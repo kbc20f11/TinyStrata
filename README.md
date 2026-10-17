@@ -71,28 +71,7 @@ A MoE model contains many **Experts**: smaller neural networks selected for each
 
 The model file is about 14.1 GB, but it does not all have to fit in VRAM. GPU memory also needs room for the conversation's **KV cache**, the model's other weights and temporary computation buffers:
 
-```mermaid
-flowchart LR
-    subgraph GPU["GPU / VRAM"]
-        direction TB
-        Other["Memory already used by other applications"]
-        Weights["Other model weights and recurrent state"]
-        KV["KV cache: memory of the conversation"]
-        Buffers["Temporary computation buffers<br/>including input-stage Expert streaming"]
-        Experts["Expert cache: uses the remaining budget"]
-        Reserve["Headroom: 768 MiB by default"]
-        Other ~~~ Weights ~~~ KV ~~~ Buffers ~~~ Experts ~~~ Reserve
-    end
-    subgraph CPU["CPU / system RAM"]
-        Host["Backing Expert weights<br/>including GPU-cached Experts"]
-        Compute["CPU computes uncached Experts<br/>during generation"]
-        Host --> Compute
-    end
-    Host -->|"Cache contents adapt to usage"| Experts
-    Host -->|"Stream weights for larger input batches"| Buffers
-    Experts --> Result["Combined model result"]
-    Compute --> Result
-```
+![How TinyStrata shares memory between GPU VRAM and system RAM](assets/memory-sharing.png)
 
 This is a layout diagram, not a fixed-size partition. At each model load, TinyStrata allocates the KV cache, other weights and work buffers first, then fits the Expert cache into the remaining free VRAM while leaving headroom. On Windows, it checks both CUDA's free-memory reading and the NVIDIA driver's device-wide reading and uses the smaller available value when both queries succeed. If allocation fails or leaves too little headroom, it retries with fewer Experts.
 
@@ -106,20 +85,7 @@ The KV cache stays in VRAM; system RAM holds Expert data for this offload mechan
 
 New configurations choose KV/Attention and context capacity automatically. You do not need to select an 8 GB, 12 GB or 16 GB recipe.
 
-```mermaid
-flowchart TD
-    Start["Load the model"] --> Hardware{"Native FP8 Attention supported<br/>by this GPU and build?"}
-    Hardware -->|Yes| FP8["FP8 KV + native FP8 Attention"]
-    Hardware -->|No| INT8["INT8 KV + INT8 Attention"]
-    FP8 --> Free["Check free VRAM before loading weights"]
-    INT8 --> Free
-    Free --> Low["Up to 8.5 GiB free<br/>64K context capacity"]
-    Free --> Mid["Over 8.5, up to 12.5 GiB free<br/>128K context capacity"]
-    Free --> High["Over 12.5 GiB free<br/>256K context capacity"]
-    Low --> Fit["Allocate weights, KV and work buffers<br/>Fit the Expert cache into what remains"]
-    Mid --> Fit
-    High --> Fit
-```
+![Automatic hardware settings for Attention, KV cache and context capacity](assets/automatic-settings.png)
 
 An RTX 3060 selects INT8. Supported RTX 40/50-series environments can select native FP8; the engine checks the compiled kernels and GPU capabilities as well as the hardware generation. If native FP8 is unavailable, automatic mode uses INT8. This chooses a supported path without running a speed or quality benchmark at startup. **Native FP8 Attention remains experimental.**
 

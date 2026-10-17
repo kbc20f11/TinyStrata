@@ -10,6 +10,7 @@
 !/install.ps1
 !/run-api.bat
 !/run.py
+!/assets/
 !/cmake/
 !/include/
 !/serve/
@@ -17,6 +18,9 @@
 !/third_party/
 
 # Only build/runtime source types belong inside the permitted directories.
+/assets/**
+!/assets/memory-sharing.png
+!/assets/automatic-settings.png
 /cmake/**
 !/cmake/**/
 !/cmake/**/*.cmake
