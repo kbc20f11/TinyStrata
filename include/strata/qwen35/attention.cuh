@@ -52,7 +52,7 @@ __device__ float block_max(float v, float* sh) {
 template<int Format>
 __global__ void k_attn_prep(const float* qg, const float* kx, const float* vx, const float* qw, const float* kw,
                             float* q, float* gate, KvCache cache, int H, int HKV, int HD, int n_rot,
-                            const int32_t* pos0, int ctx, float base, float eps) {
+                            const int32_t* pos0, int ctx, float base, float eps, const int32_t* mrope = nullptr) {
     __shared__ float sh[kThreads];
     __shared__ float buf[256];
     const int head = blockIdx.x, t = blockIdx.y;
@@ -70,7 +70,11 @@ __global__ void k_attn_prep(const float* qg, const float* kx, const float* vx, c
     const int half = n_rot / 2;
     if (i < n_rot) {
         const int p = i < half ? i : i - half;
-        const float theta = (float) pos * powf(base, -2.0f * (float) p / (float) n_rot);
+        // Qwen3.5/3.6 interleaved M-RoPE sections {11,11,10}: rotary pair p
+        // reads t/h/w by p % 3. Cache addressing and causal masking still use
+        // the token's cell index, never its compressed image rotary position.
+        const int rotary_pos = mrope ? __ldg(mrope + (size_t) pos * 3 + p % 3) : pos;
+        const float theta = (float) rotary_pos * powf(base, -2.0f * (float) p / (float) n_rot);
         float sn, cs;
         sincosf(theta, &sn, &cs);
         v = i < half ? buf[i] * cs - buf[i + half] * sn : buf[i - half] * sn + buf[i] * cs;

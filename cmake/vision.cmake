@@ -1,0 +1,27 @@
+# The image encoder uses the same pinned llama.cpp checkout as the CPU experts.
+# Its CPU-only GGML backend shares existing targets and adds no GPU allocation
+# or runtime DLL dependency. Keep llama.cpp's tools, server and UI disabled.
+function(tinystrata_add_vision_encoder)
+  if(NOT TARGET ggml OR NOT STRATA_LLAMA_SOURCE_DIR)
+    message(FATAL_ERROR "TINYSTRATA_VISION requires STRATA_NATIVE_EXPERTS=ON")
+  endif()
+  set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+  foreach(_tinystrata_llama_part COMMON TOOLS TESTS EXAMPLES SERVER APP UI)
+    set(LLAMA_BUILD_${_tinystrata_llama_part} OFF CACHE BOOL "" FORCE)
+  endforeach()
+  set(LLAMA_BUILD_MTMD ON CACHE BOOL "" FORCE)
+  set(LLAMA_OPENSSL OFF CACHE BOOL "" FORCE)
+  set(LLAMA_CURL OFF CACHE BOOL "" FORCE)
+  set(LLAMA_SUBPROCESS OFF CACHE BOOL "" FORCE)
+  set(MTMD_VIDEO OFF CACHE BOOL "" FORCE)
+  # The pinned llama.cpp release uses u8 string literals as const char*.
+  # Keep its C++17 contract instead of inheriting the engine's C++20 setting.
+  set(CMAKE_CXX_STANDARD 17)
+  add_subdirectory("${STRATA_LLAMA_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/vision-llama" EXCLUDE_FROM_ALL)
+  add_executable(tinystrata-vision "${PROJECT_SOURCE_DIR}/src/vision/tinystrata_vision.cpp")
+  target_link_libraries(tinystrata-vision PRIVATE mtmd llama)
+  target_compile_features(tinystrata-vision PRIVATE cxx_std_17)
+  set_target_properties(tinystrata-vision PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+  install(TARGETS tinystrata-vision RUNTIME DESTINATION bin)
+endfunction()
+tinystrata_add_vision_encoder()

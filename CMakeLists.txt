@@ -13,6 +13,7 @@ option(STRATA_NATIVE_EXPERTS "Build the CPU expert pool for hybrid inference" ON
 option(STRATA_PREFILL_MMQ "Build GGML MMQ prompt kernels" ON)
 option(STRATA_MMQ_KQUANTS "Build K-quant MMQ prompt kernels" ON)
 option(STRATA_Q6K_EXPERTS "Build Q6_K expert kernels" ON)
+option(TINYSTRATA_VISION "Build the CPU image encoder for Qwen3.6" ON)
 option(STRATA_PORTABLE "Build for other PCs with an AVX2 floor" OFF)
 set(STRATA_ISA_FLOOR "" CACHE STRING "Optional older CPU floor: avx or none")
 if(NOT STRATA_ISA_FLOOR MATCHES "^(|avx|none)$")
@@ -75,6 +76,9 @@ if(STRATA_PREFILL_MMQ AND NOT STRATA_NATIVE_EXPERTS)
   message(FATAL_ERROR "MMQ requires STRATA_NATIVE_EXPERTS=ON for the pinned GGML source")
 endif()
 include(cmake/cpu.cmake)
+if(TINYSTRATA_VISION)
+  include(cmake/vision.cmake)
+endif()
 
 add_library(strata_kernels STATIC
   src/kernels/cuda/native_mmvq.cu src/kernels/cuda/iq_kernels.cu

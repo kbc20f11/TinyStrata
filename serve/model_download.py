@@ -36,6 +36,13 @@ FIXED_MODEL = _Manifest(
     MODEL_REPO, MODEL_REVISION, MODEL_FILENAME, MODEL_SIZE, MODEL_SHA256,
     f"https://huggingface.co/{MODEL_REPO}/resolve/{MODEL_REVISION}/{MODEL_FILENAME}?download=true",
 )
+MMPROJ_FILENAME = "mmproj-F16.gguf"
+MMPROJ_SIZE = 899_283_584
+MMPROJ_SHA256 = "71f3cbc1f7cc0f30d09d41cfa924c0060827ebc33bf15ace7e86661e856f0160"
+FIXED_MMPROJ = _Manifest(
+    MODEL_REPO, MODEL_REVISION, MMPROJ_FILENAME, MMPROJ_SIZE, MMPROJ_SHA256,
+    f"https://huggingface.co/{MODEL_REPO}/resolve/{MODEL_REVISION}/{MMPROJ_FILENAME}?download=true",
+)
 
 
 class _Cancelled(Exception):
@@ -265,6 +272,104 @@ class FixedModelDownloader:
                 self._ready_path = path
                 self._state = "ready"
                 self._bytes = self.manifest.size
+        except _Cancelled:
+            self._update(state="cancelled")
+        except Exception as exc:
+            with self._lock:
+                self._state = "error"
+                self._error = str(exc) or type(exc).__name__
+
+
+class FixedModelBundleDownloader(FixedModelDownloader):
+    """Install the pinned language model and projector as one cancellable job.
+
+    Each file uses the same resumable, size-checked and SHA-256-checked transfer.
+    Activation happens only after both files have passed verification. The API
+    keeps its existing aggregate progress fields and adds per-file status.
+    """
+
+    def __init__(self, directory: Path, on_ready: Callable[[Path, Path], None] | None = None,
+                 existing_paths: Iterable[Path] = (), projector_paths: Iterable[Path] = (), *,
+                 _manifests: tuple[_Manifest, _Manifest] | None = None, **transfer_options):
+        model, projector = _manifests or (FIXED_MODEL, FIXED_MMPROJ)
+        super().__init__(directory, _manifest=model, **transfer_options)
+        self._bundle_ready = on_ready
+        self._assets = (
+            FixedModelDownloader(directory, existing_paths=existing_paths, _manifest=model, **transfer_options),
+            FixedModelDownloader(directory, existing_paths=projector_paths, _manifest=projector, **transfer_options),
+        )
+        self._active_asset: FixedModelDownloader | None = None
+
+    def _snapshot(self) -> dict:
+        result = super()._snapshot()
+        assets = [asset.status() for asset in self._assets]
+        total = sum(asset["total_bytes"] for asset in assets)
+        count = sum(asset["bytes_downloaded"] for asset in assets)
+        state = self._state
+        active = self._active_asset
+        if state in ("downloading", "verifying") and active is not None:
+            state = active.status()["state"]
+            if state not in ("downloading", "verifying"):
+                state = "verifying"
+        result.update(state=state, total_bytes=total, bytes_downloaded=count,
+                      progress=min(1.0, count / total) if total else 0.0,
+                      can_cancel=self._state in ("downloading", "verifying") and not self._closed,
+                      asset=active.manifest.filename if active is not None else None,
+                      assets=assets)
+        return result
+
+    def start(self) -> dict:
+        with self._lock:
+            if self._closed or self._state == "ready" or self._state in self._ACTIVE:
+                return self._snapshot()
+            for asset in self._assets:
+                asset._cancel.clear()
+                with asset._lock:
+                    asset._error = None
+            self._cancel.clear()
+            self._error = None
+            self._ready_path = None
+            self._active_asset = None
+            self._state = "downloading"
+            self._thread = threading.Thread(target=self._run, name="model-download", daemon=True)
+            self._thread.start()
+            return self._snapshot()
+
+    def cancel(self) -> dict:
+        with self._lock:
+            if self._state in ("downloading", "verifying"):
+                self._cancel.set()
+                for asset in self._assets:
+                    asset._cancel.set()
+            return self._snapshot()
+
+    def close(self, timeout: float = 5.0) -> None:
+        for asset in self._assets:
+            asset._cancel.set()
+        super().close(timeout)
+
+    def _run(self) -> None:
+        try:
+            paths = []
+            for asset in self._assets:
+                self._check_cancelled()
+                with self._lock:
+                    self._active_asset = asset
+                asset._run()
+                self._check_cancelled()
+                status = asset.status()
+                if status["state"] != "ready":
+                    raise ValueError(f'{asset.manifest.filename}: {status["error"] or status["state"]}')
+                paths.append(Path(status["path"]))
+            with self._lock:
+                self._check_cancelled()
+                self._state = "loading"
+            if self._bundle_ready is not None:
+                self._bundle_ready(*paths)
+            with self._lock:
+                self._check_cancelled()
+                self._ready_path = paths[0]
+                self._state = "ready"
         except _Cancelled:
             self._update(state="cancelled")
         except Exception as exc:

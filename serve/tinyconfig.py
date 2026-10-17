@@ -55,10 +55,17 @@ def migrate_settings(cfg: dict) -> tuple[dict, bool]:
 def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
     if cfg.get("arch", "qwen35moe") != "qwen35moe":
         raise ValueError("TinyStrata currently supports Qwen3.6 (qwen35moe) only")
-    for key in ("vision", "images", "replicas", "layer_split", "vram_elastic", "slot_save_path",
+    for key in ("images", "replicas", "layer_split", "vram_elastic", "slot_save_path",
                 "expert_profile_save", "split_skip_if_fits"):
         if cfg.get(key):
             raise ValueError(f"{key} is not supported by TinyStrata's Qwen3.6 engine")
+    vision = cfg.get("vision")
+    if vision:
+        if not isinstance(vision, dict) or not all(isinstance(vision.get(key), str) and vision[key]
+                                                for key in ("exe", "mmproj", "model")):
+            raise ValueError("vision requires the image encoder, mmproj and model paths")
+        if vision.get("gpu") or vision.get("elastic"):
+            raise ValueError("TinyStrata uses the CPU image encoder to preserve its VRAM budget")
     if cfg.get("parallel", 1) != 1:
         raise ValueError("TinyStrata currently runs one request at a time")
     if not cfg.get("exe") and not allow_uninstalled:
@@ -68,7 +75,7 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         raise ValueError("args must be a list of engine argument strings")
     values = {"--model", "--max-context", "--kv-type", "--chunk", "--mtp", "--expert-vram",
               "--expert-slots", "--cpu-threads", "--hybrid-rows", "--vram-reserve-mib"}
-    switches = {"--no-graph", "--no-warmup", "--hybrid-graph", "--no-hybrid-graph"}
+    switches = {"--no-graph", "--no-warmup", "--hybrid-graph", "--no-hybrid-graph", "--vision"}
     seen = set()
     i = 0
     while i < len(args):
@@ -103,3 +110,8 @@ def check_files(cfg: dict, *, allow_uninstalled: bool = False) -> None:
             path = base / path
         if not path.is_file() and not (allow_uninstalled and not path.exists()):
             raise ValueError(f"TinyStrata {label} not found: {path}")
+    for key in ("exe", "mmproj", "model") if cfg.get("vision") else ():
+        path = Path(cfg["vision"][key])
+        path = path if path.is_absolute() else base / path
+        if not path.is_file():
+            raise ValueError(f"TinyStrata vision {key} not found: {path}")

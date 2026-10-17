@@ -17,7 +17,8 @@ param(
     [switch]$NoStart,
     [switch]$SkipModelDownload,
     [switch]$CheckOnly,
-    [switch]$Rebuild
+    [switch]$Rebuild,
+    [switch]$Update
 )
 
 function Get-VerifiedDownload {
@@ -76,9 +77,17 @@ function Assert-TinyStrataSourceDestination {
 }
 
 function Initialize-TinyStrataSource {
-    param([string]$SourceRoot, [string]$CacheRoot)
-    if (Test-TinyStrataSource -Directory $SourceRoot) { return }
-    Assert-TinyStrataSourceDestination -Directory $SourceRoot
+    param([string]$SourceRoot, [string]$CacheRoot, [switch]$Refresh)
+    $SourceRoot = [IO.Path]::GetFullPath($SourceRoot).TrimEnd('\')
+    $existing = Test-TinyStrataSource -Directory $SourceRoot
+    if ($existing -and -not $Refresh) { return }
+    if ($existing) {
+        $sourceItem = Get-Item -LiteralPath $SourceRoot -Force
+        if (($sourceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            (Test-Path -LiteralPath (Join-Path $SourceRoot '.git'))) {
+            throw 'Update requires an archive installation, not a Git checkout or linked source directory.'
+        }
+    } else { Assert-TinyStrataSourceDestination -Directory $SourceRoot }
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
     $commit = Invoke-RestMethod -Uri 'https://api.github.com/repos/kbc20f11/TinyStrata/commits/main' `
         -Headers @{ 'User-Agent' = 'TinyStrata-Installer'; Accept = 'application/vnd.github+json' } -TimeoutSec 30
@@ -107,10 +116,32 @@ function Initialize-TinyStrataSource {
         }
     } finally { $zip.Dispose() }
     if (-not (Test-TinyStrataSource -Directory $unpacked)) { throw 'Downloaded TinyStrata sources are incomplete.' }
-    # Recheck before the final move: never replace an existing source tree.
-    Assert-TinyStrataSourceDestination -Directory $SourceRoot
-    if (Test-Path -LiteralPath $SourceRoot) { [IO.Directory]::Delete($SourceRoot, $false) }
-    [IO.Directory]::Move($unpacked, $SourceRoot)
+    if ($existing) {
+        # Replace archive sources reversibly; runtime settings and models stay
+        # in the separate work directory. Never update a Git checkout in place.
+        $sourceItem = Get-Item -LiteralPath $SourceRoot -Force
+        if (($sourceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            (Test-Path -LiteralPath (Join-Path $SourceRoot '.git'))) {
+            throw 'The source directory changed while downloading; it was left unchanged.'
+        }
+        $backupParent = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $CacheRoot) 'source-backups'))
+        $backup = [IO.Path]::GetFullPath((Join-Path $backupParent ((Split-Path -Leaf $SourceRoot) + '-' + [Guid]::NewGuid().ToString('N'))))
+        if (-not $backup.StartsWith($backupParent.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Invalid source backup destination.'
+        }
+        New-Item -ItemType Directory -Path $backupParent -Force | Out-Null
+        [IO.Directory]::Move($SourceRoot, $backup)
+        try { [IO.Directory]::Move($unpacked, $SourceRoot) }
+        catch {
+            if (-not (Test-Path -LiteralPath $SourceRoot)) { [IO.Directory]::Move($backup, $SourceRoot) }
+            throw
+        }
+        Write-Host "Previous sources: $backup"
+    } else {
+        Assert-TinyStrataSourceDestination -Directory $SourceRoot
+        if (Test-Path -LiteralPath $SourceRoot) { [IO.Directory]::Delete($SourceRoot, $false) }
+        [IO.Directory]::Move($unpacked, $SourceRoot)
+    }
     [IO.Directory]::Delete($staging, $false)
     Write-Host "Source: $SourceRoot"
 }
@@ -335,8 +366,10 @@ function Invoke-TinyStrataPortableBuild {
         if ($LASTEXITCODE -ne 0) { throw 'TinyStrata native compilation failed.' }
         $exe = Join-Path $buildRoot 'tinystrata.exe'
         $kq = Join-Path $buildRoot 'strata_kq.dll'
-        if (-not (Test-Path -LiteralPath $exe -PathType Leaf) -or -not (Test-Path -LiteralPath $kq -PathType Leaf)) { throw 'Expected native build outputs are missing.' }
-        return [pscustomobject]@{ Exe = $exe; QuantizedKernels = $kq; CudaDirectory = $cudaRoot; Architectures = $Architectures }
+        $visionExe = Join-Path $buildRoot 'tinystrata-vision.exe'
+        if (-not (Test-Path -LiteralPath $exe -PathType Leaf) -or -not (Test-Path -LiteralPath $kq -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $visionExe -PathType Leaf)) { throw 'Expected engine or vision build outputs are missing.' }
+        return [pscustomobject]@{ Exe = $exe; VisionExe = $visionExe; QuantizedKernels = $kq; CudaDirectory = $cudaRoot; Architectures = $Architectures }
     }
     finally {
         foreach ($entry in @(Get-ChildItem Env:)) {
@@ -628,7 +661,7 @@ function Invoke-TinyStrataApi {
 
 function Invoke-TinyStrataInstaller {
     param([string]$SourceDirectory, [string]$WorkingDirectory, [int]$ApiPort,
-          [bool]$DoNotStart, [bool]$DoNotDownload, [bool]$InspectOnly, [bool]$BuildAgain)
+          [bool]$DoNotStart, [bool]$DoNotDownload, [bool]$InspectOnly, [bool]$BuildAgain, [bool]$RefreshSource)
     if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitProcess) { throw 'Run this installer in 64-bit Windows PowerShell or PowerShell.' }
     $sourceRoot = [IO.Path]::GetFullPath($SourceDirectory).TrimEnd('\')
     $sourceReady = Test-TinyStrataSource -Directory $sourceRoot
@@ -648,7 +681,7 @@ function Invoke-TinyStrataInstaller {
         Write-Host "Work:    $workRoot"
         Write-Host "Config:  $configPath"
         Write-Host "API:     $baseUrl/v1"
-        if (-not $sourceReady) { Write-Host 'First download TinyStrata sources from GitHub (no git installation required).' }
+        if (-not $sourceReady -or $RefreshSource) { Write-Host 'First download TinyStrata sources from GitHub (no git installation required).' }
         Write-Host 'Plan: reuse installed components; prepare Python/dependencies; reuse or build the engine; prepare CUDA DLLs; save configuration.'
         if (-not $DoNotStart) { Write-Host 'Then start the API and install the fixed model through its API if needed.' }
         return
@@ -662,7 +695,7 @@ function Invoke-TinyStrataInstaller {
         if ($previousServer -and $savedState.port -ne $ApiPort) { throw "This installation already runs on port $($savedState.port). Stop that instance before changing its port." }
     }
     $server = Get-TinyStrataSavedProcess -StatePath $statePath -ConfigPath $configPath -SourcePath $sourceRoot -ApiPort $ApiPort
-    if ($server -and $BuildAgain) { throw 'Stop the API for this installation before requesting a rebuild.' }
+    if ($server -and ($BuildAgain -or $RefreshSource)) { throw 'Stop the API for this installation before requesting an update or rebuild.' }
     if ($server -and $DoNotStart) { Write-Host "Installation already prepared; existing API left unchanged (PID $($server.Id))."; return }
     if (-not $DoNotStart) {
         $listeners = @(Get-NetTCPConnection -LocalPort $ApiPort -State Listen -ErrorAction SilentlyContinue)
@@ -676,10 +709,10 @@ function Invoke-TinyStrataInstaller {
         & $smi.Source -L | ForEach-Object { Write-Host $_ }
         if ($LASTEXITCODE -ne 0) { throw 'The NVIDIA driver is not working. GPU drivers are not replaced by this installer.' }
         $cacheRoot = Join-Path $workRoot 'downloads'
-        if (-not $sourceReady) { Initialize-TinyStrataSource -SourceRoot $sourceRoot -CacheRoot $cacheRoot }
+        if (-not $sourceReady -or $RefreshSource) { Initialize-TinyStrataSource -SourceRoot $sourceRoot -CacheRoot $cacheRoot -Refresh:$RefreshSource }
         $python = Initialize-TinyStrataPython -WorkRoot $workRoot -SourceRoot $sourceRoot -CacheRoot $cacheRoot
         $exe = $null
-        if (-not $BuildAgain) {
+        if (-not $BuildAgain -and -not $RefreshSource) {
             $candidates = @()
             if ($cfg -and $cfg.exe) {
                 $savedExe = [string]$cfg.exe
@@ -689,7 +722,9 @@ function Invoke-TinyStrataInstaller {
             foreach ($folder in @('build', 'build\Release', 'build-cuda-132', 'build-cuda')) { $candidates += Join-Path $workRoot ($folder + '\tinystrata.exe') }
             foreach ($folder in @('bin', 'build', 'build\Release')) { $candidates += Join-Path $sourceRoot ($folder + '\tinystrata.exe') }
             foreach ($candidate in $candidates) {
-                if ((Test-Path -LiteralPath $candidate -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $candidate) 'strata_kq.dll') -PathType Leaf)) { $exe = $candidate; break }
+                if ((Test-Path -LiteralPath $candidate -PathType Leaf) -and
+                    (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $candidate) 'strata_kq.dll') -PathType Leaf) -and
+                    (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $candidate) 'tinystrata-vision.exe') -PathType Leaf)) { $exe = $candidate; break }
             }
         }
         $search = @()
@@ -713,6 +748,7 @@ function Invoke-TinyStrataInstaller {
         $dllDirs = @(Initialize-TinyStrataRuntime -RuntimeRoot $runtimeRoot -CacheRoot $cacheRoot -SearchDirectories $search -EngineDirectory (Split-Path -Parent $exe))
         if ($cfg -and $cfg.lib_dirs) { $dllDirs = @(@($cfg.lib_dirs) + $dllDirs | Select-Object -Unique) }
         $arguments = @('-B', (Join-Path $sourceRoot 'run.py'), '--config', $configPath, '--exe', $exe, '--configure-only')
+        $arguments += @('--vision-exe', (Join-Path (Split-Path -Parent $exe) 'tinystrata-vision.exe'))
         foreach ($directory in $dllDirs) { $arguments += @('--lib-dir', $directory) }
         $arguments += @('--port', [string]$ApiPort)
         Write-Host 'Preparing API settings (hardware and VRAM settings remain automatic by default)...'
@@ -747,8 +783,8 @@ function Invoke-TinyStrataInstaller {
         Start-Sleep -Milliseconds 500
     }
     if (-not $health) { throw "API startup timed out. See logs in $runtimeRoot." }
-    if (-not $health.loaded -and -not $DoNotDownload) {
-        Write-Host 'Installing the fixed Unsloth MTP model through the API (about 14.1 GB)...'
+    if ((-not $health.loaded -or -not $health.images) -and -not $DoNotDownload) {
+        Write-Host 'Installing the fixed Unsloth MTP model and vision projector through the API...'
         $null = Invoke-TinyStrataApi -BaseUrl $baseUrl -Path '/v1/model/download' -Method POST -Headers $headers
         $deadline = [DateTime]::UtcNow.AddHours(4)
         $lastUpdate = [DateTime]::MinValue
@@ -765,7 +801,7 @@ function Invoke-TinyStrataInstaller {
         }
         if ($job.state -ne 'ready') { throw 'Model installation timed out; the API remains available for retry.' }
         $health = Invoke-TinyStrataApi -BaseUrl $baseUrl -Path '/health'
-        if (-not $health.loaded) { throw 'The download finished but inference is not ready; inspect the API logs.' }
+        if (-not $health.loaded -or -not $health.images) { throw 'The download finished but image inference is not ready; inspect the API logs.' }
     }
     Write-Host "API:    $baseUrl/v1"
     Write-Host "Config: $configPath"
@@ -782,7 +818,7 @@ try {
         elseif (Test-TinyStrataSource -Directory (Get-Location).Path) { $SourceDir = (Get-Location).Path }
         else { $SourceDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'TinyStrata' }
     }
-    Invoke-TinyStrataInstaller -SourceDirectory $SourceDir -WorkingDirectory $WorkDir -ApiPort $Port -DoNotStart $NoStart.IsPresent -DoNotDownload $SkipModelDownload.IsPresent -InspectOnly $CheckOnly.IsPresent -BuildAgain $Rebuild.IsPresent
+    Invoke-TinyStrataInstaller -SourceDirectory $SourceDir -WorkingDirectory $WorkDir -ApiPort $Port -DoNotStart $NoStart.IsPresent -DoNotDownload $SkipModelDownload.IsPresent -InspectOnly $CheckOnly.IsPresent -BuildAgain $Rebuild.IsPresent -RefreshSource $Update.IsPresent
 } finally {
     $ErrorActionPreference = $tinyStrataOldErrorAction
     [Net.ServicePointManager]::SecurityProtocol = $tinyStrataOldSecurityProtocol

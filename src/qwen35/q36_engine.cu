@@ -27,6 +27,7 @@
 #include "strata/qwen35/int8_attention.hpp"
 #include "strata/qwen35/fp8_attention.hpp"
 #include "strata/qwen35/environment_policy.hpp"
+#include "strata/qwen35/vision.hpp"
 #if defined(STRATA_Q36_CPU_POOL)
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/cpu/pool.hpp"
@@ -74,6 +75,7 @@ namespace K = strata::kernels;
 namespace A = strata::qwen35::attention;
 namespace MMQ = strata::prefill::mmq;
 namespace P = strata::qwen35::environment_policy;
+namespace V = strata::qwen35::vision;
 
 #define CK(x)                                                                                                          \
     do {                                                                                                               \
@@ -761,6 +763,8 @@ struct Model {
     int64_t top_k = 8;
     float eps = 1e-6f, rope_base = 1e7f;
     int n_rot = 64;
+    bool vision_rope = true;   // Qwen3.6 interleaved M-RoPE sections {11,11,10,0}
+    int32_t image_pad = V::kImagePad;
     std::vector<Layer> layers;
     const float* out_norm = nullptr;
     Mat head;
@@ -865,6 +869,12 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
     if (const strata::MetaValue* v = gm.meta().get(p + "attention.layer_norm_rms_epsilon")) m.eps = (float) v->num();
     if (const strata::MetaValue* v = gm.meta().get(p + "rope.freq_base")) m.rope_base = (float) v->num();
     if (const strata::MetaValue* v = gm.meta().get(p + "rope.dimension_count")) m.n_rot = (int) v->u;
+    if (const strata::MetaValue* v = gm.meta().get(p + "ple.image_token_id")) m.image_pad = (int32_t) v->u;
+    if (const strata::MetaValue* v = gm.meta().get(p + "rope.dimension_sections")) {
+        m.vision_rope = v->type == strata::MetaType::ARRAY && v->items.size() >= 3 &&
+                        v->items[0].u == 11 && v->items[1].u == 11 && v->items[2].u == 10;
+        for (size_t i = 3; i < v->items.size(); ++i) m.vision_rope = m.vision_rope && v->items[i].u == 0;
+    }
     uint64_t bytes = 0;
     auto find = [&](const std::string& name, size_t& s) -> const strata::TensorInfo* {
         const strata::TensorInfo* t = gm.find(name, &s);
@@ -1029,6 +1039,12 @@ struct Engine {
     cudaStream_t st = nullptr;
     int ctx = 32768, tmax = 512;
     int64_t pos = 0;   // cells holding a processed token
+    bool vision_enabled = false, image_positions = false;
+    // Stable pointer captured by decode/verify/MTP graphs; only table contents
+    // change between requests. Image rows themselves are streamed into prompt
+    // activations, avoiding a second persistent image allocation in VRAM.
+    int32_t* mrope = nullptr;
+    V::Input image_input;
     // activations [tmax][...]
     float *x, *h, *y, *qkv, *hc, *z, *alpha, *beta, *gdn_y, *qg, *kx, *vx, *q, *gate, *att, *logits_r, *eparts, *moe_out,
         *sg, *su, *shh, *sy, *sgate, *ewts, *logits;
@@ -1152,6 +1168,11 @@ struct Engine {
         const size_t T = (size_t) tmax, N = (size_t) g.n_embd, Kp = (size_t) m->top_k, FF = (size_t) g.n_ff;
         const size_t C = (size_t) g.ssm_conv_channels;
         CK(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking));
+        if (vision_enabled) {
+            mrope = dalloc_t<int32_t>((size_t) ctx * 3);
+            const auto identity = V::identity_positions(ctx);
+            CK(cudaMemcpy(mrope, identity.data(), identity.size() * sizeof(int32_t), cudaMemcpyHostToDevice));
+        }
         x = dalloc(T * N); h = dalloc(T * N); y = dalloc(T * N); hmain = dalloc(T * N); hlast = dalloc(N);
         qkv = dalloc(T * C); hc = dalloc(T * C); z = dalloc(T * g.ssm_value_dim);
         alpha = dalloc(T * g.ssm_v_heads); beta = dalloc(T * g.ssm_v_heads); gdn_y = dalloc(T * g.ssm_value_dim);
@@ -1322,6 +1343,36 @@ struct Engine {
         pos = 0;
     }
 
+    void set_images(V::Input input) {
+        CK(cudaStreamSynchronize(st));
+        image_input = std::move(input);
+        CK(cudaMemcpy(mrope, image_input.positions.data(), image_input.positions.size() * sizeof(int32_t),
+                      cudaMemcpyHostToDevice));
+        image_positions = true;
+    }
+    void clear_images() {
+        if (!image_positions) return;
+        CK(cudaStreamSynchronize(st));
+        const auto identity = V::identity_positions(ctx);
+        CK(cudaMemcpy(mrope, identity.data(), identity.size() * sizeof(int32_t), cudaMemcpyHostToDevice));
+        image_input = {};
+        image_positions = false;
+    }
+    // Replace only image-pad embeddings. This is used for both the main model
+    // and MTP prompt pass, before their embedding norms/projection. Generated
+    // tokens always lie after these spans, so graph launches need no copies.
+    void image_rows(float* destination, int T, int64_t p0) {
+        const size_t width = (size_t) m->g.n_embd;
+        for (const V::Image& image : image_input.images) {
+            const int64_t begin = std::max<int64_t>(p0, (int64_t) image.cell);
+            const int64_t end = std::min<int64_t>(p0 + T, (int64_t) image.cell + image.rows);
+            if (begin >= end) continue;
+            const float* source = image_input.embeddings.data() + image.offset + (size_t) (begin - image.cell) * width;
+            CK(cudaMemcpyAsync(destination + (size_t) (begin - p0) * width, source,
+                               (size_t) (end - begin) * width * sizeof(float), cudaMemcpyHostToDevice, st));
+        }
+    }
+
     /// y [T][n_out] = W x [T][n_in] on the native MMVQ, 8 columns per launch.
     void mm(const Mat& w, const float* xin, float* out, int T) {
         prep(xin, w.n_in, T, q8);
@@ -1429,7 +1480,7 @@ struct Engine {
             apply(L.wv, xq, vx, T);
             auto attention = [&]<int Format>() {
                 A::k_attn_prep<Format><<<dim3(H + HKV, T), kThreads, 0, st>>>(qg, kx, vx, L.q_norm, L.k_norm, q, gate, kv[li], H,
-                                                                  HKV, HD, m->n_rot, dpos, ctx, m->rope_base, m->eps);
+                                                                  HKV, HD, m->n_rot, dpos, ctx, m->rope_base, m->eps, mrope);
                 if (T > kGemmT && tiled_prompt()) {
                     const auto& c = kv[li];
                     if constexpr (Format == 3) {
@@ -1594,6 +1645,7 @@ struct Engine {
             stream_begin(seq);
         }
         K::iq_embed_rows(m->embd_type, m->embd, m->embd_row, tok, T, N, x, st);
+        image_rows(x, T, p0);
         k_rms<<<T, kThreads, 0, st>>>(x, m->layers[0].attn_norm, h, N, m->eps);   // later layers: from k_moe_out
         for (size_t l = 0; l < m->layers.size(); ++l) {
             const bool last = l + 1 == m->layers.size();
@@ -1618,6 +1670,7 @@ struct Engine {
         const int N = (int) g.n_embd;
         if (main_hybrid && lhy(m->layers.size()) && T > hybrid_t && use_mmq) stream_begin({(int) m->layers.size()});
         K::iq_embed_rows(m->embd_type, m->embd, m->embd_row, tok_m, T, N, y, st);
+        image_rows(y, T, p0);
         k_rms_ld<<<T, kThreads, 0, st>>>(y, N, m->mtp_enorm, mtp_cat, 2 * N, N, m->eps);              // [e | ...]
         k_rms_ld<<<T, kThreads, 0, st>>>(seeds, N, m->mtp_hnorm, mtp_cat + N, 2 * N, N, m->eps);      // [... | h]
         mm(m->eh_proj, mtp_cat, x, T);
@@ -2556,11 +2609,11 @@ int serve(Engine& E) {
     std::printf("INFO version=0.1.0 kv=%s expert_slots=%d expert_cache_mib=%zu expert_cache_bytes=%zu "
                 "expert_arena_bytes=%zu expert_auto=%d vram_free_bytes=%zu vram_cuda_free_bytes=%zu "
                 "vram_physical_free_bytes=%zu vram_free_source=%s vram_reserve_mib=%zu mtp=%d "
-                "kv_auto=%d context_auto=%d gpu_cc=%d\n",
+                "kv_auto=%d context_auto=%d gpu_cc=%d vision=%d\n",
                 E.kv_name(), expert_slots, expert_bytes >> 20, expert_bytes, arena_bytes, E.expert_auto ? 1 : 0,
                 memory.free, memory.cuda_free, memory.physical ? memory.physical_free : memory.cuda_free,
                 memory.source(), E.vram_reserve >> 20, E.mtp_d,
-                E.kv_auto ? 1 : 0, E.context_auto ? 1 : 0, E.gpu_cc);
+                E.kv_auto ? 1 : 0, E.context_auto ? 1 : 0, E.gpu_cc, E.vision_enabled ? 1 : 0);
     std::printf("READY %d stop\n", E.ctx);
     std::fflush(stdout);
     std::mutex mu;
@@ -2594,13 +2647,14 @@ int serve(Engine& E) {
             lines.pop_front();
         }
         if (line.empty()) continue;
-        if (line.rfind("GEN ", 0) != 0) {
-            std::printf("ERR expected: GEN <max_new> [key=value ...] <id,id,...>\n");
+        const bool image_request = line.rfind("GENI ", 0) == 0;
+        if (!image_request && line.rfind("GEN ", 0) != 0) {
+            std::printf("ERR expected: GEN <max_new> [key=value ...] <ids> or GENI <max_new> [key=value ...] <file> <ids>\n");
             std::fflush(stdout);
             continue;
         }
         char* p = nullptr;
-        const long long max_new = std::strtoll(line.c_str() + 4, &p, 10);
+        const long long max_new = std::strtoll(line.c_str() + (image_request ? 5 : 4), &p, 10);
         Sampling smp;
         for (;;) {
             while (*p == ' ') ++p;
@@ -2621,13 +2675,20 @@ int serve(Engine& E) {
             else if (key == "penalty_present") smp.present = std::strtof(v, nullptr);
             else if (key == "seed") smp.seed = std::strtoull(v, nullptr, 10);
         }
+        std::string embeddings_path;
+        if (image_request) {
+            while (*p == ' ') ++p;
+            const char* begin = p;
+            while (*p && *p != ' ') ++p;
+            embeddings_path.assign(begin, (size_t) (p - begin));
+        }
         const std::vector<int32_t> ids = parse_ids(p);
         if (max_new < 1 || ids.empty()) {
             std::printf("ERR bad request: max_new or the ids\n");
             std::fflush(stdout);
             continue;
         }
-        if ((int64_t) ids.size() + max_new > E.ctx) {
+        if (ids.size() > (size_t) E.ctx || max_new > E.ctx - (int64_t) ids.size()) {
             std::printf("ERR prompt (%zu tokens) + max_new (%lld) exceeds the context (%d)\n", ids.size(), max_new, E.ctx);
             std::fflush(stdout);
             continue;
@@ -2635,6 +2696,16 @@ int serve(Engine& E) {
         bool bad = false;
         for (int32_t t : ids) bad |= t < 0 || t >= (int32_t) E.m->g.n_vocab;
         if (bad) { std::printf("ERR a token id is outside the vocabulary\n"); std::fflush(stdout); continue; }
+        V::Input image_input;
+        if (image_request) {
+            if (!E.vision_enabled) {
+                std::printf("ERR this engine was started without --vision\n"); std::fflush(stdout); continue;
+            }
+            std::string error;
+            if (!V::load(embeddings_path, ids, (int) E.m->g.n_embd, E.ctx, image_input, error, E.m->image_pad)) {
+                std::printf("ERR %s\n", error.c_str()); std::fflush(stdout); continue;
+            }
+        }
         stop.store(false);
         if ((int64_t) live.size() != E.pos) {
             std::fprintf(stderr, "tinystrata: consumed history (%zu) differs from model position (%lld)\n",
@@ -2645,11 +2716,17 @@ int serve(Engine& E) {
         }
         // the held state continues when the request extends it (the recurrent state cannot step back)
         size_t reuse = 0;
-        if (live.size() < ids.size() && std::equal(live.begin(), live.end(), ids.begin())) reuse = live.size();
+        // A matching sequence of image-pad IDs does not identify a picture.
+        // Read image prompts afresh, and discard their recurrent state before
+        // a text-only request; ordinary text prefix reuse stays unchanged.
+        if (!image_request && !E.image_positions && live.size() < ids.size() &&
+            std::equal(live.begin(), live.end(), ids.begin())) reuse = live.size();
         else {
             E.reset();
             live.clear();
         }
+        if (image_request) E.set_images(std::move(image_input));
+        else E.clear_images();
         const auto t0 = Clock::now();
         const int64_t fresh = (int64_t) (ids.size() - reuse);
         E.process(ids.data() + reuse, fresh, [&](int64_t done) {
@@ -2736,7 +2813,7 @@ int strata::qwen35::run(int argc, char** argv) {
     bool warm = true;
     int kv_format = P::kAutomaticKv; // -1 auto; 0 FP32, 1 FP8, 2 INT8, 3 native FP8 MMA
     int expert_slots = 0;
-    bool serve_mode = false, graph = true;
+    bool serve_mode = false, graph = true, vision = false;
     const char* hybrid_graph_env = std::getenv("STRATA_Q36_HYBRID_GRAPH");
     bool hybrid_graph_requested = hybrid_graph_env != nullptr && hybrid_graph_env[0] == '1';
     for (int i = 1; i < argc; ++i) {
@@ -2749,6 +2826,7 @@ int strata::qwen35::run(int argc, char** argv) {
             std::printf("usage: tinystrata --model GGUF [options]\n"
                         "  --tokens IDS --n N       Generate from comma-separated token IDs\n"
                         "  --serve                  Native stdin/stdout engine protocol\n"
+                        "  --vision                 Accept SVE1 image embeddings through GENI in --serve\n"
                         "  --bench-pp N --bench-tg N Benchmark prompt and generation\n"
                         "  --max-context auto|N     KV capacity (default: auto, free VRAM selects 64K/128K/256K)\n"
                         "  --kv-type auto|fp32|fp8|int8|fp8-mma  KV storage (default: auto, native FP8 when supported)\n"
@@ -2790,6 +2868,7 @@ int strata::qwen35::run(int argc, char** argv) {
         else if (a == "--dump-full-logits") dump_full = next();
         else if (a == "--bench-pp") bench_pp = std::atoi(next().c_str());
         else if (a == "--bench-tg") bench_tg = std::atoi(next().c_str());
+        else if (a == "--vision") vision = true;
         else if (a == "--no-graph") graph = false;
         else if (a == "--no-warmup") warm = false;
         else if (a == "--kv-type") {
@@ -2865,6 +2944,11 @@ int strata::qwen35::run(int argc, char** argv) {
         return 1;
     }
     Engine E;
+    if (vision && (m.n_rot != 64 || !m.vision_rope || m.image_pad < 0 || m.image_pad >= m.g.n_vocab)) {
+        std::fprintf(stderr, "tinystrata: vision requires Qwen3.6 interleaved M-RoPE with 64 rotary dimensions and sections 11/11/10\n");
+        return 2;
+    }
+    E.vision_enabled = vision;
     E.context_auto = context_auto;
     E.kv_auto = kv_format == P::kAutomaticKv;
 #if !defined(__HIPCC__)

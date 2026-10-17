@@ -35,6 +35,21 @@ def resolve_executable(cfg: dict) -> Path | None:
     return None
 
 
+def resolve_vision_executable(cfg: dict) -> Path | None:
+    """The CPU image encoder is built and installed alongside the engine."""
+    selected = cfg.get("vision_exe") or (cfg.get("vision") or {}).get("exe")
+    if selected:
+        path = Path(selected).expanduser()
+        path = path if path.is_absolute() else Path(cfg.get("cwd") or ".") / path
+        return path.resolve() if path.is_file() else None
+    engine = resolve_executable(cfg)
+    if engine is not None:
+        path = engine.with_name("tinystrata-vision" + (".exe" if os.name == "nt" else ""))
+        if path.is_file():
+            return path.resolve()
+    return None
+
+
 def configure_download(cfg: dict, config_path: str | Path) -> dict:
     """Choose the managed destination locally, never from an HTTP request."""
     from serve.model_download import MODEL_FILENAME
@@ -71,7 +86,36 @@ def save_settings(config_path: str | Path, cfg: dict) -> None:
         config.save(path, cfg)
 
 
-def prepare_installed_model(cfg: dict, config_path: str | Path, model_path: str | Path) -> dict:
+def configure_vision(cfg: dict, model: Path, *, projector: Path | None = None,
+                     verified: bool = False) -> dict:
+    """Enable real CPU image encoding only with the pinned, verified projector."""
+    from serve.model_download import MMPROJ_FILENAME, MMPROJ_SHA256, MMPROJ_SIZE
+
+    new = {**cfg, "args": list(cfg["args"])}
+    previous = cfg.get("vision") or {}
+    projector = projector or Path(previous.get("mmproj") or Path(cfg["download_dir"]) / MMPROJ_FILENAME)
+    encoder = resolve_vision_executable(cfg)
+    valid = projector.is_file() and projector.stat().st_size == MMPROJ_SIZE
+    if valid and not verified:
+        digest = hashlib.sha256()
+        with projector.open("rb") as source:
+            for block in iter(lambda: source.read(4 * 1024 * 1024), b""):
+                digest.update(block)
+        valid = digest.hexdigest() == MMPROJ_SHA256
+    new["args"] = [arg for arg in new["args"] if arg != "--vision"]
+    if valid and encoder is not None:
+        new["vision"] = {"exe": str(encoder), "mmproj": str(projector.resolve()),
+                         "model": str(model), "gpu": False}
+        new["args"].append("--vision")
+        new.pop("vision_download_required", None)
+    else:
+        new.pop("vision", None)
+        new["vision_download_required"] = True
+    return new
+
+
+def prepare_installed_model(cfg: dict, config_path: str | Path, model_path: str | Path, *,
+                            projector: Path | None = None, projector_verified: bool = False) -> dict:
     """Extract a verified/downloaded or local GGUF tokenizer, then save settings.
 
     A missing executable does not prevent downloading or preparing the model.
@@ -103,5 +147,6 @@ def prepare_installed_model(cfg: dict, config_path: str | Path, model_path: str 
             new.pop("model_bootstrap", None)
     else:
         new["model_bootstrap"] = True
+    new = configure_vision(new, model, projector=projector, verified=projector_verified)
     save_settings(path, new)
     return new

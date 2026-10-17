@@ -10,6 +10,10 @@ Existing file-level copyright and license notices remain in place.
 
 The HTTP API server and tokenizer are adapted from the same upstream commit.
 
+The image encoder in src/vision/tinystrata_vision.cpp adapts
+tools/vision/strata_vision.cpp from the same upstream commit (MIT), using the
+existing pinned llama.cpp mtmd and GGML libraries for image embeddings.
+
 INT8 KV quantization and the dense prompt attention kernel are adapted from
 aflin/momoe (https://github.com/aflin/momoe), an MIT-licensed Strata derivative.
 Source commit: 47e5b2b2ab52982e105315bba2ac48ec75de01bf.

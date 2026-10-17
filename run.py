@@ -63,6 +63,8 @@ def prepare(a) -> tuple[dict, Path]:
         candidate = resolve_executable(cfg)
         if candidate is not None:
             cfg["exe"] = str(candidate)
+    if getattr(a, "vision_exe", None):
+        cfg["vision_exe"] = str(a.vision_exe.expanduser().resolve())
     for key in ("max_context", "kv_type", "mtp", "expert_vram", "vram_reserve_mib", "chunk"):
         value = getattr(a, key)
         if value is not None:
@@ -102,6 +104,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", type=Path, help="existing Qwen3.6 GGUF (optional; download the fixed model through the API)")
     ap.add_argument("--exe", type=Path, help="built tinystrata executable")
+    ap.add_argument("--vision-exe", type=Path, help="built tinystrata-vision CPU image encoder")
     ap.add_argument("--config", type=Path, default=RUNTIME / ".tinystrata/config.json")
     ap.add_argument("--max-context", type=context_limit, metavar="auto|TOKENS",
                     help="choose context capacity from available GPU memory (default: auto), or set a token limit")
