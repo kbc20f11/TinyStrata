@@ -1,0 +1,43 @@
+TinyStrata is an independent derivative of Niko1221/Strata.
+Upstream: https://github.com/Niko1221/Strata
+Base commit: 296b59d2f73c8f04a805df29c2fa97655adace78
+Copyright (c) 2026 Niko1221 and the Strata contributors.
+The upstream MIT license is preserved in LICENSE.
+
+GGML-derived source and the pinned llama.cpp dependency are MIT licensed.
+See third_party/ggml/LICENSE and third_party/ggml/VERSION.txt.
+Existing file-level copyright and license notices remain in place.
+
+The HTTP API server and tokenizer are adapted from the same upstream commit.
+
+INT8 KV quantization and the dense prompt attention kernel are adapted from
+aflin/momoe (https://github.com/aflin/momoe), an MIT-licensed Strata derivative.
+Source commit: 47e5b2b2ab52982e105315bba2ac48ec75de01bf.
+The dense kernel was introduced by Aaron Flin in commit
+e5fd6d3acbe99f26ed7f179b6b35b8ec5343fb38. Original Strata copyright and MIT
+license remain in LICENSE. Adaptations use TinyStrata's resident cache layout.
+Native Q2_K/Q3_K expert dot helpers and Q2_K dequantization also adapt
+src/kernels/cuda/iq_kernels.cu from the same MoMoE commit, with TinyStrata's
+format dispatch and existing GGML block layouts. File-level attribution is retained.
+
+Native FP8 attention instruction wrapper
+include/strata/qwen35/fp8_mma.cuh adapts FlashInfer's
+include/flashinfer/attention/sparse_mla_sm120/arch/mma_sm120.cuh at
+38e6b8944fe8b6497d793ef21fbaadd797ea39d8 (https://github.com/flashinfer-ai/flashinfer).
+Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+BSD-3-Clause; full license and disclaimer retained in the adapted file and
+third_party/licenses/FlashInfer-BSD-3-Clause.txt (include with binary distributions).
+The surrounding dense scheduler is adapted from MoMoE, credited above.
+SageAttention d1a57a546c3d395b1ffcbeecc66d81db76f3b4b5 was consulted for
+FP8 accumulation design; no SageAttention source is incorporated.
+
+The optional Qwen3.6 hybrid CUDA Graph handoff adapts Strata's mapped-memory
+notification, device wait and host graph-launch mechanisms from
+src/core/session.cpp, src/kernels/cuda/elementwise.cu and
+include/strata/core/host_graph_launch.hpp at the base commit listed above (MIT).
+TinyStrata adds native-expert miss merging, multi-token replay service and a
+persistent launch worker. Original copyright and MIT license are retained.
+
+Qwen3.6 native-server consumed-history tracking follows Strata Flash-Next's
+src/program/generate.cpp at the base commit listed above (MIT), recording the
+whole committed speculative prefix before emitting a potentially shorter reply.
