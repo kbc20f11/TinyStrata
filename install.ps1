@@ -235,9 +235,30 @@ function Find-TinyStrataBuildTools {
     if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
         throw 'Source builds require Visual Studio 2022 or 2026 C++ Build Tools. The portable TinyStrata package does not need them.'
     }
-    $instances = & $vswhere -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json -utf8
-    if ($LASTEXITCODE -ne 0) { throw 'Could not query Visual Studio installations.' }
-    foreach ($instance in @($instances | ConvertFrom-Json | Sort-Object { [version]$_.installationVersion } -Descending)) {
+    # Read UTF-8 directly: the PowerShell console code page can corrupt the
+    # localized descriptions in vswhere's JSON before ConvertFrom-Json sees it.
+    $queryInfo = New-Object Diagnostics.ProcessStartInfo
+    $queryInfo.FileName = $vswhere
+    $queryInfo.Arguments = '-products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json -utf8'
+    $queryInfo.UseShellExecute = $false
+    $queryInfo.CreateNoWindow = $true
+    $queryInfo.RedirectStandardOutput = $true
+    $queryInfo.RedirectStandardError = $true
+    $queryInfo.StandardOutputEncoding = New-Object Text.UTF8Encoding($false)
+    $queryInfo.StandardErrorEncoding = New-Object Text.UTF8Encoding($false)
+    $query = New-Object Diagnostics.Process
+    $query.StartInfo = $queryInfo
+    try {
+        if (-not $query.Start()) { throw 'Could not start the Visual Studio installation query.' }
+        $stdout = $query.StandardOutput.ReadToEndAsync()
+        $stderr = $query.StandardError.ReadToEndAsync()
+        $query.WaitForExit()
+        $instances = $stdout.GetAwaiter().GetResult()
+        $queryError = $stderr.GetAwaiter().GetResult()
+        if ($query.ExitCode -ne 0) { throw "Could not query Visual Studio installations: $queryError" }
+    } finally { $query.Dispose() }
+    $parsedInstances = ConvertFrom-Json -InputObject $instances
+    foreach ($instance in @($parsedInstances | Sort-Object { [version]$_.installationVersion } -Descending)) {
         if ([version]$instance.installationVersion -lt [version]'17.0' -or [version]$instance.installationVersion -ge [version]'19.0') { continue }
         $vsRoot = $instance.installationPath
         $devCmd = Join-Path $vsRoot 'Common7\Tools\VsDevCmd.bat'
