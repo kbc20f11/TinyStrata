@@ -1,10 +1,11 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-Install and start TinyStrata on Windows using the local source directory.
+Install and start TinyStrata on Windows.
 .DESCRIPTION
-Run with: Get-Content .\install.ps1 -Raw | Invoke-Expression
-Downloads are obtained from official Python, NVIDIA and Microsoft endpoints.
+Run with: iex (irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/main/install.ps1')
+Uses local sources when available, otherwise downloads them from GitHub.
+Other downloads use official Python, NVIDIA and Microsoft endpoints.
 The NVIDIA driver must already be installed. No persistent PATH or execution
 policy changes are made. Runtime data stays in the sibling TinyStrata-work folder.
 #>
@@ -53,6 +54,65 @@ function Get-TinyStrataOfficialFile {
         }
         $download.GetAwaiter().GetResult()
     } finally { $client.Dispose() }
+}
+
+function Test-TinyStrataSource {
+    param([string]$Directory)
+    foreach ($name in @('run.py', 'requirements.txt', 'CMakeLists.txt', 'serve\server.py')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $Directory $name) -PathType Leaf)) { return $false }
+    }
+    return $true
+}
+
+function Assert-TinyStrataSourceDestination {
+    param([string]$Directory)
+    if (Test-Path -LiteralPath $Directory) {
+        $item = Get-Item -LiteralPath $Directory -Force
+        if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            @(Get-ChildItem -LiteralPath $Directory -Force).Count -gt 0) {
+            throw "Source destination is not an empty directory: $Directory. Choose another -SourceDir; existing files were left unchanged."
+        }
+    }
+}
+
+function Initialize-TinyStrataSource {
+    param([string]$SourceRoot, [string]$CacheRoot)
+    if (Test-TinyStrataSource -Directory $SourceRoot) { return }
+    Assert-TinyStrataSourceDestination -Directory $SourceRoot
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $commit = Invoke-RestMethod -Uri 'https://api.github.com/repos/kbc20f11/TinyStrata/commits/main' `
+        -Headers @{ 'User-Agent' = 'TinyStrata-Installer'; Accept = 'application/vnd.github+json' } -TimeoutSec 30
+    $revision = [string]$commit.sha
+    if ($revision -notmatch '^[a-f0-9]{40}$') { throw 'GitHub returned an invalid TinyStrata revision.' }
+    $archive = Join-Path $CacheRoot ("TinyStrata-$revision.zip")
+    Write-Host "Downloading TinyStrata sources ($($revision.Substring(0, 7)))..."
+    Get-TinyStrataOfficialFile -Uri ("https://codeload.github.com/kbc20f11/TinyStrata/zip/$revision") -Destination $archive
+    $sourceParent = Split-Path -Parent $SourceRoot
+    New-Item -ItemType Directory -Path $sourceParent -Force | Out-Null
+    $staging = Join-Path $sourceParent ('.TinyStrata-source-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $staging | Out-Null
+    $unpacked = Join-Path $staging ("TinyStrata-$revision")
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = [IO.Compression.ZipFile]::OpenRead($archive)
+    try {
+        foreach ($entry in $zip.Entries) {
+            $target = [IO.Path]::GetFullPath((Join-Path $staging $entry.FullName.Replace('/', '\')))
+            if (-not $entry.Name -and $target.TrimEnd('\') -eq $unpacked) { continue }
+            if (-not $target.StartsWith($unpacked + '\', [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'GitHub source archive contains an unexpected path.'
+            }
+            if (-not $entry.Name) { continue }
+            New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $target, $false)
+        }
+    } finally { $zip.Dispose() }
+    if (-not (Test-TinyStrataSource -Directory $unpacked)) { throw 'Downloaded TinyStrata sources are incomplete.' }
+    # Recheck before the final move: never replace an existing source tree.
+    Assert-TinyStrataSourceDestination -Directory $SourceRoot
+    if (Test-Path -LiteralPath $SourceRoot) { [IO.Directory]::Delete($SourceRoot, $false) }
+    [IO.Directory]::Move($unpacked, $SourceRoot)
+    [IO.Directory]::Delete($staging, $false)
+    Write-Host "Source: $SourceRoot"
 }
 
 function Ensure-TinyStrataBuildTools {
@@ -550,9 +610,8 @@ function Invoke-TinyStrataInstaller {
           [bool]$DoNotStart, [bool]$DoNotDownload, [bool]$InspectOnly, [bool]$BuildAgain)
     if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitProcess) { throw 'Run this installer in 64-bit Windows PowerShell or PowerShell.' }
     $sourceRoot = [IO.Path]::GetFullPath($SourceDirectory).TrimEnd('\')
-    foreach ($name in @('run.py', 'requirements.txt', 'CMakeLists.txt', 'serve\server.py')) {
-        if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot $name) -PathType Leaf)) { throw "TinyStrata source not found at $sourceRoot. Run from the project directory or pass -SourceDir." }
-    }
+    $sourceReady = Test-TinyStrataSource -Directory $sourceRoot
+    if (-not $sourceReady) { Assert-TinyStrataSourceDestination -Directory $sourceRoot }
     if (-not $WorkingDirectory) { $WorkingDirectory = $sourceRoot + '-work' }
     $workRoot = [IO.Path]::GetFullPath($WorkingDirectory).TrimEnd('\')
     if ($workRoot -eq $sourceRoot -or $workRoot.StartsWith($sourceRoot + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'WorkDir must be outside the source directory.' }
@@ -568,6 +627,7 @@ function Invoke-TinyStrataInstaller {
         Write-Host "Work:    $workRoot"
         Write-Host "Config:  $configPath"
         Write-Host "API:     $baseUrl/v1"
+        if (-not $sourceReady) { Write-Host 'First download TinyStrata sources from GitHub (no git installation required).' }
         Write-Host 'Plan: reuse installed components; prepare Python/dependencies; reuse or build the engine; prepare CUDA DLLs; save configuration.'
         if (-not $DoNotStart) { Write-Host 'Then start the API and install the fixed model through its API if needed.' }
         return
@@ -595,6 +655,7 @@ function Invoke-TinyStrataInstaller {
         & $smi.Source -L | ForEach-Object { Write-Host $_ }
         if ($LASTEXITCODE -ne 0) { throw 'The NVIDIA driver is not working. GPU drivers are not replaced by this installer.' }
         $cacheRoot = Join-Path $workRoot 'downloads'
+        if (-not $sourceReady) { Initialize-TinyStrataSource -SourceRoot $sourceRoot -CacheRoot $cacheRoot }
         $python = Initialize-TinyStrataPython -WorkRoot $workRoot -SourceRoot $sourceRoot -CacheRoot $cacheRoot
         $exe = $null
         if (-not $BuildAgain) {
@@ -695,7 +756,11 @@ $tinyStrataOldErrorAction = $ErrorActionPreference
 $tinyStrataOldSecurityProtocol = [Net.ServicePointManager]::SecurityProtocol
 try {
     $ErrorActionPreference = 'Stop'
-    if (-not $SourceDir) { $SourceDir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path } }
+    if (-not $SourceDir) {
+        if ($PSScriptRoot -and (Test-TinyStrataSource -Directory $PSScriptRoot)) { $SourceDir = $PSScriptRoot }
+        elseif (Test-TinyStrataSource -Directory (Get-Location).Path) { $SourceDir = (Get-Location).Path }
+        else { $SourceDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'TinyStrata' }
+    }
     Invoke-TinyStrataInstaller -SourceDirectory $SourceDir -WorkingDirectory $WorkDir -ApiPort $Port -DoNotStart $NoStart.IsPresent -DoNotDownload $SkipModelDownload.IsPresent -InspectOnly $CheckOnly.IsPresent -BuildAgain $Rebuild.IsPresent
 } finally {
     $ErrorActionPreference = $tinyStrataOldErrorAction

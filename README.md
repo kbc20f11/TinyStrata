@@ -2,6 +2,29 @@
 
 **Windows-only, API-only local MoE inference, focused on PCs with 8–24 GB of VRAM and up to 32 GB of system RAM.** Targets include ordinary gaming PCs and gaming laptops.
 
+## Quick installation
+
+Run in 64-bit PowerShell to install TinyStrata and start the API at `http://127.0.0.1:8080/v1`:
+
+```powershell
+iex (irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/main/install.ps1')
+```
+
+## Measured speed
+
+The following measurements used Windows, an RTX PRO 4000 Blackwell SFF Edition (24 GB), a Ryzen 9 7945HX3D and the fixed Unsloth MTP UD-IQ3_XXS model on 2026-10-17. Settings were greedy generation, MTP 3, the context capacities shown below, 512-token prompt chunks, automatic Expert placement and the optional hybrid CUDA Graph path enabled.
+
+| Available-memory condition | Context capacity | INT8 generation | Native FP8 generation |
+| --- | ---: | ---: | ---: |
+| Whole 24 GB GPU; all Experts resident | 256K | 121.28 tok/s | 122.73 tok/s |
+| 8 GiB occupied separately; approximately 16 GB left | 256K | 96.98 tok/s | 112.39 tok/s |
+| 12 GiB occupied separately; approximately 12 GB left | 128K | 104.28 tok/s | 107.61 tok/s |
+| 16 GiB occupied separately; approximately 8 GB left | 64K | 81.43 tok/s | 86.69 tok/s |
+
+These are aggregate decode speeds from three short inputs (34, 46 and 1,599 tokens), each generating 128 tokens twice. Loading and input processing are excluded. **64K–256K are allocated cache capacities, not input lengths.** All reduced-memory rows used independent allocations on the same 24 GB GPU and performed real CPU Expert work; they are not benchmarks of physical 16/12/8 GB GPUs.
+
+The 24/16 GB figures are from the earlier run. The added 12/8 GB cases used the current build and automatic context selection (128K/64K). Context capacity also affects speed, so these rows show different practical settings. FP8's advantage here is a measured result for these conditions, not a general guarantee or a quality comparison.
+
 ## Why TinyStrata?
 
 With PC component prices rising, putting together a high-end "1337 PC" is increasingly out of reach for many people.
@@ -106,77 +129,15 @@ MTP acceleration currently applies to **greedy generation** (temperature 0, with
 
 Explicit settings override automatic choices, and existing manually selected settings remain in effect. For example, `run-api.bat --kv-type int8` fixes INT8; `run-api.bat --kv-type auto --max-context auto --expert-vram auto` restores automatic KV, context and Expert placement.
 
-## Measured speed
-
-The following measurements used Windows, an RTX PRO 4000 Blackwell SFF Edition (24 GB), a Ryzen 9 7945HX3D and the fixed Unsloth MTP UD-IQ3_XXS model on 2026-10-17. Settings were greedy generation, MTP 3, the context capacities shown below, 512-token prompt chunks, automatic Expert placement and the optional hybrid CUDA Graph path enabled.
-
-| Available-memory condition | Context capacity | INT8 generation | Native FP8 generation |
-| --- | ---: | ---: | ---: |
-| Whole 24 GB GPU; all Experts resident | 256K | 121.28 tok/s | 122.73 tok/s |
-| 8 GiB occupied separately; approximately 16 GB left | 256K | 96.98 tok/s | 112.39 tok/s |
-| 12 GiB occupied separately; approximately 12 GB left | 128K | 104.28 tok/s | 107.61 tok/s |
-| 16 GiB occupied separately; approximately 8 GB left | 64K | 81.43 tok/s | 86.69 tok/s |
-
-These are aggregate decode speeds from three short inputs (34, 46 and 1,599 tokens), each generating 128 tokens twice. Loading and input processing are excluded. **64K–256K are allocated cache capacities, not input lengths.** All reduced-memory rows used independent allocations on the same 24 GB GPU and performed real CPU Expert work; they are not benchmarks of physical 16/12/8 GB GPUs.
-
-The 24/16 GB figures are from the earlier run. The added 12/8 GB cases used the current build and automatic context selection (128K/64K). Context capacity also affects speed, so these rows show different practical settings. FP8's advantage here is a measured result for these conditions, not a general guarantee or a quality comparison.
-
-## Quick installation
-
-From the TinyStrata folder, run this in a 64-bit PowerShell session:
-
-```powershell
-iex (Get-Content .\install.ps1 -Raw)
-```
-
-For a new installation, the default API address is **`http://127.0.0.1:8080/v1`**. To install and start on a different port, such as **18080** to avoid conflicting with upstream Strata:
-
-```powershell
-$installer = Get-Content .\install.ps1 -Raw
-iex "& { $installer } -Port 18080"
-```
-
-Then connect your API client to **`http://127.0.0.1:18080/v1`**. The selected port is saved and reused on later runs. If this installation is already running, stop it before changing its port.
-
-The installer reuses existing components, prepares Python and API dependencies, finds or builds the native engine, and supplies the required CUDA runtime libraries. It then starts the API in the background and installs the fixed Unsloth model through the API if needed. Hardware and VRAM settings are selected automatically; existing settings are preserved when you run it again.
-
-A working NVIDIA driver is required. If a first source build needs Microsoft C++ Build Tools, the installer downloads them and Windows may ask for administrator approval. Python, CUDA files, settings and logs stay in the sibling `TinyStrata-work` folder; the script does not change your persistent PATH or PowerShell execution policy. The model download is about 14.1 GB and can resume on a later run.
-
-For a preview without installing anything, or to install without starting the API:
-
-```powershell
-& ([scriptblock]::Create((Get-Content .\install.ps1 -Raw))) -CheckOnly
-& ([scriptblock]::Create((Get-Content .\install.ps1 -Raw))) -NoStart
-```
-
-The following sections describe manual builds and API setup.
-
-## Build
-
-For the Windows/NVIDIA setup, a C++20 compiler, CMake 3.24+ and the CUDA Toolkit are required. CMake fetches the pinned GGML dependency when needed. Build outputs stay outside the source directory:
-
-```powershell
-cmake -S . -B ..\TinyStrata-work\build -DTINYSTRATA_BACKEND=CUDA -DSTRATA_PORTABLE=ON
-cmake --build ..\TinyStrata-work\build --config Release
-```
-
 ## API server
 
 **TinyStrata is API-only.** It provides OpenAI-compatible Chat Completions (`/v1/chat/completions`) and Responses (`/v1/responses`) APIs and an Anthropic-compatible Messages API (`/v1/messages`), including streamed generation. Connect an API client or an external frontend; TinyStrata does not include a bundled chat UI.
 
-With Python 3.10+ installed, prepare the API environment outside the source directory:
-
-```powershell
-python -m venv ..\TinyStrata-work\runtime\.venv
-..\TinyStrata-work\runtime\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\run-api.bat
-```
-
-The API listens on `http://127.0.0.1:8080` by default. `run.py` also accepts `--exe`, `--lib-dir` and `--config` for custom locations. Settings, logs, tokenizer caches and downloaded models default to the sibling `<checkout-name>-work\runtime\.tinystrata` directory.
+The API listens on `http://127.0.0.1:8080` by default. To use another port, run `run-api.bat --port 18080` from the installed TinyStrata folder.
 
 The API can start before the model is installed. `POST /v1/model/download` with an empty JSON body (`{}`) downloads the fixed [Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS model](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf) (14.1 GB, including MTP weights), verifies its SHA-256, extracts its tokenizer and loads it. `GET /v1/model/download` reports progress; interrupted downloads can resume. A repeated download request reuses the active job, and `POST /v1/model/download/cancel` can cancel transfer or verification. Download completion is not inference readiness: wait for the download state to become `ready` and `/health` to report `loaded: true`.
 
-Existing configurations keep their selected local model until you explicitly change it. A built TinyStrata executable and its GPU runtime libraries are required for inference; `install.ps1` prepares these automatically. For manual setups with CUDA libraries in a custom directory, use `--lib-dir`. A prebuilt release package is still planned.
+The installer prepares the engine and GPU runtime libraries and downloads the model automatically. Existing configurations keep their selected local model until you explicitly change it.
 
 ## Acknowledgments
 
