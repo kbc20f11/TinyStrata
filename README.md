@@ -32,6 +32,12 @@ Run in 64-bit PowerShell to install TinyStrata and start the API at `http://127.
 irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex
 ```
 
+To start again after restarting Windows, run this command or double-click the same `run-api.bat`:
+
+```powershell
+& "$env:LOCALAPPDATA\TinyStrata\run-api.bat"
+```
+
 ## Measured speed
 
 The following measurements used Windows, an RTX PRO 4000 Blackwell SFF Edition (24 GB), a Ryzen 9 7945HX3D and the fixed Unsloth MTP UD-IQ3_XXS model on 2026-10-17. Settings were greedy generation, MTP 3, the context capacities shown below, 512-token prompt chunks, automatic Expert placement and the optional hybrid CUDA Graph path enabled.
