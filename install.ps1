@@ -3,7 +3,7 @@
 .SYNOPSIS
 Install and start TinyStrata on Windows.
 .DESCRIPTION
-Run with: iex (irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/main/install.ps1')
+Run with: iex (irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1')
 Uses local sources when available, otherwise downloads them from GitHub.
 Other downloads use official Python, NVIDIA and Microsoft endpoints.
 The NVIDIA driver must already be installed. No persistent PATH or execution

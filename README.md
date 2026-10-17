@@ -7,7 +7,7 @@
 Run in 64-bit PowerShell to install TinyStrata and start the API at `http://127.0.0.1:8080/v1`:
 
 ```powershell
-iex (irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/main/install.ps1')
+iex (irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1')
 ```
 
 ## Measured speed
