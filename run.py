@@ -49,7 +49,7 @@ def prepare(a) -> tuple[dict, Path]:
         "args": ["--max-context", "auto", "--kv-type", "auto", "--mtp", "3",
                  "--chunk", "512"],
         "memory_policy_version": MEMORY_POLICY_VERSION,
-        "sampling": {"temperature": 0}, "host": "127.0.0.1",
+        "host": "127.0.0.1",
     }
     cfg, migrated = migrate_settings(cfg)
     cfg.setdefault("port", 18080)
@@ -104,7 +104,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", type=Path, help="existing Qwen3.6 GGUF (optional; download the fixed model through the API)")
     ap.add_argument("--exe", type=Path, help="built tinystrata executable")
-    ap.add_argument("--vision-exe", type=Path, help="built tinystrata-vision CPU image encoder")
+    ap.add_argument("--vision-exe", type=Path, help="built tinystrata-vision image encoder")
     ap.add_argument("--config", type=Path, default=RUNTIME / ".tinystrata/config.json")
     ap.add_argument("--max-context", type=context_limit, metavar="auto|TOKENS",
                     help="choose context capacity from available GPU memory (default: auto), or set a token limit")

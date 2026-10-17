@@ -36,7 +36,7 @@ def resolve_executable(cfg: dict) -> Path | None:
 
 
 def resolve_vision_executable(cfg: dict) -> Path | None:
-    """The CPU image encoder is built and installed alongside the engine."""
+    """The GPU image encoder is built and installed alongside the engine."""
     selected = cfg.get("vision_exe") or (cfg.get("vision") or {}).get("exe")
     if selected:
         path = Path(selected).expanduser()
@@ -88,8 +88,13 @@ def save_settings(config_path: str | Path, cfg: dict) -> None:
 
 def configure_vision(cfg: dict, model: Path, *, projector: Path | None = None,
                      verified: bool = False) -> dict:
-    """Enable real CPU image encoding only with the pinned, verified projector."""
+    """Enable resident GPU image encoding with the pinned, verified projector.
+
+    The server starts and warms the encoder before the language engine, so its
+    weights and image workspace are already included in the free-VRAM budget.
+    """
     from serve.model_download import MMPROJ_FILENAME, MMPROJ_SHA256, MMPROJ_SIZE
+    from serve.tinyconfig import VISION_POLICY_VERSION
 
     new = {**cfg, "args": list(cfg["args"])}
     previous = cfg.get("vision") or {}
@@ -105,7 +110,8 @@ def configure_vision(cfg: dict, model: Path, *, projector: Path | None = None,
     new["args"] = [arg for arg in new["args"] if arg != "--vision"]
     if valid and encoder is not None:
         new["vision"] = {"exe": str(encoder), "mmproj": str(projector.resolve()),
-                         "model": str(model), "gpu": False}
+                         "model": str(model), "gpu": True}
+        new["vision_policy_version"] = VISION_POLICY_VERSION
         new["args"].append("--vision")
         new.pop("vision_download_required", None)
     else:

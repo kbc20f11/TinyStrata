@@ -310,6 +310,23 @@ function Find-TinyStrataBuildTools {
     throw 'Source builds need Visual Studio 2022/2026 C++ tools, a Windows SDK, CMake and Ninja. Install the portable TinyStrata release to avoid development tools.'
 }
 
+function Test-TinyStrataVisionCuda {
+    param([string]$ExecutablePath, [string[]]$SearchDirectories = @())
+    if (-not (Test-Path -LiteralPath $ExecutablePath -PathType Leaf)) { return $false }
+    $previousPath = $env:PATH
+    try {
+        $env:PATH = (@($SearchDirectories) + @((Split-Path -Parent $ExecutablePath), $previousPath)) -join ';'
+        $report = & $ExecutablePath --capabilities 2>$null
+        if ($LASTEXITCODE -ne 0) { return $false }
+        $capabilities = ($report -join [Environment]::NewLine) | ConvertFrom-Json
+        return $capabilities.cuda -eq $true
+    } catch {
+        return $false
+    } finally {
+        $env:PATH = $previousPath
+    }
+}
+
 function Invoke-TinyStrataPortableBuild {
     [CmdletBinding()]
     param(
@@ -372,6 +389,7 @@ function Invoke-TinyStrataPortableBuild {
         $visionExe = Join-Path $buildRoot 'tinystrata-vision.exe'
         if (-not (Test-Path -LiteralPath $exe -PathType Leaf) -or -not (Test-Path -LiteralPath $kq -PathType Leaf) -or
             -not (Test-Path -LiteralPath $visionExe -PathType Leaf)) { throw 'Expected engine or vision build outputs are missing.' }
+        if (-not (Test-TinyStrataVisionCuda -ExecutablePath $visionExe)) { throw 'The image encoder was not built with CUDA support.' }
         return [pscustomobject]@{ Exe = $exe; VisionExe = $visionExe; QuantizedKernels = $kq; CudaDirectory = $cudaRoot; Architectures = $Architectures }
     }
     finally {
@@ -714,6 +732,15 @@ function Invoke-TinyStrataInstaller {
         $cacheRoot = Join-Path $workRoot 'downloads'
         if (-not $sourceReady -or $RefreshSource) { Initialize-TinyStrataSource -SourceRoot $sourceRoot -CacheRoot $cacheRoot -Refresh:$RefreshSource }
         $python = Initialize-TinyStrataPython -WorkRoot $workRoot -SourceRoot $sourceRoot -CacheRoot $cacheRoot
+        $search = @()
+        if ($cfg -and $cfg.lib_dirs) { $search += @($cfg.lib_dirs) }
+        $cudaRoots = @()
+        if (Test-Path -LiteralPath $workRoot -PathType Container) {
+            $cudaRoots += @(Get-ChildItem -LiteralPath $workRoot -Directory -Filter 'cuda-*' | Sort-Object Name -Descending | ForEach-Object { $_.FullName })
+        }
+        if ($env:CUDA_PATH) { $cudaRoots += $env:CUDA_PATH }
+        foreach ($cudaRoot in $cudaRoots) { $search += Join-Path $cudaRoot 'bin'; $search += Join-Path $cudaRoot 'bin\x64' }
+        $search += $runtimeRoot
         $exe = $null
         if (-not $BuildAgain -and -not $RefreshSource) {
             $candidates = @()
@@ -727,17 +754,9 @@ function Invoke-TinyStrataInstaller {
             foreach ($candidate in $candidates) {
                 if ((Test-Path -LiteralPath $candidate -PathType Leaf) -and
                     (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $candidate) 'strata_kq.dll') -PathType Leaf) -and
-                    (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $candidate) 'tinystrata-vision.exe') -PathType Leaf)) { $exe = $candidate; break }
+                    (Test-TinyStrataVisionCuda -ExecutablePath (Join-Path (Split-Path -Parent $candidate) 'tinystrata-vision.exe') -SearchDirectories $search)) { $exe = $candidate; break }
             }
         }
-        $search = @()
-        if ($cfg -and $cfg.lib_dirs) { $search += @($cfg.lib_dirs) }
-        $cudaRoots = @()
-        if (Test-Path -LiteralPath $workRoot -PathType Container) {
-            $cudaRoots += @(Get-ChildItem -LiteralPath $workRoot -Directory -Filter 'cuda-*' | Sort-Object Name -Descending | ForEach-Object { $_.FullName })
-        }
-        if ($env:CUDA_PATH) { $cudaRoots += $env:CUDA_PATH }
-        foreach ($cudaRoot in $cudaRoots) { $search += Join-Path $cudaRoot 'bin'; $search += Join-Path $cudaRoot 'bin\x64' }
         if (-not $exe) {
             Write-Host 'No local TinyStrata engine found; preparing the first source build.'
             $null = Ensure-TinyStrataBuildTools -CacheDirectory $cacheRoot

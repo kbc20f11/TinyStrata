@@ -14,8 +14,8 @@ Images (optional, when the config has a "vision" entry): OpenAI image_url parts 
 data, http(s) URLs or local file paths) go through `strata-vision` (the model's mmproj file) and reach the engine as
 embeddings (`GENI`).  JPEG/PNG/BMP/GIF go straight in; WebP, TIFF, AVIF, ... (agents like omp send WebP) are
 converted to PNG first with Pillow.
-Requests whose prompt plus max tokens exceed the engine's context are REJECTED with 400, never truncated.
-An unset (or 0, or -1) max tokens means "unlimited": whatever the prompt leaves of the context.
+Explicit output limits that exceed the engine's context are REJECTED with 400, never truncated.
+An omitted limit defaults to 32768 (bounded by remaining context); explicit 0 or -1 means the remaining context.
 
 The engine boundary is `Engine.generate(prompt_ids, max_new, sampling, cancel) -> iterator of token ids`.
 `StrataEngine` keeps one `strata --serve` process resident (weights, expert arena and VRAM tier load once) and
@@ -2232,7 +2232,8 @@ class Vision:
     def __init__(self, cfg: dict, log=None, env: dict | None = None, lazy: bool = False):
         absolute = lambda p: os.path.abspath(p) if os.path.dirname(str(p)) else p   # the encoder runs in its own dir (#480)  # noqa: E731
         args = [absolute(cfg["exe"]), "--mmproj", absolute(cfg["mmproj"]), "--model", absolute(cfg["model"])]
-        if cfg.get("gpu"):
+        self.gpu = bool(cfg.get("gpu"))
+        if self.gpu:
             args.append("--gpu")
         if cfg.get("threads"):
             args += ["--threads", str(cfg["threads"])]
@@ -3058,7 +3059,7 @@ def slot_save_dir(value, base: str | None = None) -> str:
 class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.6-35b-a3b",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
-                 fit_max_tokens: bool = False):
+                 fit_max_tokens: bool = False, generation_defaults: dict | None = None):
         self.engine, self.tok, self.template, self.model, self.vision = engine, tokenizer, template, model_name, vision
         self.literals = literal_tags(getattr(tokenizer, "control_tokens", ()))   # texts that stay text inside a message
         self.fit_max_tokens = fit_max_tokens          # --fit-max-tokens: clamp the output cap instead of 400
@@ -3067,6 +3068,9 @@ class Service:
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
         self.codex_thread_titles = False              # #923 (opt-in): answer Codex's thread-title turns without the engine
         self.sampling_defaults = dict(sampling_defaults or {})   # the run config's `sampling` block
+        from serve.tinyconfig import DEFAULT_MAX_TOKENS
+        self.default_enable_thinking = (generation_defaults or {}).get("enable_thinking", True)
+        self.default_max_tokens = (generation_defaults or {}).get("max_tokens", DEFAULT_MAX_TOKENS)
         self.shared = {}                              # inference defaults for every client (POST /settings)
         self.shared_path = None                       # where they are kept between starts (next to the config)
         self.config_effort = None                     # #1641: the config's "reasoning_effort": the level for requests with none
@@ -3400,6 +3404,13 @@ class Service:
             raise GpuBusy("the model is not ready; POST /v1/model/download, then poll GET /v1/model/download")
         if self.loaded() and not self._vision_down():
             return
+        if self.loaded() and self._vision_down() and getattr(self.vision, "gpu", False):
+            # A crashed GPU encoder released its allocation. The language engine
+            # may now occupy that room; restore the original load order rather
+            # than starting a large image workspace beside a full Expert cache.
+            self.engine.unload()
+            print("[tinystrata] reloading the model after restarting the GPU image encoder; "
+                  "its VRAM is reserved before Expert placement", flush=True)
         self.check_load_policy()
         vision_started = False
         if self._vision_down():                         # first, as at a start: a GPU encoder takes its VRAM before
@@ -3562,26 +3573,49 @@ class Service:
         return self.shared.get("reasoning_effort") or self.config_effort
 
     def with_shared(self, req: dict, api: str) -> dict:
-        """The request with the shared thinking level and max tokens filled in where it has none of its own."""
+        """Fill omitted limits before context validation; explicit request values win."""
         s = self.shared
         effort = self.effort_default()
-        if not s and not effort:
-            return req
         req = dict(req)
-        if "max_tokens" in s and not req.get("max_tokens") and not req.get("max_completion_tokens"):
-            req["max_tokens"] = s["max_tokens"]
+        req.pop("_tinystrata_default_max_tokens", None)
+        limits = ("max_output_tokens",) if api == "responses" else ("max_tokens", "max_completion_tokens")
+        if all(req.get(key) is None for key in limits):
+            req[limits[0]] = s.get("max_tokens", self.default_max_tokens)
+            req["_tinystrata_default_max_tokens"] = True
         if effort:
             if api == "openai":
                 ctk = req.get("chat_template_kwargs") if isinstance(req.get("chat_template_kwargs"), dict) else {}
                 if not req.get("reasoning_effort") and not req.get("reasoning") and \
                         "enable_thinking" not in ctk and "reasoning_effort" not in ctk:
                     req["reasoning_effort"] = effort
+            elif api == "responses":
+                if not req.get("reasoning"):
+                    req["reasoning"] = {"effort": effort}
             elif not req.get("thinking") and not req.get("output_config"):
                 if effort == "none":
                     req["thinking"] = {"type": "disabled"}
                 else:
                     req["output_config"] = {"effort": effort}
         return req
+
+    def template_defaults(self, kwargs: dict, req: dict | None = None) -> dict:
+        """Apply the config's thinking switch without overriding a client's choice."""
+        kwargs = dict(kwargs)
+        for key in ("enable_thinking", "reasoning_effort"):
+            if kwargs.get(key) is None:
+                kwargs.pop(key, None)
+        req = req or {}
+        ctk = req.get("chat_template_kwargs")
+        choice = ctk.get("enable_thinking") if isinstance(ctk, dict) else None
+        if choice is None:
+            choice = req.get("enable_thinking")
+        if isinstance(choice, bool):
+            kwargs["enable_thinking"] = choice
+        elif isinstance(req.get("thinking"), dict) and req["thinking"].get("type") in ("enabled", "disabled"):
+            kwargs["enable_thinking"] = req["thinking"]["type"] == "enabled"
+        elif "enable_thinking" not in kwargs and "reasoning_effort" not in kwargs:
+            kwargs["enable_thinking"] = self.default_enable_thinking
+        return kwargs
 
     def start_telemetry(self):
         """The hardware sampler behind GET /metrics (serve/telemetry.py), recording this server's tok/s too."""
@@ -3766,6 +3800,7 @@ class Service:
         thinking) is rendered as a default one up to the answer - the same prompt start, so the conversation cache
         keeps it - and its effort follows in a short system turn right before the answer (thinking off: the template's
         empty thinking block).  The engine (--tail-role-token) checkpoints in front of that turn."""
+        kwargs = self.template_defaults(kwargs)
         effort = kwargs.get("reasoning_effort")
         off = kwargs.get("enable_thinking") is False
         if not self.effort_end or (not off and effort in (None, "", "xhigh", "high")):
@@ -3838,11 +3873,15 @@ class Service:
         return fetched
 
     def prepare(self, messages, tools, kwargs, max_new=None, force=None, req=None, cancel=None):
-        """-> (ids, thinking, max_new). An unset or non-positive max_new (some clients send -1) means "unlimited":
-        the rest of the context.  `force` (forced_call): without thinking the reply starts with it, so it ends the
+        """-> (ids, thinking, max_new). An omitted limit uses the configured default, bounded by remaining context.
+        An explicit non-positive max_new means the rest of the context. `force`: without thinking the reply starts with it, so it ends the
         prompt; with thinking, Service.run writes it once the thinking is over."""
         # `cancel` (#1999): set when the client hangs up; the downloads, the wait for the turn and the encodes stop
         # between pictures and raise ClientGone
+        kwargs = self.template_defaults(kwargs, req)
+        default_limit = max_new is None or bool((req or {}).get("_tinystrata_default_max_tokens"))
+        if max_new is None:
+            max_new = self.default_max_tokens
         fetched = self._note_unreadable_tool_images(messages, cancel)
         ids = self.encode_prompt(messages, tools, kwargs)
         if force and kwargs.get("enable_thinking", True) is False:
@@ -3904,14 +3943,14 @@ class Service:
             if ctx <= 0:
                 raise EngineStarting("the engine is starting (a minute or two); try again shortly")
         room = ctx - CTX_SLACK - len(ids)
-        if max_new is None or max_new <= 0 or (self.fit_max_tokens and room < 1):
-            if room < 1:
-                raise ValueError("request exceeds the context window: "
-                                 f"prompt ({len(ids)} tokens) leaves no room to answer in the context "
-                                 f"({ctx}); requests are never truncated")
+        if room < 1:
+            raise ValueError("request exceeds the context window: "
+                             f"prompt ({len(ids)} tokens) leaves no room to answer in the context "
+                             f"({ctx}); requests are never truncated")
+        if max_new <= 0:
             max_new = room
         elif max_new > room:
-            if not self.fit_max_tokens:
+            if not self.fit_max_tokens and not default_limit:
                 raise ValueError("request exceeds the context window: "
                                  f"prompt ({len(ids)} tokens) + max tokens ({max_new}) exceeds the context "
                                  f"({ctx}); requests are never truncated. Send a smaller "
@@ -5551,7 +5590,7 @@ def make_handler(svc: Service):
             params = {names.get(k, k): v for k, v in defaults.items()
                       if k in ("temperature", "top_p", "top_k", "min_p", "seed", "repetition_penalty",
                                "presence_penalty", "frequency_penalty", "penalty_last_n")}
-            params["n_predict"] = svc.shared.get("max_tokens", -1)
+            params["n_predict"] = svc.shared.get("max_tokens", svc.default_max_tokens)
             props = {"default_generation_settings": {"n_ctx": svc.reported_ctx(), "params": params},
                      "total_slots": max(1, int(getattr(svc.engine, "batch", 0) or 0)),   # #1004: the batch slots
                      "model_alias": svc.model, "chat_template": svc.template.source,
@@ -5831,6 +5870,7 @@ def make_handler(svc: Service):
                 pass
 
         def _responses_prepare(self, req, cancel=None):
+            req = svc.with_shared(req, "responses")
             responses_api.check_request(req)
             messages = responses_api.input_messages(req)
             tools, names, skipped = responses_api.request_tools(req)
@@ -5848,8 +5888,6 @@ def make_handler(svc: Service):
                 print(f"[strata] /v1/responses: left out the hosted tools {', '.join(sorted(set(skipped) - noted))} "
                       f"(this server cannot run them)", flush=True)
                 noted.update(skipped)
-            if req.get("max_output_tokens") is None and "max_tokens" in svc.shared:   # the shared shared inference defaults
-                req = {**req, "max_output_tokens": svc.shared["max_tokens"]}
             try:
                 svc.reasoning_budget(req)                    # a bad value is a 400 before anything is sent
             except ValueError as e:
@@ -5895,6 +5933,7 @@ def make_handler(svc: Service):
             read for the same request, rendered and tokenized - the model does not run."""
             req = svc.with_shared(req, "anthropic")
             messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
+            kw = svc.template_defaults(kw, req)
             stop_strings(req)                                 # the same 400 as the request itself would get
             check_request_sampling(req)                       # ... likewise a sampling field of the wrong type
             self._json(200, {"input_tokens": len(svc.encode_prompt(messages, tools, kw))})
@@ -6323,6 +6362,7 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
     A bad value refuses to start the server (a typo'd config should not quietly change sampling); unknown keys
     are named at startup and ignored."""
     out = {}
+    from serve.tinyconfig import DEFAULT_SAMPLING
     block = dict(cfg.get("sampling") or {})
     for alias, canon in SAMPLING_ALIASES.items():      # #1819: llama.cpp's names for the same two fields
         if block.get(alias) is not None:
@@ -6330,6 +6370,7 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
                 raise SystemExit(f"[strata] config sampling: both {alias!r} and {canon!r} are set; they are the same "
                                  f"setting, keep one")
             block[canon] = block.pop(alias)
+    block = {**DEFAULT_SAMPLING, **{key: value for key, value in block.items() if value is not None}}
     for key, value in block.items():
         if value is None:
             continue
@@ -6552,6 +6593,8 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
                     svc.engine, svc.tok, svc.template = candidate, tokenizer, template
                     svc.vision = image_candidate
                     svc.model, svc.sampling_defaults = name, defaults
+                    svc.default_enable_thinking = updated.get("enable_thinking", True)
+                    svc.default_max_tokens = updated.get("max_tokens", 32768)
                     svc.literals, svc.stop_ids = literals, stop_ids
                     svc.effort_end = bool(effort)
                     svc.last_request_at = time.time()
@@ -6736,7 +6779,8 @@ def main() -> int:
     svc = Service(engine, tok, ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja"),
                   model_name=default_model_name(cfg), vision=vision,
                   sampling_defaults=sampling_defaults,
-                  fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True)
+                  fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True,
+                  generation_defaults=cfg)
     svc.reasoning_close_retry = cfg.get("reasoning_close_retry") is True    # #1053: opt-in, off by default
     if cfg.get("images"):                               # image generation (serve/images.py), set up by setup --images
         icfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))

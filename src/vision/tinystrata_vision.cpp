@@ -1,4 +1,4 @@
-// CPU image encoder adapted from Niko1221/Strata tools/vision/strata_vision.cpp.
+// Image encoder adapted from Niko1221/Strata tools/vision/strata_vision.cpp.
 // Source: 296b59d2f73c8f04a805df29c2fa97655adace78 (MIT).
 // Copyright (c) 2026 Niko1221 and the Strata contributors. See LICENSE and NOTICE.
 //
@@ -7,7 +7,7 @@
 // rows at the image's pad tokens and gives them their 2-D M-RoPE positions (see --serve GENI in generate.cpp).
 //
 //   tinystrata-vision --mmproj <mmproj.gguf> --model <text model .gguf, first split> [--gpu] [--threads N]
-//                 [--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto]
+//                 [--device CUDA0] [--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto]
 // Flash attention defaults to auto, and to off on the CPU when ggml is built with AVX-512 (see main).
 //
 // Resident: prints "READY <n_embd>", then per stdin line
@@ -16,6 +16,7 @@
 // The output file is  int32 {0x31455653 'SVE1', n_tokens, nx, ny, n_embd}  then float32 [n_tokens][n_embd],
 // row i at grid position (x = i % nx, y = i / nx).  The text model is opened vocab-only (no weights).
 #include "ggml-cpu.h"
+#include "ggml-backend.h"
 #include "gguf.h"
 #include "llama.h"
 #include "mtmd.h"
@@ -27,6 +28,7 @@
 #include <unistd.h>
 #endif
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -39,7 +41,7 @@
 namespace {
 
 void quiet_log(ggml_log_level level, const char* text, void*) {
-    if (level >= GGML_LOG_LEVEL_WARN) std::fputs(text, stderr);
+    if (level >= GGML_LOG_LEVEL_WARN || std::strstr(text, "CLIP using ")) std::fputs(text, stderr);
 }
 
 // "ENC <image> <out>": paths may contain spaces, so the image path ends at the last " " before the output path;
@@ -57,8 +59,8 @@ bool parse_enc(const std::string& line, std::string& img, std::string& out) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    std::string mmproj, model;
-    bool gpu = false;
+    std::string mmproj, model, device_name;
+    bool gpu = false, capabilities = false;
     int threads = 0, max_tokens = 0, min_tokens = 0;
     llama_flash_attn_type fa = LLAMA_FLASH_ATTN_TYPE_AUTO;
     bool fa_given = false;
@@ -71,6 +73,8 @@ int main(int argc, char** argv) {
         if (a == "--mmproj") mmproj = next();
         else if (a == "--model") model = next();
         else if (a == "--gpu") gpu = true;
+        else if (a == "--device") device_name = next();
+        else if (a == "--capabilities") capabilities = true;
         else if (a == "--threads") threads = std::atoi(next().c_str());
         else if (a == "--max-tokens") max_tokens = std::atoi(next().c_str());
         else if (a == "--min-tokens") min_tokens = std::atoi(next().c_str());   // mtmd image_min_tokens (#767)
@@ -82,9 +86,21 @@ int main(int argc, char** argv) {
         }
         else { std::fprintf(stderr, "unknown argument %s\n", a.c_str()); return 2; }
     }
+    if (capabilities) {
+#if defined(TINYSTRATA_VISION_CUDA)
+        std::puts("{\"cuda\":true}");
+#else
+        std::puts("{\"cuda\":false}");
+#endif
+        return 0;
+    }
     if (mmproj.empty() || model.empty()) {
         std::fprintf(stderr, "usage: tinystrata-vision --mmproj <mmproj.gguf> --model <model.gguf> [--gpu] [--threads N] "
-                             "[--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto]\n");
+                             "[--device CUDA0] [--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto]\n");
+        return 2;
+    }
+    if (!device_name.empty() && !gpu) {
+        std::fprintf(stderr, "--device requires --gpu\n");
         return 2;
     }
     // On the CPU the GPU stays unseen: a CUDA build otherwise opens a context there (measured: 0.4-0.7 GB of VRAM,
@@ -99,6 +115,26 @@ int main(int argc, char** argv) {
     llama_log_set(quiet_log, nullptr);
     mtmd_helper_log_set(quiet_log, nullptr);
     llama_backend_init();
+    ggml_backend_dev_t gpu_device = nullptr;
+    if (gpu) {
+        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+            ggml_backend_dev_t device = ggml_backend_dev_get(i);
+            if (ggml_backend_dev_type(device) != GGML_BACKEND_DEVICE_TYPE_GPU ||
+                std::strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(device)), "CUDA") != 0) continue;
+            if (!device_name.empty() && device_name != ggml_backend_dev_name(device)) continue;
+            gpu_device = device;
+            break;
+        }
+        if (!gpu_device) {
+            std::printf("ERR GPU vision unavailable: no CUDA device%s%s\n",
+                        device_name.empty() ? "" : " named ", device_name.c_str());
+            std::fflush(stdout);
+            llama_backend_free();
+            return 1;
+        }
+        std::fprintf(stderr, "tinystrata-vision: using %s (%s)\n", ggml_backend_dev_name(gpu_device),
+                     ggml_backend_dev_description(gpu_device));
+    }
 
     const auto load_t0 = std::chrono::steady_clock::now();
 #if !defined(_WIN32) && !defined(__APPLE__)   // macOS has no posix_fadvise
@@ -121,6 +157,7 @@ int main(int argc, char** argv) {
 
     mtmd_context_params cp = mtmd_context_params_default();
     cp.use_gpu = gpu;
+    cp.device = gpu_device; // An explicit device makes failed GPU initialization an error, never a CPU fallback.
     cp.print_timings = false;
     cp.warmup = false;
     // On the CPU "auto" turns flash attention on.  ggml's fast (tiled) CPU kernel for it needs the head size, 72 in this
@@ -133,7 +170,14 @@ int main(int argc, char** argv) {
     // on the CPU without --threads: one per core (mtmd's own default is 4 threads)
     if (threads <= 0 && !gpu) threads = std::max(1u, std::thread::hardware_concurrency() / 2);
     if (threads > 0) cp.n_threads = threads;
-    if (max_tokens > 0) cp.image_max_tokens = max_tokens;
+    // The pinned Qwen-VL preprocessor already defaults to 4096 output tokens.
+    // Making that limit explicit allows the GPU warm-up to reserve its full
+    // workspace without reducing the current image resolution.
+    const int token_limit = max_tokens > 0 ? max_tokens : 4096;
+    if (min_tokens > token_limit) {
+        std::printf("ERR image min tokens exceeds max tokens\n"); std::fflush(stdout); return 1;
+    }
+    cp.image_max_tokens = token_limit;
     if (min_tokens > 0) cp.image_min_tokens = min_tokens;
     mtmd_context* ctx = mtmd_init_from_file(mmproj.c_str(), text, cp);
     if (!ctx || !mtmd_support_vision(ctx)) {
@@ -144,43 +188,65 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "tinystrata-vision: model files loaded in %.1f s\n",
                  std::chrono::duration<double>(std::chrono::steady_clock::now() - load_t0).count());
     // a vocab-only model reports no hparams, so the width comes from the projector: its output is the model's input
-    int n_embd = 0;
+    int n_embd = 0, patch_size = 0, merge_size = 0;
     {
         gguf_init_params gp{true, nullptr};
         gguf_context* gg = gguf_init_from_file(mmproj.c_str(), gp);
         const int64_t k = gg ? gguf_find_key(gg, "clip.vision.projection_dim") : -1;
         if (k >= 0) n_embd = (int) gguf_get_val_u32(gg, k);
+        const int64_t patch = gg ? gguf_find_key(gg, "clip.vision.patch_size") : -1;
+        const int64_t merge = gg ? gguf_find_key(gg, "clip.vision.spatial_merge_size") : -1;
+        if (patch >= 0) patch_size = (int) gguf_get_val_u32(gg, patch);
+        if (merge >= 0) merge_size = (int) gguf_get_val_u32(gg, merge);
         if (gg) gguf_free(gg);
     }
     if (n_embd <= 0) { std::printf("ERR the vision encoder has no projection_dim\n"); std::fflush(stdout); return 1; }
     // Warm up at the LARGEST picture before READY: the encoder's GPU work buffers are allocated now, not at the first
     // real picture.  The server starts this process before the engine, so the engine sizes its expert cache from
     // what is really left; allocating ~1 GB later, on a GPU the engine has filled, made Windows page GPU memory and
-    // the engine crawl to a standstill.  (A square image well above any cap; mtmd scales it to the token limit.)
+    // the engine crawl to a standstill. Use the configured full token capacity,
+    // with dimensions aligned to the projector's patch/merge sizes.
     // On the CPU there is no VRAM to reserve, and the warm-up would only delay the engine's start by one encode
     // (~6 s at 1,024 tokens).
     if (!gpu) std::fprintf(stderr, "tinystrata-vision: on the CPU, %d threads, no warm-up\n", threads);
     else {
         const auto warm_t0 = std::chrono::steady_clock::now();
-        const uint32_t side = 2048;
-        std::vector<unsigned char> rgb((size_t) side * side * 3, 128);
-        mtmd_bitmap* bm = mtmd_bitmap_init(side, side, rgb.data());
+        if (patch_size <= 0 || merge_size <= 0) {
+            std::printf("ERR GPU vision warm-up failed: missing patch or merge size\n"); std::fflush(stdout); return 1;
+        }
+        int nx = std::max(1, (int) std::sqrt((double) token_limit));
+        while (token_limit % nx != 0) --nx;
+        const int ny = token_limit / nx;
+        const uint32_t width = (uint32_t) nx * patch_size * merge_size;
+        const uint32_t height = (uint32_t) ny * patch_size * merge_size;
+        std::vector<unsigned char> rgb((size_t) width * height * 3, 128);
+        mtmd_bitmap* bm = mtmd_bitmap_init(width, height, rgb.data());
         mtmd_input_chunks* chunks = mtmd_input_chunks_init();
         const std::string marker = mtmd_default_marker();
         mtmd_input_text txt{marker.c_str(), marker.size(), false, true};
         const mtmd_bitmap* bms[1] = {bm};
         int warm_tokens = 0;
+        bool warm_ok = false;
         if (bm && mtmd_tokenize(ctx, chunks, &txt, bms, 1) == 0) {
             for (size_t c = 0; c < mtmd_input_chunks_size(chunks); ++c) {
                 const mtmd_input_chunk* ch = mtmd_input_chunks_get(chunks, c);
-                if (mtmd_input_chunk_get_type(ch) == MTMD_INPUT_CHUNK_TYPE_IMAGE && mtmd_encode_chunk(ctx, ch) == 0)
+                if (mtmd_input_chunk_get_type(ch) == MTMD_INPUT_CHUNK_TYPE_IMAGE) {
                     warm_tokens = (int) mtmd_input_chunk_get_n_tokens(ch);
+                    warm_ok = warm_tokens == token_limit && mtmd_encode_chunk(ctx, ch) == 0;
+                    break;
+                }
             }
         }
         std::fprintf(stderr, "tinystrata-vision: warmed up at %d image tokens in %.1f s\n", warm_tokens,
                      std::chrono::duration<double>(std::chrono::steady_clock::now() - warm_t0).count());
         mtmd_input_chunks_free(chunks);
         if (bm) mtmd_bitmap_free(bm);
+        if (!warm_ok) {
+            std::printf("ERR GPU vision warm-up failed at %d/%d image tokens\n", warm_tokens, token_limit);
+            std::fflush(stdout);
+            mtmd_free(ctx); llama_model_free(text); llama_backend_free();
+            return 1;
+        }
     }
     std::printf("READY %d\n", n_embd);
     std::fflush(stdout);
@@ -207,6 +273,14 @@ int main(int argc, char** argv) {
             if (mtmd_input_chunk_get_type(ch) == MTMD_INPUT_CHUNK_TYPE_IMAGE) ichunk = ch;
         }
         if (err.empty() && !ichunk) err = "no image chunk";
+        if (err.empty()) {
+            const size_t n = mtmd_input_chunk_get_n_tokens(ichunk);
+            // Pathological thin images can exceed mtmd's nominal pixel cap
+            // because its resize clamps the shorter side to one patch group.
+            // Refuse them before GPU allocation can outgrow the warmed budget.
+            if (n == 0 || n > (size_t) token_limit)
+                err = "image needs " + std::to_string(n) + " tokens; vision capacity is " + std::to_string(token_limit);
+        }
         if (err.empty() && mtmd_encode_chunk(ctx, ichunk) != 0) err = "the vision encoder failed";
         if (err.empty()) {
             const mtmd_image_tokens* it = mtmd_input_chunk_get_tokens_image(ichunk);

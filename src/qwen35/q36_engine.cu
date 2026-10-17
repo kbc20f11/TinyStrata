@@ -27,6 +27,7 @@
 #include "strata/qwen35/int8_attention.hpp"
 #include "strata/qwen35/fp8_attention.hpp"
 #include "strata/qwen35/environment_policy.hpp"
+#include "strata/qwen35/speculative_sampling.hpp"
 #include "strata/qwen35/vision.hpp"
 #if defined(STRATA_Q36_CPU_POOL)
 #include "strata/kernels/cpu/native_expert.hpp"
@@ -1089,7 +1090,9 @@ struct Engine {
     float *mq_gu = nullptr, *mq_h = nullptr;
     __half* x16 = nullptr;
     bool use_graph = true;
-    int mtp_d = 0;   // MTP drafts per speculative step (0: none; greedy requests only)
+    int mtp_d = 0;   // MTP drafts per speculative step (0: none)
+    std::vector<int32_t> mtp_pending;   // accepted rows needing the main model's hidden states on a later MTP pass
+    bool mtp_sampled_pending = false;
     bool expert_auto = true;
     size_t vram_reserve = (size_t) 768 << 20;
 
@@ -1341,6 +1344,8 @@ struct Engine {
         CK(cudaMemsetAsync(hlast, 0, (size_t) g.n_embd * 4, st));
         CK(cudaStreamSynchronize(st));
         pos = 0;
+        mtp_pending.clear();
+        mtp_sampled_pending = false;
     }
 
     void set_images(V::Input input) {
@@ -2048,8 +2053,28 @@ struct Engine {
     /// The tokens at the current position: a prompt in chunks (eager), one token from the decode graph.  The last
     /// token's logits stay in `logits` (its greedy pick in `pick`), hlast its normed hidden.  With the MTP block the
     /// prompt also runs through it (its K / V for every position: row q reads h_{q-1} and token q).
-    template <class F> void process(const int32_t* toks, int64_t n, F on_chunk) {
+    template <class F> void process(const int32_t* toks, int64_t n, F on_chunk, bool sync_mtp = false) {
         const int N = (int) m->g.n_embd;
+        const bool sampled_request = sync_mtp;
+        // A resumed sampled request may append just one token to a previous
+        // verify window. Repair its accepted drafts before hmain is replaced.
+        // The existing greedy processing path keeps its original operations.
+        sync_mtp = sync_mtp || mtp_sampled_pending;
+        if (sync_mtp && m->has_mtp && mtp_d > 0 && !mtp_pending.empty()) {
+            CK(cudaStreamSynchronize(st));
+            const int T = (int) mtp_pending.size();
+            for (int i = 0; i < T; ++i) hpin[16 + i] = mtp_pending[(size_t) i];
+            hpin[1] = (int32_t) (pos - T);
+            CK(cudaMemcpyAsync(tok_m, hpin + 16, (size_t) T * 4, cudaMemcpyHostToDevice, st));
+            CK(cudaMemcpyAsync(pos0_m, hpin + 1, 4, cudaMemcpyHostToDevice, st));
+            CK(cudaMemcpyAsync(mtp_seed(), hmain, (size_t) T * N * 4, cudaMemcpyDeviceToDevice, st));
+            forward_mtp(T, pos - T, mtp_seed(), false, false);
+            CK(cudaStreamSynchronize(st));
+        }
+        mtp_pending.clear();
+        // Keep the next prefix extension synchronized even when this sampled
+        // request emits only one token and never opens a verify window.
+        mtp_sampled_pending = sampled_request;
         if (n == 1) {
             CK(cudaStreamSynchronize(st));   // the pinned staging is free again
             hpin[0] = toks[0];
@@ -2059,6 +2084,14 @@ struct Engine {
             rows_deferred = true;
             graph_run(g1, [&] { forward(1, pos, 1, use_graph, false); });
             rows_deferred = false;
+            if (sync_mtp && m->has_mtp && mtp_d > 0) {
+                // hlast still belongs to the previous position here. Filling
+                // this MTP KV row after replacing it would use the wrong seed.
+                CK(cudaMemcpyAsync(mtp_seed(), hlast, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
+                CK(cudaMemcpyAsync(tok_m, tok, 4, cudaMemcpyDeviceToDevice, st));
+                CK(cudaMemcpyAsync(pos0_m, pos0, 4, cudaMemcpyDeviceToDevice, st));
+                forward_mtp(1, pos, mtp_seed(), false, false);
+            }
             CK(cudaMemcpyAsync(hlast, hmain, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
             pos += 1;
             after_rows(1);
@@ -2092,11 +2125,13 @@ struct Engine {
     /// the MTP seed rows of a prompt chunk: a buffer the block's own forward does not use (`moe_out`, [tmax][N])
     float* mtp_seed() { return moe_out; }
 
-    /// One speculative step with D MTP drafts (greedy): `x` is the next token (decided, not processed); `fix` the
+    /// One speculative step with D MTP drafts: `x` is the next token (decided, not processed); `fix` the
     /// tokens of the rows the block must redo first (the drafts the last window accepted, seeded by hmain rows
     /// 0 .. fix.size() - 1 of that window).  Drafts d1 .. dD, then the window [x, d1 .. dD] through the main model;
     /// returns the accepted count a and writes the picks of rows 0 .. a (row a's pick is the token after them).
-    int spec_step(int x_tok, const std::vector<int32_t>& fix, int D, std::vector<int32_t>& drafts, int32_t* picks) {
+    template <class Verify>
+    int spec_step_with(int x_tok, const std::vector<int32_t>& fix, int D, std::vector<int32_t>& drafts,
+                       int32_t* picks, Verify verify) {
         const int N = (int) m->g.n_embd;
         if (main_hybrid) D = std::min<int>(D, (int) (kRebalanceEvery - pos % kRebalanceEvery) - 1);
         const int T0 = (int) fix.size() + 1;   // the redo rows and the row of x
@@ -2143,15 +2178,44 @@ struct Engine {
         rows_deferred = true;
         graph_run(gv[T], [&] { forward(T, pos, T, use_graph, true); }, T);
         rows_deferred = false;
-        CK(cudaMemcpyAsync(hpin + 2, pick, (size_t) T * 4, cudaMemcpyDeviceToHost, st));
-        CK(cudaStreamSynchronize(st));
-        int a = 0;
-        while (a < D && hpin[2 + a] == drafts[(size_t) a]) ++a;
-        for (int i = 0; i <= a; ++i) picks[i] = hpin[2 + i];
+        const int a = verify(T, drafts, picks);
         commit(a + 1);
         CK(cudaMemcpyAsync(hlast, hmain + (size_t) a * N, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
         pos += a + 1;
         after_rows(a + 1);
+        mtp_pending.assign(drafts.begin(), drafts.begin() + a);
+        return a;
+    }
+
+    // Keep the original GPU argmax verification and transfers for pure greedy
+    // requests. Sampled verification below uses the same main-model window.
+    int spec_step(int x_tok, const std::vector<int32_t>& fix, int D, std::vector<int32_t>& drafts, int32_t* picks) {
+        mtp_sampled_pending = false;
+        return spec_step_with(x_tok, fix, D, drafts, picks,
+            [&](int T, const std::vector<int32_t>& proposed, int32_t* selected) {
+                CK(cudaMemcpyAsync(hpin + 2, pick, (size_t) T * 4, cudaMemcpyDeviceToHost, st));
+                CK(cudaStreamSynchronize(st));
+                int a = 0;
+                while (a < T - 1 && hpin[2 + a] == proposed[(size_t) a]) ++a;
+                for (int i = 0; i <= a; ++i) selected[i] = hpin[2 + i];
+                return a;
+            });
+    }
+
+    template <class Select, class Stop>
+    int sampled_spec_step(int x_tok, const std::vector<int32_t>& fix, int D, std::vector<int32_t>& drafts,
+                          int32_t* picks, std::vector<float>& rows, Select select, Stop terminal) {
+        const int a = spec_step_with(x_tok, fix, D, drafts, picks,
+            [&](int T, const std::vector<int32_t>& proposed, int32_t* selected) {
+                rows.resize((size_t) T * (size_t) m->g.n_vocab);
+                CK(cudaMemcpyAsync(rows.data(), logits, rows.size() * 4, cudaMemcpyDeviceToHost, st));
+                CK(cudaStreamSynchronize(st));
+                return strata::qwen35::speculative_sampling::select_prefix(proposed.data(), T - 1, selected,
+                    [&](int row) { return select(row, rows.data() + (size_t) row * (size_t) m->g.n_vocab); },
+                    terminal);
+            });
+        // Also repair before a following greedy request reuses this prefix.
+        mtp_sampled_pending = true;
         return a;
     }
 
@@ -2733,7 +2797,7 @@ int serve(Engine& E) {
             std::printf("PP %lld %lld %.0f %.1f\n", (long long) done, (long long) fresh, ms_since(t0),
                         (double) done / std::max(1e-9, ms_since(t0) / 1000.0));
             std::fflush(stdout);
-        });
+        }, smp.needs_logits());
         live.insert(live.end(), ids.begin() + (long) reuse, ids.end());
         const double prompt_ms = ms_since(t0);
         std::mt19937_64 rng(smp.seed);
@@ -2741,18 +2805,21 @@ int serve(Engine& E) {
         const auto d0 = Clock::now();
         long long produced = 0, offered = 0, accepted = 0;
         const char* finish = "length";
-        // greedy requests with the MTP block: speculative steps of mtp_d drafts (verified, so the text is the greedy
-        // text); sampled ones one token at a time
-        const bool spec = E.mtp_d > 0 && !smp.needs_logits();
+        // Greedy and sampled requests verify the same MTP proposals against the
+        // main model. Sampling visits only the matching prefix, never a row
+        // whose proposed history has already been rejected.
+        const bool sampled = smp.needs_logits();
+        const bool spec = E.mtp_d > 0;
         std::vector<int32_t> fix, drafts;
+        std::vector<float> verify_rows;
         int32_t picks[16];
-        int nx = smp.needs_logits() ? -1 : E.greedy();
+        int nx;
+        if (sampled) {
+            E.host_logits(lg);
+            nx = sample(lg, smp, hist, rng);
+        } else nx = E.greedy();
         bool done = false;
         while (!done) {
-            if (smp.needs_logits()) {
-                E.host_logits(lg);
-                nx = sample(lg, smp, hist, rng);
-            }
             auto emit = [&](int t) {   // false: the answer ends here
                 std::printf("T %d\n", t);
                 std::fflush(stdout);
@@ -2764,9 +2831,23 @@ int serve(Engine& E) {
                 return true;
             };
             if (!emit(nx)) break;
-            if (spec && E.pos + E.mtp_d + 1 <= E.ctx) {
-                const int a = E.spec_step(nx, fix, E.mtp_d, drafts, picks);
-                offered += E.mtp_d;
+            if (spec && (sampled || E.pos + E.mtp_d + 1 <= E.ctx)) {
+                int a;
+                if (sampled) {
+                    // Leave room for the returned next token. In particular,
+                    // max_new=2 verifies only nx (D=0), rather than sampling a
+                    // speculative tail that can never be emitted.
+                    const int D = (int) std::min<long long>(E.mtp_d,
+                        std::min<long long>(E.ctx - E.pos - 1, max_new - produced - 1));
+                    std::vector<int32_t> row_history = hist;   // already includes nx
+                    a = E.sampled_spec_step(nx, fix, D, drafts, picks, verify_rows,
+                        [&](int row, const float* logits) {
+                            if (row > 0) row_history.push_back(drafts[(size_t) row - 1]);
+                            lg.assign(logits, logits + (size_t) E.m->g.n_vocab);
+                            return sample(lg, smp, row_history, rng);
+                        }, [&](int token) { return is_eos(token) || stop.load(); });
+                } else a = E.spec_step(nx, fix, E.mtp_d, drafts, picks);
+                offered += (long long) drafts.size();
                 accepted += a;
                 // As in Strata's Flash-Next consumed-history bookkeeping:
                 // spec_step already committed nx AND every accepted draft.
@@ -2787,7 +2868,10 @@ int serve(Engine& E) {
             E.process(&one, 1, [](int64_t) {});
             live.push_back(nx);
             fix.clear();
-            if (!smp.needs_logits()) nx = E.greedy();
+            if (sampled) {
+                E.host_logits(lg);
+                nx = sample(lg, smp, hist, rng);
+            } else nx = E.greedy();
         }
         if ((int64_t) live.size() != E.pos) {
             std::fprintf(stderr, "tinystrata: consumed history (%zu) differs from model position (%lld) after generation\n",

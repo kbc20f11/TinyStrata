@@ -1,6 +1,6 @@
 # The image encoder uses the same pinned llama.cpp checkout as the CPU experts.
-# Its CPU-only GGML backend shares existing targets and adds no GPU allocation
-# or runtime DLL dependency. Keep llama.cpp's tools, server and UI disabled.
+# It shares GGML targets but is the only executable linking the CUDA backend
+# dispatcher. Keep llama.cpp's tools, server and UI disabled.
 function(tinystrata_add_vision_encoder)
   if(NOT TARGET ggml OR NOT STRATA_LLAMA_SOURCE_DIR)
     message(FATAL_ERROR "TINYSTRATA_VISION requires STRATA_NATIVE_EXPERTS=ON")
@@ -21,6 +21,9 @@ function(tinystrata_add_vision_encoder)
   add_executable(tinystrata-vision "${PROJECT_SOURCE_DIR}/src/vision/tinystrata_vision.cpp")
   target_link_libraries(tinystrata-vision PRIVATE mtmd llama)
   target_compile_features(tinystrata-vision PRIVATE cxx_std_17)
+  if(STRATA_ENABLE_CUDA)
+    target_compile_definitions(tinystrata-vision PRIVATE TINYSTRATA_VISION_CUDA=1)
+  endif()
   set_target_properties(tinystrata-vision PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
   install(TARGETS tinystrata-vision RUNTIME DESTINATION bin)
 endfunction()
