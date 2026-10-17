@@ -52,7 +52,7 @@ function Get-TinyStrataOfficialFile {
             Write-Host "Still downloading $([IO.Path]::GetFileName($Destination))..."
             if ([DateTime]::UtcNow -gt $deadline) { $client.CancelAsync(); throw 'Download timed out; run the installer again to retry.' }
         }
-        $download.GetAwaiter().GetResult()
+        $null = $download.GetAwaiter().GetResult()
     } finally { $client.Dispose() }
 }
 
