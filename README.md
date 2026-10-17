@@ -26,7 +26,7 @@ TinyStrata currently focuses exclusively on [Qwen3.6-35B-A3B](https://huggingfac
 
 ## Quick installation
 
-Run in 64-bit PowerShell to install TinyStrata and start the API at `http://127.0.0.1:8080/v1`:
+Run in 64-bit PowerShell to install TinyStrata and start the API at `http://127.0.0.1:18080/v1`:
 
 ```powershell
 irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex
@@ -35,7 +35,7 @@ irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/insta
 To start again after restarting Windows, run this command or double-click the same `run-api.bat`:
 
 ```powershell
-& "$env:LOCALAPPDATA\TinyStrata\run-api.bat"
+& "$env:LOCALAPPDATA\TinyStrata\run-api.bat" --port 18080
 ```
 
 ## Measured speed
@@ -139,7 +139,7 @@ Explicit settings override automatic choices, and existing manually selected set
 
 **TinyStrata is API-only.** It provides OpenAI-compatible Chat Completions (`/v1/chat/completions`) and Responses (`/v1/responses`) APIs and an Anthropic-compatible Messages API (`/v1/messages`), including streamed generation. Connect an API client or an external frontend; TinyStrata does not include a bundled chat UI.
 
-The API listens on `http://127.0.0.1:8080` by default. To use another port, run `run-api.bat --port 18080` from the installed TinyStrata folder.
+The API listens on `http://127.0.0.1:18080` by default. To use another port, run `run-api.bat --port 18081` from the installed TinyStrata folder.
 
 The API can start before the model is installed. `POST /v1/model/download` with an empty JSON body (`{}`) downloads the fixed [Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS model](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf) (14.1 GB, including MTP weights), verifies its SHA-256, extracts its tokenizer and loads it. `GET /v1/model/download` reports progress; interrupted downloads can resume. A repeated download request reuses the active job, and `POST /v1/model/download/cancel` can cancel transfer or verification. Download completion is not inference readiness: wait for the download state to become `ready` and `/health` to report `loaded: true`.
 

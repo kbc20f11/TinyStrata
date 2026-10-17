@@ -640,7 +640,7 @@ function Invoke-TinyStrataInstaller {
     $configPath = Join-Path $runtimeRoot '.tinystrata\config.json'
     $statePath = Join-Path $runtimeRoot 'server-state.json'
     $cfg = Get-TinyStrataConfig -Path $configPath
-    if ($ApiPort -eq 0) { $ApiPort = if ($cfg -and $cfg.port) { [int]$cfg.port } else { 8080 } }
+    if ($ApiPort -eq 0) { $ApiPort = if ($cfg -and $cfg.port) { [int]$cfg.port } else { 18080 } }
     if ($ApiPort -lt 1 -or $ApiPort -gt 65535) { throw 'Port must be between 1 and 65535.' }
     $baseUrl = "http://127.0.0.1:$ApiPort"
     if ($InspectOnly) {
@@ -714,7 +714,7 @@ function Invoke-TinyStrataInstaller {
         if ($cfg -and $cfg.lib_dirs) { $dllDirs = @(@($cfg.lib_dirs) + $dllDirs | Select-Object -Unique) }
         $arguments = @('-B', (Join-Path $sourceRoot 'run.py'), '--config', $configPath, '--exe', $exe, '--configure-only')
         foreach ($directory in $dllDirs) { $arguments += @('--lib-dir', $directory) }
-        if ($ApiPort -ne 8080 -or ($cfg -and $cfg.port)) { $arguments += @('--port', [string]$ApiPort) }
+        $arguments += @('--port', [string]$ApiPort)
         Write-Host 'Preparing API settings (hardware and VRAM settings remain automatic by default)...'
         & $python @arguments
         if ($LASTEXITCODE -ne 0) { throw 'TinyStrata configuration failed.' }

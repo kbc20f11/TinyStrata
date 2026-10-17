@@ -52,6 +52,7 @@ def prepare(a) -> tuple[dict, Path]:
         "sampling": {"temperature": 0}, "host": "127.0.0.1",
     }
     cfg, migrated = migrate_settings(cfg)
+    cfg.setdefault("port", 18080)
     if a.model:
         set_arg(cfg, "--model", a.model.expanduser().resolve())
         # An explicit local selection keeps the existing eager-launch behavior.
@@ -114,7 +115,7 @@ def main() -> int:
     ap.add_argument("--chunk", type=int)
     ap.add_argument("--gpu", type=int, help="GPU index")
     ap.add_argument("--lib-dir", type=Path, action="append", help="CUDA runtime DLL directory (repeatable)")
-    ap.add_argument("--port", type=int)
+    ap.add_argument("--port", type=int, help="API port (default: saved setting or 18080)")
     ap.add_argument("--host", help="API bind address (default: 127.0.0.1)")
     ap.add_argument("--api-key", help="API key required by clients (default: unset)")
     ap.add_argument("--configure-only", action="store_true")
@@ -131,7 +132,7 @@ def main() -> int:
     if a.configure_only:
         return 0
     command = [sys.executable, "-B", "-m", "serve.server", "--engine", "tinystrata", "--config", str(path),
-               "--port", str(cfg.get("port", 8080))]
+               "--port", str(cfg.get("port", 18080))]
     try:
         return subprocess.call(command, cwd=ROOT)
     except KeyboardInterrupt:
