@@ -58,7 +58,7 @@ The 24/16 GB figures are from the earlier run. The added 12/8 GB cases used the 
 | Your goal and hardware                                                                                                                       | Project                                                               |
 | -------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
 | You want API-only Qwen3.6-35B-A3B inference on **Windows**, with **8–24 GB of VRAM and 32 GB of system RAM or less**, such as an ordinary gaming PC or a gaming laptop. | TinyStrata (**Windows only**, under development)                      |
-| You have **64 GB of system RAM or more**.                                                                                                    | We recommend [Strata (upstream)](https://github.com/Niko1221/Strata). |
+| You have both **an RTX 3060-class GPU or better** and **64 GB of system RAM or more**.                                                        | We recommend [Strata (upstream)](https://github.com/Niko1221/Strata). |
 | You want a **bundled chat UI**.                                                                                                              | We recommend [Strata (upstream)](https://github.com/Niko1221/Strata). |
 
 **TinyStrata supports Windows only.** Linux and macOS are outside this project's support scope. These system RAM figures are guidelines for choosing a project. Actual memory requirements depend on the model, quantization, context length and available VRAM.
