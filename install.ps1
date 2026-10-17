@@ -317,7 +317,8 @@ function Invoke-TinyStrataPortableBuild {
         [Parameter(Mandatory = $true)][string]$BuildDirectory,
         [Parameter(Mandatory = $true)][string]$CudaDirectory,
         [ValidatePattern('^(86|89|120)(;(86|89|120))*$')][string]$Architectures = (Get-TinyStrataBuildArchitectures),
-        [ValidateRange(1, 32)][int]$Parallel = 4
+        [ValidateRange(1, 32)][int]$Parallel = 4,
+        [switch]$Clean
     )
     $tools = Find-TinyStrataBuildTools
     $sourceRoot = (Resolve-Path -LiteralPath $SourceDirectory).Path
@@ -362,7 +363,9 @@ function Invoke-TinyStrataPortableBuild {
         Write-Host "Building TinyStrata for CUDA architecture(s) $Architectures. This can take several minutes."
         & $tools.CMake @configure | Out-Host
         if ($LASTEXITCODE -ne 0) { throw 'TinyStrata CMake configuration failed.' }
-        & $tools.CMake --build $buildRoot --config Release --parallel $Parallel | Out-Host
+        $buildArguments = @('--build', $buildRoot, '--config', 'Release', '--parallel', [string]$Parallel)
+        if ($Clean) { $buildArguments += '--clean-first' }
+        & $tools.CMake @buildArguments | Out-Host
         if ($LASTEXITCODE -ne 0) { throw 'TinyStrata native compilation failed.' }
         $exe = Join-Path $buildRoot 'tinystrata.exe'
         $kq = Join-Path $buildRoot 'strata_kq.dll'
@@ -739,7 +742,7 @@ function Invoke-TinyStrataInstaller {
             Write-Host 'No local TinyStrata engine found; preparing the first source build.'
             $null = Ensure-TinyStrataBuildTools -CacheDirectory $cacheRoot
             $cuda = Ensure-TinyStrataCudaToolkit -DestinationDirectory (Join-Path $workRoot 'cuda-13.2') -CacheDirectory $cacheRoot -SearchDirectories $cudaRoots
-            $build = Invoke-TinyStrataPortableBuild -SourceDirectory $sourceRoot -BuildDirectory (Join-Path $workRoot 'build') -CudaDirectory $cuda
+            $build = Invoke-TinyStrataPortableBuild -SourceDirectory $sourceRoot -BuildDirectory (Join-Path $workRoot 'build') -CudaDirectory $cuda -Clean:($BuildAgain -or $RefreshSource)
             $exe = $build.Exe
             $search += Join-Path $cuda 'bin'; $search += Join-Path $cuda 'bin\x64'
         }
