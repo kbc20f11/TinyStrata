@@ -2,29 +2,6 @@
 
 **Windows-only, API-only local MoE inference, focused on PCs with 8–24 GB of VRAM and up to 32 GB of system RAM.** Targets include ordinary gaming PCs and gaming laptops.
 
-## Quick installation
-
-Run in 64-bit PowerShell to install TinyStrata and start the API at `http://127.0.0.1:8080/v1`:
-
-```powershell
-iex (irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1')
-```
-
-## Measured speed
-
-The following measurements used Windows, an RTX PRO 4000 Blackwell SFF Edition (24 GB), a Ryzen 9 7945HX3D and the fixed Unsloth MTP UD-IQ3_XXS model on 2026-10-17. Settings were greedy generation, MTP 3, the context capacities shown below, 512-token prompt chunks, automatic Expert placement and the optional hybrid CUDA Graph path enabled.
-
-| Available-memory condition | Context capacity | INT8 generation | Native FP8 generation |
-| --- | ---: | ---: | ---: |
-| Whole 24 GB GPU; all Experts resident | 256K | 121.28 tok/s | 122.73 tok/s |
-| 8 GiB occupied separately; approximately 16 GB left | 256K | 96.98 tok/s | 112.39 tok/s |
-| 12 GiB occupied separately; approximately 12 GB left | 128K | 104.28 tok/s | 107.61 tok/s |
-| 16 GiB occupied separately; approximately 8 GB left | 64K | 81.43 tok/s | 86.69 tok/s |
-
-These are aggregate decode speeds from three short inputs (34, 46 and 1,599 tokens), each generating 128 tokens twice. Loading and input processing are excluded. **64K–256K are allocated cache capacities, not input lengths.** All reduced-memory rows used independent allocations on the same 24 GB GPU and performed real CPU Expert work; they are not benchmarks of physical 16/12/8 GB GPUs.
-
-The 24/16 GB figures are from the earlier run. The added 12/8 GB cases used the current build and automatic context selection (128K/64K). Context capacity also affects speed, so these rows show different practical settings. FP8's advantage here is a measured result for these conditions, not a general guarantee or a quality comparison.
-
 ## Why TinyStrata?
 
 With PC component prices rising, putting together a high-end "1337 PC" is increasingly out of reach for many people.
@@ -46,6 +23,29 @@ Once TinyStrata is running, you can connect your preferred API-compatible UI or 
 ## Model focus
 
 TinyStrata currently focuses exclusively on [Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B). We will consider supporting another model when a MoE model offers a better fit than Qwen3.6-35B-A3B for fast local inference on ordinary gaming PCs and on gaming laptops.
+
+## Quick installation
+
+Run in 64-bit PowerShell to install TinyStrata and start the API at `http://127.0.0.1:8080/v1`:
+
+```powershell
+irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex
+```
+
+## Measured speed
+
+The following measurements used Windows, an RTX PRO 4000 Blackwell SFF Edition (24 GB), a Ryzen 9 7945HX3D and the fixed Unsloth MTP UD-IQ3_XXS model on 2026-10-17. Settings were greedy generation, MTP 3, the context capacities shown below, 512-token prompt chunks, automatic Expert placement and the optional hybrid CUDA Graph path enabled.
+
+| Available-memory condition | Context capacity | INT8 generation | Native FP8 generation |
+| --- | ---: | ---: | ---: |
+| Whole 24 GB GPU; all Experts resident | 256K | 121.28 tok/s | 122.73 tok/s |
+| 8 GiB occupied separately; approximately 16 GB left | 256K | 96.98 tok/s | 112.39 tok/s |
+| 12 GiB occupied separately; approximately 12 GB left | 128K | 104.28 tok/s | 107.61 tok/s |
+| 16 GiB occupied separately; approximately 8 GB left | 64K | 81.43 tok/s | 86.69 tok/s |
+
+These are aggregate decode speeds from three short inputs (34, 46 and 1,599 tokens), each generating 128 tokens twice. Loading and input processing are excluded. **64K–256K are allocated cache capacities, not input lengths.** All reduced-memory rows used independent allocations on the same 24 GB GPU and performed real CPU Expert work; they are not benchmarks of physical 16/12/8 GB GPUs.
+
+The 24/16 GB figures are from the earlier run. The added 12/8 GB cases used the current build and automatic context selection (128K/64K). Context capacity also affects speed, so these rows show different practical settings. FP8's advantage here is a measured result for these conditions, not a general guarantee or a quality comparison.
 
 ## Which project should I use?
 
