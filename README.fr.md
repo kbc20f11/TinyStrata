@@ -2,31 +2,33 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · **Français** · [Español](README.es.md) · [Português](README.pt-BR.md)
 
-**Inférence MoE locale, exclusivement sous Windows et par API, destinée aux PC disposant de 8–24 GB de VRAM et de 32 GB de mémoire système au maximum.** Cela comprend les PC de jeu courants et les ordinateurs portables de jeu.
+**TinyStrata est un moteur d’inférence rapide en cours de développement pour les modèles MoE de la classe 30B, exclusivement sous Windows et par API.** Il vise principalement les PC de jeu courants et les ordinateurs portables de jeu dotés d’un GPU avec **8–24 GB de VRAM**, ainsi que de **32 GB de mémoire système au maximum**.
 
-## Pourquoi TinyStrata ?
+## Pourquoi nous développons TinyStrata
 
-Avec la hausse des prix des composants PC, assembler un « 1337 PC » haut de gamme devient de plus en plus inaccessible pour beaucoup de personnes.
+Avec la hausse des prix des composants PC, assembler un PC haut de gamme devient de plus en plus difficile pour beaucoup de personnes.
 
-TinyStrata a été créé pour exécuter l’IA localement à grande vitesse sur des PC de jeu courants et des ordinateurs portables de jeu équipés d’un GPU de la classe RTX 3060 ou supérieure. Nous nous concentrons sur l’exécution aussi rapide que possible de modèles MoE de taille réduite.
+C’est pourquoi TinyStrata a été créé pour exécuter l’IA localement à grande vitesse sur des PC de jeu courants et des ordinateurs portables de jeu équipés d’un GPU de la classe RTX 3060 ou supérieure. Nous nous concentrons sur l’exécution aussi rapide que possible de modèles MoE relativement petits, de la classe 30B.
 
 Nous visons principalement les PC disposant de **8–24 GB de VRAM et de 32 GB de mémoire système au maximum**. Nous pensons que cette plage correspond aux configurations les plus courantes des PC de jeu et des ordinateurs portables de jeu.
 
-Basé sur Strata, TinyStrata vise à réduire l’utilisation de la VRAM et à accélérer l’inférence de Qwen3.6-35B-A3B. Nous souhaitons utiliser efficacement une mémoire GPU limitée pour vous permettre de travailler avec de longues conversations et de longs documents sur votre propre PC.
+Basé sur Strata, TinyStrata vise à accélérer l’inférence de Qwen3.6-35B-A3B dans les environnements où la VRAM est limitée. Nous souhaitons utiliser efficacement la mémoire GPU pour vous permettre de travailler avec de longues conversations et de longs documents sur votre propre PC.
 
-Nous maintenons ce fork pour concentrer le développement sur l’inférence locale rapide sous Windows et sa mise à disposition par API. Ce périmètre ciblé guide notre implémentation et nos tests.
+TinyStrata concentre son développement sur l’inférence locale rapide sous Windows et sa mise à disposition par API. Cette orientation guide notre implémentation et nos tests.
 
 Nous souhaitons également rendre la prise en main aussi simple que possible. TinyStrata choisit automatiquement les paramètres d’inférence et de mémoire adaptés à votre matériel, pour que vous puissiez utiliser l’API sans configuration compliquée ni réglages manuels.
 
 ## Pourquoi aucune interface intégrée ?
 
-Une fois TinyStrata démarré, vous pouvez connecter l’interface ou l’environnement d’exécution d’agents compatible avec l’API que vous préférez. Nous nous concentrons sur le moteur d’inférence pour vous laisser choisir l’interface et le flux de travail qui vous conviennent. Si la configuration de la connexion vous semble fastidieuse, vous pouvez demander à un agent IA de s’en charger.
+Il existe déjà de nombreuses interfaces et de nombreux environnements d’exécution d’agents compatibles avec les API pour LLM. TinyStrata prenant en charge les formats d’API courants, vous pouvez connecter et utiliser la solution de votre choix. Si la configuration de la connexion vous semble fastidieuse, vous pouvez demander à un agent IA de s’en charger. En confiant l’interface à des logiciels existants, nous pouvons nous concentrer sur le développement du moteur d’inférence et de l’API.
 
 ## Modèle privilégié
 
 TinyStrata se concentre actuellement exclusivement sur [Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B). Nous envisagerons de prendre en charge un autre modèle lorsqu’un modèle MoE sera mieux adapté que Qwen3.6-35B-A3B à l’inférence locale rapide sur des PC de jeu courants et des ordinateurs portables de jeu.
 
-## Installation rapide
+À nos yeux, le problème est que le développement et la publication de grands modèles progressent, tandis que le choix de modèles MoE de la classe 30B faciles à utiliser sur des PC de jeu courants ne s’élargit pas suffisamment. [Qwen3.6-35B-A3B, publié le 16 avril 2026](https://github.com/QwenLM/Qwen3.8#news), reste adapté à notre usage malgré le temps écoulé depuis sa publication : nous privilégions l’équilibre entre vitesse, faible consommation de mémoire et qualité des réponses. Nous n’avons encore trouvé aucun petit modèle MoE qui, selon notre évaluation, offre un équilibre nettement supérieur dans les environnements que nous visons.
+
+## Installation
 
 Exécutez cette commande dans PowerShell 64 bits pour installer TinyStrata et démarrer l’API à l’adresse `http://127.0.0.1:18080/v1` :
 
@@ -40,9 +42,13 @@ Pour relancer TinyStrata après un redémarrage de Windows, exécutez cette comm
 & "$env:LOCALAPPDATA\TinyStrata\run-api.bat" --port 18080
 ```
 
+Vous pouvez aussi donner à un agent IA le lien vers le [dépôt GitHub de TinyStrata](https://github.com/kbc20f11/TinyStrata) et lui confier l’installation.
+
 ## Vitesse mesurée
 
 Les mesures suivantes ont été effectuées le 2026-10-17 sous Windows avec une RTX PRO 4000 Blackwell SFF Edition (24 GB), un Ryzen 9 7945HX3D et le modèle Unsloth MTP UD-IQ3_XXS fixé pour ce projet. Les paramètres utilisés étaient une génération gloutonne, MTP 3, les capacités de contexte indiquées ci-dessous, des blocs de prompt de 512 tokens, le placement automatique des experts et le chemin hybride CUDA Graph optionnel activé.
+
+**Des mesures sur des machines équipées de GPU physiques de 8 GB, 12 GB et 16 GB sont prévues ultérieurement.** Les lignes à mémoire réduite du tableau ci-dessous ont été mesurées en limitant la mémoire disponible sur le même GPU de 24 GB et ne sont pas des benchmarks de GPU physiques de 8/12/16 GB.
 
 | Mémoire disponible | Capacité de contexte | Génération INT8 | Génération FP8 native |
 | --- | ---: | ---: | ---: |
@@ -51,7 +57,7 @@ Les mesures suivantes ont été effectuées le 2026-10-17 sous Windows avec une 
 | 12 GiB occupés séparément ; environ 12 GB restants | 128K | 104.28 tok/s | 107.61 tok/s |
 | 16 GiB occupés séparément ; environ 8 GB restants | 64K | 81.43 tok/s | 86.69 tok/s |
 
-Il s’agit de vitesses de décodage agrégées sur trois entrées courtes (34, 46 et 1,599 tokens), chacune produisant deux fois 128 tokens. Le chargement et le traitement des entrées sont exclus. **64K–256K sont des capacités de cache allouées, pas des longueurs d’entrée.** Toutes les lignes à mémoire réduite utilisaient des allocations indépendantes sur le même GPU de 24 GB et effectuaient de véritables calculs d’experts sur le CPU ; ce ne sont pas des benchmarks de GPU physiques de 16/12/8 GB.
+Il s’agit de vitesses de décodage agrégées sur trois entrées courtes (34, 46 et 1,599 tokens), chacune produisant deux fois 128 tokens. Le chargement et le traitement des entrées sont exclus. **64K–256K sont des capacités de cache allouées, pas des longueurs d’entrée.** Toutes les lignes à mémoire réduite utilisaient des allocations indépendantes sur le même GPU de 24 GB et effectuaient de véritables calculs d’experts sur le CPU.
 
 Les chiffres pour 24/16 GB proviennent de l’exécution précédente. Les cas ajoutés pour 12/8 GB utilisaient la version actuelle et la sélection automatique du contexte (128K/64K). La capacité de contexte influe également sur la vitesse ; ces lignes présentent donc différents réglages pratiques. L’avantage du FP8 est ici un résultat mesuré dans ces conditions, pas une garantie générale ni une comparaison de qualité.
 

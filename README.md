@@ -2,31 +2,33 @@
 
 **English** · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
 
-**Windows-only, API-only local MoE inference, focused on PCs with 8–24 GB of VRAM and up to 32 GB of system RAM.** Targets include ordinary gaming PCs and gaming laptops.
+**TinyStrata is a fast, Windows-only, API-only inference engine for 30B-class MoE models.** It primarily targets ordinary gaming PCs and gaming laptops with **8–24 GB of VRAM** and **32 GB of system RAM or less**.
 
-## Why TinyStrata?
+## Why we are building TinyStrata
 
-With PC component prices rising, putting together a high-end "1337 PC" is increasingly out of reach for many people.
+With PC component prices rising, putting together a high-end PC is increasingly out of reach for many people.
 
-TinyStrata was created to run AI locally at high speed on ordinary gaming PCs and on gaming laptops with an RTX 3060-class GPU or better. Our focus is on making smaller MoE models run as fast as possible.
+To address this, TinyStrata was created to run AI locally at high speed on ordinary gaming PCs and on gaming laptops with an RTX 3060-class GPU or better. Our focus is on making relatively small, 30B-class MoE models run as fast as possible.
 
 Our main target is PCs with **8–24 GB of VRAM and 32 GB of system RAM or less**. We believe this range represents the most common gaming PC and gaming laptop configurations.
 
-Built on Strata, TinyStrata aims to reduce VRAM usage and improve inference speed for Qwen3.6-35B-A3B. We want to make efficient use of limited GPU memory so you can work with long conversations and documents on your own PC.
+Built on Strata, TinyStrata aims to improve inference speed for Qwen3.6-35B-A3B in environments with limited VRAM. We want to use GPU memory efficiently so you can work with long conversations and documents on your own PC.
 
-We maintain this fork to concentrate development on running fast local inference on Windows and providing it through an API. This focused scope guides our implementation and testing.
+TinyStrata concentrates development on running fast local inference on Windows and providing it through an API. This focus guides our implementation and testing.
 
 We also aim to make getting started as simple as possible. TinyStrata automatically chooses inference and memory settings for your hardware, so you can use the API without complicated configuration or manual tuning.
 
 ## Why no bundled UI?
 
-Once TinyStrata is running, you can connect your preferred API-compatible UI or agent harness. We focus on the inference backend so you can choose the interface and workflow that suit you. If configuring the connection feels tedious, you can ask an AI agent to set it up for you.
+Many API-compatible UIs and agent harnesses for LLMs already exist. TinyStrata supports common API formats, so you can connect whichever you prefer. If configuring the connection feels tedious, you can ask an AI agent to set it up for you. Leaving the UI to existing software lets us focus development on the inference engine and API.
 
 ## Model focus
 
 TinyStrata currently focuses exclusively on [Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B). We will consider supporting another model when a MoE model offers a better fit than Qwen3.6-35B-A3B for fast local inference on ordinary gaming PCs and on gaming laptops.
 
-## Quick installation
+We see too few options for 30B-class MoE models that work well on ordinary gaming PCs, even as larger models continue to be developed and released. [Qwen3.6-35B-A3B, released on April 16, 2026](https://github.com/QwenLM/Qwen3.8#news), still suits our needs for a balance of speed, memory efficiency and answer quality. We have yet to find a smaller MoE model that clearly improves on this balance in our target environments.
+
+## Installation
 
 Run in 64-bit PowerShell to install TinyStrata and start the API at `http://127.0.0.1:18080/v1`:
 
@@ -40,9 +42,13 @@ To start again after restarting Windows, run this command or double-click the sa
 & "$env:LOCALAPPDATA\TinyStrata\run-api.bat" --port 18080
 ```
 
+Alternatively, give your AI agent the link to the [TinyStrata GitHub repository](https://github.com/kbc20f11/TinyStrata) and ask it to handle the installation.
+
 ## Measured speed
 
 The following measurements used Windows, an RTX PRO 4000 Blackwell SFF Edition (24 GB), a Ryzen 9 7945HX3D and the fixed Unsloth MTP UD-IQ3_XXS model on 2026-10-17. Settings were greedy generation, MTP 3, the context capacities shown below, 512-token prompt chunks, automatic Expert placement and the optional hybrid CUDA Graph path enabled.
+
+**We plan to benchmark physical GPUs with 8 GB, 12 GB and 16 GB of VRAM.** The reduced-memory rows below were measured by limiting free memory on the same 24 GB GPU; they are not benchmarks of physical 8/12/16 GB GPUs.
 
 | Available-memory condition | Context capacity | INT8 generation | Native FP8 generation |
 | --- | ---: | ---: | ---: |
@@ -51,7 +57,7 @@ The following measurements used Windows, an RTX PRO 4000 Blackwell SFF Edition (
 | 12 GiB occupied separately; approximately 12 GB left | 128K | 104.28 tok/s | 107.61 tok/s |
 | 16 GiB occupied separately; approximately 8 GB left | 64K | 81.43 tok/s | 86.69 tok/s |
 
-These are aggregate decode speeds from three short inputs (34, 46 and 1,599 tokens), each generating 128 tokens twice. Loading and input processing are excluded. **64K–256K are allocated cache capacities, not input lengths.** All reduced-memory rows used independent allocations on the same 24 GB GPU and performed real CPU Expert work; they are not benchmarks of physical 16/12/8 GB GPUs.
+These are aggregate decode speeds from three short inputs (34, 46 and 1,599 tokens), each generating 128 tokens twice. Loading and input processing are excluded. **64K–256K are allocated cache capacities, not input lengths.** All reduced-memory rows used independent allocations on the same 24 GB GPU and performed real CPU Expert work.
 
 The 24/16 GB figures are from the earlier run. The added 12/8 GB cases used the current build and automatic context selection (128K/64K). Context capacity also affects speed, so these rows show different practical settings. FP8's advantage here is a measured result for these conditions, not a general guarantee or a quality comparison.
 

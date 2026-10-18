@@ -2,31 +2,33 @@
 
 [English](README.md) · **简体中文** · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
 
-**仅支持 Windows、仅提供 API 的本地 MoE 推理，重点面向配备 8–24 GB 显存、系统内存不超过 32 GB 的 PC。** 目标设备包括普通游戏 PC 和游戏笔记本电脑。
+**TinyStrata 是一款正在开发中的高速推理引擎，面向 30B 级 MoE 模型，仅支持 Windows，且仅提供 API。** 主要面向搭载 **8–24 GB** 显存 GPU、系统内存**不超过 32 GB** 的普通游戏 PC 和游戏笔记本电脑。
 
-## 为什么选择 TinyStrata？
+## 为什么开发 TinyStrata？
 
-随着 PC 配件价格上涨，组装一台高端“1337 PC”对许多人来说正变得越来越难。
+随着 PC 配件价格上涨，组装一台高端 PC 对许多人来说正变得越来越难。
 
-TinyStrata 旨在让 AI 在配备 RTX 3060 级别或更高性能 GPU 的普通游戏 PC 和游戏笔记本电脑上，以本地方式高速运行。我们专注于让较小的 MoE 模型尽可能快地运行。
+因此，我们开发了 TinyStrata，让 AI 能在配备 RTX 3060 级别或更高性能 GPU 的普通游戏 PC 和游戏笔记本电脑上，以本地方式高速运行。我们专注于让 30B 级的较小型 MoE 模型尽可能快地运行。
 
 我们的主要目标是配备 **8–24 GB 显存、系统内存不超过 32 GB** 的 PC。我们认为，这一范围涵盖了最常见的游戏 PC 和游戏笔记本电脑配置。
 
-TinyStrata 基于 Strata，旨在降低 Qwen3.6-35B-A3B 的显存占用并提升推理速度。我们希望高效利用有限的 GPU 内存，让你能在自己的 PC 上处理长对话和文档。
+TinyStrata 基于 Strata，旨在提升显存有限环境下 Qwen3.6-35B-A3B 的推理速度。我们希望高效利用 GPU 内存，让你能在自己的 PC 上处理长对话和文档。
 
-我们维护这个分支，是为了将开发精力集中在 Windows 上的高速本地推理及其 API 服务上。这一明确的范围指导着我们的实现和测试。
+TinyStrata 将开发精力集中在 Windows 上的高速本地推理及其 API 服务上。这一方针指导着我们的实现和测试。
 
 我们也希望尽可能简化上手过程。TinyStrata 会根据你的硬件自动选择推理和内存设置，因此无需复杂配置或手动调优即可使用 API。
 
 ## 为什么不附带 UI？
 
-TinyStrata 运行后，你可以连接自己喜欢的兼容 API 的 UI 或智能体运行框架。我们专注于推理后端，让你可以选择适合自己的界面和工作流程。如果连接配置让你觉得繁琐，也可以请 AI 智能体帮你完成。
+目前已有许多支持 LLM API 的 UI 和智能体运行框架。TinyStrata 也支持常见的 API 格式，因此可以连接你喜欢的软件来使用。如果连接配置让你觉得繁琐，也可以请 AI 智能体帮你完成。将 UI 交给现有软件，让我们能够专注于推理引擎和 API 的开发。
 
 ## 重点支持的模型
 
 TinyStrata 目前仅专注于 [Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B)。当某个 MoE 模型比 Qwen3.6-35B-A3B 更适合在普通游戏 PC 和游戏笔记本电脑上进行高速本地推理时，我们会考虑支持其他模型。
 
-## 快速安装
+我们认为，当前的问题是，大型模型的开发和发布不断推进，但适合在普通游戏 PC 上使用的 30B 级 MoE 模型，选择却没有充分增加。[于 2026 年 4 月 16 日发布的 Qwen3.6-35B-A3B](https://github.com/QwenLM/Qwen3.8#news)，虽然距离发布已有一段时间，至今仍然适合我们重视速度、内存效率和回答质量平衡的用途。对于目标环境，我们尚未找到一款我们认为在这一平衡上明显更优的小型 MoE 模型。
+
+## 安装方法
 
 在 64 位 PowerShell 中运行以下命令，即可安装 TinyStrata 并在 `http://127.0.0.1:18080/v1` 启动 API：
 
@@ -40,9 +42,13 @@ irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/insta
 & "$env:LOCALAPPDATA\TinyStrata\run-api.bat" --port 18080
 ```
 
+或者，你也可以将 [TinyStrata 的 GitHub 仓库](https://github.com/kbc20f11/TinyStrata)链接交给 AI 智能体，让它帮你完成安装。
+
 ## 实测速度
 
 以下测量于 2026-10-17 在 Windows 上完成，使用 RTX PRO 4000 Blackwell SFF Edition（24 GB）、Ryzen 9 7945HX3D，以及固定的 Unsloth MTP UD-IQ3_XXS 模型。设置为贪心生成、MTP 3、下表所示的上下文容量、512 个 token 的提示词分块、自动专家放置，并启用了可选的混合 CUDA Graph 路径。
+
+**我们计划今后在搭载 8 GB、12 GB、16 GB 显存 GPU 的实机上进行测量。** 下表中减少可用内存的行，是在同一块 24 GB GPU 上限制空闲容量后测得的结果，并非物理 8/12/16 GB GPU 的基准测试。
 
 | 可用内存条件 | 上下文容量 | INT8 生成 | 原生 FP8 生成 |
 | --- | ---: | ---: | ---: |
@@ -51,7 +57,7 @@ irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/insta
 | 另行占用 12 GiB；剩余约 12 GB | 128K | 104.28 tok/s | 107.61 tok/s |
 | 另行占用 16 GiB；剩余约 8 GB | 64K | 81.43 tok/s | 86.69 tok/s |
 
-这些数据是对三个短输入（34、46 和 1,599 个 token）分别生成 128 个 token、各运行两次后汇总得到的解码速度，不包含加载和输入处理。**64K–256K 是已分配的缓存容量，而非输入长度。** 所有减少可用内存的测试行都通过在同一块 24 GB GPU 上进行独立内存分配来实现，并实际在 CPU 上进行了专家计算；它们并非物理 16/12/8 GB GPU 的基准测试。
+这些数据是对三个短输入（34、46 和 1,599 个 token）分别生成 128 个 token、各运行两次后汇总得到的解码速度，不包含加载和输入处理。**64K–256K 是已分配的缓存容量，而非输入长度。** 所有减少可用内存的测试行都通过在同一块 24 GB GPU 上进行独立内存分配来实现，并实际在 CPU 上进行了专家计算。
 
 24/16 GB 数据来自较早的一次运行。新增的 12/8 GB 测试使用了当前构建版本和自动上下文选择（128K/64K）。上下文容量也会影响速度，因此这些行展示的是不同的实用设置。FP8 在此处的优势是这些条件下的实测结果，并非普遍保证，也不是质量对比。
 
