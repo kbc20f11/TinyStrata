@@ -50,12 +50,12 @@ The following measurements used Windows, an RTX PRO 4000 Blackwell SFF Edition (
 
 **We plan to benchmark physical GPUs with 8 GB, 12 GB and 16 GB of VRAM.** The reduced-memory rows below were measured by limiting free memory on the same 24 GB GPU; they are not benchmarks of physical 8/12/16 GB GPUs.
 
-| Available-memory condition | Context capacity | INT8 generation | Native FP8 generation |
-| --- | ---: | ---: | ---: |
-| Whole 24 GB GPU; all Experts resident | 256K | 121.28 tok/s | 122.73 tok/s |
-| 8 GiB occupied separately; approximately 16 GB left | 256K | 96.98 tok/s | 112.39 tok/s |
-| 12 GiB occupied separately; approximately 12 GB left | 128K | 104.28 tok/s | 107.61 tok/s |
-| 16 GiB occupied separately; approximately 8 GB left | 64K | 81.43 tok/s | 86.69 tok/s |
+| Available VRAM | Context capacity | INT8 generation | Native FP8 generation | Notes |
+| --- | ---: | ---: | ---: | --- |
+| 24 GB | 256K | 121.28 tok/s | 122.73 tok/s | Whole GPU available; all Experts resident |
+| Approximately 16 GB | 256K | 96.98 tok/s | 112.39 tok/s | 8 GiB occupied separately |
+| Approximately 12 GB | 128K | 104.28 tok/s | 107.61 tok/s | 12 GiB occupied separately |
+| Approximately 8 GB | 64K | 81.43 tok/s | 86.69 tok/s | 16 GiB occupied separately |
 
 These are aggregate decode speeds from three short inputs (34, 46 and 1,599 tokens), each generating 128 tokens twice. Loading and input processing are excluded. **64K–256K are allocated cache capacities, not input lengths.** All reduced-memory rows used independent allocations on the same 24 GB GPU and performed real CPU Expert work.
 

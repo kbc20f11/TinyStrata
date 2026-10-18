@@ -50,12 +50,12 @@ Las siguientes mediciones se realizaron en Windows con una RTX PRO 4000 Blackwel
 
 **Tenemos previsto realizar más adelante mediciones en equipos reales con GPU de 8 GB, 12 GB y 16 GB.** Las filas con memoria reducida de la tabla siguiente se midieron limitando la memoria disponible en la misma GPU de 24 GB; no son pruebas de rendimiento de GPU físicas de 8/12/16 GB.
 
-| Condición de memoria disponible | Capacidad de contexto | Generación con INT8 | Generación con FP8 nativo |
-| --- | ---: | ---: | ---: |
-| GPU completa de 24 GB; todos los expertos residentes | 256K | 121.28 tok/s | 122.73 tok/s |
-| 8 GiB ocupados por separado; aproximadamente 16 GB restantes | 256K | 96.98 tok/s | 112.39 tok/s |
-| 12 GiB ocupados por separado; aproximadamente 12 GB restantes | 128K | 104.28 tok/s | 107.61 tok/s |
-| 16 GiB ocupados por separado; aproximadamente 8 GB restantes | 64K | 81.43 tok/s | 86.69 tok/s |
+| Condición de memoria disponible | Capacidad de contexto | Generación con INT8 | Generación con FP8 nativo | Notas |
+| --- | ---: | ---: | ---: | --- |
+| 24 GB | 256K | 121.28 tok/s | 122.73 tok/s | GPU completa disponible; todos los expertos residentes |
+| Aprox. 16 GB | 256K | 96.98 tok/s | 112.39 tok/s | 8 GiB ocupados por separado |
+| Aprox. 12 GB | 128K | 104.28 tok/s | 107.61 tok/s | 12 GiB ocupados por separado |
+| Aprox. 8 GB | 64K | 81.43 tok/s | 86.69 tok/s | 16 GiB ocupados por separado |
 
 Estas son velocidades agregadas de decodificación a partir de tres entradas cortas (34, 46 y 1,599 tokens), cada una con dos generaciones de 128 tokens. Se excluyen la carga y el procesamiento de la entrada. **64K–256K son capacidades de caché asignadas, no longitudes de entrada.** Todas las filas con memoria reducida usaron asignaciones independientes en la misma GPU de 24 GB y realizaron trabajo real de expertos en la CPU.
 

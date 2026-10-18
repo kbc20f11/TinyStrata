@@ -50,12 +50,12 @@ Les mesures suivantes ont été effectuées le 2026-10-17 sous Windows avec une 
 
 **Des mesures sur des machines équipées de GPU physiques de 8 GB, 12 GB et 16 GB sont prévues ultérieurement.** Les lignes à mémoire réduite du tableau ci-dessous ont été mesurées en limitant la mémoire disponible sur le même GPU de 24 GB et ne sont pas des benchmarks de GPU physiques de 8/12/16 GB.
 
-| Mémoire disponible | Capacité de contexte | Génération INT8 | Génération FP8 native |
-| --- | ---: | ---: | ---: |
-| GPU de 24 GB entièrement disponible ; tous les experts résidents | 256K | 121.28 tok/s | 122.73 tok/s |
-| 8 GiB occupés séparément ; environ 16 GB restants | 256K | 96.98 tok/s | 112.39 tok/s |
-| 12 GiB occupés séparément ; environ 12 GB restants | 128K | 104.28 tok/s | 107.61 tok/s |
-| 16 GiB occupés séparément ; environ 8 GB restants | 64K | 81.43 tok/s | 86.69 tok/s |
+| Mémoire disponible | Capacité de contexte | Génération INT8 | Génération FP8 native | Remarques |
+| --- | ---: | ---: | ---: | --- |
+| 24 GB | 256K | 121.28 tok/s | 122.73 tok/s | GPU entièrement disponible ; tous les experts résidents |
+| environ 16 GB | 256K | 96.98 tok/s | 112.39 tok/s | 8 GiB occupés séparément |
+| environ 12 GB | 128K | 104.28 tok/s | 107.61 tok/s | 12 GiB occupés séparément |
+| environ 8 GB | 64K | 81.43 tok/s | 86.69 tok/s | 16 GiB occupés séparément |
 
 Il s’agit de vitesses de décodage agrégées sur trois entrées courtes (34, 46 et 1,599 tokens), chacune produisant deux fois 128 tokens. Le chargement et le traitement des entrées sont exclus. **64K–256K sont des capacités de cache allouées, pas des longueurs d’entrée.** Toutes les lignes à mémoire réduite utilisaient des allocations indépendantes sur le même GPU de 24 GB et effectuaient de véritables calculs d’experts sur le CPU.
 

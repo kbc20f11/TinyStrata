@@ -50,12 +50,12 @@ Die folgenden Messungen wurden am 2026-10-17 unter Windows mit einer RTX PRO 400
 
 **Messungen auf realen Systemen mit 8-GB-, 12-GB- und 16-GB-GPUs sind geplant.** Die Zeilen mit reduziertem Speicher in der folgenden Tabelle wurden auf derselben 24-GB-GPU mit begrenztem verfügbarem Speicher gemessen und sind keine Benchmarks physischer GPUs mit 8/12/16 GB.
 
-| Verfügbarer Speicher | Kontextkapazität | INT8-Generierung | Native FP8-Generierung |
-| --- | ---: | ---: | ---: |
-| Gesamte 24-GB-GPU; alle Experten im VRAM | 256K | 121.28 tok/s | 122.73 tok/s |
-| 8 GiB separat belegt; etwa 16 GB verbleibend | 256K | 96.98 tok/s | 112.39 tok/s |
-| 12 GiB separat belegt; etwa 12 GB verbleibend | 128K | 104.28 tok/s | 107.61 tok/s |
-| 16 GiB separat belegt; etwa 8 GB verbleibend | 64K | 81.43 tok/s | 86.69 tok/s |
+| Verfügbarer Speicher | Kontextkapazität | INT8-Generierung | Native FP8-Generierung | Anmerkungen |
+| --- | ---: | ---: | ---: | --- |
+| 24 GB | 256K | 121.28 tok/s | 122.73 tok/s | Gesamte GPU verfügbar; alle Experten im VRAM |
+| ca. 16 GB | 256K | 96.98 tok/s | 112.39 tok/s | 8 GiB separat belegt |
+| ca. 12 GB | 128K | 104.28 tok/s | 107.61 tok/s | 12 GiB separat belegt |
+| ca. 8 GB | 64K | 81.43 tok/s | 86.69 tok/s | 16 GiB separat belegt |
 
 Dies sind zusammengefasste Dekodiergeschwindigkeiten für drei kurze Eingaben (34, 46 und 1,599 Token), die jeweils zweimal 128 Token erzeugten. Laden und Eingabeverarbeitung sind nicht enthalten. **64K–256K sind zugewiesene Cache-Kapazitäten, keine Eingabelängen.** Alle Zeilen mit reduziertem Speicher nutzten unabhängige Speicherzuweisungen auf derselben 24-GB-GPU und führten tatsächlich Expertenberechnungen auf der CPU aus.
 
