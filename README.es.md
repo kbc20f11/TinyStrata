@@ -71,8 +71,6 @@ Las cifras de 24/16 GB corresponden a la ejecución anterior. Los casos añadido
 
 **TinyStrata solo admite Windows.** Linux y macOS quedan fuera del alcance de soporte de este proyecto. Estas cifras de RAM del sistema sirven como orientación para elegir un proyecto. Los requisitos reales de memoria dependen del modelo, la cuantización, la longitud del contexto y la VRAM disponible.
 
-La inferencia MoE que usa memoria de la GPU y RAM del sistema puede incluir expertos almacenados en la caché de VRAM y el cálculo de algunos expertos en la CPU. Consulta el README de cada proyecto para conocer los modelos, sistemas operativos y GPU compatibles.
-
 ## Cómo se reparte la memoria
 
 Un modelo MoE contiene muchos **expertos**: redes neuronales más pequeñas que se seleccionan para cada token. TinyStrata mantiene tantos expertos como puede en la memoria de la GPU (VRAM). Durante la generación, puede calcular en la CPU los expertos seleccionados que no están en caché, usando la RAM del sistema. Al procesar lotes de entrada más grandes, puede, en su lugar, transferir progresivamente los pesos de los expertos desde la RAM a través de búferes temporales de la GPU. Todos los expertos seleccionados por el modelo participan en el cálculo.

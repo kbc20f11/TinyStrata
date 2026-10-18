@@ -71,8 +71,6 @@ irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/insta
 
 **TinyStrata 仅支持 Windows。** Linux 和 macOS 不在本项目的支持范围内。上述系统内存容量是选择项目时的参考，实际内存需求取决于模型、量化方式、上下文长度和可用显存。
 
-同时使用 GPU 内存和系统内存的 MoE 推理，可以将专家缓存在显存中，并在 CPU 上计算部分专家。有关支持的模型、操作系统和 GPU，请参阅各项目的 README。
-
 ## 内存如何分工
 
 MoE 模型包含许多**专家（Experts）**，它们是针对每个 token 选择的小型神经网络。TinyStrata 会在 GPU 内存（显存）中保留尽可能多的专家。在生成过程中，选中但未缓存的专家可以使用系统内存在 CPU 上计算。处理较大的输入批次时，也可以改为将专家权重从系统内存流式传输到临时 GPU 缓冲区。模型选中的专家都会保留在计算中。

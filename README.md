@@ -71,8 +71,6 @@ The 24/16 GB figures are from the earlier run. The added 12/8 GB cases used the 
 
 **TinyStrata supports Windows only.** Linux and macOS are outside this project's support scope. These system RAM figures are guidelines for choosing a project. Actual memory requirements depend on the model, quantization, context length and available VRAM.
 
-MoE inference using GPU memory and system RAM can include caching experts in VRAM and computing some experts on the CPU. See each project's README for supported models, operating systems and GPUs.
-
 ## How memory is shared
 
 A MoE model contains many **Experts**: smaller neural networks selected for each token. TinyStrata keeps as many Experts as it can in GPU memory (VRAM). During generation, it can compute selected uncached Experts on the CPU using system RAM. When processing larger input batches, it can instead stream Expert weights from RAM through temporary GPU buffers. Model-selected Experts are kept in the computation.

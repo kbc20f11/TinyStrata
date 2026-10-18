@@ -71,8 +71,6 @@ Die Werte für 24/16 GB stammen aus dem früheren Lauf. Die ergänzten Fälle mi
 
 **TinyStrata unterstützt ausschließlich Windows.** Linux und macOS liegen außerhalb des Unterstützungsumfangs dieses Projekts. Diese Angaben zum Arbeitsspeicher dienen als Richtwerte für die Projektwahl. Der tatsächliche Speicherbedarf hängt vom Modell, der Quantisierung, der Kontextlänge und dem verfügbaren VRAM ab.
 
-MoE-Inferenz mit GPU-Speicher und Arbeitsspeicher kann das Zwischenspeichern von Experten im VRAM und die Berechnung einiger Experten auf der CPU umfassen. Angaben zu unterstützten Modellen, Betriebssystemen und GPUs finden Sie in der README des jeweiligen Projekts.
-
 ## So wird der Speicher aufgeteilt
 
 Ein MoE-Modell enthält viele **Experten**: kleinere neuronale Netze, die für jedes Token ausgewählt werden. TinyStrata hält so viele Experten wie möglich im GPU-Speicher (VRAM). Während der Generierung kann es ausgewählte, nicht zwischengespeicherte Experten auf der CPU unter Verwendung des Arbeitsspeichers berechnen. Bei der Verarbeitung größerer Eingabestapel kann es stattdessen Expertengewichte aus dem RAM durch temporäre GPU-Puffer streamen. Die vom Modell ausgewählten Experten bleiben Teil der Berechnung.

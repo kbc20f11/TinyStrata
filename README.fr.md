@@ -71,8 +71,6 @@ Les chiffres pour 24/16 GB proviennent de l’exécution précédente. Les cas a
 
 **TinyStrata prend uniquement en charge Windows.** Linux et macOS ne font pas partie du périmètre de prise en charge de ce projet. Ces indications de mémoire système servent de repères pour choisir un projet. Les besoins réels en mémoire dépendent du modèle, de la quantification, de la longueur du contexte et de la VRAM disponible.
 
-L’inférence MoE utilisant la mémoire GPU et la mémoire système peut inclure la mise en cache d’experts dans la VRAM et le calcul de certains experts sur le CPU. Consultez le README de chaque projet pour connaître les modèles, systèmes d’exploitation et GPU pris en charge.
-
 ## Répartition de la mémoire
 
 Un modèle MoE contient de nombreux **experts** : des réseaux neuronaux plus petits sélectionnés pour chaque token. TinyStrata conserve autant d’experts que possible dans la mémoire GPU (VRAM). Pendant la génération, il peut calculer les experts sélectionnés qui ne sont pas en cache sur le CPU, en utilisant la mémoire système. Lors du traitement de lots d’entrée plus volumineux, il peut à la place transférer les poids des experts depuis la RAM via des tampons GPU temporaires. Les experts sélectionnés par le modèle restent inclus dans le calcul.
