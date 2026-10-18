@@ -125,8 +125,8 @@ TinyStrata に取り入れた KV キャッシュ、attention、量子化エキ�
 
 ## ライセンス
 
-MIT。[LICENSE](LICENSE) を参照してください。
+TinyStrata は MIT ライセンスで公開されています。詳細は [LICENSE](LICENSE) を参照してください。
 
 Copyright (c) 2026 Niko1221 and the Strata contributors.
 
-上流プロジェクトの帰属表示：[NOTICE](NOTICE)。GGML：[MIT ライセンス](third_party/ggml/LICENSE)。
+利用している外部コードの出典とライセンス情報は [NOTICE](NOTICE) にまとめています。GGML は [MIT ライセンス](third_party/ggml/LICENSE) で公開されています。
