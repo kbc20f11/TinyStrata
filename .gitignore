@@ -6,6 +6,12 @@
 !/LICENSE
 !/NOTICE
 !/README.md
+!/README.zh-CN.md
+!/README.ja.md
+!/README.de.md
+!/README.fr.md
+!/README.es.md
+!/README.pt-BR.md
 !/requirements.txt
 !/install.ps1
 !/run-api.bat

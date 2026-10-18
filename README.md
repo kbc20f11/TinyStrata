@@ -1,5 +1,7 @@
 # TinyStrata
 
+**English** · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
+
 **Windows-only, API-only local MoE inference, focused on PCs with 8–24 GB of VRAM and up to 32 GB of system RAM.** Targets include ordinary gaming PCs and gaming laptops.
 
 ## Why TinyStrata?
@@ -73,7 +75,7 @@ The downloaded model files total about **15.0 GB**: **14.1 GB** for the language
 
 ![How TinyStrata shares memory between GPU VRAM and system RAM](assets/memory-sharing.png)
 
-This is a layout diagram, not a fixed-size partition. At each model load, TinyStrata allocates the KV cache, other weights and work buffers first, then fits the Expert cache into the remaining free VRAM while leaving headroom. On Windows, it checks both CUDA's free-memory reading and the NVIDIA driver's device-wide reading and uses the smaller available value when both queries succeed. If allocation fails or leaves too little headroom, it retries with fewer Experts.
+This is a layout diagram, not a fixed-size partition. At each model load, TinyStrata starts and warms up the GPU vision encoder before loading the language model. It then allocates the KV cache, other weights and work buffers, and fits the Expert cache into the remaining free VRAM while leaving headroom. On Windows, it checks both CUDA's free-memory reading and the NVIDIA driver's device-wide reading and uses the smaller available value when both queries succeed. If allocation fails or leaves too little headroom, it retries with fewer Experts.
 
 Cache contents change as different Experts are used; cache capacity is recalculated when the model reloads. Other applications opening later can still consume VRAM. The reserve is headroom at Expert placement, not a permanent guarantee that 768 MiB stays free.
 
@@ -97,13 +99,15 @@ GGUF weight quantization and KV precision are separate. The selected UD-IQ3_XXS 
 
 New launcher configurations use MTP 3, which proposes several tokens ahead and verifies them with the main model. It can improve generation speed, but the gain depends on how many proposals are accepted. Verification is intended to preserve the main model's decoding behavior; differences in numerical execution paths can still change tokens, so enabling MTP does not promise identical output to disabling it.
 
-MTP acceleration currently applies to **greedy generation** (temperature 0, with repetition, frequency and presence penalties at their neutral defaults). Requests that use sampling or these penalties use normal generation instead.
+MTP supports both greedy generation and temperature-based sampling, including repetition, frequency and presence penalties. For sampled requests, the main model samples each verification row, and only the matching draft prefix is accepted.
 
 Explicit settings override automatic choices, and existing manually selected settings remain in effect. For example, `run-api.bat --kv-type int8` fixes INT8; `run-api.bat --kv-type auto --max-context auto --expert-vram auto` restores automatic KV, context and Expert placement.
 
 ## API server
 
 **TinyStrata is API-only.** It provides OpenAI-compatible Chat Completions (`/v1/chat/completions`) and Responses (`/v1/responses`) APIs and an Anthropic-compatible Messages API (`/v1/messages`), including streamed generation. Connect an API client or an external frontend; TinyStrata does not include a bundled chat UI.
+
+By default, thinking is enabled, with `temperature=0.7`, `top_p=0.95`, `top_k=20`, `min_p=0.0`, `presence_penalty=1.5`, `repetition_penalty=1.0`, and a maximum of **32,768 output tokens** including thinking. Per-request settings take precedence.
 
 The API listens on `http://127.0.0.1:18080` by default. To use another port, run `run-api.bat --port 18081` from the installed TinyStrata folder.
 
