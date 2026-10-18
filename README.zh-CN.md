@@ -2,15 +2,15 @@
 
 [English](README.md) · **简体中文** · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
 
-**TinyStrata 是一款正在开发中的高速推理引擎，面向 30B 级 MoE 模型，仅支持 Windows，且仅提供 API。** 主要面向搭载 **8–24 GB** 显存 GPU、系统内存**不超过 32 GB** 的普通游戏 PC 和游戏笔记本电脑。
+**TinyStrata 是一款正在开发中的高速推理引擎，面向 30B 级 MoE 模型，仅支持 Windows，且仅提供 API。** 主要面向配备主流显卡、显存为 **8–24 GB** 且系统内存**不超过 32 GB** 的 PC。
 
 ## 为什么开发 TinyStrata？
 
 随着 PC 配件价格上涨，组装一台高端 PC 对许多人来说正变得越来越难。
 
-因此，我们开发了 TinyStrata，让 AI 能在配备 RTX 3060 级别或更高性能 GPU 的普通游戏 PC 和游戏笔记本电脑上，以本地方式高速运行。我们专注于让 30B 级的较小型 MoE 模型尽可能快地运行。
+因此，我们开发了 TinyStrata，让 AI 能在配备 RTX 3060 级别或更高性能主流显卡的 PC 上，以本地方式高速运行。我们专注于让 30B 级的较小型 MoE 模型尽可能快地运行。
 
-我们的主要目标是配备 **8–24 GB 显存、系统内存不超过 32 GB** 的 PC。我们认为，这一范围涵盖了最常见的游戏 PC 和游戏笔记本电脑配置。
+我们的主要目标是配备 **8–24 GB 显存、系统内存不超过 32 GB** 的 PC。我们认为，这一范围涵盖了配备主流显卡的 PC 中最常见的配置。
 
 TinyStrata 基于 Strata，旨在提升显存有限环境下 Qwen3.6-35B-A3B 的推理速度。我们希望高效利用 GPU 内存，让你能在自己的 PC 上处理长对话和文档。
 
@@ -24,9 +24,9 @@ TinyStrata 将开发精力集中在 Windows 上的高速本地推理及其 API �
 
 ## 重点支持的模型
 
-TinyStrata 目前仅专注于 [Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B)。当某个 MoE 模型比 Qwen3.6-35B-A3B 更适合在普通游戏 PC 和游戏笔记本电脑上进行高速本地推理时，我们会考虑支持其他模型。
+TinyStrata 目前仅专注于 [Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B)。当某个 MoE 模型比 Qwen3.6-35B-A3B 更适合在配备主流显卡的 PC 上进行高速本地推理时，我们会考虑支持其他模型。
 
-我们认为，当前的问题是，大型模型的开发和发布不断推进，但适合在普通游戏 PC 上使用的 30B 级 MoE 模型，选择却没有充分增加。[于 2026 年 4 月 16 日发布的 Qwen3.6-35B-A3B](https://github.com/QwenLM/Qwen3.8#news)，虽然距离发布已有一段时间，至今仍然适合我们重视速度、内存效率和回答质量平衡的用途。对于目标环境，我们尚未找到一款我们认为在这一平衡上明显更优的小型 MoE 模型。
+我们认为，当前的问题是，大型模型的开发和发布不断推进，但适合在配备主流显卡的 PC 上使用的 30B 级 MoE 模型，选择却没有充分增加。[于 2026 年 4 月 16 日发布的 Qwen3.6-35B-A3B](https://github.com/QwenLM/Qwen3.8#news)，虽然距离发布已有一段时间，至今仍然适合我们重视速度、内存效率和回答质量平衡的用途。对于目标环境，我们尚未找到一款我们认为在这一平衡上明显更优的小型 MoE 模型。
 
 ## 安装方法
 
@@ -65,7 +65,7 @@ irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/insta
 
 | 你的目标和硬件 | 项目 |
 | --- | --- |
-| 你希望在 **Windows** 上使用仅通过 API 提供的 Qwen3.6-35B-A3B 推理，设备配备 **8–24 GB 显存、系统内存不超过 32 GB**，例如普通游戏 PC 或游戏笔记本电脑。 | TinyStrata（**仅支持 Windows**，开发中） |
+| 你希望在 **Windows** 上使用仅通过 API 提供的 Qwen3.6-35B-A3B 推理，设备是配备主流显卡的 PC，配置为 **8–24 GB 显存、系统内存不超过 32 GB**。 | TinyStrata（**仅支持 Windows**，开发中） |
 | 你同时拥有 **RTX 3060 级别或更高性能的 GPU** 和 **64 GB 或更多系统内存**。 | 推荐使用 [Strata（上游项目）](https://github.com/Niko1221/Strata)。 |
 | 你希望使用**附带聊天 UI** 的项目。 | 推荐使用 [Strata（上游项目）](https://github.com/Niko1221/Strata)。 |
 

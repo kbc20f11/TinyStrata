@@ -2,15 +2,15 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · **Deutsch** · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
 
-**TinyStrata ist eine schnelle Inferenz-Engine für MoE-Modelle der 30B-Klasse, die ausschließlich für Windows und die Nutzung per API entwickelt wird.** Sie richtet sich vor allem an gewöhnliche Gaming-PCs und Gaming-Laptops mit einer GPU mit **8–24 GB VRAM** und **höchstens 32 GB Arbeitsspeicher**.
+**TinyStrata ist eine schnelle Inferenz-Engine für MoE-Modelle der 30B-Klasse, die ausschließlich für Windows und die Nutzung per API entwickelt wird.** Sie richtet sich vor allem an PCs, die mit gängigen Grafikkarten mit **8–24 GB VRAM** ausgestattet sind und über **höchstens 32 GB Arbeitsspeicher** verfügen.
 
 ## Warum wir TinyStrata entwickeln
 
 Angesichts steigender Preise für PC-Komponenten wird es für viele Menschen immer schwieriger, einen High-End-PC zusammenzustellen.
 
-Deshalb wurde TinyStrata entwickelt, um KI lokal mit hoher Geschwindigkeit auf gewöhnlichen Gaming-PCs und Gaming-Laptops mit einer GPU der RTX 3060-Klasse oder besser auszuführen. Unser Schwerpunkt liegt darauf, vergleichsweise kleine MoE-Modelle der 30B-Klasse so schnell wie möglich auszuführen.
+Deshalb wurde TinyStrata entwickelt, um KI lokal mit hoher Geschwindigkeit auf PCs mit gängigen Grafikkarten der RTX 3060-Klasse oder besser auszuführen. Unser Schwerpunkt liegt darauf, vergleichsweise kleine MoE-Modelle der 30B-Klasse so schnell wie möglich auszuführen.
 
-Unsere Hauptzielgruppe sind PCs mit **8–24 GB VRAM und höchstens 32 GB Arbeitsspeicher**. Wir glauben, dass dieser Bereich die gängigsten Konfigurationen von Gaming-PCs und Gaming-Laptops abdeckt.
+Unsere Hauptzielgruppe sind PCs mit **8–24 GB VRAM und höchstens 32 GB Arbeitsspeicher**. Wir glauben, dass dieser Bereich die häufigsten Konfigurationen von PCs mit gängigen Grafikkarten abdeckt.
 
 Auf Basis von Strata soll TinyStrata die Inferenz für Qwen3.6-35B-A3B bei begrenztem VRAM beschleunigen. Wir möchten GPU-Speicher effizient nutzen, damit Sie auf Ihrem eigenen PC mit langen Unterhaltungen und Dokumenten arbeiten können.
 
@@ -24,9 +24,9 @@ Es gibt bereits viele Benutzeroberflächen und Agenten-Laufzeitumgebungen, die A
 
 ## Modellschwerpunkt
 
-TinyStrata konzentriert sich derzeit ausschließlich auf [Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B). Wir werden die Unterstützung eines weiteren Modells erwägen, wenn ein MoE-Modell für schnelle lokale Inferenz auf gewöhnlichen Gaming-PCs und Gaming-Laptops besser geeignet ist als Qwen3.6-35B-A3B.
+TinyStrata konzentriert sich derzeit ausschließlich auf [Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B). Wir werden die Unterstützung eines weiteren Modells erwägen, wenn ein MoE-Modell für schnelle lokale Inferenz auf PCs mit gängigen Grafikkarten besser geeignet ist als Qwen3.6-35B-A3B.
 
-Aus unserer Sicht besteht das Problem darin, dass die Entwicklung und Veröffentlichung großer Modelle voranschreitet, während die Auswahl an MoE-Modellen der 30B-Klasse, die sich gut auf gewöhnlichen Gaming-PCs nutzen lassen, nicht ausreichend wächst. Das [am 16. April 2026 veröffentlichte Qwen3.6-35B-A3B](https://github.com/QwenLM/Qwen3.8#news) passt auch heute noch zu unserem Einsatzzweck, bei dem das Verhältnis von Geschwindigkeit, geringem Speicherbedarf und Antwortqualität zählt. Wir haben noch kein kleines MoE-Modell gefunden, das dieses Verhältnis in unseren Zielumgebungen nach unserer Einschätzung klar übertrifft.
+Aus unserer Sicht besteht das Problem darin, dass die Entwicklung und Veröffentlichung großer Modelle voranschreitet, während die Auswahl an MoE-Modellen der 30B-Klasse, die sich gut auf PCs mit gängigen Grafikkarten nutzen lassen, nicht ausreichend wächst. Das [am 16. April 2026 veröffentlichte Qwen3.6-35B-A3B](https://github.com/QwenLM/Qwen3.8#news) passt auch heute noch zu unserem Einsatzzweck, bei dem das Verhältnis von Geschwindigkeit, geringem Speicherbedarf und Antwortqualität zählt. Wir haben noch kein kleines MoE-Modell gefunden, das dieses Verhältnis in unseren Zielumgebungen nach unserer Einschätzung klar übertrifft.
 
 ## Installation
 
@@ -65,7 +65,7 @@ Die Werte für 24/16 GB stammen aus dem früheren Lauf. Die ergänzten Fälle mi
 
 | Ihr Ziel und Ihre Hardware | Projekt |
 | --- | --- |
-| Sie möchten Qwen3.6-35B-A3B-Inferenz ausschließlich per API unter **Windows**, mit **8–24 GB VRAM und höchstens 32 GB Arbeitsspeicher**, etwa auf einem gewöhnlichen Gaming-PC oder einem Gaming-Laptop. | TinyStrata (**nur Windows**, in Entwicklung) |
+| Sie möchten Qwen3.6-35B-A3B-Inferenz ausschließlich per API unter **Windows**, mit **8–24 GB VRAM und höchstens 32 GB Arbeitsspeicher**, etwa auf einem PC mit einer gängigen Grafikkarte. | TinyStrata (**nur Windows**, in Entwicklung) |
 | Sie verfügen sowohl über **eine GPU der RTX 3060-Klasse oder besser** als auch über **mindestens 64 GB Arbeitsspeicher**. | Wir empfehlen [Strata (Upstream)](https://github.com/Niko1221/Strata). |
 | Sie möchten eine **integrierte Chat-Oberfläche**. | Wir empfehlen [Strata (Upstream)](https://github.com/Niko1221/Strata). |
 

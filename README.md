@@ -2,15 +2,15 @@
 
 **English** · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
 
-**TinyStrata is a fast, Windows-only, API-only inference engine for 30B-class MoE models.** It primarily targets ordinary gaming PCs and gaming laptops with **8–24 GB of VRAM** and **32 GB of system RAM or less**.
+**TinyStrata is a fast, Windows-only, API-only inference engine for 30B-class MoE models.** It primarily targets PCs with mainstream graphics cards (**8–24 GB of VRAM**) and **32 GB of system RAM or less**.
 
 ## Why we are building TinyStrata
 
 With PC component prices rising, putting together a high-end PC is increasingly out of reach for many people.
 
-To address this, TinyStrata was created to run AI locally at high speed on ordinary gaming PCs and on gaming laptops with an RTX 3060-class GPU or better. Our focus is on making relatively small, 30B-class MoE models run as fast as possible.
+To address this, TinyStrata was created to run AI locally at high speed on PCs with an RTX 3060-class graphics card or better. Our focus is on making relatively small, 30B-class MoE models run as fast as possible.
 
-Our main target is PCs with **8–24 GB of VRAM and 32 GB of system RAM or less**. We believe this range represents the most common gaming PC and gaming laptop configurations.
+Our main target is PCs with **8–24 GB of VRAM and 32 GB of system RAM or less**. We believe this range represents the most common configurations for PCs equipped with graphics cards.
 
 Built on Strata, TinyStrata aims to improve inference speed for Qwen3.6-35B-A3B in environments with limited VRAM. We want to use GPU memory efficiently so you can work with long conversations and documents on your own PC.
 
@@ -24,9 +24,9 @@ Many API-compatible UIs and agent harnesses for LLMs already exist. TinyStrata s
 
 ## Model focus
 
-TinyStrata currently focuses exclusively on [Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B). We will consider supporting another model when a MoE model offers a better fit than Qwen3.6-35B-A3B for fast local inference on ordinary gaming PCs and on gaming laptops.
+TinyStrata currently focuses exclusively on [Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B). We will consider supporting another model when a MoE model offers a better fit than Qwen3.6-35B-A3B for fast local inference on PCs with mainstream graphics cards.
 
-We see too few options for 30B-class MoE models that work well on ordinary gaming PCs, even as larger models continue to be developed and released. [Qwen3.6-35B-A3B, released on April 16, 2026](https://github.com/QwenLM/Qwen3.8#news), still suits our needs for a balance of speed, memory efficiency and answer quality. We have yet to find a smaller MoE model that clearly improves on this balance in our target environments.
+We see too few options for 30B-class MoE models that work well on PCs with mainstream graphics cards, even as larger models continue to be developed and released. [Qwen3.6-35B-A3B, released on April 16, 2026](https://github.com/QwenLM/Qwen3.8#news), still suits our needs for a balance of speed, memory efficiency and answer quality. We have yet to find a smaller MoE model that clearly improves on this balance in our target environments.
 
 ## Installation
 
@@ -65,7 +65,7 @@ The 24/16 GB figures are from the earlier run. The added 12/8 GB cases used the 
 
 | Your goal and hardware                                                                                                                       | Project                                                               |
 | -------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| You want API-only Qwen3.6-35B-A3B inference on **Windows**, with **8–24 GB of VRAM and 32 GB of system RAM or less**, such as an ordinary gaming PC or a gaming laptop. | TinyStrata (**Windows only**, under development)                      |
+| You want API-only Qwen3.6-35B-A3B inference on a **Windows** PC with a mainstream graphics card, **8–24 GB of VRAM and 32 GB of system RAM or less**. | TinyStrata (**Windows only**, under development)                      |
 | You have both **an RTX 3060-class GPU or better** and **64 GB of system RAM or more**.                                                        | We recommend [Strata (upstream)](https://github.com/Niko1221/Strata). |
 | You want a **bundled chat UI**.                                                                                                              | We recommend [Strata (upstream)](https://github.com/Niko1221/Strata). |
 
