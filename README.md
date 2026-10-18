@@ -69,8 +69,6 @@ The 24/16 GB figures are from the earlier run. The added 12/8 GB cases used the 
 | You have both **an RTX 3060-class GPU or better** and **64 GB of system RAM or more**.                                                        | We recommend [Strata (upstream)](https://github.com/Niko1221/Strata). |
 | You want a **bundled chat UI**.                                                                                                              | We recommend [Strata (upstream)](https://github.com/Niko1221/Strata). |
 
-**TinyStrata supports Windows only.** Linux and macOS are outside this project's support scope. These system RAM figures are guidelines for choosing a project. Actual memory requirements depend on the model, quantization, context length and available VRAM.
-
 ## How memory is shared
 
 A MoE model contains many **Experts**: smaller neural networks selected for each token. TinyStrata keeps as many Experts as it can in GPU memory (VRAM). During generation, it can compute selected uncached Experts on the CPU using system RAM. When processing larger input batches, it can instead stream Expert weights from RAM through temporary GPU buffers. Model-selected Experts are kept in the computation.

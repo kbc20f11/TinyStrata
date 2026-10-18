@@ -69,8 +69,6 @@ Os valores de 24/16 GB são da execução anterior. Os casos de 12/8 GB adiciona
 | Você tem tanto **uma GPU da classe RTX 3060 ou superior** quanto **64 GB de RAM do sistema ou mais**. | Recomendamos o [Strata (projeto original)](https://github.com/Niko1221/Strata). |
 | Você quer uma **interface de chat incluída**. | Recomendamos o [Strata (projeto original)](https://github.com/Niko1221/Strata). |
 
-**O TinyStrata oferece suporte apenas ao Windows.** Linux e macOS estão fora do escopo de suporte deste projeto. Esses valores de RAM do sistema são orientações para escolher um projeto. Os requisitos reais de memória dependem do modelo, da quantização, do comprimento do contexto e da VRAM disponível.
-
 ## Como a memória é compartilhada
 
 Um modelo MoE contém muitos **especialistas**: redes neurais menores selecionadas para cada token. O TinyStrata mantém o maior número possível de especialistas na memória da GPU (VRAM). Durante a geração, ele pode calcular na CPU os especialistas selecionados que não estão em cache, usando a RAM do sistema. Ao processar lotes de entrada maiores, ele pode, em vez disso, transferir os pesos dos especialistas da RAM por meio de buffers temporários da GPU. Todos os especialistas selecionados pelo modelo participam do cálculo.
