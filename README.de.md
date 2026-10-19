@@ -90,10 +90,12 @@ Gemessen am 2026-10-19 auf demselben Windows-PC mit RTX PRO 4000 Blackwell SFF E
 
 | Verfügbarer VRAM | Kontextkapazität | FP16-Generierung | INT8-Generierung | Hinweise |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 105.56 tok/s | — | Expertenberechnung auf GPU und CPU; INT8 nicht gemessen |
+| 24 GB | 256K | 105.56 tok/s | 118.62 tok/s | FP16: Expertenberechnung auf GPU und CPU; INT8: alle Experten im GPU-Speicher |
+| Etwa 16 GB | 128K | 88.46 tok/s | 86.67 tok/s | Expertenberechnung auf GPU und CPU |
+| Etwa 12 GB | 64K | 68.16 tok/s | 76.47 tok/s | Expertenberechnung auf GPU und CPU |
 | Etwa 8 GB | 64K | 48.22 tok/s | 48.97 tok/s | Expertenberechnung während der Generierung auf der CPU |
 
-Drei feste Eingabetexte wurden jeweils einmal mit 128 Ausgabetoken einschließlich Thinking ausgeführt. Die Geschwindigkeit ist die gesamte Tokenzahl geteilt durch die gesamte Decodierzeit, ohne Laden und Eingabeverarbeitung. Die 8-GB-Bedingung wurde durch eine separate Reservierung von 16 GiB auf derselben 24-GB-GPU erzeugt und ist kein Benchmark einer physischen 8-GB-GPU. 64K/256K bezeichnet die Cache-Kapazität, nicht die Eingabelänge.
+Drei feste Eingabetexte wurden jeweils einmal mit 128 Ausgabetoken einschließlich Thinking ausgeführt. Die Geschwindigkeit ist die gesamte Tokenzahl geteilt durch die gesamte Decodierzeit, ohne Laden und Eingabeverarbeitung. Für die Bedingungen mit weniger verfügbarem Speicher wurden separat 8, 12 bzw. 16 GiB auf derselben 24-GB-GPU reserviert; es sind keine Benchmarks physischer 16-, 12- oder 8-GB-GPUs. 64K/128K/256K bezeichnet die Cache-Kapazität, nicht die Eingabelänge.
 
 ## Gemessene Geschwindigkeit — LFM2.5 (experimentell)
 

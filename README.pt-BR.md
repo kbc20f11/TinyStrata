@@ -92,10 +92,12 @@ Medido em 2026-10-19 no mesmo PC Windows com RTX PRO 4000 Blackwell SFF Edition 
 
 | VRAM disponível | Capacidade de contexto | Geração FP16 | Geração INT8 | Observações |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 105.56 tok/s | — | Cálculo de especialistas na GPU e na CPU; INT8 não medido |
+| 24 GB | 256K | 105.56 tok/s | 118.62 tok/s | FP16: cálculo de especialistas na GPU e na CPU; INT8: todos os especialistas residentes na GPU |
+| Aproximadamente 16 GB | 128K | 88.46 tok/s | 86.67 tok/s | Cálculo de especialistas na GPU e na CPU |
+| Aproximadamente 12 GB | 64K | 68.16 tok/s | 76.47 tok/s | Cálculo de especialistas na GPU e na CPU |
 | Aproximadamente 8 GB | 64K | 48.22 tok/s | 48.97 tok/s | Cálculo de especialistas na CPU durante a geração |
 
-Três entradas fixas foram executadas uma vez cada, com 128 tokens de saída incluindo o raciocínio. A velocidade é o total de tokens dividido pelo tempo total de decodificação, sem carregamento nem processamento de entrada. A condição de 8 GB foi obtida reservando 16 GiB separadamente na mesma GPU de 24 GB; não é um teste de uma GPU física de 8 GB. 64K/256K indica a capacidade do cache, não o tamanho da entrada.
+Três entradas fixas foram executadas uma vez cada, com 128 tokens de saída incluindo o raciocínio. A velocidade é o total de tokens dividido pelo tempo total de decodificação, sem carregamento nem processamento de entrada. As condições com menos memória disponível foram obtidas reservando 8, 12 ou 16 GiB separadamente na mesma GPU de 24 GB; não são testes de GPUs físicas de 16, 12 ou 8 GB. 64K/128K/256K indica a capacidade do cache, não o tamanho da entrada.
 
 ## Velocidade medida — LFM2.5 (experimental)
 

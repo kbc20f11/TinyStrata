@@ -104,10 +104,12 @@ Measured on 2026-10-19 on the same Windows PC with 64 GB of system RAM, using Ge
 
 | Available VRAM | Context capacity | FP16 generation | INT8 generation | Notes |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 105.56 tok/s | — | GPU and CPU Expert computation |
+| 24 GB | 256K | 105.56 tok/s | 118.62 tok/s | FP16: GPU and CPU Experts; INT8: all Experts resident on GPU |
+| Approximately 16 GB | 128K | 88.46 tok/s | 86.67 tok/s | GPU and CPU Expert computation |
+| Approximately 12 GB | 64K | 68.16 tok/s | 76.47 tok/s | GPU and CPU Expert computation |
 | Approximately 8 GB | 64K | 48.22 tok/s | 48.97 tok/s | Experts computed on the CPU during generation |
 
-Each of the same three input texts was run once, generating 128 tokens including thinking per request. Speeds are total generated tokens divided by total decode time, excluding loading and prompt processing; 64K/256K are cache capacities, not input lengths. The 8 GB-equivalent row reserves 16 GiB separately on the 24 GB GPU; it is not a physical 8 GB GPU benchmark. The dash means unmeasured.
+Each of the same three input texts was run once, generating 128 tokens including thinking per request. Speeds are total generated tokens divided by total decode time, excluding loading and prompt processing; 64K–256K are cache capacities, not input lengths. Reduced-memory rows reserve 8, 12 or 16 GiB separately on the same 24 GB GPU; they are not benchmarks of physical 16/12/8 GB GPUs.
 
 ## Measured speed — LFM2.5 (experimental)
 
