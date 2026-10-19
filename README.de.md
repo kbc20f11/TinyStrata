@@ -46,20 +46,22 @@ Alternativ können Sie einem KI-Agenten den Link zum [GitHub-Repository von Tiny
 
 ## Gemessene Geschwindigkeit
 
-Die folgenden Messungen wurden am 2026-10-17 unter Windows mit einer RTX PRO 4000 Blackwell SFF Edition (24 GB), einem Ryzen 9 7945HX3D und dem festgelegten Unsloth MTP UD-IQ3_XXS-Modell durchgeführt. Verwendet wurden Greedy-Generierung, MTP 3, die unten angegebenen Kontextkapazitäten, Prompt-Blöcke mit 512 Token, automatische Expertenplatzierung und der aktivierte optionale hybride CUDA-Graph-Pfad.
+Die folgenden Messungen wurden am 2026-10-19 unter Windows mit einer RTX PRO 4000 Blackwell SFF Edition (24 GB), einem Ryzen 9 7945HX3D und dem festgelegten Unsloth MTP UD-IQ3_XXS-Modell durchgeführt. Modell und GPU-Vision-Projektor waren geladen und aufgewärmt. Verwendet wurden die API-Standardeinstellungen: Thinking aktiviert, Sampling mit Temperatur 0.7, MTP 3, Prompt-Blöcke mit 512 Token sowie automatische Expertenplatzierung und Kontextauswahl. Der optionale hybride CUDA-Graph-Pfad war standardmäßig ausgeschaltet; die normalen CUDA Graphs bei vollständigem GPU-Betrieb blieben aktiv. Auf dieser GPU wählte `auto` natives FP8; für die INT8-Spalte wurde nur der KV-Typ erzwungen.
 
 **Messungen auf realen Systemen mit 8-GB-, 12-GB- und 16-GB-GPUs sind geplant.** Die Zeilen mit reduziertem Speicher in der folgenden Tabelle wurden auf derselben 24-GB-GPU mit begrenztem verfügbarem Speicher gemessen und sind keine Benchmarks physischer GPUs mit 8/12/16 GB.
 
 | Verfügbarer Speicher | Kontextkapazität | INT8-Generierung | Native FP8-Generierung | Anmerkungen |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 121.28 tok/s | 122.73 tok/s | Gesamte GPU verfügbar; alle Experten im VRAM |
-| ca. 16 GB | 256K | 96.98 tok/s | 112.39 tok/s | 8 GiB separat belegt |
-| ca. 12 GB | 128K | 104.28 tok/s | 107.61 tok/s | 12 GiB separat belegt |
-| ca. 8 GB | 64K | 81.43 tok/s | 86.69 tok/s | 16 GiB separat belegt |
+| 24 GB | 256K | 118.40 tok/s | 131.82 tok/s | Alle Gewichte im VRAM |
+| ca. 16 GB | 128K | 95.09 tok/s | 99.39 tok/s | 8 GiB separat belegt; Experten auf CPU und GPU |
+| ca. 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | 12 GiB separat belegt; Experten auf CPU und GPU |
+| ca. 8 GB | — | — | — | 16 GiB separat belegt; Start wegen zu geringer VRAM-Reserve abgelehnt |
 
-Dies sind zusammengefasste Dekodiergeschwindigkeiten für drei kurze Eingaben (34, 46 und 1,599 Token), die jeweils zweimal 128 Token erzeugten. Laden und Eingabeverarbeitung sind nicht enthalten. **64K–256K sind zugewiesene Cache-Kapazitäten, keine Eingabelängen.** Alle Zeilen mit reduziertem Speicher nutzten unabhängige Speicherzuweisungen auf derselben 24-GB-GPU und führten tatsächlich Expertenberechnungen auf der CPU aus.
+Bei der gemessenen 8-GB-Speicherbegrenzung ließen die standardmäßig gewählten 64K Kontext und der im GPU-Speicher verbleibende Vision-Encoder nicht genug Platz für die standardmäßige Reserve von 768 MiB; weder INT8 noch FP8 konnten starten.
 
-Die Werte für 24/16 GB stammen aus dem früheren Lauf. Die ergänzten Fälle mit 12/8 GB nutzten den aktuellen Build und die automatische Kontextauswahl (128K/64K). Auch die Kontextkapazität beeinflusst die Geschwindigkeit, daher zeigen diese Zeilen unterschiedliche praxisnahe Einstellungen. Der Vorteil von FP8 ist hier ein Messergebnis unter diesen Bedingungen, keine allgemeine Garantie und kein Qualitätsvergleich.
+Die Dekodiergeschwindigkeiten entsprechen der Gesamtzahl erzeugter Token geteilt durch die summierten nativen Dekodierzeiten. Dieselben drei Texte (32, 44 und 1,597 Prompt-Token mit aktiviertem Thinking) erzeugten jeweils zweimal 128 Token, einschließlich Reasoning-Token. Die einzige Request-Überschreibung war `max_tokens: 128` als Benchmark-Grenze; der Standardwert 32768 wurde nicht verwendet. Sampling-Parameter und Seed wurden im Request ausgelassen. Die Requests enthielten nur Text; Laden, Eingabeverarbeitung und Bildkodierung sind nicht enthalten. **Die Kontextwerte sind zugewiesene Cache-Kapazitäten, keine Eingabelängen.** Die Zeilen mit reduziertem Speicher nutzten separate Speicherreservierungen auf derselben 24-GB-GPU; die erfolgreichen Läufe führten tatsächlich Expertenberechnungen auf der CPU aus.
+
+Alle Zeilen wurden mit demselben aktuellen Build neu gemessen. Die Tabelle zeigt die tatsächlich gewählten Kontextkapazitäten und Expertenplatzierungen. Auch die Kontextkapazität beeinflusst die Geschwindigkeit. Die Unterschiede zwischen FP8 und INT8 gelten für diese Messbedingungen und sind weder eine allgemeine Geschwindigkeitsgarantie noch ein Qualitätsvergleich.
 
 ## Welches Projekt sollte ich verwenden?
 

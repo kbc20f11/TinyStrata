@@ -46,20 +46,24 @@ También puedes darle a un agente de IA el enlace al [repositorio de TinyStrata 
 
 ## Velocidad medida
 
-Las siguientes mediciones se realizaron en Windows con una RTX PRO 4000 Blackwell SFF Edition (24 GB), un Ryzen 9 7945HX3D y el modelo fijo Unsloth MTP UD-IQ3_XXS el 2026-10-17. Se usaron generación voraz, MTP 3, las capacidades de contexto indicadas a continuación, bloques de entrada de 512 tokens, ubicación automática de expertos y la ruta híbrida opcional de CUDA Graph activada.
+Las siguientes mediciones se realizaron el 2026-10-19 en Windows con una RTX PRO 4000 Blackwell SFF Edition (24 GB), un Ryzen 9 7945HX3D y el modelo fijo Unsloth MTP UD-IQ3_XXS. El proyector de visión permaneció cargado y preparado en la GPU; las solicitudes solo contenían texto, sin tiempo de codificación de imágenes. Se usaron los valores predeterminados de la API: razonamiento activado, temperatura 0.7, MTP 3, bloques de entrada de 512 tokens y selección automática de contexto y ubicación de expertos. La ruta híbrida de CUDA Graph estaba desactivada por defecto; los grafos normales para ejecución íntegra en GPU conservaron su configuración predeterminada.
+
+Las solicitudes omitieron los parámetros de muestreo y la semilla. La única modificación a sus valores predeterminados fue `max_tokens=128` como límite de la prueba, en lugar de 32768. La columna FP8 usa la selección automática de KV en esta GPU; para la comparación INT8 solo se forzó el modo KV a INT8.
 
 **Tenemos previsto realizar más adelante mediciones en equipos reales con GPU de 8 GB, 12 GB y 16 GB.** Las filas con memoria reducida de la tabla siguiente se midieron limitando la memoria disponible en la misma GPU de 24 GB; no son pruebas de rendimiento de GPU físicas de 8/12/16 GB.
 
 | Condición de memoria disponible | Capacidad de contexto | Generación con INT8 | Generación con FP8 nativo | Notas |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 121.28 tok/s | 122.73 tok/s | GPU completa disponible; todos los expertos residentes |
-| Aprox. 16 GB | 256K | 96.98 tok/s | 112.39 tok/s | 8 GiB ocupados por separado |
-| Aprox. 12 GB | 128K | 104.28 tok/s | 107.61 tok/s | 12 GiB ocupados por separado |
-| Aprox. 8 GB | 64K | 81.43 tok/s | 86.69 tok/s | 16 GiB ocupados por separado |
+| 24 GB | 256K | 118.40 tok/s | 131.82 tok/s | Todos los pesos residentes en VRAM |
+| Aprox. 16 GB | 128K | 95.09 tok/s | 99.39 tok/s | 8 GiB reservados; cálculo de expertos en CPU y GPU |
+| Aprox. 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | 12 GiB reservados; cálculo de expertos en CPU y GPU |
+| Aprox. 8 GB | — | — | — | 16 GiB reservados; inicio rechazado por falta de margen de VRAM |
 
-Estas son velocidades agregadas de decodificación a partir de tres entradas cortas (34, 46 y 1,599 tokens), cada una con dos generaciones de 128 tokens. Se excluyen la carga y el procesamiento de la entrada. **64K–256K son capacidades de caché asignadas, no longitudes de entrada.** Todas las filas con memoria reducida usaron asignaciones independientes en la misma GPU de 24 GB y realizaron trabajo real de expertos en la CPU.
+En esta condición medida de aproximadamente 8 GB, la selección predeterminada de 64K y el codificador de visión residente en la GPU dejaron espacio insuficiente para la reserva predeterminada de 768 MiB; ni INT8 ni FP8 pudieron iniciarse.
 
-Las cifras de 24/16 GB corresponden a la ejecución anterior. Los casos añadidos de 12/8 GB usaron la compilación actual y la selección automática del contexto (128K/64K). La capacidad de contexto también afecta a la velocidad, por lo que estas filas muestran distintos ajustes prácticos. La ventaja de FP8 aquí es un resultado medido en estas condiciones, no una garantía general ni una comparación de calidad.
+Estas son velocidades agregadas de decodificación: el total de tokens generados dividido por el tiempo de decodificación registrado por el motor, excluyendo la carga y el procesamiento de la entrada. Se usaron los mismos tres textos, con 32, 44 y 1,597 tokens tras aplicar la plantilla de razonamiento, cada uno con dos generaciones de 128 tokens, incluidos los tokens de razonamiento. **Las capacidades de la tabla son capacidades de caché asignadas, no longitudes de entrada.** Las filas con memoria reducida reservaron por separado 8, 12 o 16 GiB en la misma GPU de 24 GB; las de aproximadamente 16 y 12 GB realizaron trabajo real de expertos en la CPU.
+
+Todas las filas se midieron de nuevo con la misma compilación. El contexto y la ubicación de expertos indicados son los seleccionados durante cada ejecución. La capacidad de contexto también afecta a la velocidad, por lo que estas filas muestran distintos ajustes prácticos. Los resultados de FP8 se limitan a estas condiciones y no garantizan una mayor velocidad en general ni comparan la calidad.
 
 ## ¿Qué proyecto debería usar?
 

@@ -46,20 +46,24 @@ Alternatively, give your AI agent the link to the [TinyStrata GitHub repository]
 
 ## Measured speed
 
-The following measurements used Windows, an RTX PRO 4000 Blackwell SFF Edition (24 GB), a Ryzen 9 7945HX3D and the fixed Unsloth MTP UD-IQ3_XXS model on 2026-10-17. Settings were greedy generation, MTP 3, the context capacities shown below, 512-token prompt chunks, automatic Expert placement and the optional hybrid CUDA Graph path enabled.
+Measurements were taken on 2026-10-19 using Windows, an RTX PRO 4000 Blackwell SFF Edition (24 GB), a Ryzen 9 7945HX3D and the fixed Unsloth MTP UD-IQ3_XXS model. The GPU vision encoder was resident throughout these text-only API requests.
+
+Default thinking and sampling settings (temperature 0.7), MTP 3, 512-token prompt chunks and automatic context and Expert placement were used. The hybrid CUDA Graph option stayed at its default off. The FP8 column uses automatic KV selection on this GPU; the INT8 column changes only the KV mode.
 
 **We plan to benchmark physical GPUs with 8 GB, 12 GB and 16 GB of VRAM.** The reduced-memory rows below were measured by limiting free memory on the same 24 GB GPU; they are not benchmarks of physical 8/12/16 GB GPUs.
 
 | Available VRAM | Context capacity | INT8 generation | Native FP8 generation | Notes |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 121.28 tok/s | 122.73 tok/s | Whole GPU available; all Experts resident |
-| Approximately 16 GB | 256K | 96.98 tok/s | 112.39 tok/s | 8 GiB occupied separately |
-| Approximately 12 GB | 128K | 104.28 tok/s | 107.61 tok/s | 12 GiB occupied separately |
-| Approximately 8 GB | 64K | 81.43 tok/s | 86.69 tok/s | 16 GiB occupied separately |
+| 24 GB | 256K | 118.40 tok/s | 131.82 tok/s | All weights resident in VRAM |
+| Approximately 16 GB | 128K | 95.09 tok/s | 99.39 tok/s | GPU and CPU Expert computation |
+| Approximately 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | GPU and CPU Expert computation |
+| Approximately 8 GB | — | — | — | Startup rejected: insufficient VRAM headroom |
 
-These are aggregate decode speeds from three short inputs (34, 46 and 1,599 tokens), each generating 128 tokens twice. Loading and input processing are excluded. **64K–256K are allocated cache capacities, not input lengths.** All reduced-memory rows used independent allocations on the same 24 GB GPU and performed real CPU Expert work.
+In this 8 GB memory-proxy condition, automatic selection chose 64K, but the resident vision encoder left insufficient room for the default 768 MiB reserve. Both INT8 and FP8 were rejected before inference.
 
-The 24/16 GB figures are from the earlier run. The added 12/8 GB cases used the current build and automatic context selection (128K/64K). Context capacity also affects speed, so these rows show different practical settings. FP8's advantage here is a measured result for these conditions, not a general guarantee or a quality comparison.
+Each of the three prompts (32, 44 and 1,597 tokens) generated 128 tokens twice, including reasoning tokens. The benchmark set `max_tokens` to 128 instead of the default 32768; other generation parameters were left unspecified. Rates are total generated tokens divided by summed native decode time, excluding loading and input processing. Reduced-memory rows reserved 8, 12 or 16 GiB on the same 24 GB GPU; the successful 16 and 12 GB cases performed real CPU Expert work.
+
+All rows were remeasured with the same build. The table shows the context capacity actually selected from free VRAM after the vision encoder starts. **These are allocated cache capacities, not input lengths.** The speed differences apply to this hardware and workload; they do not compare answer quality.
 
 ## Which project should I use?
 
