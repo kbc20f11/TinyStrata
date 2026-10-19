@@ -23,6 +23,7 @@
 #include "strata/prefill/gemm.hpp"
 #include "strata/prefill/moe_mmq.hpp"
 #include "strata/qwen35/engine.hpp"
+#include "q36_kernels.cuh"
 #include "strata/qwen35/attention.cuh"
 #include "strata/qwen35/int8_attention.hpp"
 #include "strata/qwen35/fp8_attention.hpp"
@@ -91,6 +92,7 @@ using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
 
 constexpr int kThreads = 256;
+constexpr int kConvTile = 16;     // tokens per block of the prompt conv
 constexpr int kChunkCells = 256;   // attention split-K chunk
 
 // On Windows/WDDM cudaMemGetInfo can describe this process's allocation budget rather than the card's global
@@ -563,10 +565,34 @@ __global__ void __launch_bounds__(128) k_conv_seq(float* hist, const float* qkv,
                                                   int qk_heads, float eps, int T, bool write) {
     __shared__ float part[4];
     const int c = blockIdx.x * 128 + threadIdx.x;
-    float v0 = hist[c * 3], v1 = hist[c * 3 + 1], v2 = hist[c * 3 + 2];
+    float v0 = 0.0f, v1 = 0.0f, v2 = 0.0f;
+    if (gridDim.y == 1 || blockIdx.y == 0) {   // other tiles read only qkv; avoid racing tile zero's history write
+        v0 = hist[c * 3]; v1 = hist[c * 3 + 1]; v2 = hist[c * 3 + 2];
+    }
+    // Prompt tiles run independently. Only tile zero writes the final history; each later tile's history is
+    // the same three preceding inputs as in the sequential loop. Decode / verify / commit use one tile.
+    int t_first = 0, t_end = T;
+    const bool tiled = gridDim.y > 1;
+    if (tiled) {
+        t_first = (int) blockIdx.y * kConvTile;
+        t_end = min(T, t_first + kConvTile);
+        if (t_first == 0 && write) {
+            const float old3[3] = {v0, v1, v2};
+            for (int k = 0; k < 3; ++k) {
+                const int idx = T - 3 + k;
+                hist[c * 3 + k] = idx >= 0 ? qkv[(size_t) idx * C + c] : old3[idx + 3];
+            }
+        }
+        if (t_first > 0) {
+            v0 = qkv[(size_t) (t_first - 3) * C + c];
+            v1 = qkv[(size_t) (t_first - 2) * C + c];
+            v2 = qkv[(size_t) (t_first - 1) * C + c];
+        }
+        if (t_first >= T) return;
+    }
     const float w0 = w[c * 4], w1 = w[c * 4 + 1], w2 = w[c * 4 + 2], w3 = w[c * 4 + 3];
     const bool qk = (int) blockIdx.x < qk_heads;
-    for (int t = 0; t < T; ++t) {
+    for (int t = t_first; t < t_end; ++t) {
         const float x = qkv[(size_t) t * C + c];
         const float sum = v0 * w0 + v1 * w1 + v2 * w2 + x * w3;
         v0 = v1;
@@ -584,7 +610,7 @@ __global__ void __launch_bounds__(128) k_conv_seq(float* hist, const float* qkv,
         }
         h[(size_t) t * C + c] = y;
     }
-    if (!write) return;   // a verify window: the history is commit()'s to move
+    if (!write || tiled) return;   // verify: commit owns it; tile zero already stored it
     hist[c * 3] = v0;
     hist[c * 3 + 1] = v1;
     hist[c * 3 + 2] = v2;
@@ -655,7 +681,7 @@ __global__ void __launch_bounds__(512) k_gdn_seq(float* state, const float* h, i
 /// each with 16 row groups of 8 rows (512 threads, 8 state values per thread in registers).  Writes the raw outputs
 /// o (T, HV * 128); k_gdn_norm applies the SiLU-gated RMS norm.  grid (HV, kGdnColGroups), block (32, 16).
 constexpr int kGdnColGroups = 4;
-__global__ void __launch_bounds__(512) k_gdn_seq_cols(float* state, const float* h, int C, const float* gate,
+__global__ void __launch_bounds__(512) k_gdn_seq_cols_old(float* state, const float* h, int C, const float* gate,
                                                       const float* beta, float* o_raw, int h_k, int h_v, int T) {
     constexpr int S = 128, NC = S / kGdnColGroups, RG = 16, RPG = S / RG;
     __shared__ float sk[S], sq[S];
@@ -697,6 +723,72 @@ __global__ void __launch_bounds__(512) k_gdn_seq_cols(float* state, const float*
             for (int i = 0; i < RG; ++i) oc += red_o[i][cl];
             o_raw[(size_t) t * h_v * S + head * S + col] = oc * rsqrtf((float) S);
         }
+    }
+#pragma unroll
+    for (int r = 0; r < RPG; ++r) base[r * row_stride] = sv[r];
+}
+__global__ void __launch_bounds__(512) k_gdn_seq_cols(float* state, const float* h, int C, const float* gate,
+                                                      const float* beta, float* o_raw, int h_k, int h_v, int T) {
+    constexpr int S = 128, NC = S / kGdnColGroups, RG = 16, RPG = S / RG;
+    // two barriers per token (was three): sk / sq are double-buffered, and the output sum of token t is done after token t + 1's first
+    // barrier, off the chain of the recurrence (red_o is read between that barrier and the next one, written after it)
+    __shared__ float sk[2][S], sq[2][S];
+    __shared__ float red_kv[RG][NC];
+    __shared__ float red_o[RG][NC];
+    const int head = blockIdx.x, cl = threadIdx.x, rg = threadIdx.y, tid = rg * NC + cl;
+    const int col = blockIdx.y * NC + cl;
+    const int qh = head % h_k;
+    float sv[RPG];
+    float* base = state + ((size_t) (rg * RPG) * h_v + head) * S + col;
+    const size_t row_stride = (size_t) h_v * S;
+#pragma unroll
+    for (int r = 0; r < RPG; ++r) sv[r] = base[r * row_stride];
+    // the next token's inputs are loaded while this one is computed (the loads were the head of every iteration)
+    float nsk = 0.0f, nsq = 0.0f, nvv = 0.0f, ngate = 0.0f, nbeta = 0.0f;
+    auto load = [&](int t) {
+        const float* ht = h + (size_t) t * C;
+        if (tid < S) { nsk = ht[h_k * S + qh * S + tid]; nsq = ht[qh * S + tid]; }
+        nvv = ht[2 * h_k * S + head * S + col];
+        ngate = gate[(size_t) t * h_v + head];
+        nbeta = beta[(size_t) t * h_v + head];
+    };
+    if (T > 0) load(0);
+    for (int t = 0; t < T; ++t) {
+        const int par = t & 1;
+        if (tid < S) { sk[par][tid] = nsk; sq[par][tid] = nsq; }
+        const float vcur = nvv, gcur = ngate, bcur = nbeta;
+        if (t + 1 < T) load(t + 1);
+        __syncthreads();
+        if (t > 0 && rg == 0) {   // token t - 1's output
+            float oc = 0.0f;
+#pragma unroll
+            for (int i = 0; i < RG; ++i) oc += red_o[i][cl];
+            o_raw[(size_t) (t - 1) * h_v * S + head * S + col] = oc * rsqrtf((float) S);
+        }
+        const float g = __expf(gcur);
+        float kv = 0.0f;
+#pragma unroll
+        for (int r = 0; r < RPG; ++r) kv = fmaf(sv[r], sk[par][rg * RPG + r], kv);
+        red_kv[rg][cl] = kv;
+        __syncthreads();
+        float kv_col = 0.0f;
+#pragma unroll
+        for (int i = 0; i < RG; ++i) kv_col += red_kv[i][cl];
+        const float delta = (vcur - g * kv_col) * bcur;
+        float o = 0.0f;
+#pragma unroll
+        for (int r = 0; r < RPG; ++r) {
+            sv[r] = fmaf(g, sv[r], sk[par][rg * RPG + r] * delta);
+            o = fmaf(sv[r], sq[par][rg * RPG + r], o);
+        }
+        red_o[rg][cl] = o;
+    }
+    __syncthreads();
+    if (T > 0 && rg == 0) {   // the last token's output
+        float oc = 0.0f;
+#pragma unroll
+        for (int i = 0; i < RG; ++i) oc += red_o[i][cl];
+        o_raw[(size_t) (T - 1) * h_v * S + head * S + col] = oc * rsqrtf((float) S);
     }
 #pragma unroll
     for (int r = 0; r < RPG; ++r) base[r * row_stride] = sv[r];
@@ -1336,6 +1428,7 @@ struct Engine {
 
     /// The recurrent state and the cache to a fresh sequence.
     void reset() {
+        xq_ready = xq_post = grouped_by_route = false;
         const auto& g = m->g;
         for (size_t l = 0; l < conv.size(); ++l) {
             if (conv[l]) CK(cudaMemsetAsync(conv[l], 0, (size_t) g.ssm_conv_channels * (g.ssm_d_conv - 1) * 4, st));
@@ -1427,8 +1520,297 @@ struct Engine {
     }
     /// x [T][n] -> its q8_1 image (T contiguous columns: one vector of T * n), for every matrix that reads x.
     void quant(const float* xin, int n, int T, void* q) { K::native_quantize_q8_1(xin, q, n * T, 1, st); }
+    // ---- decode kernels of this engine (q36_kernels.cuh), each the old kernel's bits (STRATA_Q36_VERIFY=1 compares)
+    bool fast_k = std::getenv("STRATA_Q36_OLD_KERNELS") == nullptr;
+    bool verify_k = std::getenv("STRATA_Q36_VERIFY") != nullptr;
+    float* vbuf = nullptr;                       // verify scratch
+    long long v_calls = 0, v_bad = 0;
+    std::map<std::string, long long> v_by;   // mismatches per check
+    void verify_cmp(const char* what, const float* a, const float* b, size_t n, const std::string& tag = "") {
+        CK(cudaStreamSynchronize(st));
+        std::vector<float> ha(n), hb(n);
+        CK(cudaMemcpy(ha.data(), a, n * 4, cudaMemcpyDeviceToHost));
+        CK(cudaMemcpy(hb.data(), b, n * 4, cudaMemcpyDeviceToHost));
+        ++v_calls;
+        if (std::memcmp(ha.data(), hb.data(), n * 4) != 0) {
+            ++v_bad;
+            size_t i = 0;
+            while (i < n && std::memcmp(&ha[i], &hb[i], 4) == 0) ++i;
+            if (++v_by[what] <= 3)
+                std::fprintf(stderr, "tinystrata VERIFY MISMATCH %s%s: first at %zu of %zu: new %g old %g (bits %08x %08x)\n", what,
+                             tag.c_str(), i, n, (double) ha[i], (double) hb[i], *(unsigned*) &ha[i], *(unsigned*) &hb[i]);
+        }
+    }
+    /// A Q8_0 matrix that is not on the packed decode kernel (the shared expert, attention k / v: fewer than 2048
+    /// rows) for T <= 8 columns: one warp per row (q36k::k_q8_rows) in place of the 4-warp block of
+    /// native_small_mmvq_kernel; the same bits.
+    bool q8_small(const Mat& w, const void* q, float* out, int T) {
+        if (!fast_k || w.type != 8 || T < 1 || T > 8 || w.n_in <= 0 || w.n_out <= 0 || w.n_in % 32 != 0) return false;
+        if (K::native_q8_0_packed_eligible(w.n_in, w.n_out) && K::native_q8_0_packed_enabled()) return false;
+        const int nb = w.n_in / 32;
+        if (nb > 64) return false;
+        const void* wp = w.d;
+        const half* dpl = nullptr;
+        const int NJ = nb <= 32 ? 1 : 2;
+#define Q36_Q8(NCV)                                                                                          \
+    case NCV:                                                                                                \
+        if (NJ == 1) q36k::launch_q8_rows<NCV, 1, false>(wp, dpl, q, out, nb, w.n_out, st);                  \
+        else q36k::launch_q8_rows<NCV, 2, false>(wp, dpl, q, out, nb, w.n_out, st);                          \
+        break;
+        switch (T) { Q36_Q8(1) Q36_Q8(2) Q36_Q8(3) Q36_Q8(4) Q36_Q8(5) Q36_Q8(6) Q36_Q8(7) Q36_Q8(8) }
+#undef Q36_Q8
+        if (verify_k) {
+            if (!vbuf) CK(cudaMalloc((void**) &vbuf, (size_t) 8 * std::max<int64_t>(16384, std::max(m->g.n_vocab, m->g.n_ff_shexp)) * 4));
+            const size_t qb = K::native_q8_1_bytes(w.n_in, 1);
+            for (int c0 = 0; c0 < T; c0 += 8) {
+                const int nc = std::min(8, T - c0);
+                K::native_mmvq(w.type, w.d, (const char*) q + (size_t) c0 * qb, vbuf + (size_t) c0 * w.n_out, w.n_in, w.n_out,
+                               nc, st);
+            }
+            verify_cmp("q8_small", out, vbuf, (size_t) T * w.n_out,
+                       " n_in " + std::to_string(w.n_in) + " n_out " + std::to_string(w.n_out) + " T " + std::to_string(T));
+        }
+        return true;
+    }
+    // ---- the q8_1 images produced by the norm kernels themselves (fast_k, T <= kGemmT): xq_ready = the layer's input h is
+    // already quantized in xq (k_moe_out_small of the layer before), xq_post = the MoE input h is (k_add_rms_q)
+    bool xq_ready = false, xq_post = false;
+    void* vq = nullptr;
+    void verify_q8(const char* what, const float* hsrc, int T, const std::string& tag) {
+        const int N = (int) m->g.n_embd;
+        const size_t qb = K::native_q8_1_bytes(N, 1);
+        if (!vq) CK(cudaMalloc(&vq, K::native_q8_1_bytes((int) std::max(m->g.n_embd, m->g.n_ff_shexp), 1) * 8));
+        K::native_quantize_q8_1(hsrc, vq, N * T, 1, st);
+        const long long before = v_bad;
+        verify_cmp(what, (const float*) xq, (const float*) vq, qb * (size_t) T / 4, tag);
+        if (v_bad != before && std::getenv("STRATA_Q36_VDEBUG") && v_by[what] <= 2) {   // a mismatching block, on the host
+            std::vector<uint8_t> a(qb * (size_t) T), b(qb * (size_t) T);
+            std::vector<float> hv((size_t) N * T);
+            CK(cudaMemcpy(a.data(), xq, a.size(), cudaMemcpyDeviceToHost));
+            CK(cudaMemcpy(b.data(), vq, b.size(), cudaMemcpyDeviceToHost));
+            CK(cudaMemcpy(hv.data(), hsrc, hv.size() * 4, cudaMemcpyDeviceToHost));
+            for (size_t o = 0; o < a.size(); o += 36)
+                if (std::memcmp(&a[o], &b[o], 36) != 0) {
+                    const size_t blk = o / 36;
+                    float v[32], t[32];
+                    for (int l = 0; l < 32; ++l) v[l] = t[l] = hv[blk * 32 + (size_t) l];
+                    for (int off = 16; off > 0; off >>= 1) {   // the xor butterfly, lane by lane
+                        float u[32];
+                        for (int l = 0; l < 32; ++l) u[l] = t[l] + t[l ^ off];
+                        std::memcpy(t, u, sizeof(u));
+                    }
+                    unsigned ds_a, ds_b;
+                    std::memcpy(&ds_a, &a[o], 4);
+                    std::memcpy(&ds_b, &b[o], 4);
+                    std::fprintf(stderr, "VDEBUG block %zu: ds new %08x old %08x, qs bytes %s, cpu butterfly sum %.9g (half %04x)\n",
+                                 blk, ds_a, ds_b, std::memcmp(&a[o + 4], &b[o + 4], 32) == 0 ? "equal" : "DIFFER", (double) t[0],
+                                 (unsigned) __half_as_ushort(__float2half(t[0])));
+                    break;
+                }
+        }
+    }
+    void prep_in(int T) {
+        if (xq_ready && T <= kGemmT) {
+            xq_ready = false;
+            return;
+        }
+        xq_ready = false;
+        prep(h, (int) m->g.n_embd, T, xq);
+    }
+    void add_rms_post(const Layer& L, int T) {
+        const int N = (int) m->g.n_embd;
+        xq_post = false;
+        if (fast_k && T >= 1 && T <= kGemmT && N > 0 && N % 32 == 0) {
+            if (verify_k) {
+                if (!vx_) {
+                    CK(cudaMalloc((void**) &vx_, (size_t) 8 * m->g.n_embd * 4));
+                    CK(cudaMalloc((void**) &vh_, (size_t) 8 * m->g.n_embd * 4));
+                }
+                CK(cudaMemcpyAsync(vx_, x, (size_t) T * N * 4, cudaMemcpyDeviceToDevice, st));
+                k_add_rms<<<T, kThreads, 0, st>>>(vx_, y, L.post_norm, vh_, N, m->eps);
+            }
+            q36k::k_add_rms_q<<<T, 256, 0, st>>>(x, y, L.post_norm, h, (q36k::QB*) xq, N, m->eps);
+            xq_post = true;
+            if (verify_k) {
+                verify_cmp("add_rms x", x, vx_, (size_t) T * N, " T " + std::to_string(T));
+                verify_cmp("add_rms h", h, vh_, (size_t) T * N, " T " + std::to_string(T));
+                verify_q8("add_rms q8", h, T, " T " + std::to_string(T));
+            }
+            return;
+        }
+        k_add_rms<<<T, kThreads, 0, st>>>(x, y, L.post_norm, h, N, m->eps);
+    }
+    /// The shared expert's gate + up + SwiGLU + q8_1 image (into q8) for T <= 4 rows in one launch (q36k::k_sh_gu), else false.
+    bool shared_gu(const Layer& L, int T) {
+        const int FS = (int) m->g.n_ff_shexp;
+        const Mat &a = L.sh_gate, &b = L.sh_up;
+        if (!fast_k || T < 1 || T > 4 || FS <= 0 || a.type != 8 || b.type != 8 || a.n_in != b.n_in || a.n_out != FS || b.n_out != FS ||
+            a.n_in % 32 != 0 || a.n_in / 32 > 64 || a.n_in / 32 <= 32 || FS % 32 != 0 ||
+            (K::native_q8_0_packed_eligible(a.n_in, a.n_out) && K::native_q8_0_packed_enabled()))
+            return false;
+        const int nb = a.n_in / 32;
+        const dim3 grid((unsigned) (FS / 32));
+        const bool pkd = false;
+        const uint8_t* wa = a.d;
+        const uint8_t* wb = b.d;
+        const half* da = nullptr;
+        const half* db = nullptr;
+#define Q36_SH(NCV)                                                                                          \
+    case NCV:                                                                                                \
+        if (pkd)                                                                                             \
+            q36k::k_sh_gu<NCV, 2, true><<<grid, 1024, 0, st>>>(wa, da, wb, db, (const q36k::QB*) xq,        \
+                                                               (q36k::QB*) q8, nb, FS);                      \
+        else                                                                                                 \
+            q36k::k_sh_gu<NCV, 2, false><<<grid, 1024, 0, st>>>(wa, nullptr, wb, nullptr, (const q36k::QB*) xq, \
+                                                                (q36k::QB*) q8, nb, FS);                     \
+        break;
+        switch (T) { Q36_SH(1) Q36_SH(2) Q36_SH(3) Q36_SH(4) }
+#undef Q36_SH
+        if (verify_k) {
+            if (!vbuf) CK(cudaMalloc((void**) &vbuf, (size_t) 8 * std::max<int64_t>(16384, std::max(m->g.n_vocab, m->g.n_ff_shexp)) * 4));
+            if (!vq) CK(cudaMalloc(&vq, K::native_q8_1_bytes((int) std::max(m->g.n_embd, m->g.n_ff_shexp), 1) * 8));
+            float* vg = vbuf;
+            float* vu = vbuf + (size_t) 8 * FS;
+            mmq_ref(a, xq, vg, T);
+            mmq_ref(b, xq, vu, T);
+            K::native_swiglu_quantize_q8_1(vg, vu, vq, FS, T, st);
+            verify_cmp("shared_gu q8", (const float*) q8, (const float*) vq, K::native_q8_1_bytes(FS, 1) * (size_t) T / 4,
+                       " T " + std::to_string(T));
+        }
+        return true;
+    }
+    /// The old products (native MMVQ), for the checks.
+    void mmq_ref(const Mat& w, const void* q, float* out, int T) {
+        const size_t qb = K::native_q8_1_bytes(w.n_in, 1);
+        for (int c0 = 0; c0 < T; c0 += 8) {
+            const int nc = std::min(8, T - c0);
+            K::native_mmvq(w.type, w.d, (const char*) q + (size_t) c0 * qb, out + (size_t) c0 * w.n_out, w.n_in, w.n_out, nc, st);
+        }
+    }
+    void group_old(const Layer& L, const int32_t* slot_of, int T, unsigned long long* o_ptr, int32_t* o_start, int32_t* o_ng,
+                   int32_t* o_dst, int32_t* o_tok) {
+        const int Kp = (int) m->top_k, n_ent = T * Kp;
+        if (slot_of)
+            k_group_hy<<<1, kThreads, 0, st>>>(ids, n_ent, Kp, (int) m->g.n_expert, slot_of, L.blobs, L.stride, o_ptr, o_start,
+                                               o_ng, o_dst, o_tok);
+        else
+            k_group<<<1, kThreads, 0, st>>>(ids, n_ent, Kp, (int) m->g.n_expert, L.blobs, L.stride, o_ptr, o_start, o_ng, o_dst,
+                                            o_tok);
+    }
+    /// VERIFY: the old grouping of the current `ids` into scratch, compared with grp_ptr / grp_start / n_groups / ent_dst / ent_tok.
+    void group_verify(const Layer& L, const int32_t* slot_of, int T) {
+        if (!vgrp) CK(cudaMalloc((void**) &vgrp, 2048));
+        unsigned long long* o_ptr = (unsigned long long*) vgrp;
+        int32_t* o_start = (int32_t*) (o_ptr + 65);
+        int32_t* o_ng = o_start + 66;
+        int32_t* o_dst = o_ng + 2;
+        int32_t* o_tok = o_dst + 64;
+        group_old(L, slot_of, T, o_ptr, o_start, o_ng, o_dst, o_tok);
+        CK(cudaStreamSynchronize(st));
+        int nn = 0, no = 0;
+        CK(cudaMemcpy(&nn, n_groups, 4, cudaMemcpyDeviceToHost));
+        CK(cudaMemcpy(&no, o_ng, 4, cudaMemcpyDeviceToHost));
+        ++v_calls;
+        bool bad = nn != no;
+        if (!bad) {
+            std::vector<unsigned long long> a((size_t) nn + 1), b((size_t) nn + 1);
+            std::vector<int32_t> sa((size_t) nn + 1), sb((size_t) nn + 1), da(64), db(64), ta(64), tb(64);
+            CK(cudaMemcpy(a.data(), grp_ptr, (size_t) nn * 8, cudaMemcpyDeviceToHost));
+            CK(cudaMemcpy(b.data(), o_ptr, (size_t) nn * 8, cudaMemcpyDeviceToHost));
+            CK(cudaMemcpy(sa.data(), grp_start, ((size_t) nn + 1) * 4, cudaMemcpyDeviceToHost));
+            CK(cudaMemcpy(sb.data(), o_start, ((size_t) nn + 1) * 4, cudaMemcpyDeviceToHost));
+            const int tot = sa[(size_t) nn];
+            CK(cudaMemcpy(da.data(), ent_dst, (size_t) tot * 4, cudaMemcpyDeviceToHost));
+            CK(cudaMemcpy(db.data(), o_dst, (size_t) tot * 4, cudaMemcpyDeviceToHost));
+            CK(cudaMemcpy(ta.data(), ent_tok, (size_t) tot * 4, cudaMemcpyDeviceToHost));
+            CK(cudaMemcpy(tb.data(), o_tok, (size_t) tot * 4, cudaMemcpyDeviceToHost));
+            bad = std::memcmp(a.data(), b.data(), (size_t) nn * 8) != 0 ||
+                  std::memcmp(sa.data(), sb.data(), ((size_t) nn + 1) * 4) != 0 ||
+                  std::memcmp(da.data(), db.data(), (size_t) tot * 4) != 0 ||
+                  std::memcmp(ta.data(), tb.data(), (size_t) tot * 4) != 0;
+        }
+        if (bad) {
+            ++v_bad;
+            if (v_bad <= 20) std::fprintf(stderr, "tinystrata VERIFY MISMATCH group (T %d, groups %d vs %d)\n", T, nn, no);
+        }
+    }
+    bool grouped_by_route = false;   // route_group already filled the group arrays of this layer
+    /// The router's top-k and the grouping of the picks in one launch (T <= 8, 256 experts, 8 picks); the logits are in logits_r.
+    /// `slot_of`: the hybrid mode's slot table (null: every expert resident).  Returns false when the old kernels must run.
+    bool route_group(const Layer& L, const int32_t* slot_of, int T, int ld) {
+        const int Kp = (int) m->top_k;
+        grouped_by_route = false;
+        if (!fast_k || T < 1 || T > 8 || m->g.n_expert != 256 || Kp != 8) return false;
+        if (slot_of)
+            q36k::k_route_group<true><<<1, dim3(32, 8), 0, st>>>(logits_r, ids, ewts, T, ld, slot_of, L.blobs, L.stride, grp_ptr,
+                                                                 grp_start, n_groups, ent_dst, ent_tok);
+        else
+            q36k::k_route_group<false><<<1, dim3(32, 8), 0, st>>>(logits_r, ids, ewts, T, ld, nullptr, L.blobs, L.stride, grp_ptr,
+                                                                  grp_start, n_groups, ent_dst, ent_tok);
+        grouped_by_route = true;
+        if (verify_k) {
+            // the old top-k into scratch, the ids / weights compared, then the old grouping of the new ids
+            if (!vbuf) CK(cudaMalloc((void**) &vbuf, (size_t) 8 * std::max<int64_t>(16384, std::max(m->g.n_vocab, m->g.n_ff_shexp)) * 4));
+            int32_t* vid = (int32_t*) (vbuf + 8 * 8192);
+            float* vw = vbuf + 8 * 8192 + 64;
+            K::native_router_topk(logits_r, vid, vw, 256, Kp, T, st);
+            verify_cmp("route ids", (const float*) ids, (const float*) vid, (size_t) T * Kp, " T " + std::to_string(T));
+            verify_cmp("route weights", ewts, vw, (size_t) T * Kp, " T " + std::to_string(T));
+            group_verify(L, slot_of, T);
+        }
+        return true;
+    }
+    /// The routed entries of T rows grouped per expert (k_group; with slot_of the hybrid mode's k_group_hy).
+    void group_entries(const Layer& L, const int32_t* slot_of, int T) {
+        if (grouped_by_route) {   // route_group did it
+            grouped_by_route = false;
+            return;
+        }
+        const int Kp = (int) m->top_k, n_ent = T * Kp;
+        if (fast_k && T > 0 && Kp > 0 && n_ent <= 64) {
+            if (slot_of)
+                q36k::k_group_small<true><<<1, 64, 0, st>>>(ids, n_ent, Kp, slot_of, L.blobs, L.stride, grp_ptr, grp_start,
+                                                            n_groups, ent_dst, ent_tok);
+            else
+                q36k::k_group_small<false><<<1, 64, 0, st>>>(ids, n_ent, Kp, nullptr, L.blobs, L.stride, grp_ptr, grp_start,
+                                                             n_groups, ent_dst, ent_tok);
+            if (verify_k) group_verify(L, slot_of, T);
+            return;
+        }
+        group_old(L, slot_of, T, grp_ptr, grp_start, n_groups, ent_dst, ent_tok);
+    }
+    void* vgrp = nullptr;
+    float *vx_ = nullptr, *vh_ = nullptr;
+    /// The MoE block's end (k_moe_out) for T rows.
+    void moe_end(int T, const int32_t* prow, const float* shared, const float* sgate, const float* wn, float* hout, int sgs = 1) {
+        const int N = (int) m->g.n_embd, Kp = (int) m->top_k;
+        const bool small = fast_k && T >= 1 && T <= 8 && N > 0 && N <= 2048 && N % 256 == 0 && Kp > 0 && Kp <= 15;
+        if (small && verify_k) {
+            if (!vx_) {
+                CK(cudaMalloc((void**) &vx_, (size_t) 8 * m->g.n_embd * 4));
+                CK(cudaMalloc((void**) &vh_, (size_t) 8 * m->g.n_embd * 4));
+            }
+            CK(cudaMemcpyAsync(vx_, x, (size_t) T * N * 4, cudaMemcpyDeviceToDevice, st));
+            k_moe_out<<<T, kThreads, 0, st>>>(vx_, eparts, prow, ewts, Kp, shared, sgate, sgs, wn, vh_, N, m->eps);
+        }
+        if (small) {
+            const bool mkq = wn != nullptr && hout == h;   // the next layer's input, quantized here
+            q36k::k_moe_out_small<<<T, 1024, 0, st>>>(x, eparts, prow, ewts, Kp, shared, sgate, sgs, wn, hout, N, m->eps,
+                                                      mkq ? (q36k::QB*) xq : nullptr);
+            xq_ready = mkq;
+            if (verify_k) {
+                if (mkq) verify_q8("moe_out q8", hout, T, " T " + std::to_string(T));
+                verify_cmp("moe_out x", x, vx_, (size_t) T * N, " T " + std::to_string(T));
+                if (wn) verify_cmp("moe_out h", hout, vh_, (size_t) T * N, " T " + std::to_string(T));
+            }
+            return;
+        }
+        xq_ready = false;
+        k_moe_out<<<T, kThreads, 0, st>>>(x, eparts, prow, ewts, Kp, shared, sgate, sgs, wn, hout, N, m->eps);
+    }
     /// y [T][n_out] = W x from x's q8_1 image, 8 columns per launch.
     void mmq(const Mat& w, const void* q, float* out, int T) {
+        if (q8_small(w, q, out, T)) return;
         const size_t qb = K::native_q8_1_bytes(w.n_in, 1);
         for (int c0 = 0; c0 < T; c0 += 8) {
             const int nc = std::min(8, T - c0);
@@ -1452,7 +1834,7 @@ struct Engine {
             float* hc_b = verify ? v_hc[li] : hc;
             float* al_b = verify ? v_alpha[li] : alpha;
             float* be_b = verify ? v_beta[li] : beta;
-            prep(h, N, T, xq);
+            prep_in(T);
             apply(L.qkv, xq, qkv_b, T);
             apply(L.zg, xq, z, T);
             if (T <= kGemmT) {
@@ -1468,10 +1850,15 @@ struct Engine {
             // fused single-token kernels are not used here: fused_gdn_conv_l2's 4-tap sum contracts into FMAs
             // differently from k_conv_seq's, a 1-ulp difference in h that the Q8_1 activation rounding can turn into a
             // flipped near-tie later; with them the KL is the same, 1.05x / 0.81x the floor, but MTP would not be exact.)
-            k_conv_seq<<<C / 128, 128, 0, st>>>(conv[li], qkv_b, L.conv, hc_b, C, 2 * HK, m->eps, T, !verify);
+            const int tiles = (fast_k && T > kGemmT && !verify) ? (T + kConvTile - 1) / kConvTile : 1;
+            k_conv_seq<<<dim3(C / 128, tiles), 128, 0, st>>>(conv[li], qkv_b, L.conv, hc_b, C, 2 * HK, m->eps, T, !verify);
             if (T > kGemmT && !verify) {   // a prompt chunk: the column-split delta rule, then the norm
-                k_gdn_seq_cols<<<dim3(HV, kGdnColGroups), dim3(128 / kGdnColGroups, 16), 0, st>>>(S[li], hc_b, C, al_b,
-                                                                                                  be_b, gdn_y, HK, HV, T);
+                if (fast_k)
+                    k_gdn_seq_cols<<<dim3(HV, kGdnColGroups), dim3(128 / kGdnColGroups, 16), 0, st>>>(S[li], hc_b, C, al_b,
+                                                                                                      be_b, gdn_y, HK, HV, T);
+                else
+                    k_gdn_seq_cols_old<<<dim3(HV, kGdnColGroups), dim3(128 / kGdnColGroups, 16), 0, st>>>(S[li], hc_b, C, al_b,
+                                                                                                          be_b, gdn_y, HK, HV, T);
                 k_gdn_norm<<<dim3(HV, T), 128, 0, st>>>(gdn_y, z, L.ssm_norm, m->eps, gdn_y, HV);
             } else {   // decode, verify windows and commits: one kernel, so a window's rows are a decode step's rows
                 k_gdn_seq<<<HV, dim3(128, 4), 0, st>>>(S[li], hc_b, C, al_b, be_b, z, L.ssm_norm, m->eps, gdn_y, HK, HV,
@@ -1479,7 +1866,7 @@ struct Engine {
             }
             mm(L.ssm_out, gdn_y, y, T);
         } else {
-            prep(h, N, T, xq);
+            prep_in(T);
             apply(L.wq, xq, qg, T);
             apply(L.wk, xq, kx, T);
             apply(L.wv, xq, vx, T);
@@ -1568,17 +1955,23 @@ struct Engine {
             else attention.template operator()<0>();
             mm(L.wo, att, y, T);
         }
-        k_add_rms<<<T, kThreads, 0, st>>>(x, y, L.post_norm, h, N, m->eps);
+        add_rms_post(L, T);
         // routed experts (one token: the router and the shared expert's gate in one product, the gate its last row)
         const bool one = T == 1;
-        if (one) f32mm(L.router_ext, h, logits_r, N, (int) g.n_expert + 1, 1);
+        // Decode batches append the shared expert's gate, using the same per-row F32 dot products.
+        const bool ext = one || (fast_k && std::getenv("STRATA_Q36_NO_EXT") == nullptr && !verify_k &&
+                                 T >= 1 && T <= kGemmT && g.n_expert == 256 && Kp == 8);
+        if (ext) f32mm(L.router_ext, h, logits_r, N, (int) g.n_expert + 1, T);
         else f32mm(L.router, h, logits_r, N, (int) g.n_expert, T);
-        K::native_router_topk(logits_r, ids, ewts, (int) g.n_expert, Kp, T, st);
-        const int64_t n_ent = (int64_t) T * Kp;
-        const int32_t* prow = nullptr;
         // the hybrid rows path: a batch of up to hybrid_t rows; when only the MTP block is hybrid, its every batch
         // (its prompt pass too: no staging buffers then)
         const bool hy_rows = lhy(li) && (T <= hybrid_t || !main_hybrid);
+        const bool mmq_rows = !hy_rows && T > kGemmT && use_mmq;
+        if (!(!mmq_rows && route_group(L, hy_rows ? hy[li].slot_of_d : nullptr, T,
+                                      ext ? (int) g.n_expert + 1 : (int) g.n_expert)))
+            K::native_router_topk(logits_r, ids, ewts, (int) g.n_expert, Kp, T, st);
+        const int64_t n_ent = (int64_t) T * Kp;
+        const int32_t* prow = nullptr;
         if (hy_rows) {
             moe_hybrid_gpu(L, li, T);
         } else if (T > kGemmT && use_mmq) {
@@ -1613,34 +2006,37 @@ struct Engine {
             if (lhy(li)) stream_done();
             prow = rinv;
         } else {
-            k_group<<<1, kThreads, 0, st>>>(ids, (int) n_ent, Kp, (int) g.n_expert, L.blobs, L.stride, grp_ptr, grp_start,
-                                            n_groups, ent_dst, ent_tok);
-            quant(h, N, T, xq);   // the experts' and the shared expert's input
+            group_entries(L, nullptr, T);
+            if (!xq_post) quant(h, N, T, xq);   // the experts' and the shared expert's input
             K::native_expert_grouped(L.L, grp_ptr, grp_start, n_groups, ent_dst, ent_tok,
                                      std::min<int64_t>(n_ent, g.n_expert), n_ent, xq, escr, eparts, st);
         }
         // the shared expert, scaled by sigmoid(w . h)
         if (T > kGemmT) k_to_f16<<<grid1((int64_t) N * T), kThreads, 0, st>>>(h, x16, (int64_t) N * T);
-        apply(L.sh_gate, xq, sg, T);
-        apply(L.sh_up, xq, su, T);
-        if (T <= kGemmT) {   // SwiGLU and its q8_1 image in one launch
-            K::native_swiglu_quantize_q8_1(sg, su, q8, FS, T, st);
+        if (T <= kGemmT) {
+            if (!shared_gu(L, T)) {
+                apply(L.sh_gate, xq, sg, T);
+                apply(L.sh_up, xq, su, T);
+                K::native_swiglu_quantize_q8_1(sg, su, q8, FS, T, st);
+            }
             mmq(L.sh_down, q8, sy, T);
         } else {
+            apply(L.sh_gate, xq, sg, T);
+            apply(L.sh_up, xq, su, T);
             k_swiglu<<<grid1((int64_t) T * FS), kThreads, 0, st>>>(sg, su, shh, (int64_t) T * FS);
             mm(L.sh_down, shh, sy, T);
         }
-        if (!one) f32mm(L.sh_gate_inp, h, sgate, N, 1, T);
+        if (!ext) f32mm(L.sh_gate_inp, h, sgate, N, 1, T);
         if (hy_rows) moe_hybrid_cpu(li, T);   // the CPU pool's experts (while the GPU runs the rest), merged
         // the combine, the shared expert's gate, the residual add and the next norm in one launch
-        k_moe_out<<<T, kThreads, 0, st>>>(x, eparts, prow, ewts, Kp, sy, one ? logits_r + g.n_expert : sgate, 1, wn, hout,
-                                          N, m->eps);
+        moe_end(T, prow, sy, ext ? logits_r + g.n_expert : sgate, wn, hout, ext ? (int) g.n_expert + 1 : 1);
     }
 
     /// The main model over T rows (device `tok`, positions p0 .. p0 + T - 1, also at *pos0): hmain gets every row's
     /// final normed hidden; `heads` rows from the end get logits (rows [T - heads, T): logits row r - (T - heads)) and
     /// their greedy picks (`pick`).  `verify`: a verify window (the GDN state left for commit()).
     void forward(int T, int64_t p0, int heads, bool graph_mode, bool verify) {
+        xq_ready = false;
         const auto& g = m->g;
         const int N = (int) g.n_embd;
         if (main_hybrid && T > hybrid_t && use_mmq) {
@@ -1671,6 +2067,7 @@ struct Engine {
     /// seeds[t] (the main model's normed hidden of the position before, or the block's own for a chained draft);
     /// hmtp gets each row's normed output.  `draft`: logits of the last row and its pick (`pick_m`).
     void forward_mtp(int T, int64_t p0, const float* seeds, bool draft, bool graph_mode) {
+        xq_ready = false;
         const auto& g = m->g;
         const int N = (int) g.n_embd;
         if (main_hybrid && lhy(m->layers.size()) && T > hybrid_t && use_mmq) stream_begin({(int) m->layers.size()});
@@ -1775,9 +2172,8 @@ struct Engine {
             CK(cudaMemcpyAsync(h_h, h, (size_t) T * N * 4, cudaMemcpyDeviceToHost, st));
             CK(cudaEventRecord(ev_route, st));
         }
-        k_group_hy<<<1, kThreads, 0, st>>>(ids, (int) n_ent, Kp, (int) g.n_expert, hy[li].slot_of_d, L.blobs, L.stride,
-                                           grp_ptr, grp_start, n_groups, ent_dst, ent_tok);
-        quant(h, N, T, xq);   // the experts' and the shared expert's input
+        group_entries(L, hy[li].slot_of_d, T);
+        if (!xq_post) quant(h, N, T, xq);   // the experts' and the shared expert's input
         K::native_expert_grouped(L.L, grp_ptr, grp_start, n_groups, ent_dst, ent_tok,
                                  std::min<int64_t>(n_ent, g.n_expert), n_ent, xq, escr, eparts, st);
     }
@@ -3087,6 +3483,10 @@ int strata::qwen35::run(int argc, char** argv) {
     struct Report {
         Engine& E;
         ~Report() {
+            if (E.verify_k) std::fprintf(stderr, "tinystrata VERIFY: %lld comparisons, %lld mismatches\n", E.v_calls, E.v_bad);
+            if (E.verify_k)
+                for (const auto& kv : E.v_by)
+                    std::fprintf(stderr, "tinystrata VERIFY   %s: %lld mismatches\n", kv.first.c_str(), kv.second);
             if (!E.m->hybrid) return;
             const long long n = E.hy_cpu + E.hy_gpu;
             std::fprintf(stderr, "tinystrata: hybrid experts: %lld of %lld batch entries on the GPU (%.1f%%), %lld on the "
