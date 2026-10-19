@@ -38,7 +38,7 @@
 #include <cublas_v2.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
-#if defined(_WIN32) && !defined(__HIPCC__)
+#if defined(_WIN32) && !defined(STRATA_USE_HIP) && !defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
 #include <windows.h>
 #endif
 #if defined(STRATA_Q36_CPU_POOL) && !defined(__HIPCC__)
@@ -95,12 +95,14 @@ constexpr int kThreads = 256;
 constexpr int kConvTile = 16;     // tokens per block of the prompt conv
 constexpr int kChunkCells = 256;   // attention split-K chunk
 
-// On Windows/WDDM cudaMemGetInfo can describe this process's allocation budget rather than the card's global
-// physical headroom. Bound automatic placement by both. NVML ships with the NVIDIA driver; resolve the small C ABI
-// dynamically so CUDA installations need neither an NVML SDK nor an import library. Never load a DLL from the model
-// directory, working directory or PATH, and select the same PCI adapter as the active CUDA device.
-#if defined(_WIN32) && !defined(__HIPCC__)
-struct NvmlMemory {
+// WDDM can satisfy CUDA allocations with pageable GPU memory. cudaMemGetInfo is
+// still an allocation estimate, but is not a promise that the whole allocation
+// will remain in dedicated VRAM. Automatic expert placement needs the latter:
+// bound the estimate by the active adapter's device-wide dedicated-memory free
+// count. NVML is supplied by the NVIDIA driver; neither its SDK nor an import
+// library is required. An unavailable query keeps the existing CUDA estimate.
+#if defined(_WIN32) && !defined(STRATA_USE_HIP) && !defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+struct ResidentVram {
     struct Memory { unsigned long long total, free, used; };
     using Init = int (*)();
     using Shutdown = int (*)();
@@ -108,49 +110,68 @@ struct NvmlMemory {
     using MemoryInfo = int (*)(void*, Memory*);
     HMODULE module = nullptr;
     Shutdown shutdown = nullptr;
+    HandleByPci handle_by_pci = nullptr;
     MemoryInfo memory_info = nullptr;
-    void* device = nullptr;
     bool initialized = false;
-    const char* unavailable = "driver NVML DLL unavailable";
-    NvmlMemory() {
+
+    ResidentVram() {
+        // Never search the working/model directory or PATH for a driver DLL.
         module = LoadLibraryExW(L"nvml.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-        if (!module) return;
+        if (module == nullptr) return;
         const auto init = reinterpret_cast<Init>(GetProcAddress(module, "nvmlInit_v2"));
         shutdown = reinterpret_cast<Shutdown>(GetProcAddress(module, "nvmlShutdown"));
-        const auto handle = reinterpret_cast<HandleByPci>(GetProcAddress(module, "nvmlDeviceGetHandleByPciBusId_v2"));
+        handle_by_pci = reinterpret_cast<HandleByPci>(GetProcAddress(module, "nvmlDeviceGetHandleByPciBusId_v2"));
         memory_info = reinterpret_cast<MemoryInfo>(GetProcAddress(module, "nvmlDeviceGetMemoryInfo"));
-        unavailable = "driver NVML entry points unavailable";
-        if (!init || !shutdown || !handle || !memory_info) return;
-        unavailable = "driver NVML initialization failed";
-        if (init() != 0) return;
-        initialized = true;
-        int cuda_device = 0;
-        char pci[32] = {};
-        unavailable = "active CUDA PCI adapter unavailable";
-        if (cudaGetDevice(&cuda_device) != cudaSuccess ||
-            cudaDeviceGetPCIBusId(pci, sizeof pci, cuda_device) != cudaSuccess) {
-            (void) cudaGetLastError();
-            return;
-        }
-        unavailable = "active CUDA adapter not found in NVML";
-        if (handle(pci, &device) != 0) device = nullptr;
+        if (init && shutdown && handle_by_pci && memory_info) initialized = init() == 0;
     }
-    ~NvmlMemory() {
+    ~ResidentVram() {
         if (initialized) shutdown();
         if (module) FreeLibrary(module);
     }
-    bool query(size_t& free_bytes) {
-        if (!device || !memory_info) return false;
-        Memory memory{};
-        if (memory_info(device, &memory) != 0 || memory.total == 0 || memory.free > memory.total) {
-            unavailable = "driver NVML memory query failed";
+    bool query(size_t& free_bytes) const {
+        if (!initialized) return false;
+        int device = 0;
+        char pci[32] = {};
+        if (cudaGetDevice(&device) != cudaSuccess || cudaDeviceGetPCIBusId(pci, sizeof pci, device) != cudaSuccess) {
+            (void) cudaGetLastError();
             return false;
         }
+        // NVML ordinals need not match CUDA ordinals (e.g. CUDA_VISIBLE_DEVICES).
+        void* nvml_device = nullptr;
+        Memory memory{};
+        if (handle_by_pci(pci, &nvml_device) != 0 || nvml_device == nullptr ||
+            memory_info(nvml_device, &memory) != 0 || memory.total == 0 || memory.free > memory.total)
+            return false;
         free_bytes = (size_t) memory.free;
         return true;
     }
 };
+ResidentVram& resident_vram() {
+    static ResidentVram resident;
+    return resident;
+}
 #endif
+
+cudaError_t resident_mem_info(size_t* free_bytes, size_t* total_bytes) {
+    const cudaError_t status = cudaMemGetInfo(free_bytes, total_bytes);
+#if defined(_WIN32) && !defined(STRATA_USE_HIP) && !defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+    if (status == cudaSuccess && free_bytes != nullptr && total_bytes != nullptr) {
+        size_t physical = 0;
+        const size_t raw = *free_bytes;
+        const bool known = resident_vram().query(physical);
+        if (known) *free_bytes = std::min(raw, physical);
+        if (std::getenv("STRATA_Q36_PLACE_DEBUG")) {
+            if (known)
+                std::fprintf(stderr, "strata-q36: resident VRAM budget: CUDA %.2f GiB, physical %.2f GiB, using %.2f GiB\n",
+                             raw / 1073741824.0, physical / 1073741824.0, *free_bytes / 1073741824.0);
+            else
+                std::fprintf(stderr, "strata-q36: resident VRAM budget: NVML unavailable, using CUDA %.2f GiB\n",
+                             raw / 1073741824.0);
+        }
+    }
+#endif
+    return status;
+}
 
 struct VramAvailability {
     size_t free = 0, cuda_free = 0, cuda_total = 0, physical_free = 0;
@@ -161,15 +182,15 @@ VramAvailability available_vram(bool physical = true) {
     VramAvailability memory;
     CK(cudaMemGetInfo(&memory.cuda_free, &memory.cuda_total));
     memory.free = memory.cuda_free;
-#if defined(_WIN32) && !defined(__HIPCC__)
+#if defined(_WIN32) && !defined(STRATA_USE_HIP) && !defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
     if (physical) {
-        static NvmlMemory nvml;
+        ResidentVram& nvml = resident_vram();
         memory.physical = nvml.query(memory.physical_free);
         if (memory.physical) memory.free = std::min(memory.free, memory.physical_free);
         else {
             static bool reported = false;
             if (!reported) {
-                std::fprintf(stderr, "tinystrata: %s; available VRAM falls back to CUDA's memory query\n", nvml.unavailable);
+                std::fprintf(stderr, "tinystrata: NVML unavailable; available VRAM falls back to CUDA's memory query\n");
                 reported = true;
             }
         }
@@ -2674,7 +2695,7 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         max_layer = std::max(max_layer, L->stride * (size_t) ne);
     }
     size_t fr = 0, tot = 0;
-    CK(cudaMemGetInfo(&fr, &tot));
+    CK(resident_mem_info(&fr, &tot));
     E.expert_auto = vram_gib < 0 && slots <= 0;
     E.vram_reserve = reserve;
     const size_t budget = vram_gib >= 0 ? (size_t) (vram_gib * (double) (1ull << 30))
@@ -2702,7 +2723,7 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         }
         m.packed.clear();
         E.reset_graphs();
-        CK(cudaMemGetInfo(&fr, &tot));
+        CK(resident_mem_info(&fr, &tot));
         std::fprintf(stderr, "tinystrata: the packed Q8_0 decode copies (%.2f GiB) given back so that every routed "
                      "expert fits in VRAM (STRATA_Q36_KEEP_PACKED=1 keeps them and runs the hybrid mode)\n",
                      (double) packed_bytes / (1 << 30));
@@ -2724,7 +2745,7 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
             mtp_only = true;
         } else if (total_main + ((size_t) 64 << 20) <= room) {
             E.shrink_att((size_t) 16 << 20);
-            CK(cudaMemGetInfo(&fr, &tot));
+            CK(resident_mem_info(&fr, &tot));
             budget2 = fr > small_reserve ? fr - small_reserve : 0;
             E.vram_reserve = small_reserve;
             mtp_only = total_main + ((size_t) 64 << 20) <= budget2;
@@ -3358,7 +3379,7 @@ int strata::qwen35::run(int argc, char** argv) {
         // auto: the largest chunk (4096 .. 1024) that fits beside every expert in VRAM; 2048 when they will not all fit (a prompt chunk streams every layer's
         // experts over PCIe once, so a bigger chunk pays that once for more tokens)
         size_t fr = 0, tot = 0, experts = 0;
-        CK(cudaMemGetInfo(&fr, &tot));
+        CK(resident_mem_info(&fr, &tot));
         for (const Layer& L : m.layers) experts += L.stride * (size_t) m.g.n_expert;
         const size_t fr_raw = fr;   // before the packed Q8_0 copies count as given back
         // (the MTP block's experts can go to the CPU, the packed Q8_0 copies can be given back: see place_experts)

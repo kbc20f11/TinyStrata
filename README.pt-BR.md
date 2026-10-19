@@ -57,9 +57,9 @@ As solicitações omitiram os parâmetros de amostragem e a semente. A única al
 | 24 GB | 256K | 118.40 tok/s | 131.82 tok/s | Todos os pesos residentes na VRAM |
 | Aprox. 16 GB | 128K | 95.09 tok/s | 99.39 tok/s | 8 GiB reservados; cálculo de especialistas na CPU e na GPU |
 | Aprox. 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | 12 GiB reservados; cálculo de especialistas na CPU e na GPU |
-| Aprox. 8 GB | 64K | 64.35 tok/s | 65.62 tok/s | 16 GiB reservados; cálculo de especialistas na CPU e na GPU |
+| Aprox. 8 GB | 64K | 66.30 tok/s | 63.85 tok/s | 16 GiB reservados; cálculo de especialistas na CPU e na GPU |
 
-Estas medições são de versões anteriores à política atual de memória na inicialização. A linha de 8 GB foi medida separadamente com blocos de 512 tokens; as linhas de 24/16/12 GB mantêm os resultados anteriores da mesma data.
+A linha de 8 GB foi medida novamente com a configuração automática atual. Conforme a memória livre ao iniciar, o cache de especialistas na GPU foi de 455 MiB com INT8 e 364 MiB com FP8; a comparação inclui, portanto, diferenças de alocação além do formato KV. As linhas de 24/16/12 GB mantêm os resultados da mesma data, anteriores à política atual de memória na inicialização.
 
 Essas são velocidades agregadas de decodificação: o total de tokens gerados dividido pelo tempo de decodificação registrado pelo mecanismo, excluindo o carregamento e o processamento da entrada. Foram usados os mesmos três textos, com 32, 44 e 1,597 tokens após aplicar o template de raciocínio, cada um gerando 128 tokens duas vezes, incluindo os tokens de raciocínio. **As capacidades da tabela são capacidades de cache alocadas, não comprimentos de entrada.** As linhas com memória reduzida reservaram separadamente 8, 12 ou 16 GiB na mesma GPU de 24 GB e realizaram trabalho real de especialistas na CPU.
 
@@ -81,7 +81,7 @@ Os arquivos de modelo baixados somam cerca de **15.0 GB**: **14.1 GB** para o mo
 
 ![Como o TinyStrata compartilha a memória entre a VRAM da GPU e a RAM do sistema](assets/memory-sharing.png)
 
-Este é um diagrama de distribuição, não uma partição de tamanho fixo. A cada carregamento do modelo, o TinyStrata inicia e aquece o codificador de visão da GPU antes de carregar o modelo de linguagem; seus pesos e buffers de trabalho aquecidos permanecem residentes. Em seguida, aloca o cache KV, os demais pesos e os buffers de trabalho, e dimensiona o cache de especialistas conforme a memória livre restante informada pelo CUDA.
+Este é um diagrama de distribuição, não uma partição de tamanho fixo. A cada carregamento do modelo, o TinyStrata inicia e aquece o codificador de visão da GPU antes de carregar o modelo de linguagem; seus pesos e buffers de trabalho aquecidos permanecem residentes. Em seguida, aloca o cache KV, os demais pesos e os buffers de trabalho, e dimensiona o cache de especialistas conforme a VRAM livre restante. No Windows, usa o menor valor entre a memória livre informada pelo CUDA e a VRAM dedicada livre informada pelo driver NVIDIA, quando ambos estão disponíveis.
 
 O conteúdo do cache muda conforme diferentes especialistas são usados; a capacidade do cache é recalculada quando o modelo é recarregado. Outros aplicativos abertos posteriormente ainda podem consumir VRAM.
 

@@ -57,9 +57,9 @@ Las solicitudes omitieron los parámetros de muestreo y la semilla. La única mo
 | 24 GB | 256K | 118.40 tok/s | 131.82 tok/s | Todos los pesos residentes en VRAM |
 | Aprox. 16 GB | 128K | 95.09 tok/s | 99.39 tok/s | 8 GiB reservados; cálculo de expertos en CPU y GPU |
 | Aprox. 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | 12 GiB reservados; cálculo de expertos en CPU y GPU |
-| Aprox. 8 GB | 64K | 64.35 tok/s | 65.62 tok/s | 16 GiB reservados; cálculo de expertos en CPU y GPU |
+| Aprox. 8 GB | 64K | 66.30 tok/s | 63.85 tok/s | 16 GiB reservados; cálculo de expertos en CPU y GPU |
 
-Estas mediciones proceden de versiones anteriores a la política actual de memoria al iniciar. La fila de 8 GB se midió por separado con bloques de 512 tokens; las filas de 24/16/12 GB conservan los resultados anteriores de la misma fecha.
+La fila de 8 GB se volvió a medir con la configuración automática actual. Según la memoria libre al iniciar, la caché de expertos en GPU fue de 455 MiB con INT8 y 364 MiB con FP8, por lo que la comparación incluye diferencias de ubicación y no solo de formato KV. Las filas de 24/16/12 GB conservan los resultados de la misma fecha, anteriores a la política actual de memoria al iniciar.
 
 Estas son velocidades agregadas de decodificación: el total de tokens generados dividido por el tiempo de decodificación registrado por el motor, excluyendo la carga y el procesamiento de la entrada. Se usaron los mismos tres textos, con 32, 44 y 1,597 tokens tras aplicar la plantilla de razonamiento, cada uno con dos generaciones de 128 tokens, incluidos los tokens de razonamiento. **Las capacidades de la tabla son capacidades de caché asignadas, no longitudes de entrada.** Las filas con memoria reducida reservaron por separado 8, 12 o 16 GiB en la misma GPU de 24 GB y realizaron trabajo real de expertos en la CPU.
 
@@ -81,7 +81,7 @@ Los archivos del modelo descargados suman unos **15.0 GB**: **14.1 GB** para el 
 
 ![Cómo reparte TinyStrata la memoria entre la VRAM de la GPU y la RAM del sistema](assets/memory-sharing.png)
 
-Este es un diagrama de distribución, no una partición de tamaño fijo. Cada vez que carga el modelo, TinyStrata inicia y prepara el codificador de visión de la GPU antes de cargar el modelo de lenguaje; sus pesos y búferes de trabajo preparados permanecen residentes. Después asigna la caché KV, los demás pesos y los búferes de trabajo, y dimensiona la caché de expertos según la memoria libre restante que informa CUDA.
+Este es un diagrama de distribución, no una partición de tamaño fijo. Cada vez que carga el modelo, TinyStrata inicia y prepara el codificador de visión de la GPU antes de cargar el modelo de lenguaje; sus pesos y búferes de trabajo preparados permanecen residentes. Después asigna la caché KV, los demás pesos y los búferes de trabajo, y dimensiona la caché de expertos según la VRAM libre restante. En Windows usa el menor valor entre la memoria libre que informa CUDA y la VRAM dedicada libre que informa el controlador NVIDIA, cuando ambos están disponibles.
 
 El contenido de la caché cambia a medida que se usan distintos expertos; la capacidad de la caché se recalcula cuando se vuelve a cargar el modelo. Otras aplicaciones que se abran más tarde pueden seguir consumiendo VRAM.
 

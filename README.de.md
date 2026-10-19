@@ -55,9 +55,9 @@ Die folgenden Messungen wurden am 2026-10-19 unter Windows mit einer RTX PRO 400
 | 24 GB | 256K | 118.40 tok/s | 131.82 tok/s | Alle Gewichte im VRAM |
 | ca. 16 GB | 128K | 95.09 tok/s | 99.39 tok/s | 8 GiB separat belegt; Experten auf CPU und GPU |
 | ca. 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | 12 GiB separat belegt; Experten auf CPU und GPU |
-| ca. 8 GB | 64K | 64.35 tok/s | 65.62 tok/s | 16 GiB separat belegt; Experten auf CPU und GPU |
+| ca. 8 GB | 64K | 66.30 tok/s | 63.85 tok/s | 16 GiB separat belegt; Experten auf CPU und GPU |
 
-Diese Messungen stammen aus Builds vor der aktuellen Speicherstrategie beim Start. Die 8-GB-Zeile wurde separat mit Blöcken von 512 Token gemessen; die Zeilen für 24/16/12 GB behalten die früheren Ergebnisse vom selben Tag bei.
+Die 8-GB-Zeile wurde mit den aktuellen automatischen Einstellungen erneut gemessen. Je nach freiem Speicher beim Start betrug der GPU-Expertencache 455 MiB für INT8 und 364 MiB für FP8; der Vergleich umfasst daher auch Unterschiede bei der Platzierung und nicht nur beim KV-Format. Die Zeilen 24/16/12 GB behalten die Ergebnisse vom selben Tag vor der aktuellen Speicherstrategie beim Start bei.
 
 Die Dekodiergeschwindigkeiten entsprechen der Gesamtzahl erzeugter Token geteilt durch die summierten nativen Dekodierzeiten. Dieselben drei Texte (32, 44 und 1,597 Prompt-Token mit aktiviertem Thinking) erzeugten jeweils zweimal 128 Token, einschließlich Reasoning-Token. Die einzige Request-Überschreibung war `max_tokens: 128` als Benchmark-Grenze; der Standardwert 32768 wurde nicht verwendet. Sampling-Parameter und Seed wurden im Request ausgelassen. Die Requests enthielten nur Text; Laden, Eingabeverarbeitung und Bildkodierung sind nicht enthalten. **Die Kontextwerte sind zugewiesene Cache-Kapazitäten, keine Eingabelängen.** Die Zeilen mit reduziertem Speicher nutzten separate Speicherreservierungen auf derselben 24-GB-GPU; die erfolgreichen Läufe führten tatsächlich Expertenberechnungen auf der CPU aus.
 
@@ -79,7 +79,7 @@ Die heruntergeladenen Modelldateien umfassen insgesamt etwa **15.0 GB**: **14.1 
 
 ![So teilt TinyStrata den Speicher zwischen GPU-VRAM und Arbeitsspeicher auf](assets/memory-sharing.png)
 
-Dies ist ein Schema der Speicheraufteilung, keine Partitionierung mit festen Größen. Bei jedem Laden des Modells startet TinyStrata den GPU-Vision-Encoder und lässt ihn warmlaufen, bevor es das Sprachmodell lädt; seine Gewichte und aufgewärmten Arbeitspuffer bleiben im Speicher. Anschließend weist es Speicher für den KV-Cache, die übrigen Gewichte und Arbeitspuffer zu und bemisst den Experten-Cache nach dem verbleibenden freien Speicher, den CUDA meldet.
+Dies ist ein Schema der Speicheraufteilung, keine Partitionierung mit festen Größen. Bei jedem Laden des Modells startet TinyStrata den GPU-Vision-Encoder und lässt ihn warmlaufen, bevor es das Sprachmodell lädt; seine Gewichte und aufgewärmten Arbeitspuffer bleiben im Speicher. Anschließend weist es Speicher für den KV-Cache, die übrigen Gewichte und Arbeitspuffer zu und bemisst den Experten-Cache nach dem verbleibenden freien VRAM. Unter Windows verwendet es den kleineren Wert aus dem freien CUDA-Speicher und dem vom NVIDIA-Treiber gemeldeten freien dedizierten VRAM, wenn beide verfügbar sind.
 
 Der Cache-Inhalt ändert sich, wenn andere Experten verwendet werden; die Cache-Kapazität wird beim erneuten Laden des Modells neu berechnet. Später gestartete Anwendungen können weiterhin VRAM belegen.
 

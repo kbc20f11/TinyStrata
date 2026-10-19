@@ -57,9 +57,9 @@ Default thinking and sampling settings (temperature 0.7), MTP 3, 512-token promp
 | 24 GB | 256K | 118.40 tok/s | 131.82 tok/s | All weights resident in VRAM |
 | Approximately 16 GB | 128K | 95.09 tok/s | 99.39 tok/s | GPU and CPU Expert computation |
 | Approximately 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | GPU and CPU Expert computation |
-| Approximately 8 GB | 64K | 64.35 tok/s | 65.62 tok/s | GPU and CPU Expert computation |
+| Approximately 8 GB | 64K | 66.30 tok/s | 63.85 tok/s | GPU and CPU Expert computation |
 
-These measurements predate the current startup-memory policy. The 8 GB row was measured separately with 512-token chunks; the 24/16/12 GB rows retain earlier results from the same date.
+The 8 GB row was remeasured with the current automatic settings. Available memory at startup produced GPU Expert caches of 455 MiB for INT8 and 364 MiB for FP8, so this comparison includes placement differences as well as KV format. The 24/16/12 GB rows retain earlier results from the same date, before the current startup-memory policy.
 
 Each of the three prompts (32, 44 and 1,597 tokens) generated 128 tokens twice, including reasoning tokens. The benchmark set `max_tokens` to 128 instead of the default 32768; other generation parameters were left unspecified. Rates are total generated tokens divided by summed native decode time, excluding loading and input processing. Reduced-memory rows reserved 8, 12 or 16 GiB on the same 24 GB GPU and performed real CPU Expert work.
 
@@ -81,7 +81,7 @@ The downloaded model files total about **15.0 GB**: **14.1 GB** for the language
 
 ![How TinyStrata shares memory between GPU VRAM and system RAM](assets/memory-sharing.png)
 
-This is a layout diagram, not a fixed-size partition. At each model load, TinyStrata starts and warms up the GPU vision encoder before loading the language model; its weights and warmed work buffers stay resident. It then allocates the KV cache, other weights and work buffers, and sizes the Expert cache from CUDA's remaining free-memory reading.
+This is a layout diagram, not a fixed-size partition. At each model load, TinyStrata starts and warms up the GPU vision encoder before loading the language model; its weights and warmed work buffers stay resident. It then allocates the KV cache, other weights and work buffers, and sizes the Expert cache from the remaining free VRAM. On Windows, it uses the smaller of CUDA's free-memory reading and the NVIDIA driver's free dedicated VRAM when both are available.
 
 Cache contents change as different Experts are used; cache capacity is recalculated when the model reloads. Other applications opening later can still consume VRAM.
 

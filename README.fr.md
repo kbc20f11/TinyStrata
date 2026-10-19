@@ -55,9 +55,9 @@ Les mesures suivantes ont été effectuées le 2026-10-19 sous Windows avec une 
 | 24 GB | 256K | 118.40 tok/s | 131.82 tok/s | Tous les poids résidents en VRAM |
 | environ 16 GB | 128K | 95.09 tok/s | 99.39 tok/s | 8 GiB occupés séparément ; experts calculés sur CPU et GPU |
 | environ 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | 12 GiB occupés séparément ; experts calculés sur CPU et GPU |
-| environ 8 GB | 64K | 64.35 tok/s | 65.62 tok/s | 16 GiB occupés séparément ; experts calculés sur CPU et GPU |
+| environ 8 GB | 64K | 66.30 tok/s | 63.85 tok/s | 16 GiB occupés séparément ; experts calculés sur CPU et GPU |
 
-Ces mesures proviennent de versions antérieures à la stratégie actuelle de mémoire au démarrage. La ligne 8 GB a été mesurée séparément avec des blocs de 512 tokens ; les lignes 24/16/12 GB conservent les résultats antérieurs de la même date.
+La ligne 8 GB a été remesurée avec les réglages automatiques actuels. Selon la mémoire libre au démarrage, le cache GPU des experts était de 455 MiB en INT8 et de 364 MiB en FP8 ; la comparaison inclut donc aussi les différences de placement, pas seulement le format KV. Les lignes 24/16/12 GB conservent les résultats de la même date, antérieurs à la stratégie actuelle de mémoire au démarrage.
 
 Les vitesses de décodage correspondent au nombre total de tokens générés divisé par la somme des durées de décodage natives. Les trois mêmes textes (32, 44 et 1,597 tokens de prompt avec la réflexion activée) ont chacun produit deux fois 128 tokens, tokens de raisonnement compris. Le seul paramètre modifié dans les requêtes était `max_tokens: 128`, comme limite du benchmark ; la valeur par défaut de 32768 n’a pas été utilisée. Les paramètres d’échantillonnage et la seed étaient omis des requêtes. Celles-ci ne contenaient que du texte ; le chargement, le traitement des entrées et l’encodage des images sont exclus. **Les valeurs de contexte sont des capacités de cache allouées, pas des longueurs d’entrée.** Les lignes à mémoire réduite utilisaient des réservations séparées sur le même GPU de 24 GB ; les exécutions réussies effectuaient de véritables calculs d’experts sur le CPU.
 
@@ -79,7 +79,7 @@ Les fichiers du modèle téléchargés représentent environ **15.0 GB** au tota
 
 ![Répartition de la mémoire entre la VRAM du GPU et la mémoire système dans TinyStrata](assets/memory-sharing.png)
 
-Il s’agit d’un schéma de répartition, pas d’un partitionnement de taille fixe. À chaque chargement du modèle, TinyStrata démarre et préchauffe l’encodeur de vision sur le GPU avant de charger le modèle de langage ; ses poids et ses tampons de travail préchauffés restent résidents. Il alloue ensuite le cache KV, les autres poids et les tampons de travail, puis dimensionne le cache d’experts selon la mémoire libre restante indiquée par CUDA.
+Il s’agit d’un schéma de répartition, pas d’un partitionnement de taille fixe. À chaque chargement du modèle, TinyStrata démarre et préchauffe l’encodeur de vision sur le GPU avant de charger le modèle de langage ; ses poids et ses tampons de travail préchauffés restent résidents. Il alloue ensuite le cache KV, les autres poids et les tampons de travail, puis dimensionne le cache d’experts selon la VRAM libre restante. Sous Windows, il utilise la plus petite valeur entre la mémoire libre indiquée par CUDA et la VRAM dédiée libre indiquée par le pilote NVIDIA, lorsque les deux sont disponibles.
 
 Le contenu du cache change selon les experts utilisés ; sa capacité est recalculée au rechargement du modèle. Les autres applications ouvertes par la suite peuvent toujours consommer de la VRAM.
 
