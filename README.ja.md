@@ -16,7 +16,16 @@ cmake --build ..\TinyStrata-work\build --config Release --target tinystrata-lfm2
 .\run-api.bat --model-family lfm2 --port 18081
 ```
 
-設定は独立した `config-lfm2.json` に保存します。モデルが未導入の場合は `POST /v1/model/download` に `{}` を送ると、固定の Q4_K_M をダウンロードし、検証します。手元のファイルを使う場合は、起動コマンドに `--model "C:\models\LFM2.5-24B-A2B-Q4_K_M.gguf"` を追加してください。以下の `main` 用インストーラーが導入するのは Qwen 版です。LFM の既定値は `temperature=0.1`、`top_k=50`、`repetition_penalty=1.05` で、思考は常に有効です。新しいエンジンは検証中であり、llama.cpp や CPU・GPU の配置が異なる場合と同じトークン列になることは保証しません。
+設定は独立した `config-lfm2.json` に保存します。`--model-family lfm2` で起動したサーバーのダウンロード API は、公式の LFM Q4_K_M を取得します。ポート 18081 に対して、次のコマンドで開始・進捗確認ができます。
+
+```powershell
+Invoke-RestMethod 'http://127.0.0.1:18081/v1/model/download' -Method Post -ContentType 'application/json' -Body '{}'
+Invoke-RestMethod 'http://127.0.0.1:18081/v1/model/download'
+```
+
+中断後の再開と SHA-256 検証に対応し、一致するファイルが手元にある場合は再利用します。トークナイザーの準備とエンジンの読み込みが成功すると、状態が `ready` になります。転送・検証を中断する場合は、同じサーバーの `POST /v1/model/download/cancel` に `{}` を送ってください。
+
+手元のファイルを使う場合は、起動コマンドに `--model "C:\models\LFM2.5-24B-A2B-Q4_K_M.gguf"` を追加してください。以下の `main` 用インストーラーが導入するのは Qwen 版です。LFM の既定値は `temperature=0.1`、`top_k=50`、`repetition_penalty=1.05` で、思考は常に有効です。新しいエンジンは検証中であり、llama.cpp や CPU・GPU の配置が異なる場合と同じトークン列になることは保証しません。
 
 **TinyStrata は、30B 級の MoE モデル向けに開発している Windows 専用・API 専用の高速推論エンジンです。** VRAM が **8–24 GB** の一般的なグラフィックボードを搭載し、システム RAM が **32 GB 以下**の PC を主な対象としています。
 

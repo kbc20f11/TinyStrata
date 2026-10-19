@@ -16,7 +16,16 @@ cmake --build ..\TinyStrata-work\build --config Release --target tinystrata-lfm2
 .\run-api.bat --model-family lfm2 --port 18081
 ```
 
-The API uses a separate `config-lfm2.json`. If the model is not installed, `POST /v1/model/download` with `{}` downloads and verifies the pinned Q4_K_M file. To use an existing file, add `--model "C:\models\LFM2.5-24B-A2B-Q4_K_M.gguf"` to the launcher. The `main` installer below still installs the Qwen release. LFM defaults are `temperature=0.1`, `top_k=50` and `repetition_penalty=1.05`; its reasoning is always enabled. This new engine is under validation and does not promise token-identical output to llama.cpp or between CPU/GPU placements.
+The API uses a separate `config-lfm2.json`. The server started with `--model-family lfm2` selects the official LFM Q4_K_M for its download API. Start the download and check progress on port 18081:
+
+```powershell
+Invoke-RestMethod 'http://127.0.0.1:18081/v1/model/download' -Method Post -ContentType 'application/json' -Body '{}'
+Invoke-RestMethod 'http://127.0.0.1:18081/v1/model/download'
+```
+
+Downloads resume after interruption and are SHA-256 verified. A matching local file is reused. The state becomes `ready` after tokenizer preparation and engine loading succeed. To cancel a transfer or verification, send `POST /v1/model/download/cancel` with `{}` to the same server.
+
+To use an existing file, add `--model "C:\models\LFM2.5-24B-A2B-Q4_K_M.gguf"` to the launcher. The `main` installer below still installs the Qwen release. LFM defaults are `temperature=0.1`, `top_k=50` and `repetition_penalty=1.05`; its reasoning is always enabled. This new engine is under validation and does not promise token-identical output to llama.cpp or between CPU/GPU placements.
 
 **TinyStrata is a fast, Windows-only, API-only inference engine for 30B-class MoE models.** It primarily targets PCs with mainstream graphics cards (**8–24 GB of VRAM**) and **32 GB of system RAM or less**.
 
