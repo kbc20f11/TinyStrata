@@ -12,11 +12,11 @@ To address this, TinyStrata was created to run AI locally at high speed on PCs w
 
 Our main target is PCs with **8–24 GB of VRAM and 32 GB of system RAM or less**. We believe this range represents the most common configurations for PCs equipped with graphics cards.
 
-Built on Strata, TinyStrata aims to improve inference speed for Qwen3.6-35B-A3B in environments with limited VRAM. We want to use GPU memory efficiently so you can work with long conversations and documents on your own PC.
+TinyStrata builds on Strata to use GPU memory efficiently and run 30B-class MoE models quickly with limited VRAM. Our goal is to make long conversations and documents practical on your own PC.
 
-TinyStrata concentrates development on running fast local inference on Windows and providing it through an API. This focus guides our implementation and testing.
+We focus on local inference on Windows and serving it through an API.
 
-We also aim to make getting started as simple as possible. TinyStrata automatically chooses inference and memory settings for your hardware, so you can use the API without complicated configuration or manual tuning.
+TinyStrata automatically selects inference and memory settings for your hardware, so you can start using the API without complex configuration or manual tuning.
 
 ## Why no bundled UI?
 

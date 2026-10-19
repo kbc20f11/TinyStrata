@@ -12,11 +12,11 @@ Deshalb wurde TinyStrata entwickelt, um KI lokal mit hoher Geschwindigkeit auf P
 
 Unsere Hauptzielgruppe sind PCs mit **8–24 GB VRAM und höchstens 32 GB Arbeitsspeicher**. Wir glauben, dass dieser Bereich die häufigsten Konfigurationen von PCs mit gängigen Grafikkarten abdeckt.
 
-Auf Basis von Strata soll TinyStrata die Inferenz für Qwen3.6-35B-A3B bei begrenztem VRAM beschleunigen. Wir möchten GPU-Speicher effizient nutzen, damit Sie auf Ihrem eigenen PC mit langen Unterhaltungen und Dokumenten arbeiten können.
+TinyStrata baut auf Strata auf und nutzt GPU-Speicher effizient, damit MoE-Modelle der 30B-Klasse auch mit begrenztem VRAM schnell laufen können. Unser Ziel ist es, lange Unterhaltungen und Dokumente auf Ihrem eigenen PC nutzbar zu machen.
 
-TinyStrata konzentriert die Entwicklung auf schnelle lokale Inferenz unter Windows und deren Bereitstellung über eine API. Diese Ausrichtung bestimmt unsere Implementierung und Tests.
+Die Entwicklung konzentriert sich auf lokale Inferenz unter Windows und deren Bereitstellung über eine API.
 
-Außerdem möchten wir den Einstieg so einfach wie möglich machen. TinyStrata wählt Inferenz- und Speichereinstellungen automatisch passend zu Ihrer Hardware, sodass Sie die API ohne komplizierte Konfiguration oder manuelle Feinabstimmung nutzen können.
+TinyStrata wählt Inferenz- und Speichereinstellungen automatisch passend zu Ihrer Hardware, sodass Sie die API ohne komplizierte Konfiguration oder manuelle Feinabstimmung nutzen können.
 
 ## Warum keine integrierte Benutzeroberfläche?
 

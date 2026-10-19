@@ -12,11 +12,11 @@ Por eso, TinyStrata nació para ejecutar IA localmente a gran velocidad en PC eq
 
 Nuestro objetivo principal son los equipos con **8–24 GB de VRAM y 32 GB de RAM del sistema o menos**. Creemos que este intervalo representa las configuraciones más habituales de PC equipados con tarjetas gráficas de uso común.
 
-Basado en Strata, TinyStrata busca mejorar la velocidad de inferencia de Qwen3.6-35B-A3B en entornos con VRAM limitada. Queremos aprovechar de forma eficiente la memoria de la GPU para que puedas trabajar con conversaciones y documentos largos en tu propio PC.
+Basado en Strata, TinyStrata busca aprovechar de forma eficiente la memoria de la GPU para ejecutar modelos MoE de la clase 30B con rapidez, incluso con VRAM limitada. Nuestro objetivo es que puedas trabajar con conversaciones y documentos largos en tu propio PC.
 
-TinyStrata concentra su desarrollo en ofrecer inferencia local rápida en Windows y hacerla accesible mediante una API. Esta orientación guía nuestra implementación y nuestras pruebas.
+El desarrollo se centra en la inferencia local en Windows y su acceso mediante una API.
 
-También buscamos que empezar sea lo más sencillo posible. TinyStrata elige automáticamente los ajustes de inferencia y memoria para tu hardware, de modo que puedas usar la API sin una configuración complicada ni ajustes manuales.
+TinyStrata elige automáticamente los ajustes de inferencia y memoria para tu hardware, de modo que puedas empezar a usar la API sin una configuración complicada ni ajustes manuales.
 
 ## ¿Por qué no incluye una interfaz de usuario?
 
