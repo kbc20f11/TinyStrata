@@ -80,6 +80,19 @@ As solicitações omitiram os parâmetros de amostragem e a semente. A única al
 | Aprox. 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | 12 GiB reservados; cálculo de especialistas na CPU e na GPU |
 | Aprox. 8 GB | 64K | 66.30 tok/s | 63.85 tok/s | 16 GiB reservados; cálculo de especialistas na CPU e na GPU |
 
+## Velocidade medida — LFM2.5 (experimental)
+
+Medições no mesmo PC Windows com 64 GB de RAM do sistema, o LFM2.5-24B-A2B Q4_K_M oficial, KV FP16, sem MTP ou Vision, e CUDA Graphs ativado. Foram usados os padrões atuais da API: raciocínio ativado, `temperature=0.1`, `top_k=50`, `repetition_penalty=1.05`. A capacidade de contexto, os blocos de entrada (256 tokens em todos os casos) e a distribuição dos especialistas foram selecionados automaticamente.
+
+| VRAM disponível | Capacidade de contexto | Geração FP16 | Notas |
+| --- | ---: | ---: | --- |
+| 24 GB | 128K | 151.71 tok/s | Todos os pesos residentes na VRAM |
+| Aproximadamente 16 GB | 128K | 111.71 tok/s | Cálculo de especialistas na GPU e na CPU |
+| Aproximadamente 12 GB | 128K | 70.80 tok/s | Cálculo de especialistas na GPU e na CPU |
+| Aproximadamente 8 GB | 64K | 51.20 tok/s | Cálculo de especialistas na GPU e na CPU |
+
+Os mesmos três textos de entrada do teste do Qwen foram executados duas vezes cada, gerando 128 tokens por pedido, incluindo o raciocínio. A velocidade é o total de tokens gerados dividido pelo tempo total de decodificação, sem o carregamento e o processamento de entrada. As linhas com memória reduzida limitam a VRAM disponível da mesma GPU de 24 GB e não representam GPUs físicas de 8/12/16 GB. O modelo e as configurações de amostragem diferem dos da tabela do Qwen.
+
 ## Qual projeto devo usar?
 
 | Seu objetivo e seu hardware | Projeto |

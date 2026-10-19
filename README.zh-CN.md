@@ -80,6 +80,19 @@ Invoke-RestMethod "$api/v1/model/switch"
 | 约 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | GPU 与 CPU 共同计算专家 |
 | 约 8 GB | 64K | 66.30 tok/s | 63.85 tok/s | GPU 与 CPU 共同计算专家 |
 
+## 实测速度 — LFM2.5（实验性支持）
+
+在同一台 Windows PC（64 GB 系统内存）上使用官方 LFM2.5-24B-A2B Q4_K_M、FP16 KV 测量，不使用 MTP 或 Vision，启用 CUDA Graph。采用当前 API 默认值：启用思考、`temperature=0.1`、`top_k=50`、`repetition_penalty=1.05`；上下文容量、输入分块（各条件均为 256 个 token）和专家分配均自动选择。
+
+| 可用显存 | 上下文容量 | FP16 生成 | 备注 |
+| --- | ---: | ---: | --- |
+| 24 GB | 128K | 151.71 tok/s | 所有权重常驻显存 |
+| 约 16 GB | 128K | 111.71 tok/s | GPU 和 CPU 计算专家 |
+| 约 12 GB | 128K | 70.80 tok/s | GPU 和 CPU 计算专家 |
+| 约 8 GB | 64K | 51.20 tok/s | GPU 和 CPU 计算专家 |
+
+与 Qwen 测量相同的 3 个输入文本各运行 2 次，每次生成包含思考在内的 128 个 token。速度为生成 token 总数除以解码总时间，不含加载及输入处理。减少显存的行同样在这张 24 GB GPU 上限制可用显存，并非实际 8/12/16 GB GPU 的基准测试。模型和采样设置与 Qwen 表不同。
+
 ## 我应该使用哪个项目？
 
 | 你的目标和硬件 | 项目 |

@@ -92,6 +92,19 @@ Default thinking and sampling settings (temperature 0.7), MTP 3, 512-token promp
 | Approximately 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | GPU and CPU Expert computation |
 | Approximately 8 GB | 64K | 66.30 tok/s | 63.85 tok/s | GPU and CPU Expert computation |
 
+## Measured speed — LFM2.5 (experimental)
+
+Measured on the same Windows PC with 64 GB of system RAM, using the official LFM2.5-24B-A2B Q4_K_M model, FP16 KV, no MTP or Vision, and CUDA Graphs enabled. Current API defaults were used: thinking enabled, `temperature=0.1`, `top_k=50` and `repetition_penalty=1.05`. Context capacity, prompt chunks (256 tokens in all cases) and Expert placement were selected automatically.
+
+| Available VRAM | Context capacity | FP16 generation | Notes |
+| --- | ---: | ---: | --- |
+| 24 GB | 128K | 151.71 tok/s | All weights resident in VRAM |
+| Approximately 16 GB | 128K | 111.71 tok/s | GPU and CPU Expert computation |
+| Approximately 12 GB | 128K | 70.80 tok/s | GPU and CPU Expert computation |
+| Approximately 8 GB | 64K | 51.20 tok/s | GPU and CPU Expert computation |
+
+The same three input texts as the Qwen benchmark were run twice each, generating 128 tokens including thinking per request. Decode speed is total generated tokens divided by total decode time; loading and prompt processing are excluded. Reduced-memory rows limit available VRAM on the same 24 GB GPU and are not physical 8/12/16 GB GPU benchmarks. Model and sampling settings differ from the Qwen table.
+
 ## Which project should I use?
 
 | Your goal and hardware                                                                                                                       | Project                                                               |

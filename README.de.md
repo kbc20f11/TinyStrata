@@ -78,6 +78,19 @@ Die folgenden Messungen wurden am 2026-10-19 unter Windows mit einer RTX PRO 400
 | ca. 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | 12 GiB separat belegt; Experten auf CPU und GPU |
 | ca. 8 GB | 64K | 66.30 tok/s | 63.85 tok/s | 16 GiB separat belegt; Experten auf CPU und GPU |
 
+## Gemessene Geschwindigkeit — LFM2.5 (experimentell)
+
+Gemessen auf demselben Windows-PC mit 64 GB Arbeitsspeicher und dem offiziellen LFM2.5-24B-A2B Q4_K_M, FP16-KV, ohne MTP oder Vision, mit aktivierten CUDA Graphs. Es gelten die aktuellen API-Standardwerte: Thinking aktiv, `temperature=0.1`, `top_k=50`, `repetition_penalty=1.05`. Kontextkapazität, Prompt-Chunks (jeweils 256 Token) und Expertenverteilung wurden automatisch gewählt.
+
+| Verfügbarer VRAM | Kontextkapazität | FP16-Generierung | Hinweise |
+| --- | ---: | ---: | --- |
+| 24 GB | 128K | 151.71 tok/s | Alle Gewichte im VRAM |
+| Etwa 16 GB | 128K | 111.71 tok/s | Expertenberechnung auf GPU und CPU |
+| Etwa 12 GB | 128K | 70.80 tok/s | Expertenberechnung auf GPU und CPU |
+| Etwa 8 GB | 64K | 51.20 tok/s | Expertenberechnung auf GPU und CPU |
+
+Die gleichen drei Eingabetexte wie beim Qwen-Benchmark wurden jeweils zweimal ausgeführt, mit je 128 generierten Token einschließlich Thinking. Die Geschwindigkeit ist die gesamte Tokenzahl geteilt durch die gesamte Decodierzeit, ohne Laden und Prompt-Verarbeitung. Die Zeilen mit weniger Speicher begrenzen den verfügbaren VRAM derselben 24-GB-GPU und sind keine Benchmarks physischer 8-/12-/16-GB-GPUs. Modell und Sampling-Einstellungen unterscheiden sich von der Qwen-Tabelle.
+
 ## Welches Projekt sollte ich verwenden?
 
 | Ihr Ziel und Ihre Hardware | Projekt |
