@@ -18,6 +18,8 @@ function(tinystrata_add_vision_encoder)
   # Keep its C++17 contract instead of inheriting the engine's C++20 setting.
   set(CMAKE_CXX_STANDARD 17)
   add_subdirectory("${STRATA_LLAMA_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/vision-llama" EXCLUDE_FROM_ALL)
+  include("${PROJECT_SOURCE_DIR}/cmake/vision_workspace.cmake")
+  tinystrata_vision_workspace()
   add_executable(tinystrata-vision "${PROJECT_SOURCE_DIR}/src/vision/tinystrata_vision.cpp")
   target_link_libraries(tinystrata-vision PRIVATE mtmd llama)
   target_compile_features(tinystrata-vision PRIVATE cxx_std_17)

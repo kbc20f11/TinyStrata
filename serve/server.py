@@ -2247,6 +2247,8 @@ class Vision:
         self.stopped = True
         self.lock = threading.Lock()
         self.cache: dict[str, tuple[Path, int]] = {}
+        self.workspace_mib = 0
+        self.before_encode = None
         # opt-in (the vision section's "elastic": true, with the config's "vram_elastic"): the encoder starts with the
         # first picture and stops after elastic_idle_s without one; while it runs, the engine's expert cache keeps
         # elastic_mib of VRAM free for it (Service._vision_up / _vision_idle_down)
@@ -2277,6 +2279,13 @@ class Vision:
             except (OSError, subprocess.TimeoutExpired):
                 pass
             raise RuntimeError(vision_start_error(line, self.spawn[1]))
+        self.workspace_mib = 0
+        for field in line.split()[2:]:
+            if field.startswith("workspace_mib="):
+                try:
+                    self.workspace_mib = max(0, int(field.split("=", 1)[1]))
+                except ValueError:
+                    pass
         self.stopped = False
 
     def _readline(self, timeout: float, what: str) -> str:
@@ -2424,6 +2433,9 @@ class Vision:
             if key in self.cache:
                 self.cache[key] = self.cache.pop(key)                  # most recently used last
                 return self.cache[key]
+            before_encode = getattr(self, "before_encode", None)
+            if before_encode is not None:
+                before_encode()
             img, out = self.dir / f"{key}.img", self.dir / f"{key}.sve"
             img.write_bytes(data)
             try:
@@ -3061,6 +3073,8 @@ class Service:
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
                  fit_max_tokens: bool = False, generation_defaults: dict | None = None):
         self.engine, self.tok, self.template, self.model, self.vision = engine, tokenizer, template, model_name, vision
+        if isinstance(vision, Vision):
+            vision.before_encode = self.check_vision_workspace
         self.literals = literal_tags(getattr(tokenizer, "control_tokens", ()))   # texts that stay text inside a message
         self.fit_max_tokens = fit_max_tokens          # --fit-max-tokens: clamp the output cap instead of 400
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
@@ -3344,6 +3358,19 @@ class Service:
             return int(m.free >> 20)
         except Exception:
             return None
+
+    def check_vision_workspace(self):
+        """An image borrows the free reserve while text generation holds the FIFO idle."""
+        required = getattr(self.vision, "workspace_mib", 0)
+        if not required:
+            return
+        free = self.free_vram_mib()
+        # The encoder was warmed at its full image limit, so this is its largest
+        # graph workspace. Leave room for driver/accounting changes as well.
+        if free is not None and free < required + 128:
+            raise GpuBusy(f"the image encoder needs {required} MiB of workspace plus 128 MiB of headroom, "
+                          f"but only {free} MiB of VRAM is free; close another GPU application and retry",
+                          retry_after=1)
 
     def check_load_policy(self):
         """Apply the configured before-load hook and free-VRAM gate. Caller holds self.fifo."""
@@ -6592,6 +6619,7 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
                     svc.engine.close()
                     svc.engine, svc.tok, svc.template = candidate, tokenizer, template
                     svc.vision = image_candidate
+                    image_candidate.before_encode = svc.check_vision_workspace
                     svc.model, svc.sampling_defaults = name, defaults
                     svc.default_enable_thinking = updated.get("enable_thinking", True)
                     svc.default_max_tokens = updated.get("max_tokens", 32768)
