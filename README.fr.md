@@ -55,13 +55,13 @@ Les mesures suivantes ont été effectuées le 2026-10-19 sous Windows avec une 
 | 24 GB | 256K | 118.40 tok/s | 131.82 tok/s | Tous les poids résidents en VRAM |
 | environ 16 GB | 128K | 95.09 tok/s | 99.39 tok/s | 8 GiB occupés séparément ; experts calculés sur CPU et GPU |
 | environ 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | 12 GiB occupés séparément ; experts calculés sur CPU et GPU |
-| environ 8 GB | — | — | — | 16 GiB occupés séparément ; ancienne mesure : démarrage refusé, marge VRAM insuffisante |
+| environ 8 GB | 64K | 64.35 tok/s | 65.62 tok/s | 16 GiB occupés séparément ; experts calculés sur CPU et GPU |
 
-Ces résultats précèdent la libération des tampons de travail de vision et l’ajustement automatique de la taille des blocs. Dans la simulation de 8 GB de l’époque, le contexte de 64K sélectionné automatiquement et l’encodeur de vision résident sur GPU ne laissaient pas assez d’espace pour la réserve par défaut de 768 MiB ; ni INT8 ni FP8 n’ont pu démarrer. Le démarrage avec IQ3 et 64K dans une simulation de 8 GB a depuis été vérifié avec la version actuelle. Des mesures de vitesse comparables restent à effectuer.
+Seule la ligne de 8 GB a été remesurée après la libération des tampons de travail de vision et l’ajout de l’ajustement automatique des blocs ; les deux modes ont automatiquement choisi des blocs de 512 tokens. Les lignes de 24/16/12 GB conservent les résultats précédents du même jour.
 
 Les vitesses de décodage correspondent au nombre total de tokens générés divisé par la somme des durées de décodage natives. Les trois mêmes textes (32, 44 et 1,597 tokens de prompt avec la réflexion activée) ont chacun produit deux fois 128 tokens, tokens de raisonnement compris. Le seul paramètre modifié dans les requêtes était `max_tokens: 128`, comme limite du benchmark ; la valeur par défaut de 32768 n’a pas été utilisée. Les paramètres d’échantillonnage et la seed étaient omis des requêtes. Celles-ci ne contenaient que du texte ; le chargement, le traitement des entrées et l’encodage des images sont exclus. **Les valeurs de contexte sont des capacités de cache allouées, pas des longueurs d’entrée.** Les lignes à mémoire réduite utilisaient des réservations séparées sur le même GPU de 24 GB ; les exécutions réussies effectuaient de véritables calculs d’experts sur le CPU.
 
-Toutes les lignes ont été mesurées avec la même version utilisée lors de ces tests. Le tableau indique les capacités de contexte et les placements d’experts réellement sélectionnés. La capacité de contexte influe également sur la vitesse. Les écarts entre FP8 et INT8 valent pour ces conditions de mesure et ne constituent ni une garantie générale de vitesse ni une comparaison de qualité.
+Le tableau indique les capacités de contexte et les placements d’experts réellement sélectionnés. La capacité de contexte influe également sur la vitesse. Les écarts entre FP8 et INT8 valent pour ces conditions de mesure et ne constituent ni une garantie générale de vitesse ni une comparaison de qualité.
 
 ## Quel projet choisir ?
 

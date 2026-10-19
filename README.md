@@ -57,13 +57,13 @@ Default thinking and sampling settings (temperature 0.7), MTP 3, 512-token promp
 | 24 GB | 256K | 118.40 tok/s | 131.82 tok/s | All weights resident in VRAM |
 | Approximately 16 GB | 128K | 95.09 tok/s | 99.39 tok/s | GPU and CPU Expert computation |
 | Approximately 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | GPU and CPU Expert computation |
-| Approximately 8 GB | — | — | — | Earlier measurement: startup rejected for insufficient VRAM headroom |
+| Approximately 8 GB | 64K | 64.35 tok/s | 65.62 tok/s | GPU and CPU Expert computation |
 
-These benchmark results predate vision-workspace release and automatic chunk adjustment. In that 8 GB memory-proxy condition, automatic selection chose 64K, but the resident vision encoder left insufficient room for the default 768 MiB reserve; both INT8 and FP8 were rejected before inference. The current build has since been verified to start with IQ3 and 64K in the 8 GB memory-proxy condition. Comparable speed benchmarks for the current build are pending.
+Only the 8 GB row was remeasured after vision-workspace release and automatic chunk adjustment; automatic selection chose 512-token chunks for both modes. The 24/16/12 GB rows retain earlier results from the same date.
 
-Each of the three prompts (32, 44 and 1,597 tokens) generated 128 tokens twice, including reasoning tokens. The benchmark set `max_tokens` to 128 instead of the default 32768; other generation parameters were left unspecified. Rates are total generated tokens divided by summed native decode time, excluding loading and input processing. Reduced-memory rows reserved 8, 12 or 16 GiB on the same 24 GB GPU; the successful 16 and 12 GB cases performed real CPU Expert work.
+Each of the three prompts (32, 44 and 1,597 tokens) generated 128 tokens twice, including reasoning tokens. The benchmark set `max_tokens` to 128 instead of the default 32768; other generation parameters were left unspecified. Rates are total generated tokens divided by summed native decode time, excluding loading and input processing. Reduced-memory rows reserved 8, 12 or 16 GiB on the same 24 GB GPU and performed real CPU Expert work.
 
-All rows were remeasured with the same build. The table shows the context capacity actually selected from free VRAM after the vision encoder starts. **These are allocated cache capacities, not input lengths.** The speed differences apply to this hardware and workload; they do not compare answer quality.
+The table shows the context capacity actually selected from free VRAM after the vision encoder starts. **These are allocated cache capacities, not input lengths.** The speed differences apply to this hardware and workload; they do not compare answer quality.
 
 ## Which project should I use?
 

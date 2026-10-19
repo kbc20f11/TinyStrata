@@ -55,13 +55,13 @@ Die folgenden Messungen wurden am 2026-10-19 unter Windows mit einer RTX PRO 400
 | 24 GB | 256K | 118.40 tok/s | 131.82 tok/s | Alle Gewichte im VRAM |
 | ca. 16 GB | 128K | 95.09 tok/s | 99.39 tok/s | 8 GiB separat belegt; Experten auf CPU und GPU |
 | ca. 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | 12 GiB separat belegt; Experten auf CPU und GPU |
-| ca. 8 GB | — | — | — | 16 GiB separat belegt; frühere Messung: Start wegen zu geringer VRAM-Reserve abgelehnt |
+| ca. 8 GB | 64K | 64.35 tok/s | 65.62 tok/s | 16 GiB separat belegt; Experten auf CPU und GPU |
 
-Diese Benchmark-Ergebnisse stammen aus der Zeit vor der Freigabe der Vision-Arbeitspuffer und der automatischen Anpassung der Blockgröße. Bei der damaligen 8-GB-Speicherbegrenzung ließen die automatisch gewählten 64K Kontext und der GPU-residente Vision-Encoder nicht genug Platz für die standardmäßige Reserve von 768 MiB; weder INT8 noch FP8 konnten starten. Mit dem aktuellen Build wurde der Start mit IQ3 und 64K bei einer Speicherbegrenzung auf etwa 8 GB inzwischen bestätigt. Vergleichbare neue Geschwindigkeitsmessungen stehen noch aus.
+Nur die 8-GB-Zeile wurde nach der Freigabe der Vision-Arbeitspuffer und der Einführung der automatischen Blockgrößenanpassung neu gemessen; für beide Modi wurden automatisch Blöcke mit 512 Token gewählt. Die Zeilen für 24/16/12 GB behalten die früheren Ergebnisse vom selben Tag bei.
 
 Die Dekodiergeschwindigkeiten entsprechen der Gesamtzahl erzeugter Token geteilt durch die summierten nativen Dekodierzeiten. Dieselben drei Texte (32, 44 und 1,597 Prompt-Token mit aktiviertem Thinking) erzeugten jeweils zweimal 128 Token, einschließlich Reasoning-Token. Die einzige Request-Überschreibung war `max_tokens: 128` als Benchmark-Grenze; der Standardwert 32768 wurde nicht verwendet. Sampling-Parameter und Seed wurden im Request ausgelassen. Die Requests enthielten nur Text; Laden, Eingabeverarbeitung und Bildkodierung sind nicht enthalten. **Die Kontextwerte sind zugewiesene Cache-Kapazitäten, keine Eingabelängen.** Die Zeilen mit reduziertem Speicher nutzten separate Speicherreservierungen auf derselben 24-GB-GPU; die erfolgreichen Läufe führten tatsächlich Expertenberechnungen auf der CPU aus.
 
-Alle Zeilen wurden mit demselben damals verwendeten Build gemessen. Die Tabelle zeigt die tatsächlich gewählten Kontextkapazitäten und Expertenplatzierungen. Auch die Kontextkapazität beeinflusst die Geschwindigkeit. Die Unterschiede zwischen FP8 und INT8 gelten für diese Messbedingungen und sind weder eine allgemeine Geschwindigkeitsgarantie noch ein Qualitätsvergleich.
+Die Tabelle zeigt die tatsächlich gewählten Kontextkapazitäten und Expertenplatzierungen. Auch die Kontextkapazität beeinflusst die Geschwindigkeit. Die Unterschiede zwischen FP8 und INT8 gelten für diese Messbedingungen und sind weder eine allgemeine Geschwindigkeitsgarantie noch ein Qualitätsvergleich.
 
 ## Welches Projekt sollte ich verwenden?
 

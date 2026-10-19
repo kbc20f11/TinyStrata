@@ -57,13 +57,13 @@ Las solicitudes omitieron los parámetros de muestreo y la semilla. La única mo
 | 24 GB | 256K | 118.40 tok/s | 131.82 tok/s | Todos los pesos residentes en VRAM |
 | Aprox. 16 GB | 128K | 95.09 tok/s | 99.39 tok/s | 8 GiB reservados; cálculo de expertos en CPU y GPU |
 | Aprox. 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | 12 GiB reservados; cálculo de expertos en CPU y GPU |
-| Aprox. 8 GB | — | — | — | 16 GiB reservados; medición anterior: inicio rechazado por falta de margen de VRAM |
+| Aprox. 8 GB | 64K | 64.35 tok/s | 65.62 tok/s | 16 GiB reservados; cálculo de expertos en CPU y GPU |
 
-Estos resultados son anteriores a la liberación de los búferes de trabajo de visión y al ajuste automático del tamaño de los bloques. En aquella simulación de aproximadamente 8 GB, los 64K seleccionados automáticamente y el codificador de visión residente en la GPU dejaron espacio insuficiente para la reserva predeterminada de 768 MiB; ni INT8 ni FP8 pudieron iniciarse. Desde entonces se ha verificado el arranque de la compilación actual con IQ3 y 64K en la simulación de 8 GB. Aún están pendientes nuevas mediciones de velocidad comparables.
+Solo se volvió a medir la fila de 8 GB después de liberar los búferes de trabajo de visión e introducir el ajuste automático de bloques; ambos modos seleccionaron automáticamente bloques de 512 tokens. Las filas de 24/16/12 GB conservan los resultados anteriores del mismo día.
 
-Estas son velocidades agregadas de decodificación: el total de tokens generados dividido por el tiempo de decodificación registrado por el motor, excluyendo la carga y el procesamiento de la entrada. Se usaron los mismos tres textos, con 32, 44 y 1,597 tokens tras aplicar la plantilla de razonamiento, cada uno con dos generaciones de 128 tokens, incluidos los tokens de razonamiento. **Las capacidades de la tabla son capacidades de caché asignadas, no longitudes de entrada.** Las filas con memoria reducida reservaron por separado 8, 12 o 16 GiB en la misma GPU de 24 GB; las de aproximadamente 16 y 12 GB realizaron trabajo real de expertos en la CPU.
+Estas son velocidades agregadas de decodificación: el total de tokens generados dividido por el tiempo de decodificación registrado por el motor, excluyendo la carga y el procesamiento de la entrada. Se usaron los mismos tres textos, con 32, 44 y 1,597 tokens tras aplicar la plantilla de razonamiento, cada uno con dos generaciones de 128 tokens, incluidos los tokens de razonamiento. **Las capacidades de la tabla son capacidades de caché asignadas, no longitudes de entrada.** Las filas con memoria reducida reservaron por separado 8, 12 o 16 GiB en la misma GPU de 24 GB y realizaron trabajo real de expertos en la CPU.
 
-Todas las filas se midieron de nuevo con la misma compilación. El contexto y la ubicación de expertos indicados son los seleccionados durante cada ejecución. La capacidad de contexto también afecta a la velocidad, por lo que estas filas muestran distintos ajustes prácticos. Los resultados de FP8 se limitan a estas condiciones y no garantizan una mayor velocidad en general ni comparan la calidad.
+El contexto y la ubicación de expertos indicados son los seleccionados durante cada ejecución. La capacidad de contexto también afecta a la velocidad, por lo que estas filas muestran distintos ajustes prácticos. Los resultados de FP8 se limitan a estas condiciones y no garantizan una mayor velocidad en general ni comparan la calidad.
 
 ## ¿Qué proyecto debería usar?
 
