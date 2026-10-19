@@ -79,36 +79,10 @@ namespace MMQ = strata::prefill::mmq;
 namespace P = strata::qwen35::environment_policy;
 namespace V = strata::qwen35::vision;
 
-// Only the startup workspace/placement window can ask the API supervisor to
-// retry with a smaller prompt chunk. Model loading and inference errors remain
-// ordinary failures; each retry starts a fresh child and releases its memory.
-struct StartupFit {
-    bool active = false, protocol = false;
-    int context = 0, chunk = 0;
-} startup_fit;
-
-void report_startup_fit(const char* reason) {
-    if (!startup_fit.active || !startup_fit.protocol) return;
-    std::printf("FIT_RETRY context=%d chunk=%d reason=%s\n", startup_fit.context, startup_fit.chunk, reason);
-    std::fflush(stdout);
-}
-
-void report_startup_cuda_failure(cudaError_t status, const char* operation) {
-    // Pinned-host allocations can also return cudaErrorMemoryAllocation. They
-    // are RAM failures, not evidence that the GPU prompt workspace is too big.
-    if (status == cudaErrorMemoryAllocation &&
-        (std::strncmp(operation, "cudaMalloc(", 11) == 0 ||
-         std::strncmp(operation, "cudaMemset(", 11) == 0 ||
-         std::strncmp(operation, "cudaMemcpy(", 11) == 0 ||
-         std::strncmp(operation, "cudaDeviceSynchronize(", 22) == 0))
-        report_startup_fit("allocation");
-}
-
 #define CK(x)                                                                                                          \
     do {                                                                                                               \
         cudaError_t e_ = (x);                                                                                          \
         if (e_ != cudaSuccess) {                                                                                       \
-            report_startup_cuda_failure(e_, #x);                                                                       \
             std::fprintf(stderr, "tinystrata: %s failed: %s (%s:%d)\n", #x, cudaGetErrorString(e_), __FILE__, __LINE__); \
             std::exit(1);                                                                                              \
         }                                                                                                              \
@@ -2686,8 +2660,7 @@ struct Engine {
 /// reserve), else the hybrid mode - every expert in host memory, the same number of VRAM slots per layer, a decode
 /// batch's other experts on the CPU pool and a prompt chunk's streamed through two staging buffers.
 bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid_t, int slots,
-                   size_t reserve, std::string& err, bool& fit_failure) {
-    fit_failure = false;
+                   size_t reserve, bool reserve_explicit, std::string& err) {
     const auto t0 = Clock::now();
     const auto& g = m.g;
     const int64_t ne = g.n_expert;
@@ -2700,68 +2673,12 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         per_slot += L->stride;
         max_layer = std::max(max_layer, L->stride * (size_t) ne);
     }
-    const bool automatic = vram_gib < 0 && slots <= 0;
-    size_t fr = 0;
-    VramAvailability memory;
-    auto read_free = [&]() {
-        memory = available_vram(automatic);
-        fr = memory.free;
-    };
-    read_free();
-    E.expert_auto = automatic;
+    size_t fr = 0, tot = 0;
+    CK(cudaMemGetInfo(&fr, &tot));
+    E.expert_auto = vram_gib < 0 && slots <= 0;
     E.vram_reserve = reserve;
     const size_t budget = vram_gib >= 0 ? (size_t) (vram_gib * (double) (1ull << 30))
                                         : (fr > reserve ? fr - reserve : 0);
-    if (automatic)
-        std::fprintf(stderr, "tinystrata: automatic expert placement: %.2f GiB available after weights, KV and workspaces "
-                     "(%s; CUDA %.2f GiB, physical %.2f GiB); keeping %zu MiB free\n", (double) fr / (1ull << 30),
-                     memory.source(), (double) memory.cuda_free / (1ull << 30),
-                     (double) (memory.physical ? memory.physical_free : memory.cuda_free) / (1ull << 30), reserve >> 20);
-    // Allocate and touch the entire proposed cache before choosing its final size. Under WDDM an allocation can
-    // consume more physical VRAM once written; cudaMalloc can also fail because of system commit. Neither case
-    // should terminate automatic sizing while a smaller cache (including zero slots) can still work.
-    auto release_arenas = [&]() {
-        for (Layer* L : all) {
-            if (L->blobs) CK(cudaFree(L->blobs));
-            L->blobs = nullptr;
-            L->n_slots = 0;
-        }
-    };
-    enum class ArenaResult { ready, memory, reserve_short, error };
-    auto allocate_arenas = [&](const std::vector<int>& counts) {
-        for (size_t li = 0; li < all.size(); ++li) {
-            if (counts[li] <= 0) continue;
-            Layer& L = *all[li];
-            const size_t bytes = L.stride * (size_t) counts[li] + kMmqTail;
-            const auto status = cudaMalloc(&L.blobs, bytes);
-            if (status != cudaSuccess) {
-                (void) cudaGetLastError();
-                err = std::string("expert cache allocation: ") + cudaGetErrorString(status);
-                release_arenas();
-                return status == cudaErrorMemoryAllocation ? ArenaResult::memory : ArenaResult::error;
-            }
-            const auto touched = cudaMemset(L.blobs, 0, bytes);
-            if (touched != cudaSuccess) {
-                (void) cudaGetLastError();
-                err = std::string("writing expert cache: ") + cudaGetErrorString(touched);
-                release_arenas();
-                return touched == cudaErrorMemoryAllocation ? ArenaResult::memory : ArenaResult::error;
-            }
-        }
-        const auto sync = cudaDeviceSynchronize();
-        if (sync != cudaSuccess) {
-            (void) cudaGetLastError();
-            err = std::string("synchronizing expert cache: ") + cudaGetErrorString(sync);
-            release_arenas();
-            return sync == cudaErrorMemoryAllocation ? ArenaResult::memory : ArenaResult::error;
-        }
-        read_free();
-        if (automatic && fr < reserve) {
-            release_arenas();
-            return ArenaResult::reserve_short;
-        }
-        return ArenaResult::ready;
-    };
     // every expert fits once the packed Q8_0 decode copies are given back (a file a few GiB larger than the card's
     // room, UD-Q6_K_XL on 32 GB): drop them - the decode reads the GGUF layout then, bitwise the same outputs, a little
     // slower - rather than run the hybrid mode with its CPU share and streamed prompt layers.  STRATA_Q36_KEEP_PACKED=1
@@ -2770,7 +2687,10 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     for (const auto& pk : m.packed) packed_bytes += std::get<2>(pk);
     size_t main_need = 0;   // the main layers' experts (the MTP block's can go to the CPU, see below)
     for (Layer& L : m.layers) main_need += L.stride * (size_t) ne + kMmqTail;
-    const size_t slack = ((size_t) 512 << 20) + (E.kAttScoreFloats > ((size_t) 16 << 20) ? E.kAttScoreFloats - ((size_t) 16 << 20) : 0) * 6;   // reserve + scores
+    // Tiled INT8/FP8 attention has no score buffer; its saving is zero.
+    const size_t score_save = (E.kAttScoreFloats > ((size_t) 16 << 20)
+                                  ? E.kAttScoreFloats - ((size_t) 16 << 20) : 0) * 6;
+    const size_t slack = (reserve_explicit ? 0 : ((size_t) 512 << 20)) + score_save;   // reserve + scores
     const bool mtp_cpu_ok = m.has_mtp && std::getenv("STRATA_Q36_NO_MTP_CPU") == nullptr;
     if (slots <= 0 && vram_gib < 0 && total > budget && packed_bytes > 0 &&
         (total <= budget + packed_bytes || (mtp_cpu_ok && main_need <= budget + packed_bytes + slack)) &&
@@ -2782,7 +2702,7 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         }
         m.packed.clear();
         E.reset_graphs();
-        read_free();
+        CK(cudaMemGetInfo(&fr, &tot));
         std::fprintf(stderr, "tinystrata: the packed Q8_0 decode copies (%.2f GiB) given back so that every routed "
                      "expert fits in VRAM (STRATA_Q36_KEEP_PACKED=1 keeps them and runs the hybrid mode)\n",
                      (double) packed_bytes / (1 << 30));
@@ -2790,46 +2710,45 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     size_t budget2 = vram_gib >= 0 ? budget : (fr > reserve ? fr - reserve : 0);
     // the MAIN layers' experts fit, the MTP block's not all (UD-Q6_K_XL on 32 GB): the main layers all in VRAM - the
     // text is the all-in-VRAM text, the decode graph stays - and the MTP block's experts on slots + the CPU pool (its
-    // drafts only). A smaller attention scores buffer can free space, but never silently reduce the requested
-    // reserve. STRATA_Q36_NO_MTP_CPU=1: the plain hybrid mode for every layer.
+    // drafts only).  When that needs it: the attention scores buffer at 64 MB instead of 256 MB (more, smaller
+    // slices in a long prompt) and the reserve at 256 MiB instead of 768 (said in the log; --expert-vram sets the
+    // budget instead).  STRATA_Q36_NO_MTP_CPU=1: the plain hybrid mode for every layer.
     size_t total_main = 0;
     for (Layer& L : m.layers) total_main += L.stride * (size_t) ne + kMmqTail;
     bool mtp_only = false;
     if (slots <= 0 && vram_gib < 0 && m.has_mtp && total > budget2 && std::getenv("STRATA_Q36_NO_MTP_CPU") == nullptr) {
-        const size_t att_save = (E.kAttScoreFloats > ((size_t) 16 << 20) ? E.kAttScoreFloats - ((size_t) 16 << 20) : 0) * 6;   // att_s (4 B) + att_p16 (2 B)
-        const size_t room = fr + att_save > reserve ? fr + att_save - reserve : 0;
+        const size_t att_save = score_save;   // att_s (4 B) + att_p16 (2 B), if present
+        const size_t small_reserve = reserve_explicit ? reserve : (size_t) 256 << 20;
+        const size_t room = fr + att_save > small_reserve ? fr + att_save - small_reserve : 0;
         if (total_main + ((size_t) 64 << 20) <= budget2) {
             mtp_only = true;
         } else if (total_main + ((size_t) 64 << 20) <= room) {
             E.shrink_att((size_t) 16 << 20);
-            read_free();
-            budget2 = fr > reserve ? fr - reserve : 0;
+            CK(cudaMemGetInfo(&fr, &tot));
+            budget2 = fr > small_reserve ? fr - small_reserve : 0;
+            E.vram_reserve = small_reserve;
             mtp_only = total_main + ((size_t) 64 << 20) <= budget2;
-            std::fprintf(stderr, "tinystrata: smaller attention scores buffer to fit the main experts; keeping the "
-                         "%zu MiB VRAM reserve\n", reserve >> 20);
+            std::fprintf(stderr, "tinystrata: the experts nearly fit: reduced attention scores workspace where present "
+                         "and a %zu MiB VRAM reserve so that every main layer's experts fit; a driver or "
+                         "another program needing more VRAM later can make it fail - --expert-vram GiB sets the experts' "
+                         "budget instead\n", small_reserve >> 20);
         }
     }
     if (slots <= 0 && total <= budget2 && total + ((size_t) 256 << 20) <= fr) {
-        const auto status = allocate_arenas(std::vector<int>(all.size(), (int) ne));
-        if (status == ArenaResult::ready) {
-            std::vector<uint8_t> blob;
-            for (Layer* L : all) {
-                blob.assign(L->L.bytes, 0);
-                for (int64_t e = 0; e < ne; ++e) {
-                    expert_blob(*L, e, blob.data());
-                    CK(cudaMemcpy(L->blobs + (size_t) e * L->stride, blob.data(), L->L.bytes, cudaMemcpyHostToDevice));
-                }
-                L->n_slots = (int) ne;
+        std::vector<uint8_t> blob;
+        for (Layer* L : all) {
+            CK(cudaMalloc(&L->blobs, L->stride * (size_t) ne + kMmqTail));
+            CK(cudaMemset(L->blobs, 0, L->stride * (size_t) ne + kMmqTail));
+            blob.assign(L->L.bytes, 0);
+            for (int64_t e = 0; e < ne; ++e) {
+                expert_blob(*L, e, blob.data());
+                CK(cudaMemcpy(L->blobs + (size_t) e * L->stride, blob.data(), L->L.bytes, cudaMemcpyHostToDevice));
             }
-            std::fprintf(stderr, "tinystrata: every routed expert in VRAM (%.2f GiB), %.2f GiB free, in %.1f s\n",
-                         (double) total / (1ull << 30), (double) fr / (1ull << 30), ms_since(t0) / 1000.0);
-            return true;
+            L->n_slots = (int) ne;
         }
-        if (!automatic || status == ArenaResult::error) return false;
-        std::fprintf(stderr, "tinystrata: the complete expert cache did not fit with the reserve; using CPU/GPU placement\n");
-        mtp_only = false;
-        read_free();
-        budget2 = fr > reserve ? fr - reserve : 0;
+        std::fprintf(stderr, "tinystrata: every routed expert in VRAM (%.2f GiB) in %.1f s\n", (double) total / (1 << 30),
+                     ms_since(t0) / 1000.0);
+        return true;
     }
 #if !defined(STRATA_Q36_CPU_POOL)
     (void) threads;
@@ -2846,130 +2765,52 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     E.mtp_graph = false;                      // the MTP block's layer is hybrid either way
     E.hybrid_t = std::max(1, std::min(hybrid_t, E.use_mmq ? E.tmax : E.tmax));
     if (!E.use_mmq) E.hybrid_t = E.tmax;   // no streamed prompt path: every batch on slots + the pool
-    const size_t T = (size_t) E.tmax, N = (size_t) g.n_embd, Kp = (size_t) m.top_k;
-    // Allocate the hybrid path's real buffers before measuring the room left for expert slots. Previously these
-    // allocations (and each layer's MMQ tail) came after the fit calculation and consumed part of its reserve.
-    CK(cudaHostAlloc((void**) &E.h_h, T * N * 4, cudaHostAllocDefault));
-    CK(cudaHostAlloc((void**) &E.cpu_out, T * Kp * N * 4, cudaHostAllocDefault));
-    CK(cudaHostAlloc((void**) &E.h_ids, T * Kp * 4, cudaHostAllocDefault));
-    CK(cudaHostAlloc((void**) &E.h_miss, T * Kp * 4, cudaHostAllocDefault));
-    CK(cudaHostAlloc((void**) &E.h_cnt, all.size() * (size_t) ne * 4, cudaHostAllocDefault));
-    CK(cudaMalloc(&E.ecpu, T * Kp * N * 4));
-    CK(cudaMalloc(&E.d_miss, T * Kp * 4));
-    E.acts = (uint8_t*) std::malloc(T * C::kNativeActBytes + 64);
-    if (!E.acts) { err = "no host memory for expert activations"; return false; }
-    CK(cudaEventCreateWithFlags(&E.ev_route, cudaEventDisableTiming));
-    E.hy.resize(all.size());
-    for (size_t li = 0; li < all.size(); ++li) {
-        Engine::Hy& H = E.hy[li];
-        const Layer& L = *all[li];
-        CK(cudaMalloc(&H.slot_of_d, (size_t) ne * 4));
-        if (!C::native_fmt(L.L.gu_type, L.L.d_type, g.n_embd, g.n_ff, H.fmt, err)) return false;
-        if (H.fmt.up_off != L.L.up_off || H.fmt.down_off != L.L.down_off || H.fmt.bytes != L.L.bytes) {
-            err = "the CPU and GPU expert layouts differ";
+    const size_t staging = E.use_mmq && E.main_hybrid ? 2 * (max_layer + kMmqTail) : 0;
+    size_t slot_bytes = budget2 > staging ? budget2 - staging : 0;
+    if (slot_bytes + staging + ((size_t) 256 << 20) > fr) slot_bytes = fr > staging + ((size_t) 512 << 20) ? fr - staging - ((size_t) 512 << 20) : 0;
+    // --expert-slots: that many per layer (tests: the same split with and without the MTP block)
+    int S = slots > 0 ? (int) std::min<int64_t>(ne, slots) : (int) std::min<size_t>((size_t) ne, slot_bytes / per_slot);
+    if (mtp_only) {   // the main layers all, the MTP block what is left
+        const size_t left = budget2 > total_main ? budget2 - total_main : 0;
+        S = (int) std::min<size_t>((size_t) ne, left / m.mtp.stride);
+    }
+    {   // what the hybrid mode allocates next (the staging pair, the CPU part's outputs, the slots) against the VRAM the
+        // sessions and the context left: said with the numbers instead of a cudaMalloc failure (8 slots on a 12 GB card)
+        const size_t Tn = (size_t) E.tmax, Nn = (size_t) g.n_embd, Kn = (size_t) m.top_k;
+        size_t need = staging + Tn * Kn * Nn * 4 + Tn * Kn * 4;
+        for (Layer* L : all) {
+            if (mtp_only && L != &m.mtp) need += L->stride * (size_t) ne + kMmqTail;
+            else need += (S > 0 ? (size_t) S * L->stride + kMmqTail : 0);
+        }
+        if (need > fr) {
+            err = "not enough VRAM left for the hybrid experts' buffers and slots (" + std::to_string((need >> 20)) +
+                  " MiB needed, " + std::to_string(fr >> 20) + " MiB free after the weights, the context and the sessions): use "
+                  "fewer slots (\"parallel\" / --batch), a shorter --max-context" +
+                  (slots > 0 ? ", or fewer --expert-slots" : "");
             return false;
         }
     }
-    size_t staging = 0;
-    auto prepare_staging = [&]() {
-        if (staging || !E.use_mmq || !E.main_hybrid) return;
-        staging = 2 * (max_layer + kMmqTail);
-        CK(cudaStreamCreateWithFlags(&E.cst, cudaStreamNonBlocking));
-        for (int b = 0; b < 2; ++b) {
-            CK(cudaMalloc(&E.stage[b], max_layer + kMmqTail));
-            CK(cudaMemset(E.stage[b], 0, max_layer + kMmqTail));
-            CK(cudaEventCreateWithFlags(&E.ev_copy[b], cudaEventDisableTiming));
-            CK(cudaEventCreateWithFlags(&E.ev_used[b], cudaEventDisableTiming));
-            CK(cudaEventRecord(E.ev_used[b], E.st));
-        }
-    };
-    prepare_staging();
-    // Host memory: every CPU-eligible expert, pinned where the driver allows it. Delay repacking until the final
-    // slot count is known, so a reserve/OOM retry changes memory placement only, without repeating model work.
+    // host memory: every expert, pinned where the driver allows it (the prompt's stream and the slot copies)
     size_t host = 0;
+    for (Layer* L : all)
+        if (!mtp_only || L == &m.mtp) host += L->stride * (size_t) ne + kMmqTail;
     uint8_t* arena = nullptr;
-    bool pinned = false;
-    auto prepare_host = [&]() {
-        if (arena) {
-            if (pinned) CK(cudaFreeHost(arena)); else std::free(arena);
-            arena = nullptr;
-        }
-        host = 0;
-        for (Layer* L : all)
-            if (!mtp_only || L == &m.mtp) host += L->stride * (size_t) ne + kMmqTail;
-        pinned = cudaHostAlloc((void**) &arena, host, cudaHostAllocDefault) == cudaSuccess;
-        if (!pinned) {
-            (void) cudaGetLastError();
-            arena = (uint8_t*) std::malloc(host);
-        }
-        if (arena) return true;
-        err = "no host memory for the experts (" + std::to_string(host >> 20) + " MiB)";
-        return false;
-    };
-    if (!prepare_host()) return false;
-    auto fit_slots = [&]() {
-        CK(cudaDeviceSynchronize());
-        read_free();
-        if (automatic) {
-            const size_t room = fr > reserve ? fr - reserve : 0;
-            if (mtp_only) {
-                const size_t fixed = total_main + kMmqTail;
-                return (int) std::min<size_t>((size_t) ne, room > fixed ? (room - fixed) / m.mtp.stride : 0);
-            }
-            const size_t tails = all.size() * kMmqTail;
-            return (int) std::min<size_t>((size_t) ne, room > tails ? (room - tails) / per_slot : 0);
-        }
-        // Advanced explicit budgets/slot counts retain the established placement used for controlled comparisons.
-        size_t slot_bytes = budget2 > staging ? budget2 - staging : 0;
-        if (slot_bytes + staging + ((size_t) 256 << 20) > fr)
-            slot_bytes = fr > staging + ((size_t) 512 << 20) ? fr - staging - ((size_t) 512 << 20) : 0;
-        return slots > 0 ? (int) std::min<int64_t>(ne, slots)
-                         : (int) std::min<size_t>((size_t) ne, slot_bytes / per_slot);
-    };
-    int S = fit_slots();
-    for (int attempt = 0;; ++attempt) {
-        std::vector<int> counts(all.size(), S);
-        if (mtp_only) std::fill(counts.begin(), counts.end() - 1, (int) ne);
-        const auto status = allocate_arenas(counts);
-        if (status == ArenaResult::ready) break;
-        if (!automatic || status == ArenaResult::error) return false;
-        if (attempt >= 13) {
-            fit_failure = true;
-            err = "automatic expert placement could not preserve the VRAM reserve after retries";
+    bool pinned = cudaHostAlloc((void**) &arena, host, cudaHostAllocDefault) == cudaSuccess;
+    if (!pinned) {
+        (void) cudaGetLastError();
+        arena = (uint8_t*) std::malloc(host);
+        if (!arena) {
+            err = "no host memory for the experts (" + std::to_string(host >> 20) + " MiB)";
             return false;
         }
-        if (S == 0) {
-            if (!mtp_only) {
-                err = "weights, KV and workspaces leave less than the requested VRAM reserve even with all experts "
-                      "on the CPU; lower --max-context/--chunk or --vram-reserve-mib";
-                fit_failure = true;
-                return false;
-            }
-            mtp_only = false;
-            E.main_hybrid = true;
-            E.use_graph = false;
-            prepare_staging();
-            if (!prepare_host()) return false;
-            S = fit_slots();
-            std::fprintf(stderr, "tinystrata: the main experts need CPU/GPU placement to preserve the reserve\n");
-            continue;
-        }
-        const int previous = S;
-        if (status == ArenaResult::memory) S = S * 3 / 4;
-        else {
-            const size_t step = mtp_only ? m.mtp.stride : per_slot;
-            const size_t give = reserve - fr + ((size_t) 64 << 20);
-            const size_t drop = (give + step - 1) / step;
-            S = drop >= (size_t) S ? 0 : S - (int) drop;
-        }
-        std::fprintf(stderr, "tinystrata: automatic expert cache %s; trying %d instead of %d slots per %s\n",
-                     status == ArenaResult::memory ? "allocation ran out of memory" : "left too little VRAM after writing",
-                     S, previous, mtp_only ? "MTP layer" : "layer");
     }
     size_t off = 0;
+    E.hy.resize(all.size());
     for (size_t li = 0; li < all.size(); ++li) {
         Layer& L = *all[li];
         if (mtp_only && &L != &m.mtp) {   // a main layer: every expert in VRAM, as in the all-in-VRAM placement
+            CK(cudaMalloc(&L.blobs, L.stride * (size_t) ne + kMmqTail));
+            CK(cudaMemset(L.blobs, 0, L.stride * (size_t) ne + kMmqTail));
             std::vector<uint8_t> blob(L.L.bytes, 0);
             for (int64_t e = 0; e < ne; ++e) {
                 expert_blob(L, e, blob.data());
@@ -2984,6 +2825,8 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         for (int64_t e = 0; e < ne; ++e) expert_blob(L, e, L.hblobs + (size_t) e * L.stride);
         L.n_slots = S;
         if (S > 0) {
+            CK(cudaMalloc(&L.blobs, L.stride * (size_t) S + kMmqTail));
+            CK(cudaMemset(L.blobs, 0, L.stride * (size_t) S + kMmqTail));
             CK(cudaMemcpy(L.blobs, L.hblobs, L.stride * (size_t) S, cudaMemcpyHostToDevice));
         }
         Engine::Hy& H = E.hy[li];
@@ -2994,7 +2837,34 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
             H.exp_in_slot[(size_t) s] = s;
         }
         H.score.assign((size_t) ne, 0.0);
+        CK(cudaMalloc(&H.slot_of_d, (size_t) ne * 4));
         CK(cudaMemcpy(H.slot_of_d, H.slot_of.data(), (size_t) ne * 4, cudaMemcpyHostToDevice));
+        if (!C::native_fmt(L.L.gu_type, L.L.d_type, g.n_embd, g.n_ff, H.fmt, err)) return false;
+        if (H.fmt.up_off != L.L.up_off || H.fmt.down_off != L.L.down_off || H.fmt.bytes != L.L.bytes) {
+            err = "the CPU and GPU expert layouts differ";
+            return false;
+        }
+    }
+    const size_t T = (size_t) E.tmax, N = (size_t) g.n_embd, Kp = (size_t) m.top_k;
+    CK(cudaHostAlloc((void**) &E.h_h, T * N * 4, cudaHostAllocDefault));
+    CK(cudaHostAlloc((void**) &E.cpu_out, T * Kp * N * 4, cudaHostAllocDefault));
+    CK(cudaHostAlloc((void**) &E.h_ids, T * Kp * 4, cudaHostAllocDefault));
+    CK(cudaHostAlloc((void**) &E.h_miss, T * Kp * 4, cudaHostAllocDefault));
+    CK(cudaHostAlloc((void**) &E.h_cnt, all.size() * (size_t) ne * 4, cudaHostAllocDefault));
+    CK(cudaMalloc(&E.ecpu, T * Kp * N * 4));
+    CK(cudaMalloc(&E.d_miss, T * Kp * 4));
+    E.acts = (uint8_t*) std::malloc(T * C::kNativeActBytes + 64);
+    if (!E.acts) { err = "no host memory for expert activations"; return false; }
+    CK(cudaEventCreateWithFlags(&E.ev_route, cudaEventDisableTiming));
+    if (staging) {
+        CK(cudaStreamCreateWithFlags(&E.cst, cudaStreamNonBlocking));
+        for (int b = 0; b < 2; ++b) {
+            CK(cudaMalloc(&E.stage[b], max_layer + kMmqTail));
+            CK(cudaMemset(E.stage[b], 0, max_layer + kMmqTail));
+            CK(cudaEventCreateWithFlags(&E.ev_copy[b], cudaEventDisableTiming));
+            CK(cudaEventCreateWithFlags(&E.ev_used[b], cudaEventDisableTiming));
+            CK(cudaEventRecord(E.ev_used[b], E.st));
+        }
     }
     E.pool = std::make_unique<C::ExpertPool>(threads);
     CK(cudaDeviceSynchronize());
@@ -3003,10 +2873,6 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         E.use_graph = true;
         E.mtp_graph = true;
     }
-    read_free();
-    if (automatic)
-        std::fprintf(stderr, "tinystrata: automatic expert placement ready: %.2f GiB free; %zu MiB reserve\n",
-                     (double) fr / (1ull << 30), reserve >> 20);
     if (mtp_only)
         std::fprintf(stderr, "tinystrata: every main layer's routed experts in VRAM (%.2f GiB); the MTP block's: %d of "
                      "%lld in VRAM, the rest on the CPU pool (its drafts only)\n", (double) total_main / (1 << 30), S,
@@ -3322,6 +3188,7 @@ int strata::qwen35::run(int argc, char** argv) {
     int ctx = 0, chunk = 0, n_gen = 64, bench_pp = 0, bench_tg = 0, mtp_d = 0, cpu_threads = 0, hybrid_rows = 128;
     double expert_vram = -1.0;
     size_t vram_reserve = (size_t) 768 << 20;
+    bool reserve_explicit = false;
     bool warm = true;
     int kv_format = P::kAutomaticKv; // -1 auto; 0 FP32, 1 FP8, 2 INT8, 3 native FP8 MMA
     int expert_slots = 0;
@@ -3342,11 +3209,11 @@ int strata::qwen35::run(int argc, char** argv) {
                         "  --bench-pp N --bench-tg N Benchmark prompt and generation\n"
                         "  --max-context auto|N     KV capacity (default: auto, free VRAM selects 64K/128K/256K)\n"
                         "  --kv-type auto|fp32|fp8|int8|fp8-mma  KV storage (default: auto, native FP8 when supported)\n"
-                        "  --chunk N                Prompt chunk size (default: auto)\n"
+                        "  --chunk auto|N           Prompt chunk size (default: auto)\n"
                         "  --mtp N                  MTP drafts, 0..7 (default: 0)\n"
                         "  --expert-vram auto|GiB   Routed expert budget (default: available VRAM)\n"
                         "  --expert-slots N         Resident expert slots per layer\n"
-                        "  --vram-reserve-mib N     Free VRAM kept by automatic placement (default: 768)\n"
+                        "  --vram-reserve-mib N     Override automatic VRAM reserve (default: 768, near-fit: 256)\n"
                         "  --cpu-threads N          CPU expert workers\n"
                         "  --hybrid-rows N          CPU/GPU batch threshold (default: 128)\n"
                         "  --no-graph --no-warmup   Disable graphs or startup warm-up\n"
@@ -3415,6 +3282,7 @@ int strata::qwen35::run(int argc, char** argv) {
                 return 2;
             }
             vram_reserve = (size_t) mib << 20;
+            reserve_explicit = true;
         }
         else if (a == "--cpu-threads") cpu_threads = std::atoi(next().c_str());
         else if (a == "--expert-slots") expert_slots = std::atoi(next().c_str());
@@ -3441,7 +3309,7 @@ int strata::qwen35::run(int argc, char** argv) {
     const bool context_auto = ctx == 0;
     if (context_auto) {
         // Sample before model weights consume VRAM, using the same physical
-        // memory accounting as automatic expert placement on Windows/WDDM.
+        // available-memory accounting for automatic context selection on Windows/WDDM.
         const auto memory = available_vram(true);
         ctx = P::resolve_context(ctx, memory.free);
         std::fprintf(stderr, "tinystrata: automatic context: %.2f GiB free (%s, before model weights) -> %d tokens\n",
@@ -3487,10 +3355,12 @@ int strata::qwen35::run(int argc, char** argv) {
     E.use_graph = graph;
     E.hybrid_graph_requested = hybrid_graph_requested;
     if (chunk == 0) {
-        // auto: 512 with every expert in VRAM; 2048 when they will not all fit (a prompt chunk streams every layer's
+        // auto: the largest chunk (4096 .. 1024) that fits beside every expert in VRAM; 2048 when they will not all fit (a prompt chunk streams every layer's
         // experts over PCIe once, so a bigger chunk pays that once for more tokens)
-        size_t fr = available_vram(expert_vram < 0 && expert_slots <= 0).free, experts = 0;
+        size_t fr = 0, tot = 0, experts = 0;
+        CK(cudaMemGetInfo(&fr, &tot));
         for (const Layer& L : m.layers) experts += L.stride * (size_t) m.g.n_expert;
+        const size_t fr_raw = fr;   // before the packed Q8_0 copies count as given back
         // (the MTP block's experts can go to the CPU, the packed Q8_0 copies can be given back: see place_experts)
         size_t packed = 0;
         for (const auto& pk : m.packed) packed += std::get<2>(pk);
@@ -3500,19 +3370,39 @@ int strata::qwen35::run(int argc, char** argv) {
         const bool fits = expert_slots <= 0 && (expert_vram < 0 ? want <= (double) fr
                                                                : (double) experts <= expert_vram * (double) (1ull << 30));
         chunk = fits ? 512 : 2048;
+        const double GiB = (double) (1ull << 30);
+        if (fits && expert_vram < 0) {
+            // a bigger prompt chunk feeds the MMQ expert kernels more rows per expert (R9700, UD-Q4_K_XL, pp4096: 512 3390, 1024
+            // 4495, 2048 5353, 4096 5750 tok/s): the largest that fits beside the experts.  Its buffers grow by about 0.5 MiB per
+            // token (measured 0.47: 1.66 GiB more at 4096 than at 512), the sessions' K / V caches by 50 KB per cell and session.
+            // With several slots a long prompt would hold the other slots' windows for a whole chunk: 1024 at most there.
+            // (measured on a 32 GB R9700 at 8192 cells, 512 chunk: 1.77 GiB of buffers + K / V; the free room after init must still hold
+            // every expert and the 0.77 GiB reserve, or place_experts gives the packed decode copies back - slower decode - or goes hybrid)
+            const int ns = 1;   // TinyStrata has one native session
+            const double kv_one = 45056.0, kv_shared = 5120.0;   // per cell: a session's K / V, and the fp16 copies the prompt attention keeps
+            const double sess_extra = std::max(0.0, (double) ctx * (kv_one * ns + kv_shared) - 8192.0 * (kv_one + kv_shared));
+            const int cap = ns > 1 ? 1024 : 4096;
+            for (int c : {4096, 2048, 1024})
+                if (c <= cap && (double) experts + 2.75 * GiB + (double) (c - 512) * 0.5 * 1048576.0 + sess_extra <= (double) fr_raw) {   // (no give-back of the packed decode copies for a bigger chunk)
+                    chunk = c;
+                    break;
+                }
+        } else if (!fits) {
+            // the hybrid mode: 2048 (a chunk streams every layer's experts over PCIe once); a small card, where the chunk's buffers
+            // would take the slots' room, falls back to less
+            const double fr_gib = (double) fr / GiB;
+            chunk = fr_gib >= 7.5 ? 2048 : fr_gib >= 5.5 ? 1024 : 512;
+        }
+        if (const char* cv = std::getenv("STRATA_Q36_CHUNK")) chunk = std::max(256, std::min(4096, std::atoi(cv)));   // force a chunk (512: the old default)
         if (std::getenv("STRATA_Q36_PLACE_DEBUG"))
-            std::fprintf(stderr, "tinystrata: chunk rule: free %.2f GiB (with %.2f packed), main experts %.2f GiB\n",
-                         fr / 1073741824.0, packed / 1073741824.0, experts / 1073741824.0);
+            std::fprintf(stderr, "tinystrata: chunk rule: free %.2f GiB (raw %.2f, with %.2f packed), main experts %.2f GiB, chunk %d\n",
+                         fr / 1073741824.0, fr_raw / 1073741824.0, packed / 1073741824.0, experts / 1073741824.0, chunk);
     }
-    startup_fit = {true, serve_mode, ctx, chunk};
     E.init(m, ctx, chunk);
-    bool fit_failure = false;
-    if (!place_experts(m, E, expert_vram, cpu_threads, hybrid_rows, expert_slots, vram_reserve, err, fit_failure)) {
-        if (fit_failure) report_startup_fit("reserve");
+    if (!place_experts(m, E, expert_vram, cpu_threads, hybrid_rows, expert_slots, vram_reserve, reserve_explicit, err)) {
         std::fprintf(stderr, "tinystrata: %s\n", err.c_str());
         return 1;
     }
-    startup_fit.active = false;
     std::fprintf(stderr, "tinystrata: decode graphs %s (requested %s; main experts %s)\n",
                  E.use_graph ? "enabled" : "disabled", graph ? "on" : "off",
                  E.main_hybrid ? "CPU/GPU hybrid" : "GPU resident");

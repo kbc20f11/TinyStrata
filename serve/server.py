@@ -303,14 +303,6 @@ class EngineDied(RuntimeError):
     """The engine process ended in the middle of a request (issue #27: on Linux, the out-of-memory killer)."""
 
 
-class StartupFitError(EngineDied):
-    """The native engine explicitly reported that its startup allocations did not fit."""
-
-    def __init__(self, message: str, context: int, chunk: int, reason: str):
-        super().__init__(message)
-        self.context, self.chunk, self.reason = context, chunk, reason
-
-
 class EngineStarting(RuntimeError):
     """The engine is (re)starting and has not said READY yet (#344): no context size to plan a request with - a 503,
     not a 400 about the prompt."""
@@ -776,56 +768,6 @@ class StrataEngine:
 
     def __init__(self, exe: str, args: list[str], cwd: str | None = None, log: str | None = None,
                  env: dict | None = None, lazy: bool = False, cpus: list[int] | None = None, _attempt: int = 0):
-        # The API owns automatic chunk selection; every native process receives
-        # an integer. Keep the original request for later unload/reload cycles,
-        # which must start at 512 again and measure the then-current free VRAM.
-        original = list(args)
-        requested = original[original.index("--chunk") + 1] if "--chunk" in original else "auto"
-        chunk_auto = requested in ("auto", "0")
-        chunks = (512, 256, 128, 64, 32, 16) if chunk_auto else (int(requested),)
-        requested_ctx = original[original.index("--max-context") + 1] if "--max-context" in original else "auto"
-        context_auto = requested_ctx in ("auto", "0")
-        pinned_ctx = None
-        attempts = []
-
-        def replace(arguments, flag, value):
-            arguments = list(arguments)
-            if flag in arguments:
-                arguments[arguments.index(flag) + 1] = str(value)
-            else:
-                arguments += [flag, str(value)]
-            return arguments
-
-        try:
-            for index, chunk in enumerate(chunks):
-                actual = replace(original, "--chunk", chunk)
-                if pinned_ctx is not None:
-                    actual = replace(actual, "--max-context", pinned_ctx)
-                if not lazy:
-                    attempts.append(chunk)
-                try:
-                    self._initialize(exe, actual, cwd, log, env, lazy, cpus, _attempt)
-                    self.info.update(chunk_auto=chunk_auto, chunk_attempts=list(attempts),
-                                     context_auto=context_auto)
-                    if not lazy:
-                        self.info["chunk"] = chunk
-                    break
-                except StartupFitError as e:
-                    # Only this typed startup-memory failure is eligible. DLL,
-                    # model, device and timeout errors keep their real cause.
-                    if not chunk_auto or index == len(chunks) - 1 or e.chunk != chunk or \
-                            (pinned_ctx is not None and e.context != pinned_ctx):
-                        raise
-                    if context_auto and pinned_ctx is None:
-                        pinned_ctx = e.context
-                    print(f"[tinystrata] startup fit: chunk {chunk} did not fit ({e.reason}); retrying "
-                          f"chunk {chunks[index + 1]} with context {e.context}", flush=True)
-        finally:
-            self.spawn = (exe, original, cwd, log, env, False, cpus)
-            self.context_auto = context_auto
-
-    def _initialize(self, exe: str, args: list[str], cwd: str | None = None, log: str | None = None,
-                    env: dict | None = None, lazy: bool = False, cpus: list[int] | None = None, _attempt: int = 0):
         self.spawn = (exe, list(args), cwd, log, env, False, cpus)   # to start it again after it died (issue #27)
         self.session_save_reclaim = '--session-save-reclaim' in args
         paths = {k: v for k, v in zip(args, args[1:]) if k in ("--model", "--native", "--pack")}
@@ -841,6 +783,8 @@ class StrataEngine:
         self.can_stop = False            # the engine honours a STOP line mid-request (READY <ctx> stop)
         self.last = {}
         self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
+        requested_chunk = args[args.index("--chunk") + 1] if "--chunk" in args else "auto"
+        self.info["chunk_auto"] = requested_chunk in ("auto", "0")
         self.prefill_tok_s_mean = None
         self.progress = None             # (read, total) prompt tokens while a prompt is read, from PP lines
         self.progress_ms = 0             # PP's own milliseconds since the prompt started (its third field)
@@ -897,7 +841,6 @@ class StrataEngine:
         ready_thread.start()
         ready_deadline = None if ENGINE_READY_S is None else time.monotonic() + ENGINE_READY_S
         timed_out = False
-        fit_failure = None
         while True:
             left = None if ready_deadline is None else ready_deadline - time.monotonic()
             if left is not None and left <= 0:
@@ -913,9 +856,6 @@ class StrataEngine:
                 for kv in line.split()[1:]:
                     k, _, v = kv.partition("=")
                     self.info[k] = int(v) if v.lstrip("-").isdigit() else v
-            fit = re.fullmatch(r"FIT_RETRY context=([1-9][0-9]*) chunk=([1-9][0-9]*) reason=(reserve|allocation)\s*", line)
-            if fit:
-                fit_failure = (int(fit[1]), int(fit[2]), fit[3])
             if line.startswith("READY"):
                 f = line.split()
                 self.max_context = int(f[1])
@@ -946,7 +886,7 @@ class StrataEngine:
                     pass
             if log:
                 self.log.close()
-            if not timed_out and fit_failure is None and _attempt < START_RETRIES and \
+            if not timed_out and _attempt < START_RETRIES and \
                     transient_start_failure(log, log_start, time.monotonic() - spawned_at, self.proc.returncode):
                 wait_s = 2.0 * (2 ** _attempt)              # 2, 4, 8 s: the previous process's GPU queues go away
                 exit_words = engine_exit_words(self.proc.returncode)
@@ -961,7 +901,7 @@ class StrataEngine:
                           f"ready yet: starting it again in {wait_s:.0f} s (try {_attempt + 2} of {START_RETRIES + 1})",
                           flush=True)
                 time.sleep(wait_s)
-                self._initialize(exe, args, cwd, log, env, lazy, cpus, _attempt + 1)
+                StrataEngine.__init__(self, exe, args, cwd, log, env, lazy, cpus, _attempt + 1)
                 return
             why = (f"the engine did not report READY within {ENGINE_READY_S:.0f} s" if timed_out else
                    "the engine exited before it was ready")
@@ -973,8 +913,6 @@ class StrataEngine:
             if tail and lines and all(x.strip().startswith("[strata]") for x in lines):
                 tail += "\n  (those are the launcher's own lines: the engine itself wrote nothing)"
             message = why + (f" (see {log})" if log else "") + note + start_failure_hint(log, log_start) + tail
-            if fit_failure is not None and not timed_out:
-                raise StartupFitError(message, *fit_failure)
             raise EngineDied(message)
         self.known_ctx = self.max_context   # survives a failed restart: requests keep their limit and restart it
         # (from PR #41, midhatn) a locally built engine can sit next to another release's BUILD.json: engines that
@@ -1152,10 +1090,6 @@ class StrataEngine:
                 try:
                     self.__init__(*self.spawn)
                     break
-                except StartupFitError:
-                    # __init__ already exhausted the permitted chunk sizes (or
-                    # the user fixed one); repeating the full policy cannot help.
-                    raise
                 except RuntimeError:
                     try:
                         self.proc.wait(timeout=60)
@@ -2336,8 +2270,6 @@ class Vision:
         self.stopped = True
         self.lock = threading.Lock()
         self.cache: dict[str, tuple[Path, int]] = {}
-        self.workspace_mib = 0
-        self.before_encode = None
         # opt-in (the vision section's "elastic": true, with the config's "vram_elastic"): the encoder starts with the
         # first picture and stops after elastic_idle_s without one; while it runs, the engine's expert cache keeps
         # elastic_mib of VRAM free for it (Service._vision_up / _vision_idle_down)
@@ -2368,13 +2300,6 @@ class Vision:
             except (OSError, subprocess.TimeoutExpired):
                 pass
             raise RuntimeError(vision_start_error(line, self.spawn[1]))
-        self.workspace_mib = 0
-        for field in line.split()[2:]:
-            if field.startswith("workspace_mib="):
-                try:
-                    self.workspace_mib = max(0, int(field.split("=", 1)[1]))
-                except ValueError:
-                    pass
         self.stopped = False
 
     def _readline(self, timeout: float, what: str) -> str:
@@ -2522,9 +2447,6 @@ class Vision:
             if key in self.cache:
                 self.cache[key] = self.cache.pop(key)                  # most recently used last
                 return self.cache[key]
-            before_encode = getattr(self, "before_encode", None)
-            if before_encode is not None:
-                before_encode()
             img, out = self.dir / f"{key}.img", self.dir / f"{key}.sve"
             img.write_bytes(data)
             try:
@@ -3162,8 +3084,6 @@ class Service:
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
                  fit_max_tokens: bool = False, generation_defaults: dict | None = None):
         self.engine, self.tok, self.template, self.model, self.vision = engine, tokenizer, template, model_name, vision
-        if isinstance(vision, Vision):
-            vision.before_encode = self.check_vision_workspace
         self.literals = literal_tags(getattr(tokenizer, "control_tokens", ()))   # texts that stay text inside a message
         self.fit_max_tokens = fit_max_tokens          # --fit-max-tokens: clamp the output cap instead of 400
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
@@ -3447,19 +3367,6 @@ class Service:
             return int(m.free >> 20)
         except Exception:
             return None
-
-    def check_vision_workspace(self):
-        """An image borrows the free reserve while text generation holds the FIFO idle."""
-        required = getattr(self.vision, "workspace_mib", 0)
-        if not required:
-            return
-        free = self.free_vram_mib()
-        # The encoder was warmed at its full image limit, so this is its largest
-        # graph workspace. Leave room for driver/accounting changes as well.
-        if free is not None and free < required + 128:
-            raise GpuBusy(f"the image encoder needs {required} MiB of workspace plus 128 MiB of headroom, "
-                          f"but only {free} MiB of VRAM is free; close another GPU application and retry",
-                          retry_after=1)
 
     def check_load_policy(self):
         """Apply the configured before-load hook and free-VRAM gate. Caller holds self.fifo."""
@@ -6708,7 +6615,6 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
                     svc.engine.close()
                     svc.engine, svc.tok, svc.template = candidate, tokenizer, template
                     svc.vision = image_candidate
-                    image_candidate.before_encode = svc.check_vision_workspace
                     svc.model, svc.sampling_defaults = name, defaults
                     svc.default_enable_thinking = updated.get("enable_thinking", True)
                     svc.default_max_tokens = updated.get("max_tokens", 32768)

@@ -38,16 +38,10 @@
 #include <thread>
 #include <vector>
 
-// Private extensions compiled into the pinned mtmd library by vision.cmake.
-extern "C" size_t tinystrata_mtmd_workspace_bytes(mtmd_context* ctx);
-extern "C" size_t tinystrata_mtmd_release_workspace(mtmd_context* ctx);
-
 namespace {
 
 void quiet_log(ggml_log_level level, const char* text, void*) {
-    if (level >= GGML_LOG_LEVEL_WARN || std::strstr(text, "CLIP using ") ||
-        std::strstr(text, "compute buffer size") || std::strstr(text, "flash attention is "))
-        std::fputs(text, stderr);
+    if (level >= GGML_LOG_LEVEL_WARN || std::strstr(text, "CLIP using ")) std::fputs(text, stderr);
 }
 
 // "ENC <image> <out>": paths may contain spaces, so the image path ends at the last " " before the output path;
@@ -207,10 +201,11 @@ int main(int argc, char** argv) {
         if (gg) gguf_free(gg);
     }
     if (n_embd <= 0) { std::printf("ERR the vision encoder has no projection_dim\n"); std::fflush(stdout); return 1; }
-    // Warm up at the largest picture before READY to load kernels and measure
-    // the actual workspace. Keep the GPU weights, but release graph buffers
-    // between images. The API serializes images with text generation and checks
-    // that this measured workspace fits in free VRAM before a cache miss.
+    // Warm up at the LARGEST picture before READY: the encoder's GPU work buffers are allocated now, not at the first
+    // real picture.  The server starts this process before the engine, so the engine sizes its expert cache from
+    // what is really left; allocating ~1 GB later, on a GPU the engine has filled, made Windows page GPU memory and
+    // the engine crawl to a standstill. Use the configured full token capacity,
+    // with dimensions aligned to the projector's patch/merge sizes.
     // On the CPU there is no VRAM to reserve, and the warm-up would only delay the engine's start by one encode
     // (~6 s at 1,024 tokens).
     if (!gpu) std::fprintf(stderr, "tinystrata-vision: on the CPU, %d threads, no warm-up\n", threads);
@@ -253,25 +248,9 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
-    const char* keep_workspace = std::getenv("TINYSTRATA_VISION_KEEP_WORKSPACE");
-    const bool release_workspace = gpu && !(keep_workspace && std::strcmp(keep_workspace, "1") == 0);
-    const size_t workspace_bytes = release_workspace ? tinystrata_mtmd_workspace_bytes(ctx) : 0;
-    const size_t workspace_mib = (workspace_bytes + ((size_t) 1 << 20) - 1) >> 20;
-    if (release_workspace) {
-        const size_t released = tinystrata_mtmd_release_workspace(ctx);
-        if (workspace_bytes && released != workspace_bytes) {
-            std::printf("ERR cannot release GPU vision workspace\n");
-            std::fflush(stdout);
-            mtmd_free(ctx); llama_model_free(text); llama_backend_free();
-            return 1;
-        }
-        std::fprintf(stderr, "tinystrata-vision: %.2f MiB image workspace released; GPU weights stay resident\n",
-                     released / 1048576.0);
-    }
-    std::printf("READY %d workspace_mib=%zu\n", n_embd, workspace_mib);
+    std::printf("READY %d\n", n_embd);
     std::fflush(stdout);
 
-    int exit_status = 0;
     std::string line;
     while (std::getline(std::cin, line)) {
         while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
@@ -286,7 +265,7 @@ int main(int argc, char** argv) {
         const std::string prompt = mtmd_default_marker();
         mtmd_input_text txt{prompt.c_str(), prompt.size(), false, true};
         const mtmd_bitmap* bm[1] = {bw.bitmap};
-        std::string err, reply;
+        std::string err;
         const mtmd_input_chunk* ichunk = nullptr;
         if (mtmd_tokenize(ctx, chunks, &txt, bm, 1) != 0) err = "the image could not be preprocessed";
         for (size_t c = 0; err.empty() && c < mtmd_input_chunks_size(chunks); ++c) {
@@ -320,30 +299,17 @@ int main(int argc, char** argv) {
                 std::fclose(f);
                 if (!ok) err = "short write to " + out;
                 const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-                if (ok) {
-                    char response[128];
-                    std::snprintf(response, sizeof response, "OK %d %d %d %.0f\n", n, nx, ny, ms);
-                    reply = response;
-                }
-            }
-        }
-        mtmd_input_chunks_free(chunks);
-        mtmd_bitmap_free(bw.bitmap);
-        if (bw.video_ctx) mtmd_helper_video_free(bw.video_ctx);
-        if (release_workspace) {
-            const size_t held = tinystrata_mtmd_workspace_bytes(ctx);
-            if (held && tinystrata_mtmd_release_workspace(ctx) != held) {
-                err = "cannot release GPU vision workspace";
-                exit_status = 1;
+                if (ok) std::printf("OK %d %d %d %.0f\n", n, nx, ny, ms);
             }
         }
         if (!err.empty()) std::printf("ERR %s\n", err.c_str());
-        else std::fputs(reply.c_str(), stdout);
-        std::fflush(stdout); // The response means GPU work buffers have also been returned.
-        if (exit_status) break;
+        std::fflush(stdout);
+        mtmd_input_chunks_free(chunks);
+        mtmd_bitmap_free(bw.bitmap);
+        if (bw.video_ctx) mtmd_helper_video_free(bw.video_ctx);
     }
     mtmd_free(ctx);
     llama_model_free(text);
     llama_backend_free();
-    return exit_status;
+    return 0;
 }

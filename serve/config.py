@@ -15,7 +15,7 @@ ENGINE_OPTIONS = {
     "expert_vram": ("--expert-vram", 0, None, False),
     "vram_reserve_mib": ("--vram-reserve-mib", 0, None, True),
     "mtp": ("--mtp", 0, 7, True),
-    "chunk": ("--chunk", 1, 2048, True),
+    "chunk": ("--chunk", 1, 4096, True),
 }
 
 

@@ -45,7 +45,7 @@ def chunk_size(value: str):
         parsed = "auto" if value.lower() == "auto" else int(value)
         return config.check("chunk", parsed, {})
     except ValueError as e:
-        raise argparse.ArgumentTypeError("expected auto or a whole-number input chunk from 1 to 2048") from e
+        raise argparse.ArgumentTypeError("expected auto or a whole-number input chunk from 1 to 4096") from e
 
 
 def prepare(a) -> tuple[dict, Path]:
@@ -124,9 +124,9 @@ def main() -> int:
     ap.add_argument("--expert-vram", type=expert_budget, metavar="auto|GiB",
                     help="fit experts to available VRAM (default: auto), or set an advanced GiB limit; 0 = CPU experts")
     ap.add_argument("--vram-reserve-mib", type=int,
-                    help="free GPU memory to leave unused when fitting experts automatically (engine default: 768 MiB)")
+                    help="override the automatic VRAM reserve (default: 768 MiB; upstream near-fit path: 256 MiB)")
     ap.add_argument("--chunk", type=chunk_size, metavar="auto|TOKENS",
-                    help="adapt input chunk size to available GPU memory (default: auto), or fix 1–2048 tokens")
+                    help="use the upstream engine's automatic chunk selection (default: auto), or fix 1–4096 tokens")
     ap.add_argument("--gpu", type=int, help="GPU index")
     ap.add_argument("--lib-dir", type=Path, action="append", help="CUDA runtime DLL directory (repeatable)")
     ap.add_argument("--port", type=int, help="API port (default: saved setting or 18080)")

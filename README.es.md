@@ -59,7 +59,7 @@ Las solicitudes omitieron los parámetros de muestreo y la semilla. La única mo
 | Aprox. 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | 12 GiB reservados; cálculo de expertos en CPU y GPU |
 | Aprox. 8 GB | 64K | 64.35 tok/s | 65.62 tok/s | 16 GiB reservados; cálculo de expertos en CPU y GPU |
 
-Solo se volvió a medir la fila de 8 GB después de liberar los búferes de trabajo de visión e introducir el ajuste automático de bloques; ambos modos seleccionaron automáticamente bloques de 512 tokens. Las filas de 24/16/12 GB conservan los resultados anteriores del mismo día.
+Estas mediciones proceden de versiones anteriores a la política actual de memoria al iniciar. La fila de 8 GB se midió por separado con bloques de 512 tokens; las filas de 24/16/12 GB conservan los resultados anteriores de la misma fecha.
 
 Estas son velocidades agregadas de decodificación: el total de tokens generados dividido por el tiempo de decodificación registrado por el motor, excluyendo la carga y el procesamiento de la entrada. Se usaron los mismos tres textos, con 32, 44 y 1,597 tokens tras aplicar la plantilla de razonamiento, cada uno con dos generaciones de 128 tokens, incluidos los tokens de razonamiento. **Las capacidades de la tabla son capacidades de caché asignadas, no longitudes de entrada.** Las filas con memoria reducida reservaron por separado 8, 12 o 16 GiB en la misma GPU de 24 GB y realizaron trabajo real de expertos en la CPU.
 
@@ -81,9 +81,11 @@ Los archivos del modelo descargados suman unos **15.0 GB**: **14.1 GB** para el 
 
 ![Cómo reparte TinyStrata la memoria entre la VRAM de la GPU y la RAM del sistema](assets/memory-sharing.png)
 
-Este es un diagrama de distribución, no una partición de tamaño fijo. Cada vez que carga el modelo, TinyStrata inicia y prepara el codificador de visión de la GPU antes de cargar el modelo de lenguaje. Después asigna la caché KV, los demás pesos y los búferes de trabajo, y ajusta la caché de expertos a la VRAM libre restante, dejando un margen. En Windows, consulta tanto la lectura de memoria libre de CUDA como la lectura de todo el dispositivo del controlador de NVIDIA, y usa el menor valor disponible cuando ambas consultas tienen éxito. Si la asignación falla o deja demasiado poco margen, vuelve a intentarlo con menos expertos.
+Este es un diagrama de distribución, no una partición de tamaño fijo. Cada vez que carga el modelo, TinyStrata inicia y prepara el codificador de visión de la GPU antes de cargar el modelo de lenguaje; sus pesos y búferes de trabajo preparados permanecen residentes. Después asigna la caché KV, los demás pesos y los búferes de trabajo, y dimensiona la caché de expertos según la memoria libre restante que informa CUDA.
 
-El contenido de la caché cambia a medida que se usan distintos expertos; la capacidad de la caché se recalcula cuando se vuelve a cargar el modelo. Otras aplicaciones que se abran más tarde pueden seguir consumiendo VRAM. La reserva es un margen disponible al ubicar los expertos, no una garantía permanente de que queden 768 MiB libres.
+El contenido de la caché cambia a medida que se usan distintos expertos; la capacidad de la caché se recalcula cuando se vuelve a cargar el modelo. Otras aplicaciones que se abran más tarde pueden seguir consumiendo VRAM.
+
+La ubicación de expertos busca normalmente un margen de 768 MiB. Como Strata, cuando falta poco para que todos los expertos del modelo principal quepan en VRAM, puede liberar las copias empaquetadas de los pesos Q8, reducir un búfer de puntuaciones de Attention si existe y bajar el margen a 256 MiB; los expertos MTP pueden ejecutarse en la CPU. `--vram-reserve-mib N` fija la reserva explícitamente. Es un objetivo al ubicar los expertos, no una garantía permanente de memoria libre.
 
 Tener más expertos residentes en la GPU suele implicar menos trabajo para la CPU. En modo híbrido, la RAM del sistema también conserva copias de respaldo de los expertos almacenados en la caché de VRAM, por lo que añadir VRAM no reduce el uso de RAM byte por byte. Deja RAM también para el sistema operativo y las demás aplicaciones. Una mayor **capacidad de RAM** permite alojar los datos del modelo, pero la velocidad también depende de la CPU, el ancho de banda de la RAM y la GPU. La «memoria compartida de GPU» de Windows es distinta del cálculo deliberado de expertos en la CPU que realiza TinyStrata.
 
@@ -93,15 +95,13 @@ La caché KV permanece en la VRAM; la RAM del sistema almacena los datos de los 
 
 Las configuraciones nuevas eligen automáticamente KV/Attention y la capacidad de contexto. No necesitas seleccionar una receta para 8 GB, 12 GB o 16 GB.
 
-![Ajustes automáticos según el hardware para Attention, la caché KV y la capacidad de contexto](assets/automatic-settings.png)
-
 Una RTX 3060 selecciona INT8. Los entornos compatibles con RTX de las series 40/50 pueden seleccionar FP8 nativo; el motor comprueba los kernels compilados y las capacidades de la GPU, además de la generación del hardware. Si FP8 nativo no está disponible, el modo automático usa INT8. Esto elige una ruta compatible sin ejecutar una prueba de velocidad o calidad al iniciar. **Attention con FP8 nativo sigue siendo experimental.**
 
-La división automática de la entrada comienza con bloques de 512 tokens. Solo si el arranque informa de VRAM insuficiente, TinyStrata vuelve a intentarlo con 256, 128, 64, 32 y, por último, 16 tokens, sin cambiar el modelo, la capacidad de contexto seleccionada ni la reserva de VRAM. Los bloques más pequeños pueden ralentizar el procesamiento de la entrada. `run-api.bat --chunk N` fija el tamaño; `run-api.bat --chunk auto` restablece el ajuste automático.
+El motor nativo estima al iniciar un tamaño de bloque de entrada de 512, 1024, 2048 o 4096 tokens, según la VRAM libre, la capacidad de contexto y si los expertos caben en la GPU. Los bloques mayores pueden reducir las transferencias repetidas de pesos de RAM a GPU durante el procesamiento de la entrada. `run-api.bat --chunk N` fija el tamaño; `run-api.bat --chunk auto` restablece la selección automática nativa.
 
 La capacidad de contexto es el espacio máximo reservado para la entrada y la salida generada en conjunto. Una capacidad mayor usa más memoria KV incluso con una conversación corta, y deja menos VRAM para los expertos. La capacidad tampoco implica la misma velocidad con cualquier longitud de conversación: procesar un documento largo requiere más trabajo. Como referencia, solo KV en INT8 ocupa unos **0.71 GiB a 64K, 1.42 GiB a 128K y 2.84 GiB a 256K**, incluida la capa MTP; los demás pesos y búferes de trabajo requieren espacio adicional. En esta implementación, FP8 nativo usa aproximadamente el mismo almacenamiento KV que INT8; su ventaja es una ruta de cálculo diferente, en lugar de una caché considerablemente más pequeña.
 
-La VRAM libre es la memoria disponible al cargar el modelo, no la cifra impresa en la caja de la GPU. Por ello, otras aplicaciones pueden hacer que se seleccione un contexto menor. Si una recarga reduce la capacidad, la API rechaza una entrada que ya no quepa en vez de truncarla silenciosamente.
+La VRAM libre es la memoria disponible al cargar el modelo, no la cifra impresa en la caja de la GPU. Por ello, otras aplicaciones pueden hacer que se seleccione un contexto menor. Si una recarga reduce la capacidad, la API rechaza una entrada que ya no quepa en vez de truncarla silenciosamente. En Windows, la selección automática de contexto consulta tanto la memoria libre de CUDA como la lectura de todo el dispositivo del controlador de NVIDIA, y usa el menor valor cuando ambas consultas tienen éxito.
 
 La cuantización de los pesos GGUF y la precisión de KV son independientes. El modelo UD-IQ3_XXS seleccionado tiene pesos comprimidos; INT8 o FP8 describe la caché de la conversación y su ruta de Attention. KV de menor precisión puede cambiar las respuestas, por lo que estos modos no prometen una salida idéntica a la de KV en FP32. La implementación conserva todas las posiciones visibles del contexto y todos los expertos seleccionados por el modelo.
 
