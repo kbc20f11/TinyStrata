@@ -2,6 +2,22 @@
 
 **English** · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
 
+> **LFN development branch:** adds LFM2.5-24B-A2B alongside the Qwen engine. The existing Qwen installation and measurements below remain separate.
+
+## LFN branch: LFM2.5-24B-A2B
+
+This branch runs the official [LiquidAI Q4_K_M GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF) (14.53 GB), with an automatic VRAM Expert cache, CPU Expert computation, prompt weight streaming and CUDA Graphs. All selected Experts are evaluated. LFM currently uses **FP16 KV**, up to **128K context**, and **no MTP or Vision**; publicly released MTP weights are not available.
+
+Build the LFM executable from this checkout using an x64 Visual Studio developer terminal with CUDA installed:
+
+```powershell
+cmake -S . -B ..\TinyStrata-work\build -DTINYSTRATA_BACKEND=CUDA
+cmake --build ..\TinyStrata-work\build --config Release --target tinystrata-lfm2 --parallel 4
+.\run-api.bat --model-family lfm2 --port 18081
+```
+
+The API uses a separate `config-lfm2.json`. If the model is not installed, `POST /v1/model/download` with `{}` downloads and verifies the pinned Q4_K_M file. To use an existing file, add `--model "C:\models\LFM2.5-24B-A2B-Q4_K_M.gguf"` to the launcher. The `main` installer below still installs the Qwen release. LFM defaults are `temperature=0.1`, `top_k=50` and `repetition_penalty=1.05`; its reasoning is always enabled. This new engine is under validation and does not promise token-identical output to llama.cpp or between CPU/GPU placements.
+
 **TinyStrata is a fast, Windows-only, API-only inference engine for 30B-class MoE models.** It primarily targets PCs with mainstream graphics cards (**8–24 GB of VRAM**) and **32 GB of system RAM or less**.
 
 ## Why we are building TinyStrata

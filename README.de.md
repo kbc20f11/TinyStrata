@@ -2,6 +2,8 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · **Deutsch** · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
 
+> **Entwicklungsbranch LFN:** ergänzt LFM2.5-24B-A2B Q4_K_M mit FP16-KV, ohne MTP/Vision. Siehe [LFM-Einrichtung](README.md#lfn-branch-lfm25-24b-a2b). Die bisherigen Installationsschritte und Messwerte unten beziehen sich weiterhin auf Qwen.
+
 **TinyStrata ist eine schnelle Inferenz-Engine für MoE-Modelle der 30B-Klasse, die ausschließlich für Windows und die Nutzung per API entwickelt wird.** Sie richtet sich vor allem an PCs, die mit gängigen Grafikkarten mit **8–24 GB VRAM** ausgestattet sind und über **höchstens 32 GB Arbeitsspeicher** verfügen.
 
 ## Warum wir TinyStrata entwickeln

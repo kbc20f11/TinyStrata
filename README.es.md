@@ -2,6 +2,8 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · **Español** · [Português](README.pt-BR.md)
 
+> **Rama de desarrollo LFN:** añade LFM2.5-24B-A2B Q4_K_M con KV FP16, sin MTP/Vision. Consulta la [configuración de LFM](README.md#lfn-branch-lfm25-24b-a2b). Las instrucciones y mediciones existentes que aparecen más abajo siguen correspondiendo a Qwen.
+
 **TinyStrata es un motor de inferencia de alta velocidad en desarrollo para modelos MoE de la clase 30B, exclusivo de Windows y accesible solo mediante API.** Está orientado principalmente a PC equipados con tarjetas gráficas de uso común de **8–24 GB** de VRAM y con **32 GB de RAM del sistema o menos**.
 
 ## ¿Por qué desarrollamos TinyStrata?

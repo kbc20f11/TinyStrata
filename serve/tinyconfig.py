@@ -14,6 +14,8 @@ DEFAULT_SAMPLING = {
     "temperature": 0.7, "top_p": 0.95, "top_k": 20, "min_p": 0.0,
     "presence_penalty": 1.5, "repetition_penalty": 1.0,
 }
+LFM2_SAMPLING = {"temperature": 0.1, "top_k": 50, "repetition_penalty": 1.05}
+MODEL_NAMES = {"qwen35moe": "qwen3.6-35b-a3b", "lfm2moe": "lfm2.5-24b-a2b"}
 
 
 def migrate_generation_settings(cfg: dict) -> tuple[dict, bool]:
@@ -26,9 +28,10 @@ def migrate_generation_settings(cfg: dict) -> tuple[dict, bool]:
     if sampling is not None and not isinstance(sampling, dict):
         raise ValueError("sampling must be an object")
     sampling = dict(sampling or {})
-    if cfg.get("generation_policy_version") != GENERATION_POLICY_VERSION and sampling == {"temperature": 0}:
+    if cfg.get("arch") != "lfm2moe" and cfg.get("generation_policy_version") != GENERATION_POLICY_VERSION and \
+            sampling == {"temperature": 0}:
         sampling = {}
-    defaults = dict(DEFAULT_SAMPLING)
+    defaults = dict(LFM2_SAMPLING if cfg.get("arch") == "lfm2moe" else DEFAULT_SAMPLING)
     # Preserve the upstream spelling as well as the canonical spelling.
     if sampling.get("repeat_penalty") is not None:
         defaults.pop("repetition_penalty")
@@ -93,13 +96,16 @@ def migrate_chunk_settings(cfg: dict) -> tuple[dict, bool]:
 
 def check_vision_options(cfg: dict) -> str:
     """Validate launcher preferences independently of installed image assets."""
-    mode = cfg.get("vision_mode", "gpu")
+    lfm2 = cfg.get("arch") == "lfm2moe"
+    mode = cfg.get("vision_mode", "no" if lfm2 else "gpu")
     if mode not in ("gpu", "cpu", "no"):
         raise ValueError("vision_mode must be gpu, cpu or no")
     if "vision_tokens" in cfg:
         tokens = cfg["vision_tokens"]
         if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
             raise ValueError("vision_tokens must be a positive whole number")
+    if lfm2 and (mode != "no" or cfg.get("vision")):
+        raise ValueError("LFM2.5-24B-A2B is text-only; use --vision no")
     return mode
 
 
@@ -153,8 +159,11 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
     max_tokens = cfg.get("max_tokens", DEFAULT_MAX_TOKENS)
     if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
         raise ValueError("max_tokens must be a positive whole number")
-    if cfg.get("arch", "qwen35moe") != "qwen35moe":
-        raise ValueError("TinyStrata currently supports Qwen3.6 (qwen35moe) only")
+    arch = cfg.get("arch", "qwen35moe")
+    if arch not in MODEL_NAMES:
+        raise ValueError("TinyStrata supports qwen35moe and lfm2moe models")
+    if arch == "lfm2moe" and cfg.get("enable_thinking", True) is False:
+        raise ValueError("LFM2.5-24B-A2B always uses thinking")
     for key in ("images", "replicas", "layer_split", "vram_elastic", "slot_save_path",
                 "expert_profile_save", "split_skip_if_fits"):
         if cfg.get(key):
@@ -197,6 +206,23 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         value = config.value_of(cfg, key)
         if value is not None:
             config.check(key, value, cfg)
+    kv = config.value_of(cfg, "kv_type")
+    if arch == "lfm2moe":
+        qwen_only = seen.intersection({"--hybrid-graph", "--no-hybrid-graph", "--hybrid-rows",
+                                       "--expert-slots", "--no-warmup"})
+        if qwen_only:
+            raise ValueError("Unsupported LFM2.5 engine option: " + ", ".join(sorted(qwen_only)))
+        if "--vision" in seen:
+            raise ValueError("LFM2.5-24B-A2B is text-only; remove --vision")
+        if kv not in (None, "auto", "fp16"):
+            raise ValueError("LFM2.5 currently supports --kv-type auto or fp16; INT8/FP8 are not implemented")
+        context = config.value_of(cfg, "max_context")
+        if context not in (None, "auto") and context > 131072:
+            raise ValueError("LFM2.5 supports at most 131072 context tokens")
+        if config.value_of(cfg, "mtp") not in (None, 0):
+            raise ValueError("LFM2.5 has no published MTP head; --mtp must be 0")
+    elif kv == "fp16":
+        raise ValueError("Qwen3.6 does not support --kv-type fp16")
 
 
 def check_files(cfg: dict, *, allow_uninstalled: bool = False) -> None:

@@ -2602,6 +2602,10 @@ def engine_args(cfg: dict) -> list[str]:
     config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32"; see
     layer_split_value)."""
     args = list(cfg["args"])
+    if cfg.get("arch") == "lfm2moe" and "--mtp" in args:
+        index = args.index("--mtp")
+        if index + 1 < len(args) and args[index + 1] == "0":
+            del args[index:index + 2]
     # #1322: a config with a "vision" section but without --vision in its args (written by an older setup run, or edited by
     # hand) advertised images and then refused every picture ("this engine was started without --vision").  The section
     # says images are wanted: start the engine with them, and keep the encoder's VRAM free as setup does for a GPU encoder
@@ -2940,13 +2944,20 @@ class UnavailableEngine:
 def model_tokenizer(path: Path):
     """Read the tokenizer exported from the verified GGUF; no remote tokenizer code."""
     from serve import tokenizer as ST
-    vocab = json.loads((path / "vocab.json").read_text(encoding="utf-8"))
-    tokens = [None] * len(vocab)
-    for token, index in vocab.items():
-        tokens[index] = token
-    merges = (path / "merges.txt").read_text(encoding="utf-8").split("\n")
-    types = json.loads((path / "token_type.json").read_text())
-    return ST.Tokenizer(tokens, merges, types)
+    return ST.Tokenizer.from_dir(path)
+
+
+def tokenizer_stop_ids(tokenizer) -> set[int]:
+    """EOS/control IDs only: an absent marker must not become ordinary BPE stops."""
+    result = set()
+    eos = getattr(tokenizer, "eos_token_id", None)
+    if isinstance(eos, int) and not isinstance(eos, bool) and eos >= 0:
+        result.add(eos)
+    known = set(getattr(tokenizer, "control_tokens", ())) | set(getattr(tokenizer, "special_tokens", ()))
+    for marker in (IM_END, "<|endoftext|>"):
+        if marker in known:
+            result.update(tokenizer.encode(marker, parse_special=True))
+    return result
 
 
 # ------------------------------------------------------------------------------------------------ core
@@ -3084,6 +3095,8 @@ class Service:
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
                  fit_max_tokens: bool = False, generation_defaults: dict | None = None):
         self.engine, self.tok, self.template, self.model, self.vision = engine, tokenizer, template, model_name, vision
+        self.template_tokens = dict(getattr(tokenizer, "template_tokens", {}))
+        self.call_format = getattr(template, "call_format", "function")
         self.literals = literal_tags(getattr(tokenizer, "control_tokens", ()))   # texts that stay text inside a message
         self.fit_max_tokens = fit_max_tokens          # --fit-max-tokens: clamp the output cap instead of 400
         self.aliases: list[str] = []                  # #297: other names of the model (the config's `aliases`)
@@ -3157,8 +3170,7 @@ class Service:
         self.tool_call_recovery = False                   # opt-in: tool calls in forms next to the template's
         self.images = None                                # serve/images.py's ImageGen when the config has "images"
         self.restore_after_load = None                    # a session file an image job saved before it unloaded
-        self.stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
-                            tokenizer.encode("<|endoftext|>", parse_special=True))
+        self.stop_ids = tokenizer_stop_ids(tokenizer)
 
     def loaded(self) -> bool:
         return self.model_available and (not hasattr(self.engine, "alive") or self.engine.alive())
@@ -3623,7 +3635,7 @@ class Service:
 
     def template_defaults(self, kwargs: dict, req: dict | None = None) -> dict:
         """Apply the config's thinking switch without overriding a client's choice."""
-        kwargs = dict(kwargs)
+        kwargs = {**self.template_tokens, **kwargs}
         for key in ("enable_thinking", "reasoning_effort"):
             if kwargs.get(key) is None:
                 kwargs.pop(key, None)
@@ -3638,6 +3650,8 @@ class Service:
             kwargs["enable_thinking"] = req["thinking"]["type"] == "enabled"
         elif "enable_thinking" not in kwargs and "reasoning_effort" not in kwargs:
             kwargs["enable_thinking"] = self.default_enable_thinking
+        if self.call_format == "lfm2" and kwargs.get("enable_thinking") is False:
+            raise ValueError("LFM2.5-24B-A2B always uses thinking; disabling it is not supported")
         return kwargs
 
     def start_telemetry(self):
@@ -4144,7 +4158,8 @@ class Service:
                 print(f"[strata] thinking capped at {max_new - reserve} of max_tokens {max_new} to leave room for "
                       f"the answer (budget {budget})", flush=True)
                 budget = max(1, max_new - reserve)
-        parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True, recover=self.tool_call_recovery)
+        parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True, recover=self.tool_call_recovery,
+                              call_format=self.call_format)
         detok, n, finish = Detokenizer(self.tok), 0, "length"
         run_tok, run_len, repeated = None, 0, False     # #606: the current run of one repeated token
         thinking_n = 0                                  # tokens written while thinking (Responses' reasoning_tokens)
@@ -5733,7 +5748,7 @@ def make_handler(svc: Service):
             self._no_local_images(messages)
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # as the Responses route: no tools are offered
                 tools = None
-            force = forced_call(req.get("tool_choice"), tools)      # a bad value is a 400 before anything is sent
+            force = forced_call(req.get("tool_choice"), tools, call_format=svc.call_format)
             messages, validator = prepare_format(req.get("response_format"), messages)
             if validator is not None and (tools or req.get("strata_mcp")):
                 raise ValueError("structured response_format with tools/MCP is not supported")
@@ -5968,7 +5983,7 @@ def make_handler(svc: Service):
             self._no_local_images(messages)
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # Anthropic's {"type": "none"}: no tools offered
                 tools = None
-            force = forced_call(req.get("tool_choice"), tools)        # "any" / {"type": "tool", "name": N}
+            force = forced_call(req.get("tool_choice"), tools, call_format=svc.call_format)
             max_new = int(req.get("max_tokens") or 0)                  # 0/-1: the rest of the context
             svc.reasoning_budget(req)                         # a bad value is a 400 before anything is sent
             stop_strings(req)                                 # ... and so is a bad stop / stop_sequences
@@ -6385,7 +6400,7 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
     A bad value refuses to start the server (a typo'd config should not quietly change sampling); unknown keys
     are named at startup and ignored."""
     out = {}
-    from serve.tinyconfig import DEFAULT_SAMPLING
+    from serve.tinyconfig import DEFAULT_SAMPLING, LFM2_SAMPLING
     block = dict(cfg.get("sampling") or {})
     for alias, canon in SAMPLING_ALIASES.items():      # #1819: llama.cpp's names for the same two fields
         if block.get(alias) is not None:
@@ -6393,7 +6408,8 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
                 raise SystemExit(f"[strata] config sampling: both {alias!r} and {canon!r} are set; they are the same "
                                  f"setting, keep one")
             block[canon] = block.pop(alias)
-    block = {**DEFAULT_SAMPLING, **{key: value for key, value in block.items() if value is not None}}
+    defaults = LFM2_SAMPLING if cfg.get("arch") == "lfm2moe" else DEFAULT_SAMPLING
+    block = {**defaults, **{key: value for key, value in block.items() if value is not None}}
     for key, value in block.items():
         if value is None:
             continue
@@ -6524,17 +6540,17 @@ def check_request_sampling(req) -> None:
 
 
 # the API's model name per model family (the GGUF architecture, "arch" in the config) when the config names none
-FAMILY_MODEL_NAMES = {"qwen35moe": "qwen3.6-35b-a3b"}
+FAMILY_MODEL_NAMES = {"qwen35moe": "qwen3.6-35b-a3b", "lfm2moe": "lfm2.5-24b-a2b"}
 
 
 def default_model_name(cfg: dict) -> str:
     """The configured API name, or TinyStrata's Qwen3.6 model name."""
-    return cfg.get("model_name") or FAMILY_MODEL_NAMES["qwen35moe"]
+    return cfg.get("model_name") or FAMILY_MODEL_NAMES.get(cfg.get("arch", "qwen35moe"), FAMILY_MODEL_NAMES["qwen35moe"])
 
 
 def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
     """Install the fixed GGUF and image projector before publishing inference readiness."""
-    from serve.model_download import FixedModelBundleDownloader
+    from serve.model_download import FixedModelBundleDownloader, FixedModelDownloader, manifest_for_arch
     from serve.model_setup import model_path, prepare_installed_model, resolve_executable, save_settings
 
     existing = model_path(cfg)
@@ -6542,7 +6558,7 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
     if not directory.is_absolute():
         directory = Path(cfg.get("cwd") or ROOT) / directory
 
-    def activate(path: Path, projector: Path):
+    def activate(path: Path, projector: Path | None = None):
         if svc.stopping.is_set() or getattr(svc.downloads, "closed", False):
             raise RuntimeError("the API is stopping")
         # Reuse an already complete installation, without another resident model.
@@ -6580,8 +6596,7 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
         template = ChatTemplate(tpath / "chat_template.jinja")
         effort = effort_end_args(updated, str(exe), tokenizer)
         literals = literal_tags(getattr(tokenizer, "control_tokens", ()))
-        stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
-                       tokenizer.encode("<|endoftext|>", parse_special=True))
+        stop_ids = tokenizer_stop_ids(tokenizer)
         name, defaults = default_model_name(updated), sampling_defaults_from_config(updated)
         candidate = StrataEngine(str(exe), engine_args(updated) + (effort or []), cwd=updated.get("cwd"),
                                  log=updated.get("log"), env=child_env(updated), lazy=True)
@@ -6620,6 +6635,8 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
                     save_settings(config_path, updated)
                     svc.engine.close()
                     svc.engine, svc.tok, svc.template = candidate, tokenizer, template
+                    svc.template_tokens = dict(getattr(tokenizer, "template_tokens", {}))
+                    svc.call_format = getattr(template, "call_format", "function")
                     svc.vision = image_candidate
                     svc.model, svc.sampling_defaults = name, defaults
                     svc.default_enable_thinking = updated.get("enable_thinking", True)
@@ -6639,10 +6656,15 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
         print("[tinystrata] verified model" + (" and image encoder" if image_candidate is not None else "") +
               " loaded; inference API ready", flush=True)
 
-    projector = (cfg.get("vision") or {}).get("mmproj")
-    svc.downloads = FixedModelBundleDownloader(directory, on_ready=activate,
-                                               existing_paths=(existing,) if existing is not None else (),
-                                               projector_paths=(Path(projector),) if projector else ())
+    if cfg.get("arch") == "lfm2moe":
+        svc.downloads = FixedModelDownloader(directory, on_ready=activate,
+                                             existing_paths=(existing,) if existing is not None else (),
+                                             _manifest=manifest_for_arch("lfm2moe"))
+    else:
+        projector = (cfg.get("vision") or {}).get("mmproj")
+        svc.downloads = FixedModelBundleDownloader(directory, on_ready=activate,
+                                                   existing_paths=(existing,) if existing is not None else (),
+                                                   projector_paths=(Path(projector),) if projector else ())
     return svc.downloads
 
 

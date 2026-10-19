@@ -14,6 +14,7 @@ and the formats change often; the engine boundary is token ids in, text deltas o
 """
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import os
@@ -25,9 +26,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import jinja2
+from jinja2.ext import Extension
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 LOGGER = logging.getLogger(__name__)
+
+
+class GenerationExtension(Extension):
+    """Render transformers' assistant-training markers as ordinary blocks."""
+    tags = {"generation"}
+
+    def parse(self, parser):
+        token = next(parser.stream)
+        body = parser.parse_statements(("name:endgeneration",), drop_needle=True)
+        return jinja2.nodes.Scope(body).set_lineno(token.lineno)
 
 
 # ------------------------------------------------------------------------------------------------ template
@@ -46,10 +58,12 @@ class ChatTemplate:
         def tojson(x, ensure_ascii=False, indent=None, separators=None, sort_keys=False):
             return json.dumps(x, ensure_ascii=ensure_ascii, indent=indent, separators=separators, sort_keys=sort_keys)
 
-        env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True, extensions=["jinja2.ext.loopcontrols"])
+        env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True,
+                                            extensions=["jinja2.ext.loopcontrols", GenerationExtension])
         env.filters["tojson"] = tojson
         env.globals["raise_exception"] = raise_exception
         self.source = Path(path).read_text(encoding="utf-8")
+        self.call_format = "lfm2" if "<|tool_call_start|>" in self.source else "function"
         self.template = env.from_string(self.source)
         self.caps = self._detect_caps()
 
@@ -61,6 +75,9 @@ class ChatTemplate:
                     if i == len(messages) - 1 or os.environ.get("STRATA_KEEP_EMPTY_TURNS") == "1" or not (isinstance(m, dict) and m.get("role") == "assistant"
                                                       and not _text_of(m.get("content")).strip()
                                                       and not _has_image(m.get("content")) and not m.get("tool_calls"))]
+        if self.call_format == "lfm2":
+            messages = [{**m, "thinking": m["reasoning_content"]}
+                        if "reasoning_content" in m and "thinking" not in m else m for m in messages]
         return self.template.render(messages=messages, tools=tools, add_generation_prompt=add_generation_prompt,
                                     **kwargs)
 
@@ -92,10 +109,14 @@ class ChatTemplate:
             prompt = render(messages, tools)
             # Instructions include example XML and literal tag names, which are not model output. Parse only
             # complete calls to our probe functions, using the same body parser as OutputParser.
-            bodies = re.findall(r"<tool_call>\s*(<function=strata_caps_call_\d+>.*?</function>)\s*</tool_call>",
-                                prompt, re.S)
             try:
-                parsed = [parse_tool_call(body) for body in bodies]
+                if self.call_format == "lfm2":
+                    bodies = re.findall(r"<\|tool_call_start\|>(.*?)<\|tool_call_end\|>", prompt, re.S)
+                    parsed = [call for body in bodies for call in parse_lfm2_tool_calls(body)]
+                else:
+                    bodies = re.findall(r"<tool_call>\s*(<function=strata_caps_call_\d+>.*?</function>)\s*</tool_call>",
+                                        prompt, re.S)
+                    parsed = [parse_tool_call(body) for body in bodies]
             except ValueError:
                 return False
             return [{"name": call.name, "arguments": call.arguments} for call in parsed] == calls \
@@ -103,13 +124,15 @@ class ChatTemplate:
 
         history = [user, {"role": "assistant", "content": "strata_caps_answer",
                           "reasoning_content": "strata_caps_reasoning"}, user]
+        tool_markers = () if self.call_format == "lfm2" else ("<tool_call>", "<function=")
+        reasoning_prompt = self.render(history, preserve_thinking=True) if self.call_format == "lfm2" else render(history)
         return {"supports_tools": all(s in tool_prompt for s in
-                                      ("strata_caps_call_0", "strata_caps_description", "<tool_call>", "<function=")),
+                                      ("strata_caps_call_0", "strata_caps_description", *tool_markers)),
                 "supports_tool_calls": calls_supported(1),
                 "supports_system_role": "strata_caps_system" in render(
                     [{"role": "system", "content": "strata_caps_system"}, user]),
                 "supports_parallel_tool_calls": calls_supported(2),
-                "supports_preserve_reasoning": "strata_caps_reasoning" in render(history)}
+                "supports_preserve_reasoning": "strata_caps_reasoning" in reasoning_prompt}
 
 
 # ------------------------------------------------------------------------------------------------ requests
@@ -672,6 +695,93 @@ THINK_END = "</think>"
 CALL_START = "<tool_call>"
 CALL_END = "</tool_call>"
 
+# LFM2 list-style calls adapted from PolyStrata serve/frontend.py at
+# 26e4cb5df7996edfb5ff549a63b82d8581e1e658 (MIT).
+LFM2_CALL, LFM2_CALL_END = "<|tool_call_start|>", "<|tool_call_end|>"
+_LFM2_NAME = re.compile(r"[\s,\[]*([\w.\-]+)\s*\(")
+_LFM2_KEY = re.compile(r"[\s,]*(\w+)\s*=\s*")
+_LFM2_WORD, _LFM2_CLOSE = re.compile(r"[^,)]*"), re.compile(r"\s*\)")
+_LFM2_WORDS = {"true": True, "True": True, "false": False, "False": False, "null": None, "None": None}
+
+
+def lfm2_call_name(text: str) -> str | None:
+    match = _LFM2_NAME.match(text)
+    return match.group(1) if match else None
+
+
+def lfm2_call_end(text: str) -> int:
+    """Find the closing token outside quoted argument strings."""
+    quote, escaped = "", False
+    for i, char in enumerate(text):
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+        elif char in "'\"":
+            quote = char
+        elif text.startswith(LFM2_CALL_END, i):
+            return i
+    return -1
+
+
+def _lfm2_close(text: str, i: int) -> int:
+    depth, quote = 0, ""
+    while i < len(text):
+        char = text[i]
+        if quote:
+            if char == "\\":
+                i += 1
+            elif char == quote:
+                quote = ""
+        elif char in "'\"":
+            quote = char
+        elif char in "[{":
+            depth += 1
+        elif char in "]}":
+            depth -= 1
+        i += 1
+        if not quote and not depth:
+            return i
+    return i
+
+
+def _lfm2_value(text: str, i: int):
+    if i < len(text) and text[i] in "'\"[{":
+        end = _lfm2_close(text, i)
+        value = text[i:end]
+        for read in (json.loads, ast.literal_eval) if text[i] in "[{" else (ast.literal_eval,):
+            try:
+                return read(value), end
+            except (ValueError, SyntaxError, TypeError):
+                pass
+        return value, end
+    match = _LFM2_WORD.match(text, i)
+    word = match.group().strip()
+    if word in _LFM2_WORDS:
+        return _LFM2_WORDS[word], match.end()
+    try:
+        return json.loads(word), match.end()
+    except ValueError:
+        return word, match.end()
+
+
+def parse_lfm2_tool_calls(body: str, schema: dict | None = None) -> list[ToolCall]:
+    """Decode `[f(a='x', n=1), g()]` without executing Python expressions."""
+    calls, i = [], 0
+    while match := _LFM2_NAME.match(body, i):
+        name, args, i = match.group(1), {}, match.end()
+        while key := _LFM2_KEY.match(body, i):
+            args[key.group(1)], i = _lfm2_value(body, key.end())
+        close = _LFM2_CLOSE.match(body, i)
+        if close is None:
+            return []
+        i = close.end()
+        calls.append(ToolCall(name=name, arguments=args))
+    return calls if body[i:].strip() in ("", "]") else []
+
 
 PARAM_END = "</parameter>"
 FUNC_START = "<function="
@@ -752,7 +862,7 @@ def tool_choice_of(tool_choice) -> tuple[str, str | None]:
     return "unknown", None
 
 
-def forced_call(tool_choice, tools: list[dict] | None) -> str | None:
+def forced_call(tool_choice, tools: list[dict] | None, call_format: str = "function") -> str | None:
     """`tool_choice` -> the text that opens the call the reply must make, or None (the model decides).
     There is no grammar here: the server writes this opening itself, so the model can only go on with a call.
     "required" / Anthropic "any": any of the tools; a named function: that one.  A value it cannot honour (an
@@ -765,8 +875,12 @@ def forced_call(tool_choice, tools: list[dict] | None) -> str | None:
     if kind == "required" and len(names) == 1:     # one tool to call: name it, the model cannot invent another
         kind, name = "named", next(iter(names))
     if kind == "required" and names:
+        if call_format == "lfm2":
+            return LFM2_CALL + "["
         return CALL_START + "\n<function="
     if kind == "named" and name in names:
+        if call_format == "lfm2":
+            return LFM2_CALL + f"[{name}("
         return CALL_START + f"\n<function={name}>\n"
     print(f"[strata] tool_choice {json.dumps(tool_choice)[:200]} is not supported here (or names no tool of the "
           "request): the model decides, as with \"auto\"", flush=True)
@@ -874,10 +988,12 @@ class OutputParser:
     until it is complete, so clients never see `<tool_` or `</thi`."""
 
     def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
-                 recover: bool = False):
+                 recover: bool = False, call_format: str = "function"):
+        self.call_format = call_format
+        self.lfm_opening = call_format == "lfm2"
         self.state = "reasoning" if thinking else "content"
         self.buf = ""
-        self.lead = False
+        self.lead = call_format == "lfm2" and not thinking
         self.schemas = {t.get("name"): t for t in tools or []}
         # stream_tools: a tool call is also reported while it is being written - "tool_start" (its name and id) as
         # soon as the name is known, then "tool_args" pieces of its JSON arguments (string parameters character by
@@ -1157,7 +1273,93 @@ class OutputParser:
                     best = max(best, n)
         return best
 
+    def _lfm2_end(self) -> int:
+        """Scan each arriving tool argument character once, holding partial tags."""
+        while self.lfm_scan < len(self.buf):
+            i, char = self.lfm_scan, self.buf[self.lfm_scan]
+            if self.lfm_quote:
+                if self.lfm_escape:
+                    self.lfm_escape = False
+                elif char == "\\":
+                    self.lfm_escape = True
+                elif char == self.lfm_quote:
+                    self.lfm_quote = ""
+            elif char in "'\"":
+                self.lfm_quote = char
+            elif char == "<":
+                rest = self.buf[i:]
+                if rest.startswith(LFM2_CALL_END):
+                    return i
+                if LFM2_CALL_END.startswith(rest):
+                    return -1
+            self.lfm_scan += 1
+        return -1
+
+    def _feed_lfm2(self, delta: str) -> list[Event]:
+        self.buf += delta
+        out = []
+        while True:
+            if self.lfm_opening:
+                if self.buf.startswith("<think>"):
+                    self.buf = self.buf[len("<think>"):]
+                    self.state = "reasoning"
+                elif "<think>".startswith(self.buf):
+                    return out
+                self.lfm_opening = False
+            if self.state == "reasoning":
+                end = self.buf.find(THINK_END)
+                if end < 0:
+                    keep = self._hold(self.buf, (THINK_END,))
+                    text, self.buf = self.buf[:len(self.buf) - keep], self.buf[len(self.buf) - keep:]
+                    if text:
+                        out.append(Event("reasoning", text))
+                    return out
+                if end:
+                    out.append(Event("reasoning", self.buf[:end]))
+                self.buf = self.buf[end + len(THINK_END):]
+                self.state, self.lead = "content", True
+            elif self.state == "content":
+                if self.lead:
+                    self.buf = self.buf.lstrip("\r\n")
+                    if not self.buf:
+                        return out
+                    self.lead = False
+                start = self.buf.find(LFM2_CALL) if self.schemas else -1
+                if start < 0:
+                    keep = self._hold(self.buf, (LFM2_CALL,)) if self.schemas else 0
+                    text, self.buf = self.buf[:len(self.buf) - keep], self.buf[len(self.buf) - keep:]
+                    if text:
+                        out.append(Event("content", text))
+                    return out
+                if start:
+                    out.append(Event("content", self.buf[:start]))
+                self.buf = self.buf[start + len(LFM2_CALL):]
+                self.state = "lfm_call"
+                self.lfm_scan, self.lfm_quote, self.lfm_escape = 0, "", False
+            elif self.state == "lfm_call":
+                if self.stream_tools and self.scall is None:
+                    name = lfm2_call_name(self.buf)
+                    if name:
+                        self.scall = ToolCall(name=name, arguments={})
+                        out.append(Event("tool_start", call=self.scall))
+                end = self._lfm2_end()
+                if end < 0:
+                    return out
+                body, self.buf = self.buf[:end], self.buf[end + len(LFM2_CALL_END):]
+                calls = parse_lfm2_tool_calls(body)
+                if calls:
+                    if self.scall is not None:
+                        calls[0].id = self.scall.id
+                        out.append(Event("tool_args", json.dumps(calls[0].arguments, ensure_ascii=False), call=self.scall))
+                    out.extend(Event("tool_call", call=call) for call in calls)
+                else:
+                    out.append(Event("content", LFM2_CALL + body + LFM2_CALL_END))
+                self.scall = None
+                self.state, self.lead = "content", True
+
     def feed(self, delta: str) -> list[Event]:
+        if self.call_format == "lfm2":
+            return self._feed_lfm2(delta)
         self.buf += delta
         out: list[Event] = []
         while True:
@@ -1384,6 +1586,14 @@ class OutputParser:
         already announced stays unfinished: its JSON is not closed and no "tool_call" follows it, #211).  `reason` is
         how the turn ended: calls waiting from the reasoning become real calls only on a natural stop (None = stop);
         a turn cut by max tokens (or cancelled, or failed) keeps them as reasoning text (#1058)."""
+        if self.call_format == "lfm2":
+            if self.state == "lfm_call" and self.scall is not None:
+                self.buf = ""
+                return []
+            text = LFM2_CALL + self.buf if self.state == "lfm_call" else self.buf
+            kind = "reasoning" if self.state == "reasoning" else "content"
+            self.buf = ""
+            return [Event(kind, text)] if text else []
         out = []
         if self.pending:
             out += self._release(reason in (None, "stop") and self.state == "reasoning" and not self.buf)

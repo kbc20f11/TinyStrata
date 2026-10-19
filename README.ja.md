@@ -2,6 +2,22 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · **日本語** · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
 
+> **LFN 開発ブランチ：** Qwen エンジンに加えて LFM2.5-24B-A2B に対応しています。以下に残した Qwen の導入手順・計測値とは別の実装です。
+
+## LFN ブランチ：LFM2.5-24B-A2B
+
+公式の [LiquidAI Q4_K_M GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF)（14.53 GB）を使い、空き VRAM に合わせた Expert キャッシュ、CPU での Expert 計算、入力時の重みのストリーミング、CUDA Graph で高速化します。モデルが選んだ Expert は省略しません。現時点の KV は **FP16**、最大コンテキストは **128K** で、**MTP・Vision はありません**。MTP 付きの公開重みは確認できていません。
+
+CUDA を導入した Visual Studio の x64 開発者ターミナルで、このブランチからビルドします。
+
+```powershell
+cmake -S . -B ..\TinyStrata-work\build -DTINYSTRATA_BACKEND=CUDA
+cmake --build ..\TinyStrata-work\build --config Release --target tinystrata-lfm2 --parallel 4
+.\run-api.bat --model-family lfm2 --port 18081
+```
+
+設定は独立した `config-lfm2.json` に保存します。モデルが未導入の場合は `POST /v1/model/download` に `{}` を送ると、固定の Q4_K_M をダウンロードし、検証します。手元のファイルを使う場合は、起動コマンドに `--model "C:\models\LFM2.5-24B-A2B-Q4_K_M.gguf"` を追加してください。以下の `main` 用インストーラーが導入するのは Qwen 版です。LFM の既定値は `temperature=0.1`、`top_k=50`、`repetition_penalty=1.05` で、思考は常に有効です。新しいエンジンは検証中であり、llama.cpp や CPU・GPU の配置が異なる場合と同じトークン列になることは保証しません。
+
 **TinyStrata は、30B 級の MoE モデル向けに開発している Windows 専用・API 専用の高速推論エンジンです。** VRAM が **8–24 GB** の一般的なグラフィックボードを搭載し、システム RAM が **32 GB 以下**の PC を主な対象としています。
 
 ## TinyStrata を開発する理由

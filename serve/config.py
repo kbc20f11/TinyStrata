@@ -10,7 +10,7 @@ from pathlib import Path
 CHUNK_POLICY_VERSION = 1
 
 ENGINE_OPTIONS = {
-    "kv_type": ("--kv-type", ("auto", "fp32", "fp8", "fp8-mma", "int8")),
+    "kv_type": ("--kv-type", ("auto", "fp16", "fp32", "fp8", "fp8-mma", "int8")),
     "max_context": ("--max-context", 16, 262144, True),
     "expert_vram": ("--expert-vram", 0, None, False),
     "vram_reserve_mib": ("--vram-reserve-mib", 0, None, True),

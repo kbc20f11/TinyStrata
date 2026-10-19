@@ -53,3 +53,10 @@ The optional AVX2 singleton IQ expert path adapts src/kernels/cpu/iq_avx2.cpp,
 src/kernels/cpu/iq_avx2_rows.inl, src/kernels/cpu/native_expert.cpp and the
 corresponding header from the same commit. Original copyright and MIT license
 notices are retained.
+
+The LFM2.5-24B-A2B engine, Expert cache/streaming, CPU worker pool,
+LFM tokenizer and tool-call handling adapt the MIT-licensed PolyStrata project:
+https://github.com/VecSzn/PolyStrata
+Source commit: 26e4cb5df7996edfb5ff549a63b82d8581e1e658.
+Only the LFM model path is incorporated. Expert omission is removed.
+Original Strata and GGML copyright notices and licenses are preserved.

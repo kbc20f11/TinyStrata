@@ -61,19 +61,36 @@ def vision_tokens(value: str) -> int:
 def prepare(a) -> tuple[dict, Path]:
     from serve import config
     from serve.tinyconfig import MEMORY_POLICY_VERSION, automatic_experts, check_files, migrate_settings, validate
-    from serve.model_setup import (configure_download, configure_vision, model_path, prepare_installed_model,
-                                   resolve_executable, save_settings)
+    from serve.model_setup import (configure_download, configure_vision, model_architecture, model_path, prepare_installed_model,
+                                   resolve_executable, save_settings, shared_library_dirs)
 
-    path = a.config.expanduser().resolve()
+    selected = getattr(a, "model_family", None)
+    requested_arch = {"qwen36": "qwen35moe", "qwen3.6": "qwen35moe",
+                      "lfm2": "lfm2moe", "lfm2.5": "lfm2moe"}.get(selected)
+    if a.model:
+        local = a.model.expanduser().resolve()
+        if not local.is_file():
+            raise ValueError(f"TinyStrata model not found: {local}")
+        actual_arch = model_architecture(local)
+        if requested_arch is not None and actual_arch != requested_arch:
+            raise ValueError("--model-family does not match the local GGUF architecture")
+        requested_arch = actual_arch
+    config_path = getattr(a, "config", None)
+    path = (config_path or RUNTIME / ".tinystrata" /
+            ("config-lfm2.json" if requested_arch == "lfm2moe" else "config.json")).expanduser().resolve()
+    arch = requested_arch or "qwen35moe"
     cfg = config.load(path) if path.exists() else {
-        "arch": "qwen35moe", "model_name": "qwen3.6-35b-a3b", "cwd": str(ROOT),
-        "args": ["--max-context", "auto", "--kv-type", "auto", "--mtp", "3",
-                 "--chunk", "auto"],
+        "arch": arch, "model_name": "lfm2.5-24b-a2b" if arch == "lfm2moe" else "qwen3.6-35b-a3b",
+        "cwd": str(ROOT),
+        "args": ["--max-context", "auto", "--kv-type", "auto", "--chunk", "auto"] +
+                ([] if arch == "lfm2moe" else ["--mtp", "3"]),
         "memory_policy_version": MEMORY_POLICY_VERSION,
         "host": "127.0.0.1",
     }
+    if requested_arch is not None and cfg.get("arch", "qwen35moe") != requested_arch:
+        raise ValueError("This config belongs to another model family; choose a separate --config path")
     cfg, migrated = migrate_settings(cfg)
-    cfg.setdefault("port", 18080)
+    cfg.setdefault("port", 18081 if cfg.get("arch") == "lfm2moe" else 18080)
     if a.model:
         set_arg(cfg, "--model", a.model.expanduser().resolve())
         # An explicit local selection keeps the existing eager-launch behavior.
@@ -107,6 +124,7 @@ def prepare(a) -> tuple[dict, Path]:
         cfg["api_key"] = a.api_key
     if a.gpu is not None:
         cfg["gpu"] = a.gpu
+    cfg = shared_library_dirs(cfg)
     cfg = configure_download(cfg, path)
     model = model_path(cfg)
     if cfg.get("vision_mode") == "no":
@@ -115,7 +133,7 @@ def prepare(a) -> tuple[dict, Path]:
     check_files(cfg, allow_uninstalled=True)
     if a.model and not model.is_file():
         raise ValueError(f"TinyStrata model not found: {model}")
-    cfg["log"] = str(path.parent / "engine.log")
+    cfg["log"] = str(path.parent / ("engine-lfm2.log" if cfg.get("arch") == "lfm2moe" else "engine.log"))
     if model.is_file():
         cfg = prepare_installed_model(cfg, path, model)
     else:
@@ -129,18 +147,20 @@ def prepare(a) -> tuple[dict, Path]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--model", type=Path, help="existing Qwen3.6 GGUF (optional; download the fixed model through the API)")
+    ap.add_argument("--model", type=Path, help="existing supported GGUF (the local header selects its model family)")
+    ap.add_argument("--model-family", choices=("qwen36", "qwen3.6", "lfm2", "lfm2.5"),
+                    help="Qwen3.6 (default) or LFM2.5; LFM uses a separate config-lfm2.json")
     ap.add_argument("--exe", type=Path, help="built tinystrata executable")
     ap.add_argument("--vision-exe", type=Path, help="built tinystrata-vision image encoder")
     ap.add_argument("--vision", choices=("gpu", "cpu", "no", "yes", "none"),
                     help="image encoder: gpu (default), cpu or no; yes = gpu, none = no; saved for later starts")
     ap.add_argument("--vision-tokens", type=vision_tokens, metavar="N",
                     help="maximum image tokens per picture (default: 4096); saved for later starts")
-    ap.add_argument("--config", type=Path, default=RUNTIME / ".tinystrata/config.json")
+    ap.add_argument("--config", type=Path, help="configuration path (default: a separate file per model family)")
     ap.add_argument("--max-context", type=context_limit, metavar="auto|TOKENS",
                     help="choose context capacity from available GPU memory (default: auto), or set a token limit")
-    ap.add_argument("--kv-type", choices=("auto", "fp32", "fp8", "fp8-mma", "int8"),
-                    help="choose native FP8 Attention when supported, otherwise INT8 (default: auto)")
+    ap.add_argument("--kv-type", choices=("auto", "fp16", "fp32", "fp8", "fp8-mma", "int8"),
+                    help="automatic supported KV path; LFM2.5 currently uses FP16")
     ap.add_argument("--mtp", type=int)
     ap.add_argument("--expert-vram", type=expert_budget, metavar="auto|GiB",
                     help="fit experts to available VRAM (default: auto), or set an advanced GiB limit; 0 = CPU experts")

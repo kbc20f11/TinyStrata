@@ -44,6 +44,25 @@ FIXED_MMPROJ = _Manifest(
     f"https://huggingface.co/{MODEL_REPO}/resolve/{MODEL_REVISION}/{MMPROJ_FILENAME}?download=true",
 )
 
+LFM2_MODEL_REPO = "LiquidAI/LFM2.5-24B-A2B-GGUF"
+LFM2_MODEL_REVISION = "0912d33141f77e10705345a6732bfd83f0252fdc"
+LFM2_MODEL_FILENAME = "LFM2.5-24B-A2B-Q4_K_M.gguf"
+LFM2_MODEL_SIZE = 14_526_258_464
+LFM2_MODEL_SHA256 = "d3334405b96228eb9908cdebb5c6194908f2da64282bda852afc3a3910c64e7d"
+FIXED_LFM2_MODEL = _Manifest(
+    LFM2_MODEL_REPO, LFM2_MODEL_REVISION, LFM2_MODEL_FILENAME, LFM2_MODEL_SIZE, LFM2_MODEL_SHA256,
+    f"https://huggingface.co/{LFM2_MODEL_REPO}/resolve/{LFM2_MODEL_REVISION}/{LFM2_MODEL_FILENAME}?download=true",
+)
+
+
+def manifest_for_arch(arch: str = "qwen35moe") -> _Manifest:
+    """The server-selected fixed artifact, never selected by HTTP request data."""
+    if arch == "qwen35moe":
+        return FIXED_MODEL
+    if arch == "lfm2moe":
+        return FIXED_LFM2_MODEL
+    raise ValueError(f"Unsupported TinyStrata model architecture: {arch}")
+
 
 class _Cancelled(Exception):
     pass

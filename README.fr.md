@@ -2,6 +2,8 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · **Français** · [Español](README.es.md) · [Português](README.pt-BR.md)
 
+> **Branche de développement LFN :** ajoute LFM2.5-24B-A2B Q4_K_M avec KV FP16, sans MTP/Vision. Voir la [configuration LFM](README.md#lfn-branch-lfm25-24b-a2b). Les instructions d’installation et mesures existantes ci-dessous concernent toujours Qwen.
+
 **TinyStrata est un moteur d’inférence rapide en cours de développement pour les modèles MoE de la classe 30B, exclusivement sous Windows et par API.** Il vise principalement les PC équipés de cartes graphiques grand public avec **8–24 GB de VRAM** et disposant de **32 GB de mémoire système au maximum**.
 
 ## Pourquoi nous développons TinyStrata

@@ -61,14 +61,37 @@ QWEN35_PATTERN = (
     r"|\s+"
 )
 
+# LFM2 uses llama.cpp's LLAMA3 pre-tokenizer and whole-piece vocabulary lookup.
+# Adapted from PolyStrata tools/strata_tokenizer.py at 26e4cb5df7996edfb5ff549a63b82d8581e1e658 (MIT).
+LFM2_PATTERN = (
+    r"(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])"
+    r"|[^\r\n\p{L}\p{N}]?\p{L}+"
+    r"|\p{N}{1,3}"
+    r"| ?[^\s\p{L}\p{N}]+[\r\n]*"
+    r"|\s*[\r\n]+"
+    r"|\s+(?!\S)"
+    r"|\s+"
+)
+
 
 class Tokenizer:
     def __init__(self, tokens: list[str], merges: list[str], token_types: list[int] | None = None,
-                 pre: str = "qwen35", special_ids: dict[str, int] | None = None):
+                 pre: str = "qwen35", special_ids: dict[str, int] | None = None, *,
+                 add_bos_token: bool | None = None, add_eos_token: bool = False,
+                 ignore_merges: bool | None = None):
         self.tokens = tokens
         self.pre = pre
         self.token_types = token_types
         self.special_ids = special_ids or {}
+        self.bos_token_id = self.special_ids.get("tokenizer.ggml.bos_token_id")
+        self.eos_token_id = self.special_ids.get("tokenizer.ggml.eos_token_id")
+        self.add_bos_token = pre == "lfm2" if add_bos_token is None else bool(add_bos_token)
+        self.add_eos_token = bool(add_eos_token)
+        self.ignore_merges = pre == "lfm2" if ignore_merges is None else bool(ignore_merges)
+        self.pre_pattern = LFM2_PATTERN if pre == "lfm2" else QWEN35_PATTERN
+        self.template_tokens = {name: tokens[index] for name, index in
+                                (("bos_token", self.bos_token_id), ("eos_token", self.eos_token_id))
+                                if isinstance(index, int) and 0 <= index < len(tokens)}
         self.ids = {t: i for i, t in enumerate(tokens)}
         if len(self.ids) != len(tokens):
             raise ValueError("vocabulary has duplicate tokens: %d entries, %d unique"
@@ -84,7 +107,7 @@ class Tokenizer:
             if parts[0] not in self.ids or parts[1] not in self.ids:
                 raise ValueError("merge %d names a token outside the vocabulary: %r" % (i, m))
             self.ranks[(parts[0], parts[1])] = i
-        self._re = regex.compile(QWEN35_PATTERN)
+        self._re = regex.compile(self.pre_pattern)
 
         # The literals matched directly instead of being run through BPE.  GGUF token types: 3 = CONTROL,
         # 4 = USER_DEFINED.  The two classes behave DIFFERENTLY and llama.cpp's own tokenizer settled which:
@@ -134,9 +157,27 @@ class Tokenizer:
             raise ValueError("expected a byte-level BPE tokenizer (model 'gpt2'), got %r" % model)
         special = {k: int(md[k]) for k in md
                    if k.startswith("tokenizer.ggml.") and k.endswith("_token_id")}
+        pre = md.get("tokenizer.ggml.pre", "qwen35")
         return cls(list(md["tokenizer.ggml.tokens"]), list(md["tokenizer.ggml.merges"]),
                    list(md.get("tokenizer.ggml.token_type") or []) or None,
-                   md.get("tokenizer.ggml.pre", "qwen35"), special)
+                   pre, special, add_bos_token=md.get("tokenizer.ggml.add_bos_token", pre == "lfm2"),
+                   add_eos_token=md.get("tokenizer.ggml.add_eos_token", False))
+
+    @classmethod
+    def from_dir(cls, path) -> "Tokenizer":
+        """Restore the pre-tokenizer and special-token metadata written by extract()."""
+        path = pathlib.Path(path)
+        vocab = json.loads((path / "vocab.json").read_text(encoding="utf-8"))
+        tokens = [None] * len(vocab)
+        for token, index in vocab.items():
+            tokens[index] = token
+        merges = (path / "merges.txt").read_text(encoding="utf-8").splitlines()
+        types = json.loads((path / "token_type.json").read_text(encoding="utf-8"))
+        meta = json.loads((path / "tokenizer.json").read_text(encoding="utf-8")) \
+            if (path / "tokenizer.json").exists() else {}
+        return cls(tokens, merges, types, pre=meta.get("pre", "qwen35"), special_ids=meta.get("special_ids"),
+                   add_bos_token=meta.get("add_bos_token"), add_eos_token=meta.get("add_eos_token", False),
+                   ignore_merges=meta.get("ignore_merges"))
 
     # -------------------------------------------------------------- the algorithm
     def _bpe(self, word: str) -> list[str]:
@@ -220,12 +261,15 @@ class Tokenizer:
             got = cache.get(piece)
             if got is None:
                 mapped = "".join(BYTE_TO_UNICODE[b] for b in piece.encode("utf-8"))
-                got = []
-                for tok in self._bpe(mapped):
-                    i = self.ids.get(tok)
-                    if i is None:
-                        raise KeyError("BPE produced a token outside the vocabulary: %r" % tok)
-                    got.append(i)
+                if self.ignore_merges and mapped in self.ids:
+                    got = [self.ids[mapped]]
+                else:
+                    got = []
+                    for tok in self._bpe(mapped):
+                        i = self.ids.get(tok)
+                        if i is None:
+                            raise KeyError("BPE produced a token outside the vocabulary: %r" % tok)
+                        got.append(i)
                 if len(cache) < self.PIECE_CACHE_MAX:
                     cache[piece] = got
             out.extend(got)
@@ -270,7 +314,7 @@ class Tokenizer:
             out.extend(self._encode_plain(text[pos:]))
         return out
 
-    def encode(self, text: str, parse_special: bool = False, plain=()) -> list[int]:
+    def encode(self, text: str, parse_special: bool = False, plain=(), *, add_special_tokens: bool = False) -> list[int]:
         """Tokenize `text`.
 
         `parse_special` controls only the type-3 CONTROL literals such as `<|im_end|>`; the type-4
@@ -278,7 +322,15 @@ class Tokenizer:
         `plain`: (start, end) spans of `text` that are ordinary text even where they spell a literal - a
         `</think>` quoted in a message (#537) - and are tokenized with the text around them.
         """
-        return self._encode_matching(text, self._special_re if parse_special else self._always_re, plain)
+        ids = self._encode_matching(text, self._special_re if parse_special else self._always_re, plain)
+        # Chat templates normally write their own BOS. Keep ordinary encode() a
+        # literal tokenizer, including calls that look up one control token.
+        if add_special_tokens:
+            if self.add_bos_token and self.bos_token_id is not None and (not ids or ids[0] != self.bos_token_id):
+                ids.insert(0, self.bos_token_id)
+            if self.add_eos_token and self.eos_token_id is not None and (not ids or ids[-1] != self.eos_token_id):
+                ids.append(self.eos_token_id)
+        return ids
 
     def token_bytes(self, i: int) -> bytes:
         """The raw bytes of one token (a multi-byte character can be split across tokens)."""
@@ -312,11 +364,14 @@ def extract(gguf_path, out_dir) -> dict:
         "vocab_size": len(tk.tokens),
         "n_merges": len(tk.ranks),
         "special_ids": tk.special_ids,
-        "add_bos_token": False,
+        "add_bos_token": tk.add_bos_token,
+        "add_eos_token": tk.add_eos_token,
         # The pattern is SHIPPED, not recomputed by the reader: it is transcribed from llama.cpp for the
         # declared `pre` type, and a C++ port that re-derived it would be free to get `\p{M}` wrong again.
-        "pre_pattern": QWEN35_PATTERN,
-        "pre_pattern_source": ".ref/llama.cpp src/llama-vocab.cpp L396 (LLAMA_VOCAB_PRE_TYPE_QWEN35)",
+        "pre_pattern": tk.pre_pattern,
+        "pre_pattern_source": "llama.cpp src/llama-vocab.cpp (LLAMA_VOCAB_PRE_TYPE_LLAMA3)" if tk.pre == "lfm2"
+                              else ".ref/llama.cpp src/llama-vocab.cpp L396 (LLAMA_VOCAB_PRE_TYPE_QWEN35)",
+        "ignore_merges": tk.ignore_merges,
     }
     (out / "vocab.json").write_text(json.dumps(tk.ids, ensure_ascii=False), encoding="utf-8")
     (out / "merges.txt").write_text("\n".join("%s %s" % k for k, _ in

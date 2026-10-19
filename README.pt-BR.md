@@ -2,6 +2,8 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · **Português**
 
+> **Branch de desenvolvimento LFN:** adiciona LFM2.5-24B-A2B Q4_K_M com KV FP16, sem MTP/Vision. Veja a [configuração do LFM](README.md#lfn-branch-lfm25-24b-a2b). As instruções e medições existentes abaixo continuam se referindo ao Qwen.
+
 **O TinyStrata é um mecanismo de inferência de alta velocidade em desenvolvimento para modelos MoE da classe 30B, exclusivo para Windows e acessível apenas por API.** Ele é voltado principalmente a PCs equipados com placas de vídeo comuns de **8–24 GB** de VRAM e com **32 GB de RAM do sistema ou menos**.
 
 ## Por que desenvolvemos o TinyStrata?

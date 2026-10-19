@@ -1,4 +1,4 @@
-"""Shared launcher and API setup for the fixed Qwen3.6 GGUF model."""
+"""Shared launcher and API setup for supported, pinned GGUF models."""
 from __future__ import annotations
 
 import hashlib
@@ -9,6 +9,36 @@ from serve import config
 
 ROOT = Path(__file__).resolve().parent.parent
 TOKENIZER_FILES = ("vocab.json", "merges.txt", "token_type.json", "tokenizer.json", "chat_template.jinja")
+
+
+def model_architecture(path: str | Path) -> str:
+    """Inspect only a local GGUF header; model weights are not read."""
+    from serve.gguf_reader import GGUFFile
+    from serve.tinyconfig import MODEL_NAMES
+    arch = GGUFFile(Path(path)).metadata.get("general.architecture")
+    if arch not in MODEL_NAMES:
+        raise ValueError(f"Unsupported GGUF model architecture: {arch}")
+    return arch
+
+
+def shared_library_dirs(cfg: dict) -> dict:
+    """Reuse an installed portable CUDA runtime for a separate LFM config."""
+    if cfg.get("arch") != "lfm2moe" or "lib_dirs" in cfg:
+        return cfg
+    work = ROOT.with_name(ROOT.name + "-work")
+    directories = []
+    qwen = work / "runtime/.tinystrata/config.json"
+    if qwen.is_file():
+        try:
+            saved = config.load(qwen)
+        except (OSError, ValueError):
+            saved = {}
+        directories.extend(saved.get("lib_dirs") or [])
+    for toolkit in sorted(work.glob("cuda-*"), reverse=True):
+        directories.extend((str(toolkit / "bin"), str(toolkit / "bin/x64")))
+    directories.append(str(work / "runtime"))
+    found = list(dict.fromkeys(str(Path(item).resolve()) for item in directories if Path(item).is_dir()))
+    return {**cfg, "lib_dirs": found} if found else cfg
 
 
 def model_path(cfg: dict) -> Path | None:
@@ -28,8 +58,10 @@ def resolve_executable(cfg: dict) -> Path | None:
         return path.resolve() if path.is_file() else None
     suffix = ".exe" if os.name == "nt" else ""
     work = ROOT.with_name(ROOT.name + "-work")
-    for folder in (work / "build", work / "build/Release", ROOT / "bin", ROOT / "build", ROOT / "build/Release"):
-        candidate = folder / ("tinystrata" + suffix)
+    name = "tinystrata-lfm2" if cfg.get("arch") == "lfm2moe" else "tinystrata"
+    for folder in (work / "build", work / "build/Release", work / "build-cuda-132",
+                   ROOT / "bin", ROOT / "build", ROOT / "build/Release"):
+        candidate = folder / (name + suffix)
         if candidate.is_file():
             return candidate.resolve()
     return None
@@ -52,7 +84,7 @@ def resolve_vision_executable(cfg: dict) -> Path | None:
 
 def configure_download(cfg: dict, config_path: str | Path) -> dict:
     """Choose the managed destination locally, never from an HTTP request."""
-    from serve.model_download import MODEL_FILENAME
+    from serve.model_download import manifest_for_arch
 
     args = cfg.get("args", [])
     if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
@@ -61,7 +93,7 @@ def configure_download(cfg: dict, config_path: str | Path) -> dict:
     directory = Path(config_path).expanduser().resolve().parent / "model-files"
     new["download_dir"] = str(directory)
     if "--model" not in new["args"]:
-        new["args"].extend(("--model", str(directory / MODEL_FILENAME)))
+        new["args"].extend(("--model", str(directory / manifest_for_arch(cfg.get("arch", "qwen35moe")).filename)))
     return new
 
 
@@ -71,8 +103,8 @@ def _extract_tokenizer(model: Path, cache: Path) -> None:
     from serve.tokenizer import extract
 
     md = GGUFFile(model).metadata
-    if md.get("general.architecture") != "qwen35moe":
-        raise ValueError("This launcher supports Qwen3.6 qwen35moe GGUF models only")
+    if md.get("general.architecture") not in ("qwen35moe", "lfm2moe"):
+        raise ValueError("This launcher supports qwen35moe and lfm2moe GGUF models")
     if not md.get("tokenizer.chat_template"):
         raise ValueError("The GGUF does not contain its chat template")
     print("Extracting the model tokenizer and chat template ...", flush=True)
@@ -143,6 +175,9 @@ def prepare_installed_model(cfg: dict, config_path: str | Path, model_path: str 
     model = Path(model_path).expanduser().resolve()
     if not model.is_file():
         raise ValueError(f"TinyStrata model not found: {model}")
+    actual_arch = model_architecture(model)
+    if actual_arch != cfg.get("arch", "qwen35moe"):
+        raise ValueError("The GGUF architecture differs from this configuration; use --model-family with a separate config")
     st = model.stat()
     identity = f"{model}\n{st.st_size}\n{st.st_mtime_ns}"
     cache = path.parent / "models" / hashlib.sha256(identity.encode()).hexdigest()[:16]
@@ -151,11 +186,11 @@ def prepare_installed_model(cfg: dict, config_path: str | Path, model_path: str 
         _extract_tokenizer(model, cache)
     if not all((tokenizer / name).is_file() for name in TOKENIZER_FILES):
         raise ValueError("The GGUF tokenizer extraction did not produce all required files")
-    new = configure_download(cfg, path)
+    new = shared_library_dirs(configure_download(cfg, path))
     args = new["args"]
     args[args.index("--model") + 1] = str(model)
     new["tokenizer"] = str(tokenizer)
-    new["log"] = str(path.parent / "engine.log")
+    new["log"] = str(path.parent / ("engine-lfm2.log" if actual_arch == "lfm2moe" else "engine.log"))
     exe = resolve_executable(new)
     if exe is not None:
         new["exe"] = str(exe)

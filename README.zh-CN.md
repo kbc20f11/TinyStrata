@@ -2,6 +2,8 @@
 
 [English](README.md) · **简体中文** · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
 
+> **LFN 开发分支：**新增 LFM2.5-24B-A2B Q4_K_M（FP16 KV，无 MTP/Vision）。参见 [LFM 安装说明](README.md#lfn-branch-lfm25-24b-a2b)。以下原有安装步骤和测速数据仍针对 Qwen。
+
 **TinyStrata 是一款正在开发中的高速推理引擎，面向 30B 级 MoE 模型，仅支持 Windows，且仅提供 API。** 主要面向配备主流显卡、显存为 **8–24 GB** 且系统内存**不超过 32 GB** 的 PC。
 
 ## 为什么开发 TinyStrata？
