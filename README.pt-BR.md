@@ -24,11 +24,11 @@ Já existem muitas interfaces e ambientes de agentes compatíveis com APIs para 
 
 ## Foco de modelos
 
-O [Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) continua sendo o modelo padrão pelo equilíbrio entre velocidade, consumo de memória e qualidade das respostas em PCs com placas de vídeo comuns. O TinyStrata se concentra em modelos MoE pequenos e também oferece **suporte experimental ao LFM2.5-24B-A2B e ao Gemma 4 26B-A4B-it**.
+O [Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) continua sendo o modelo padrão pelo equilíbrio entre velocidade, consumo de memória e qualidade das respostas em PCs com placas de vídeo comuns. O TinyStrata se concentra em modelos MoE pequenos e também oferece **suporte ao Gemma 4 26B-A4B-it e ao LFM2.5-24B-A2B**.
 
-O LFM usa o [GGUF Q4_K_M oficial da LiquidAI](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF) (**14.53 GB**), **KV FP16** e até **128K de contexto**, sem MTP ou Vision. Usa cache automático de especialistas na VRAM, cálculo de especialistas na CPU, streaming de pesos durante a entrada e CUDA Graphs; os especialistas selecionados não são omitidos. Os padrões são `temperature=0.1`, `top_k=50` e `repetition_penalty=1.05`, com raciocínio sempre ativado. As configurações de Qwen, LFM e Gemma são salvas separadamente. O motor LFM ainda está em validação e não garante tokens idênticos ao llama.cpp nem entre diferentes distribuições CPU/GPU.
+O **Gemma 4 26B-A4B-it QAT Q4_0** usa [o modelo principal e o projetor de visão oficiais do Google](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf) com [o assistente MTP QAT Q4_0 correspondente da Unsloth](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF/blob/7b92b5b28818151e8669af2e45e88d6086f490dd/mtp-gemma-4-26B-A4B-it.gguf). Os três arquivos somam **15.886 GB**: modelo 14.439 GB, projetor 1.195 GB e assistente 0.252 GB. O motor oferece codificador de imagens residente na GPU, cache adaptativo de especialistas na GPU, cálculo de especialistas na CPU a partir da RAM e MTP 3 pela mesma API. Os especialistas selecionados não são omitidos. O Gemma aceita **KV FP16 e INT8**; a seleção automática atual é **FP16**. A entrada de imagens, o MTP 3, o uso combinado de RAM e a troca de modelo foram testados com o modelo real.
 
-O **Gemma 4 26B-A4B-it QAT Q4_0** usa [o modelo principal e o projetor de visão oficiais do Google](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf) com [o assistente MTP QAT Q4_0 correspondente da Unsloth](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF/blob/7b92b5b28818151e8669af2e45e88d6086f490dd/mtp-gemma-4-26B-A4B-it.gguf). Os três arquivos somam **15.886 GB**: modelo 14.439 GB, projetor 1.195 GB e assistente 0.252 GB. O motor oferece codificador de imagens residente na GPU, cache adaptativo de especialistas na GPU, cálculo de especialistas na CPU a partir da RAM e MTP 3 pela mesma API. Os especialistas selecionados não são omitidos. O Gemma aceita **KV FP16 e INT8**; a seleção automática atual é **FP16**. A implementação está disponível e a validação com o modelo real está em andamento; o suporte continua experimental.
+O LFM usa o [GGUF Q4_K_M oficial da LiquidAI](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF) (**14.53 GB**), **KV FP16** e até **128K de contexto**, sem MTP ou Vision. Usa cache automático de especialistas na VRAM, cálculo de especialistas na CPU, streaming de pesos durante a entrada e CUDA Graphs; os especialistas selecionados não são omitidos. Os padrões são `temperature=0.1`, `top_k=50` e `repetition_penalty=1.05`, com raciocínio sempre ativado. As configurações de Qwen, Gemma e LFM são salvas separadamente. O motor LFM ainda está em validação e não garante tokens idênticos ao llama.cpp nem entre diferentes distribuições CPU/GPU.
 
 Se o executável de um modelo adicional não estiver disponível, veja as [instruções de compilação manual](README.md#model-focus).
 
@@ -50,22 +50,22 @@ Você também pode passar o link do [repositório do TinyStrata no GitHub](https
 
 ### Trocar de modelo sem reiniciar
 
-O instalador inicia o Qwen por padrão. Para preparar o LFM no mesmo servidor API, inicie o download e consulte o progresso:
+O instalador inicia o Qwen por padrão. Para preparar o Gemma no mesmo servidor API, inicie o download e consulte o progresso:
 
 ```powershell
 $api = 'http://127.0.0.1:18080'
-Invoke-RestMethod "$api/v1/model/download" -Method Post -ContentType 'application/json' -Body '{"model":"lfm2.5-24b-a2b"}'
-Invoke-RestMethod "$api/v1/model/download?model=lfm2.5-24b-a2b"
+Invoke-RestMethod "$api/v1/model/download" -Method Post -ContentType 'application/json' -Body '{"model":"gemma-4-26b-a4b-it"}'
+Invoke-RestMethod "$api/v1/model/download?model=gemma-4-26b-a4b-it"
 ```
 
 Repita a consulta até `state` ser `ready` e então solicite a troca explicitamente. O download de um modelo inativo apenas o prepara, sem ativá-lo:
 
 ```powershell
-Invoke-RestMethod "$api/v1/model/switch" -Method Post -ContentType 'application/json' -Body '{"model":"lfm2.5-24b-a2b"}'
+Invoke-RestMethod "$api/v1/model/switch" -Method Post -ContentType 'application/json' -Body '{"model":"gemma-4-26b-a4b-it"}'
 Invoke-RestMethod "$api/v1/model/switch"
 ```
 
-Para usar o Gemma, substitua `lfm2.5-24b-a2b` por `gemma-4-26b-a4b-it` nos pedidos de download, progresso e troca acima. Para iniciar diretamente com o Gemma, execute `run-api.bat --model-family gemma4`; o endereço padrão da API é `http://127.0.0.1:18082/v1`.
+Para iniciar diretamente com o Gemma, execute `run-api.bat --model-family gemma4`; a API usa `http://127.0.0.1:18082/v1`. Para o LFM, substitua `gemma-4-26b-a4b-it` por `lfm2.5-24b-a2b` nos pedidos de download, progresso e troca acima, ou execute `run-api.bat --model-family lfm2` para iniciá-lo diretamente em `http://127.0.0.1:18081/v1`.
 
 Consulte `GET /v1/model/switch` até `state` ser `ready`. Para voltar ao Qwen, envie o mesmo pedido com `{"model":"qwen3.6-35b-a3b"}`. Iniciar um download ou uma troca retorna `202`; uma troca durante uma geração retorna `409`, então tente novamente quando ela terminar. Pedidos de inferência durante a troca recebem `503`. A porta e a autenticação não mudam. A seleção vale para a sessão atual do servidor; ao reiniciar, é usado o modelo escolhido no inicializador.
 
@@ -84,6 +84,17 @@ As solicitações omitiram os parâmetros de amostragem e a semente. A única al
 | Aprox. 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | 12 GiB reservados; cálculo de especialistas na CPU e na GPU |
 | Aprox. 8 GB | 64K | 66.30 tok/s | 63.85 tok/s | 16 GiB reservados; cálculo de especialistas na CPU e na GPU |
 
+## Velocidade medida — Gemma 4
+
+Medido em 2026-10-19 no mesmo PC Windows com RTX PRO 4000 Blackwell SFF Edition (24 GB), Ryzen 9 7945HX3D e 64 GB de RAM. Foram usados o Gemma 4 26B-A4B-it QAT Q4_0 do Google e o assistente MTP QAT correspondente da Unsloth, com codificador de imagens residente na GPU, entradas de texto pela API, MTP 3 e CUDA Graphs ativados. Foram mantidos os padrões do Google: raciocínio ativado, `temperature=1.0`, `top_p=0.95`, `top_k=64`. O contexto e a distribuição de especialistas foram escolhidos automaticamente, com blocos de entrada automáticos de 1120 tokens.
+
+| VRAM disponível | Capacidade de contexto | Geração FP16 | Geração INT8 | Observações |
+| --- | ---: | ---: | ---: | --- |
+| 24 GB | 256K | 105.56 tok/s | — | Cálculo de especialistas na GPU e na CPU; INT8 não medido |
+| Aproximadamente 8 GB | 64K | 48.22 tok/s | 48.97 tok/s | Cálculo de especialistas na CPU durante a geração |
+
+Três entradas fixas foram executadas uma vez cada, com 128 tokens de saída incluindo o raciocínio. A velocidade é o total de tokens dividido pelo tempo total de decodificação, sem carregamento nem processamento de entrada. A condição de 8 GB foi obtida reservando 16 GiB separadamente na mesma GPU de 24 GB; não é um teste de uma GPU física de 8 GB. 64K/256K indica a capacidade do cache, não o tamanho da entrada.
+
 ## Velocidade medida — LFM2.5 (experimental)
 
 Medições no mesmo PC Windows com 64 GB de RAM do sistema, o LFM2.5-24B-A2B Q4_K_M oficial, KV FP16, sem MTP ou Vision, e CUDA Graphs ativado. Foram usados os padrões atuais da API: raciocínio ativado, `temperature=0.1`, `top_k=50`, `repetition_penalty=1.05`. A capacidade de contexto, os blocos de entrada (256 tokens em todos os casos) e a distribuição dos especialistas foram selecionados automaticamente.
@@ -101,7 +112,7 @@ Os mesmos três textos de entrada do teste do Qwen foram executados duas vezes c
 
 | Seu objetivo e seu hardware | Projeto |
 | --- | --- |
-| Você quer inferência do Qwen3.6-35B-A3B apenas por API no **Windows**, com **8–24 GB de VRAM e 32 GB de RAM do sistema ou menos**, como em um PC equipado com uma placa de vídeo comum. | TinyStrata (**somente Windows**, em desenvolvimento) |
+| Você quer inferência do Qwen3.6 / Gemma 4 / LFM2.5 apenas por API no **Windows**, com **8–24 GB de VRAM e 32 GB de RAM do sistema ou menos**, como em um PC equipado com uma placa de vídeo comum. | TinyStrata (**somente Windows**, em desenvolvimento) |
 | Você tem tanto **uma GPU da classe RTX 3060 ou superior** quanto **64 GB de RAM do sistema ou mais**. | Recomendamos o [Strata (projeto original)](https://github.com/Niko1221/Strata). |
 | Você quer uma **interface de chat incluída**. | Recomendamos o [Strata (projeto original)](https://github.com/Niko1221/Strata). |
 

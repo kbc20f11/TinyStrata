@@ -24,11 +24,11 @@ LLM 向けの API に対応した UI やエージェントハーネスは、す�
 
 ## 対象モデル
 
-一般的なグラフィックボードを搭載した PC での速度・省メモリ性・回答品質のバランスを重視し、[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) を既定のモデルとしています。比較的小さな MoE モデルに注力し、**LFM2.5-24B-A2B と Gemma 4 26B-A4B-it にも実験的に対応しています**。
+一般的なグラフィックボードを搭載した PC での速度・省メモリ性・回答品質のバランスを重視し、[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) を既定のモデルとしています。比較的小さな MoE モデルに注力し、**Gemma 4 26B-A4B-it と LFM2.5-24B-A2B にも対応しています**。
 
-LFM は公式の [LiquidAI Q4_K_M GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF)（**14.53 GB**）を使い、KV は **FP16**、最大コンテキストは **128K** です。MTP・Vision はありません。空き VRAM に合わせたエキスパートキャッシュ、CPU でのエキスパート計算、入力時の重みのストリーミング、CUDA Graph を利用し、モデルが選んだエキスパートは省略しません。既定値は `temperature=0.1`、`top_k=50`、`repetition_penalty=1.05` で、思考は常に有効です。設定は Qwen・LFM・Gemma で別々に保持します。LFM エンジンは検証中であり、llama.cpp や CPU・GPU の配置が異なる場合と同じトークン列になることは保証しません。
+**Gemma 4 26B-A4B-it QAT Q4_0** は、[Google 公式の本体・ビジョンプロジェクタ](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf)と、対応する [Unsloth の QAT Q4_0 MTP アシスタント](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF/blob/7b92b5b28818151e8669af2e45e88d6086f490dd/mtp-gemma-4-26B-A4B-it.gguf)を使います。ダウンロードは本体 14.439 GB、プロジェクタ 1.195 GB、アシスタント 0.252 GB の 3 ファイル、合計 **15.886 GB** です。画像エンコーダの GPU 常駐、空き VRAM に合わせたエキスパートキャッシュ、システム RAM を使った CPU でのエキスパート計算、MTP 3 に対応し、共通の API から利用できます。モデルが選んだエキスパートは省略しません。KV は **FP16・INT8** に対応し、現在の自動選択は **FP16** です。画像入力・MTP 3・RAM 併用推論・起動中のモデル切り替えは実モデルで動作確認済みです。
 
-**Gemma 4 26B-A4B-it QAT Q4_0** は、[Google 公式の本体・ビジョンプロジェクタ](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf)と、対応する [Unsloth の QAT Q4_0 MTP アシスタント](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF/blob/7b92b5b28818151e8669af2e45e88d6086f490dd/mtp-gemma-4-26B-A4B-it.gguf)を使います。ダウンロードは本体 14.439 GB、プロジェクタ 1.195 GB、アシスタント 0.252 GB の 3 ファイル、合計 **15.886 GB** です。画像エンコーダの GPU 常駐、空き VRAM に合わせたエキスパートキャッシュ、システム RAM を使った CPU でのエキスパート計算、MTP 3 に対応し、共通の API から利用できます。モデルが選んだエキスパートは省略しません。KV は **FP16・INT8** に対応し、現在の自動選択は **FP16** です。実装は追加済みで、実モデルでの検証を進めているため、実験対応として扱っています。
+LFM は公式の [LiquidAI Q4_K_M GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF)（**14.53 GB**）を使い、KV は **FP16**、最大コンテキストは **128K** です。MTP・Vision はありません。空き VRAM に合わせたエキスパートキャッシュ、CPU でのエキスパート計算、入力時の重みのストリーミング、CUDA Graph を利用し、モデルが選んだエキスパートは省略しません。既定値は `temperature=0.1`、`top_k=50`、`repetition_penalty=1.05` で、思考は常に有効です。設定は Qwen・Gemma・LFM で別々に保持します。LFM エンジンは検証中であり、llama.cpp や CPU・GPU の配置が異なる場合と同じトークン列になることは保証しません。
 
 <details>
 <summary>追加モデルの実行ファイルがない場合の手動ビルド</summary>
@@ -37,10 +37,10 @@ CUDA を導入した x64 Visual Studio 開発者ターミナルで、このリ�
 
 ```powershell
 cmake -S . -B ..\TinyStrata-work\build -DTINYSTRATA_BACKEND=CUDA
-cmake --build ..\TinyStrata-work\build --config Release --target tinystrata-lfm2 tinystrata-gemma4 --parallel 4
+cmake --build ..\TinyStrata-work\build --config Release --target tinystrata-gemma4 tinystrata-lfm2 --parallel 4
 ```
 
-初めから LFM で起動する場合は `run-api.bat --model-family lfm2 --port 18080` を実行します。手元のファイルを使う場合は `--model "C:\models\LFM2.5-24B-A2B-Q4_K_M.gguf"` を追加してください。
+Gemma は `run-api.bat --model-family gemma4`（既定ポート 18082）、LFM は `run-api.bat --model-family lfm2`（既定ポート 18081）で起動できます。
 
 </details>
 
@@ -62,22 +62,22 @@ Windows を再起動したあとに再び起動するには、次のコマンド
 
 ### 起動したままモデルを切り替える
 
-インストーラーは既定で Qwen を起動します。同じ API サーバーで LFM を使うには、まずダウンロードを開始し、進捗を確認します。
+インストーラーは既定で Qwen を起動します。同じ API サーバーで Gemma を使うには、まずダウンロードを開始し、進捗を確認します。
 
 ```powershell
 $api = 'http://127.0.0.1:18080'
-Invoke-RestMethod "$api/v1/model/download" -Method Post -ContentType 'application/json' -Body '{"model":"lfm2.5-24b-a2b"}'
-Invoke-RestMethod "$api/v1/model/download?model=lfm2.5-24b-a2b"
+Invoke-RestMethod "$api/v1/model/download" -Method Post -ContentType 'application/json' -Body '{"model":"gemma-4-26b-a4b-it"}'
+Invoke-RestMethod "$api/v1/model/download?model=gemma-4-26b-a4b-it"
 ```
 
 進捗確認を繰り返して `state` が `ready` になったら、明示的に切り替えます。使用中でないモデルのダウンロードは準備だけを行い、自動では切り替わりません。
 
 ```powershell
-Invoke-RestMethod "$api/v1/model/switch" -Method Post -ContentType 'application/json' -Body '{"model":"lfm2.5-24b-a2b"}'
+Invoke-RestMethod "$api/v1/model/switch" -Method Post -ContentType 'application/json' -Body '{"model":"gemma-4-26b-a4b-it"}'
 Invoke-RestMethod "$api/v1/model/switch"
 ```
 
-Gemma を使う場合は、上のダウンロード・進捗確認・切り替えリクエストの `lfm2.5-24b-a2b` を `gemma-4-26b-a4b-it` に置き換えてください。初めから Gemma で起動する場合は `run-api.bat --model-family gemma4` を実行します。既定の API アドレスは `http://127.0.0.1:18082/v1` です。
+初めから Gemma で起動する場合は `run-api.bat --model-family gemma4` を実行します。既定の API アドレスは `http://127.0.0.1:18082/v1` です。LFM を使う場合は、上のダウンロード・進捗確認・切り替えリクエストの `gemma-4-26b-a4b-it` を `lfm2.5-24b-a2b` に置き換えるか、`run-api.bat --model-family lfm2`（既定の API アドレス `http://127.0.0.1:18081/v1`）で起動してください。
 
 `GET /v1/model/switch` で `state` が `ready` になるまで確認してください。Qwen に戻す場合は、同じ切り替えリクエストに `{"model":"qwen3.6-35b-a3b"}` を指定します。ダウンロード・切り替えの開始時は `202`、生成中の切り替え要求は `409` を返すので、生成終了後に再試行してください。切り替え中の推論リクエストは `503` になります。ポートと認証設定はそのままです。モデルの選択は今回の起動中だけ有効で、再起動時はランチャーで選んだモデルを使用します。
 
@@ -96,6 +96,17 @@ Gemma を使う場合は、上のダウンロード・進捗確認・切り替�
 | VRAM を約 12 GB に制限 | 64K | 85.03 tok/s | 85.59 tok/s | GPU と CPU でエキスパートを計算 |
 | VRAM を約 8 GB に制限 | 64K | 66.30 tok/s | 63.85 tok/s | GPU と CPU でエキスパートを計算 |
 
+## 実測速度 — Gemma 4
+
+2026-10-19 に同じ Windows PC（システム RAM 64 GB）で、Gemma 4 26B-A4B-it QAT Q4_0 と対応する QAT MTP アシスタントを使って計測しました。画像エンコーダを GPU に常駐させ、テキスト API 入力に対し、MTP 3・CUDA Graph・既定の思考とサンプリング（`temperature=1.0`、`top_p=0.95`、`top_k=64`）を有効にしています。コンテキスト容量・入力チャンク（1,120 トークン）・エキスパート配置は自動選択です。
+
+| VRAM 条件 | コンテキスト容量 | FP16 生成 | INT8 生成 | 備考 |
+| --- | ---: | ---: | ---: | --- |
+| 24 GB | 256K | 105.56 tok/s | — | GPU と CPU でエキスパートを計算 |
+| VRAM を約 8 GB に制限 | 64K | 48.22 tok/s | 48.97 tok/s | 生成時のエキスパート計算は CPU |
+
+同じ 3 種類の入力文を各 1 回使い、毎回、思考を含む 128 トークンを生成しました。速度は総生成トークン数を総デコード時間で割った値で、読み込み・入力処理は含みません。64K・256K はキャッシュ容量であり、入力の長さではありません。8 GB 相当の行は、24 GB GPU 上で別途 16 GiB を確保した条件で、物理的な 8 GB GPU の測定ではありません。表の「—」は未計測です。
+
 ## 実測速度 — LFM2.5（実験対応）
 
 同じ Windows PC（システム RAM 64 GB）で、公式 LFM2.5-24B-A2B Q4_K_M、FP16 KV、MTP・Vision なし、CUDA Graph 有効で計測しました。現在の API の既定値（思考有効、`temperature=0.1`、`top_k=50`、`repetition_penalty=1.05`）を使い、コンテキスト容量・入力チャンク（全条件で 256 トークン）・エキスパート配置は自動選択しています。
@@ -113,7 +124,7 @@ Qwen の測定と同じ 3 種類の入力文をそれぞれ 2 回使い、毎回
 
 | 目的とハードウェア | プロジェクト |
 | --- | --- |
-| 一般的なグラフィックボードを搭載した、**VRAM が 8–24 GB、システム RAM が 32 GB 以下**の **Windows** PC で、API 専用の Qwen3.6-35B-A3B 推論を使いたい。 | TinyStrata（**Windows 専用**、開発中） |
+| 一般的なグラフィックボードを搭載した、**VRAM が 8–24 GB、システム RAM が 32 GB 以下**の **Windows** PC で、Qwen3.6 / Gemma 4 / LFM2.5 を API 経由で使いたい。 | TinyStrata（**Windows 専用**、開発中） |
 | **RTX 3060 クラス以上の GPU** と **64 GB 以上のシステム RAM** の両方を備えている。 | [Strata（上流プロジェクト）](https://github.com/Niko1221/Strata) をお勧めします。 |
 | **チャット UI が同梱されたもの**を使いたい。 | [Strata（上流プロジェクト）](https://github.com/Niko1221/Strata) をお勧めします。 |
 

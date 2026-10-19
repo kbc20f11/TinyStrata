@@ -24,11 +24,11 @@ TinyStrata 将开发精力集中在 Windows 上的高速本地推理及其 API �
 
 ## 重点支持的模型
 
-[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) 仍是默认模型，适合在配备主流显卡的 PC 上兼顾速度、内存效率和回答质量。TinyStrata 专注于较小的 MoE 模型，并新增了对 **LFM2.5-24B-A2B 和 Gemma 4 26B-A4B-it 的实验性支持**。
+[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) 仍是默认模型，适合在配备主流显卡的 PC 上兼顾速度、内存效率和回答质量。TinyStrata 专注于较小的 MoE 模型，并支持 **Gemma 4 26B-A4B-it 和 LFM2.5-24B-A2B**。
 
-LFM 使用官方 [LiquidAI Q4_K_M GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF)（**14.53 GB**）、**FP16 KV**，最大上下文为 **128K**，不支持 MTP 或 Vision。它利用自动 VRAM 专家缓存、CPU 专家计算、输入阶段权重流式传输和 CUDA Graph，不省略模型选中的专家。默认值为 `temperature=0.1`、`top_k=50`、`repetition_penalty=1.05`，思考始终启用。Qwen、LFM 与 Gemma 的设置分别保存。LFM 引擎仍在验证中，不保证与 llama.cpp 或不同 CPU/GPU 分配下的输出 token 完全一致。
+**Gemma 4 26B-A4B-it QAT Q4_0** 使用 [Google 官方主模型及视觉投影器](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf)，以及[匹配的 Unsloth QAT Q4_0 MTP 助手](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF/blob/7b92b5b28818151e8669af2e45e88d6086f490dd/mtp-gemma-4-26B-A4B-it.gguf)。三个文件共 **15.886 GB**：主模型 14.439 GB、投影器 1.195 GB、助手 0.252 GB。引擎支持 GPU 常驻图像编码器、自适应 GPU 专家缓存、利用系统 RAM 的 CPU 专家计算及 MTP 3，均通过同一 API 使用，不省略模型选中的专家。Gemma 支持 **FP16 和 INT8 KV**，目前自动选择 **FP16**。已使用实际模型测试图像输入、MTP 3、RAM 混合计算和模型切换。
 
-**Gemma 4 26B-A4B-it QAT Q4_0** 使用 [Google 官方主模型及视觉投影器](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf)，以及[匹配的 Unsloth QAT Q4_0 MTP 助手](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF/blob/7b92b5b28818151e8669af2e45e88d6086f490dd/mtp-gemma-4-26B-A4B-it.gguf)。三个文件共 **15.886 GB**：主模型 14.439 GB、投影器 1.195 GB、助手 0.252 GB。引擎支持 GPU 常驻图像编码器、自适应 GPU 专家缓存、利用系统 RAM 的 CPU 专家计算及 MTP 3，均通过同一 API 使用，不省略模型选中的专家。Gemma 支持 **FP16 和 INT8 KV**，目前自动选择 **FP16**。实现已加入，正在进行实模型验证，仍属实验性支持。
+LFM 使用官方 [LiquidAI Q4_K_M GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF)（**14.53 GB**）、**FP16 KV**，最大上下文为 **128K**，不支持 MTP 或 Vision。它利用自动 VRAM 专家缓存、CPU 专家计算、输入阶段权重流式传输和 CUDA Graph，不省略模型选中的专家。默认值为 `temperature=0.1`、`top_k=50`、`repetition_penalty=1.05`，思考始终启用。Qwen、Gemma 与 LFM 的设置分别保存。LFM 引擎仍在验证中，不保证与 llama.cpp 或不同 CPU/GPU 分配下的输出 token 完全一致。
 
 额外模型的可执行文件缺失时，请参见[手动构建说明](README.md#model-focus)。
 
@@ -50,22 +50,22 @@ irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/insta
 
 ### 无需重启即可切换模型
 
-安装器默认启动 Qwen。要在同一个 API 服务中使用 LFM，请先下载并查看进度：
+安装器默认启动 Qwen。要在同一个 API 服务中使用 Gemma，请先下载并查看进度：
 
 ```powershell
 $api = 'http://127.0.0.1:18080'
-Invoke-RestMethod "$api/v1/model/download" -Method Post -ContentType 'application/json' -Body '{"model":"lfm2.5-24b-a2b"}'
-Invoke-RestMethod "$api/v1/model/download?model=lfm2.5-24b-a2b"
+Invoke-RestMethod "$api/v1/model/download" -Method Post -ContentType 'application/json' -Body '{"model":"gemma-4-26b-a4b-it"}'
+Invoke-RestMethod "$api/v1/model/download?model=gemma-4-26b-a4b-it"
 ```
 
 重复查询进度，直到 `state` 为 `ready`，再明确请求切换。下载未启用的模型只会完成准备，不会自动切换：
 
 ```powershell
-Invoke-RestMethod "$api/v1/model/switch" -Method Post -ContentType 'application/json' -Body '{"model":"lfm2.5-24b-a2b"}'
+Invoke-RestMethod "$api/v1/model/switch" -Method Post -ContentType 'application/json' -Body '{"model":"gemma-4-26b-a4b-it"}'
 Invoke-RestMethod "$api/v1/model/switch"
 ```
 
-使用 Gemma 时，将上述下载、进度查询和切换请求中的 `lfm2.5-24b-a2b` 替换为 `gemma-4-26b-a4b-it`。也可通过 `run-api.bat --model-family gemma4` 直接启动 Gemma，默认 API 地址为 `http://127.0.0.1:18082/v1`。
+通过 `run-api.bat --model-family gemma4` 可直接启动 Gemma，默认 API 地址为 `http://127.0.0.1:18082/v1`。使用 LFM 时，将上述下载、进度查询和切换请求中的 `gemma-4-26b-a4b-it` 替换为 `lfm2.5-24b-a2b`；也可通过 `run-api.bat --model-family lfm2` 直接启动，默认地址为 `http://127.0.0.1:18081/v1`。
 
 轮询 `GET /v1/model/switch`，直到 `state` 为 `ready`。切回 Qwen 时，向相同切换接口发送 `{"model":"qwen3.6-35b-a3b"}`。下载或切换开始时返回 `202`；生成期间的切换请求返回 `409`，请在生成结束后重试。切换期间的推理请求返回 `503`。端口和身份验证保持不变。模型选择只在当前服务会话中有效，重启后使用启动器选择的模型。
 
@@ -84,6 +84,17 @@ Invoke-RestMethod "$api/v1/model/switch"
 | 约 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | GPU 与 CPU 共同计算专家 |
 | 约 8 GB | 64K | 66.30 tok/s | 63.85 tok/s | GPU 与 CPU 共同计算专家 |
 
+## 实测速度 — Gemma 4
+
+于 2026-10-19 在同一台 Windows PC 上测量，配置为 RTX PRO 4000 Blackwell SFF Edition（24 GB）、Ryzen 9 7945HX3D、64 GB 系统内存。使用 Google Gemma 4 26B-A4B-it QAT Q4_0 及对应的 Unsloth QAT MTP 助手，图像编码器常驻 GPU，通过 API 输入文本，启用 MTP 3 和 CUDA Graph。采用 Google 默认采样设置：启用思考、`temperature=1.0`、`top_p=0.95`、`top_k=64`；自动选择上下文容量及专家分配，自动输入分块为 1120 个 token。
+
+| 可用显存 | 上下文容量 | FP16 生成 | INT8 生成 | 备注 |
+| --- | ---: | ---: | ---: | --- |
+| 24 GB | 256K | 105.56 tok/s | — | GPU 和 CPU 计算专家；未测量 INT8 |
+| 约 8 GB | 64K | 48.22 tok/s | 48.97 tok/s | 生成时由 CPU 计算专家 |
+
+三个固定输入各运行一次，每次生成包含思考在内的 128 个 token。速度为生成 token 总数除以解码总时间，不含加载和输入处理。8 GB 条件是在同一块 24 GB GPU 上另行预留 16 GiB 来模拟的，并非物理 8 GB GPU 的实测。64K/256K 是缓存容量，不是输入长度。
+
 ## 实测速度 — LFM2.5（实验性支持）
 
 在同一台 Windows PC（64 GB 系统内存）上使用官方 LFM2.5-24B-A2B Q4_K_M、FP16 KV 测量，不使用 MTP 或 Vision，启用 CUDA Graph。采用当前 API 默认值：启用思考、`temperature=0.1`、`top_k=50`、`repetition_penalty=1.05`；上下文容量、输入分块（各条件均为 256 个 token）和专家分配均自动选择。
@@ -101,7 +112,7 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 | 你的目标和硬件 | 项目 |
 | --- | --- |
-| 你希望在 **Windows** 上使用仅通过 API 提供的 Qwen3.6-35B-A3B 推理，设备是配备主流显卡的 PC，配置为 **8–24 GB 显存、系统内存不超过 32 GB**。 | TinyStrata（**仅支持 Windows**，开发中） |
+| 你希望在 **Windows** 上使用仅通过 API 提供的 Qwen3.6 / Gemma 4 / LFM2.5 推理，设备是配备主流显卡的 PC，配置为 **8–24 GB 显存、系统内存不超过 32 GB**。 | TinyStrata（**仅支持 Windows**，开发中） |
 | 你同时拥有 **RTX 3060 级别或更高性能的 GPU** 和 **64 GB 或更多系统内存**。 | 推荐使用 [Strata（上游项目）](https://github.com/Niko1221/Strata)。 |
 | 你希望使用**附带聊天 UI** 的项目。 | 推荐使用 [Strata（上游项目）](https://github.com/Niko1221/Strata)。 |
 
