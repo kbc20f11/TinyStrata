@@ -2,8 +2,6 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · **Français** · [Español](README.es.md) · [Português](README.pt-BR.md)
 
-> **Branche de développement LFN :** ajoute LFM2.5-24B-A2B Q4_K_M avec KV FP16, sans MTP/Vision. Voir la [configuration LFM](README.md#lfn-branch-lfm25-24b-a2b). Les instructions d’installation et mesures existantes ci-dessous concernent toujours Qwen.
-
 **TinyStrata est un moteur d’inférence rapide en cours de développement pour les modèles MoE de la classe 30B, exclusivement sous Windows et par API.** Il vise principalement les PC équipés de cartes graphiques grand public avec **8–24 GB de VRAM** et disposant de **32 GB de mémoire système au maximum**.
 
 ## Pourquoi nous développons TinyStrata
@@ -26,9 +24,11 @@ Il existe déjà de nombreuses interfaces et de nombreux environnements d’exé
 
 ## Modèle privilégié
 
-TinyStrata se concentre actuellement exclusivement sur [Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B). Nous envisagerons de prendre en charge un autre modèle lorsqu’un modèle MoE sera mieux adapté que Qwen3.6-35B-A3B à l’inférence locale rapide sur des PC équipés de cartes graphiques grand public.
+[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) reste le modèle par défaut, pour son équilibre entre vitesse, consommation de mémoire et qualité des réponses sur les PC équipés de cartes graphiques grand public. TinyStrata se concentre sur les petits modèles MoE et prend également en charge **LFM2.5-24B-A2B à titre expérimental**.
 
-À nos yeux, le problème est que le développement et la publication de grands modèles progressent, tandis que le choix de modèles MoE de la classe 30B faciles à utiliser sur des PC équipés de cartes graphiques grand public ne s’élargit pas suffisamment. [Qwen3.6-35B-A3B, publié le 16 avril 2026](https://github.com/QwenLM/Qwen3.8#news), reste adapté à notre usage malgré le temps écoulé depuis sa publication : nous privilégions l’équilibre entre vitesse, faible consommation de mémoire et qualité des réponses. Nous n’avons encore trouvé aucun petit modèle MoE qui, selon notre évaluation, offre un équilibre nettement supérieur dans les environnements que nous visons.
+LFM utilise le [GGUF Q4_K_M officiel de LiquidAI](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF) (**14.53 GB**), un **KV FP16** et jusqu’à **128K de contexte**, sans MTP ni Vision. Il bénéficie du cache automatique d’experts en VRAM, du calcul d’experts sur CPU, du streaming des poids à l’entrée et des CUDA Graphs ; aucun expert sélectionné n’est omis. Ses valeurs par défaut sont `temperature=0.1`, `top_k=50` et `repetition_penalty=1.05`, avec le raisonnement toujours activé. Les paramètres Qwen et LFM sont conservés séparément. Le moteur LFM est encore en cours de validation et ne garantit pas les mêmes tokens que llama.cpp ou entre différentes répartitions CPU/GPU.
+
+Si l’exécutable LFM manque, consultez les [instructions de compilation manuelle](README.md#model-focus).
 
 ## Installation
 
@@ -46,7 +46,26 @@ Pour relancer TinyStrata après un redémarrage de Windows, exécutez cette comm
 
 Vous pouvez aussi donner à un agent IA le lien vers le [dépôt GitHub de TinyStrata](https://github.com/kbc20f11/TinyStrata) et lui confier l’installation.
 
-## Vitesse mesurée
+### Changer de modèle sans redémarrer
+
+Le programme d’installation démarre Qwen par défaut. Pour préparer LFM sur le même serveur API, lancez son téléchargement et consultez la progression :
+
+```powershell
+$api = 'http://127.0.0.1:18080'
+Invoke-RestMethod "$api/v1/model/download" -Method Post -ContentType 'application/json' -Body '{"model":"lfm2.5-24b-a2b"}'
+Invoke-RestMethod "$api/v1/model/download?model=lfm2.5-24b-a2b"
+```
+
+Répétez la consultation jusqu’à `state: ready`, puis demandez explicitement le changement. Télécharger un modèle inactif le prépare sans l’activer :
+
+```powershell
+Invoke-RestMethod "$api/v1/model/switch" -Method Post -ContentType 'application/json' -Body '{"model":"lfm2.5-24b-a2b"}'
+Invoke-RestMethod "$api/v1/model/switch"
+```
+
+Consultez `GET /v1/model/switch` jusqu’à `state: ready`. Pour revenir à Qwen, envoyez la même requête avec `{"model":"qwen3.6-35b-a3b"}`. Le démarrage d’un téléchargement ou d’un changement renvoie `202` ; un changement pendant une génération renvoie `409`, réessayez après sa fin. Les requêtes d’inférence pendant le changement reçoivent `503`. Le port et l’authentification restent inchangés. La sélection vaut pour la session actuelle du serveur ; au redémarrage, le modèle choisi dans le lanceur est utilisé.
+
+## Vitesse mesurée — Qwen3.6
 
 Les mesures suivantes ont été effectuées le 2026-10-19 sous Windows avec une RTX PRO 4000 Blackwell SFF Edition (24 GB), un Ryzen 9 7945HX3D et le modèle Unsloth MTP UD-IQ3_XXS fixé pour ce projet. Le modèle et le projecteur de vision sur GPU étaient chargés et préchauffés. Les paramètres étaient ceux de l’API par défaut : réflexion activée, échantillonnage à température 0.7, MTP 3, blocs de prompt de 512 tokens, placement des experts et sélection du contexte automatiques. Le chemin hybride CUDA Graph optionnel était désactivé par défaut ; les CUDA Graphs habituels en exécution entièrement sur GPU restaient actifs. Sur ce GPU, `auto` sélectionnait le FP8 natif ; seule la précision KV était imposée pour la colonne INT8.
 
@@ -67,7 +86,7 @@ Les mesures suivantes ont été effectuées le 2026-10-19 sous Windows avec une 
 | Vous disposez à la fois **d’un GPU de la classe RTX 3060 ou supérieure** et **de 64 GB de mémoire système ou plus**. | Nous recommandons [Strata (projet amont)](https://github.com/Niko1221/Strata). |
 | Vous souhaitez une **interface de chat intégrée**. | Nous recommandons [Strata (projet amont)](https://github.com/Niko1221/Strata). |
 
-## Répartition de la mémoire
+## Répartition de la mémoire — Qwen3.6
 
 Un modèle MoE contient de nombreux **experts** : des réseaux neuronaux plus petits sélectionnés pour chaque token. TinyStrata conserve autant d’experts que possible dans la mémoire GPU (VRAM). Pendant la génération, il peut calculer les experts sélectionnés qui ne sont pas en cache sur le CPU, en utilisant la mémoire système. Lors du traitement de lots d’entrée plus volumineux, il peut à la place transférer les poids des experts depuis la RAM via des tampons GPU temporaires. Les experts sélectionnés par le modèle restent inclus dans le calcul.
 
@@ -85,7 +104,7 @@ Davantage d’experts résidents sur le GPU signifie généralement moins de tra
 
 Le cache KV reste dans la VRAM ; la mémoire système contient les données des experts pour ce mécanisme de déport. Une longue conversation a donc toujours besoin de suffisamment de mémoire GPU pour son cache KV.
 
-## Paramètres automatiques
+## Paramètres automatiques — Qwen3.6
 
 Les nouvelles configurations choisissent automatiquement KV/Attention et la capacité de contexte. Vous n’avez pas besoin de sélectionner un profil pour 8 GB, 12 GB ou 16 GB.
 
@@ -109,19 +128,15 @@ Les paramètres explicites remplacent les choix automatiques, et les paramètres
 
 **TinyStrata fonctionne exclusivement par API.** Il fournit des API Chat Completions (`/v1/chat/completions`) et Responses (`/v1/responses`) compatibles avec OpenAI ainsi qu’une API Messages (`/v1/messages`) compatible avec Anthropic, avec génération en streaming. Connectez un client API ou une interface externe ; TinyStrata ne comprend pas d’interface de chat intégrée.
 
-Par défaut, le raisonnement est activé, avec `temperature=0.7`, `top_p=0.95`, `top_k=20`, `min_p=0.0`, `presence_penalty=1.5`, `repetition_penalty=1.0` et un maximum de **32,768 tokens de sortie**, raisonnement compris. Les paramètres définis pour chaque requête sont prioritaires.
+Pour Qwen, le raisonnement est activé par défaut, avec `temperature=0.7`, `top_p=0.95`, `top_k=20`, `min_p=0.0`, `presence_penalty=1.5`, `repetition_penalty=1.0` et un maximum de **32,768 tokens de sortie**, raisonnement compris. Les paramètres définis pour chaque requête sont prioritaires.
 
 L’API écoute par défaut sur `http://127.0.0.1:18080`. Pour utiliser un autre port, exécutez `run-api.bat --port 18081` depuis le dossier d’installation de TinyStrata.
 
-`run-api.bat --vision gpu` traite les images sur GPU (valeur par défaut des nouvelles configurations) ; `--vision cpu` utilise le CPU et `--vision no` désactive les images. `--vision-tokens N` fixe le nombre maximal de tokens d’image (4096 par défaut). Ces choix sont enregistrés et conservés lors des prochains démarrages si ces options sont omises.
+Pour Qwen, `run-api.bat --vision gpu` traite les images sur GPU (valeur par défaut des nouvelles configurations) ; `--vision cpu` utilise le CPU et `--vision no` désactive les images. `--vision-tokens N` fixe le nombre maximal de tokens d’image (4096 par défaut). Ces choix sont enregistrés et conservés lors des prochains démarrages si ces options sont omises.
 
 L’API peut démarrer avant l’installation des fichiers du modèle. Lorsque Qwen est sélectionné, `POST /v1/model/download` avec un corps JSON vide (`{}`) télécharge le [modèle de langage Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf) fixé pour ce projet (14.1 GB, poids MTP compris) et son [projecteur de vision](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/mmproj-F16.gguf) (0.9 GB), soit environ **15.0 GB au total**. Il vérifie les sommes de contrôle SHA-256 des deux fichiers, extrait le tokenizer et les charge. `GET /v1/model/download` indique la progression ; les téléchargements interrompus peuvent reprendre. Une nouvelle requête de téléchargement réutilise la tâche active, et `POST /v1/model/download/cancel` peut annuler le transfert ou la vérification. La fin du téléchargement ne signifie pas que l’inférence est prête : attendez que l’état du téléchargement passe à `ready` et que `/health` indique `loaded: true` et, si les images sont activées, `images: true`.
 
-Lorsque les deux moteurs sont disponibles, vous pouvez changer de modèle sans redémarrer le serveur API. Envoyez `POST /v1/model/download` avec `{"model":"lfm2.5-24b-a2b"}`, puis consultez `GET /v1/model/download?model=lfm2.5-24b-a2b` jusqu’à l’état `ready`. Le téléchargement d’un modèle inactif le prépare sans l’activer. Envoyez ensuite `POST /v1/model/switch` avec le même JSON et consultez `GET /v1/model/switch` jusqu’à `ready`. Pour revenir à Qwen, utilisez `{"model":"qwen3.6-35b-a3b"}`.
-
-Le démarrage d’un téléchargement ou d’un changement renvoie `202`. Un changement demandé pendant une génération renvoie `409` ; réessayez après sa fin. Les requêtes d’inférence pendant le changement reçoivent `503`. Le port et l’authentification restent inchangés. Les paramètres sont conservés séparément pour chaque modèle ; la sélection vaut pour la session actuelle du serveur. Au redémarrage, le modèle choisi dans le lanceur est utilisé.
-
-Le programme d’installation prépare le moteur et les bibliothèques d’exécution GPU, puis télécharge automatiquement les deux fichiers du modèle. Les configurations existantes conservent le modèle local sélectionné jusqu’à ce que vous le changiez explicitement.
+Le programme d’installation prépare les exécutables des moteurs et les bibliothèques d’exécution GPU, puis télécharge Qwen et son projecteur de vision par défaut. Les configurations existantes conservent le modèle local sélectionné jusqu’à ce que vous le changiez explicitement.
 
 ## Remerciements
 

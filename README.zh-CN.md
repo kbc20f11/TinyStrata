@@ -2,8 +2,6 @@
 
 [English](README.md) · **简体中文** · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
 
-> **LFN 开发分支：**新增 LFM2.5-24B-A2B Q4_K_M（FP16 KV，无 MTP/Vision）。参见 [LFM 安装说明](README.md#lfn-branch-lfm25-24b-a2b)。以下原有安装步骤和测速数据仍针对 Qwen。
-
 **TinyStrata 是一款正在开发中的高速推理引擎，面向 30B 级 MoE 模型，仅支持 Windows，且仅提供 API。** 主要面向配备主流显卡、显存为 **8–24 GB** 且系统内存**不超过 32 GB** 的 PC。
 
 ## 为什么开发 TinyStrata？
@@ -26,9 +24,11 @@ TinyStrata 将开发精力集中在 Windows 上的高速本地推理及其 API �
 
 ## 重点支持的模型
 
-TinyStrata 目前仅专注于 [Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B)。当某个 MoE 模型比 Qwen3.6-35B-A3B 更适合在配备主流显卡的 PC 上进行高速本地推理时，我们会考虑支持其他模型。
+[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) 仍是默认模型，适合在配备主流显卡的 PC 上兼顾速度、内存效率和回答质量。TinyStrata 专注于较小的 MoE 模型，并新增了对 **LFM2.5-24B-A2B 的实验性支持**。
 
-我们认为，当前的问题是，大型模型的开发和发布不断推进，但适合在配备主流显卡的 PC 上使用的 30B 级 MoE 模型，选择却没有充分增加。[于 2026 年 4 月 16 日发布的 Qwen3.6-35B-A3B](https://github.com/QwenLM/Qwen3.8#news)，虽然距离发布已有一段时间，至今仍然适合我们重视速度、内存效率和回答质量平衡的用途。对于目标环境，我们尚未找到一款我们认为在这一平衡上明显更优的小型 MoE 模型。
+LFM 使用官方 [LiquidAI Q4_K_M GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF)（**14.53 GB**）、**FP16 KV**，最大上下文为 **128K**，不支持 MTP 或 Vision。它利用自动 VRAM 专家缓存、CPU 专家计算、输入阶段权重流式传输和 CUDA Graph，不省略模型选中的专家。默认值为 `temperature=0.1`、`top_k=50`、`repetition_penalty=1.05`，思考始终启用。Qwen 与 LFM 的设置分别保存。LFM 引擎仍在验证中，不保证与 llama.cpp 或不同 CPU/GPU 分配下的输出 token 完全一致。
+
+LFM 可执行文件缺失时，请参见[手动构建说明](README.md#model-focus)。
 
 ## 安装方法
 
@@ -46,7 +46,26 @@ irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/insta
 
 或者，你也可以将 [TinyStrata 的 GitHub 仓库](https://github.com/kbc20f11/TinyStrata)链接交给 AI 智能体，让它帮你完成安装。
 
-## 实测速度
+### 无需重启即可切换模型
+
+安装器默认启动 Qwen。要在同一个 API 服务中使用 LFM，请先下载并查看进度：
+
+```powershell
+$api = 'http://127.0.0.1:18080'
+Invoke-RestMethod "$api/v1/model/download" -Method Post -ContentType 'application/json' -Body '{"model":"lfm2.5-24b-a2b"}'
+Invoke-RestMethod "$api/v1/model/download?model=lfm2.5-24b-a2b"
+```
+
+重复查询进度，直到 `state` 为 `ready`，再明确请求切换。下载未启用的模型只会完成准备，不会自动切换：
+
+```powershell
+Invoke-RestMethod "$api/v1/model/switch" -Method Post -ContentType 'application/json' -Body '{"model":"lfm2.5-24b-a2b"}'
+Invoke-RestMethod "$api/v1/model/switch"
+```
+
+轮询 `GET /v1/model/switch`，直到 `state` 为 `ready`。切回 Qwen 时，向相同切换接口发送 `{"model":"qwen3.6-35b-a3b"}`。下载或切换开始时返回 `202`；生成期间的切换请求返回 `409`，请在生成结束后重试。切换期间的推理请求返回 `503`。端口和身份验证保持不变。模型选择只在当前服务会话中有效，重启后使用启动器选择的模型。
+
+## 实测速度 — Qwen3.6
 
 以下测量于 2026-10-19 在 Windows 上完成，使用 RTX PRO 4000 Blackwell SFF Edition（24 GB）、Ryzen 9 7945HX3D，以及固定的 Unsloth MTP UD-IQ3_XXS 模型。通过正常启动的 API 测量纯文本生成速度，视觉编码器始终常驻 GPU。
 
@@ -69,7 +88,7 @@ irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/insta
 | 你同时拥有 **RTX 3060 级别或更高性能的 GPU** 和 **64 GB 或更多系统内存**。 | 推荐使用 [Strata（上游项目）](https://github.com/Niko1221/Strata)。 |
 | 你希望使用**附带聊天 UI** 的项目。 | 推荐使用 [Strata（上游项目）](https://github.com/Niko1221/Strata)。 |
 
-## 内存如何分工
+## 内存如何分工 — Qwen3.6
 
 MoE 模型包含许多**专家（Experts）**，它们是针对每个 token 选择的小型神经网络。TinyStrata 会在 GPU 内存（显存）中保留尽可能多的专家。在生成过程中，选中但未缓存的专家可以使用系统内存在 CPU 上计算。处理较大的输入批次时，也可以改为将专家权重从系统内存流式传输到临时 GPU 缓冲区。模型选中的专家都会保留在计算中。
 
@@ -87,7 +106,7 @@ MoE 模型包含许多**专家（Experts）**，它们是针对每个 token 选�
 
 KV 缓存始终保留在显存中；在这一卸载机制中，系统内存用于存放专家数据。因此，长对话仍然需要足够的 GPU 内存来容纳 KV 缓存。
 
-## 自动设置
+## 自动设置 — Qwen3.6
 
 新配置会自动选择 KV/Attention 和上下文容量，无需选择适用于 8 GB、12 GB 或 16 GB 的配置方案。
 
@@ -111,19 +130,15 @@ MTP 同时支持贪心生成和基于温度的采样，包括重复惩罚、频�
 
 **TinyStrata 仅提供 API。** 它提供兼容 OpenAI 的 Chat Completions（`/v1/chat/completions`）和 Responses（`/v1/responses`）API，以及兼容 Anthropic 的 Messages API（`/v1/messages`），并支持流式生成。请连接 API 客户端或外部前端；TinyStrata 不附带聊天 UI。
 
-默认启用思考，设置为 `temperature=0.7`、`top_p=0.95`、`top_k=20`、`min_p=0.0`、`presence_penalty=1.5`、`repetition_penalty=1.0`，包含思考在内最多输出 **32,768 个 token**。每个请求中的设置优先。
+Qwen 默认启用思考，设置为 `temperature=0.7`、`top_p=0.95`、`top_k=20`、`min_p=0.0`、`presence_penalty=1.5`、`repetition_penalty=1.0`，包含思考在内最多输出 **32,768 个 token**。每个请求中的设置优先。
 
 API 默认监听 `http://127.0.0.1:18080`。要使用其他端口，请在已安装的 TinyStrata 文件夹中运行 `run-api.bat --port 18081`。
 
-`run-api.bat --vision gpu` 使用 GPU 处理图像（新配置的默认值）；`--vision cpu` 使用 CPU，`--vision no` 禁用图像。`--vision-tokens N` 设置图像 token 上限（默认 4096）。这些选择会保存，后续启动时省略参数也会保留。
+对于 Qwen，`run-api.bat --vision gpu` 使用 GPU 处理图像（新配置的默认值）；`--vision cpu` 使用 CPU，`--vision no` 禁用图像。`--vision-tokens N` 设置图像 token 上限（默认 4096）。这些选择会保存，后续启动时省略参数也会保留。
 
 模型文件尚未安装时，API 也可以启动。选择 Qwen 时，调用 `POST /v1/model/download` 并使用空 JSON 请求体（`{}`），会下载固定的 [Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS 语言模型](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf)（14.1 GB，包含 MTP 权重）及其[视觉投影器](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/mmproj-F16.gguf)（0.9 GB），总计约 **15.0 GB**。它会验证两个文件的 SHA-256 校验和，提取分词器并加载模型文件。`GET /v1/model/download` 可报告进度；中断的下载可以续传。重复的下载请求会复用当前任务，`POST /v1/model/download/cancel` 可以取消传输或校验。下载完成并不意味着推理已就绪：请等待下载状态变为 `ready`，且 `/health` 报告 `loaded: true`（启用图像时还需 `images: true`）。
 
-两个引擎均已准备好后，无需重启 API 服务即可切换模型。向 `POST /v1/model/download` 发送 `{"model":"lfm2.5-24b-a2b"}`，并轮询 `GET /v1/model/download?model=lfm2.5-24b-a2b`，直到状态为 `ready`。下载未启用的模型只会完成准备，不会自动切换。然后向 `POST /v1/model/switch` 发送相同 JSON，并轮询 `GET /v1/model/switch`，直到状态为 `ready`。切回 Qwen 时使用 `{"model":"qwen3.6-35b-a3b"}`。
-
-下载或切换开始时返回 `202`。生成期间请求切换会返回 `409`，请在生成结束后重试；切换期间的推理请求返回 `503`。端口和身份验证设置保持不变。各模型的设置独立保存；切换只在当前服务会话中有效，重启后使用启动器选择的模型。
-
-安装程序会准备引擎和 GPU 运行时库，并自动下载两个模型文件。现有配置会继续使用已选择的本地模型，直到你明确更改它。
+安装程序会准备引擎可执行文件和 GPU 运行时库，并默认下载 Qwen 及其视觉投影器。现有配置会继续使用已选择的本地模型，直到你明确更改它。
 
 ## 致谢
 

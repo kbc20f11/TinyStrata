@@ -2,31 +2,6 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · **日本語** · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
 
-> **LFN 開発ブランチ：** Qwen エンジンに加えて LFM2.5-24B-A2B に対応しています。以下に残した Qwen の導入手順・計測値とは別の実装です。
-
-## LFN ブランチ：LFM2.5-24B-A2B
-
-公式の [LiquidAI Q4_K_M GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF)（14.53 GB）を使い、空き VRAM に合わせた Expert キャッシュ、CPU での Expert 計算、入力時の重みのストリーミング、CUDA Graph で高速化します。モデルが選んだ Expert は省略しません。現時点の KV は **FP16**、最大コンテキストは **128K** で、**MTP・Vision はありません**。MTP 付きの公開重みは確認できていません。
-
-CUDA を導入した Visual Studio の x64 開発者ターミナルで、このブランチからビルドします。
-
-```powershell
-cmake -S . -B ..\TinyStrata-work\build -DTINYSTRATA_BACKEND=CUDA
-cmake --build ..\TinyStrata-work\build --config Release --target tinystrata-lfm2 --parallel 4
-.\run-api.bat --model-family lfm2 --port 18081
-```
-
-LFM の設定は独立した `config-lfm2.json` に保存します。公式 LFM Q4_K_M のダウンロードは、ポート 18081 に対して次のコマンドで開始・進捗確認ができます。
-
-```powershell
-Invoke-RestMethod 'http://127.0.0.1:18081/v1/model/download' -Method Post -ContentType 'application/json' -Body '{"model":"lfm2.5-24b-a2b"}'
-Invoke-RestMethod 'http://127.0.0.1:18081/v1/model/download?model=lfm2.5-24b-a2b'
-```
-
-中断後の再開と SHA-256 検証に対応し、一致するファイルが手元にある場合は再利用します。使用中でないモデルのダウンロードは準備だけを行い、現在のモデルは切り替えません。準備できたら、[同じ API サーバーから切り替えられます](#api-サーバー)。このダウンロードを中断する場合は、`POST /v1/model/download/cancel` に `{"model":"lfm2.5-24b-a2b"}` を送ってください。
-
-手元のファイルを使う場合は、起動コマンドに `--model "C:\models\LFM2.5-24B-A2B-Q4_K_M.gguf"` を追加してください。以下の `main` 用インストーラーが導入するのは Qwen 版です。LFM の既定値は `temperature=0.1`、`top_k=50`、`repetition_penalty=1.05` で、思考は常に有効です。新しいエンジンは検証中であり、llama.cpp や CPU・GPU の配置が異なる場合と同じトークン列になることは保証しません。
-
 **TinyStrata は、30B 級の MoE モデル向けに開発している Windows 専用・API 専用の高速推論エンジンです。** VRAM が **8–24 GB** の一般的なグラフィックボードを搭載し、システム RAM が **32 GB 以下**の PC を主な対象としています。
 
 ## TinyStrata を開発する理由
@@ -49,9 +24,23 @@ LLM 向けの API に対応した UI やエージェントハーネスは、す�
 
 ## 対象モデル
 
-TinyStrata は現在、[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) のみに対応しています。一般的なグラフィックボードを搭載した PC での高速なローカル推論において、Qwen3.6-35B-A3B より適した MoE モデルが登場した場合は、別のモデルへの対応を検討します。
+一般的なグラフィックボードを搭載した PC での速度・省メモリ性・回答品質のバランスを重視し、[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) を既定のモデルとしています。比較的小さな MoE モデルに注力し、**LFM2.5-24B-A2B にも実験的に対応しています**。
 
-私たちが課題と考えているのは、大規模モデルの開発・発表が進む一方で、一般的なグラフィックボードを搭載した PC で扱いやすい 30B 級の MoE モデルの選択肢が十分に増えていないことです。[2026 年 4 月 16 日に公開された Qwen3.6-35B-A3B](https://github.com/QwenLM/Qwen3.8#news) は、公開から時間が経った現在も、速度・省メモリ性・回答品質のバランスを重視する私たちの用途に合っています。対象とする環境で、このバランスを明確に上回ると判断できる小規模 MoE モデルは、まだ見つかっていません。
+LFM は公式の [LiquidAI Q4_K_M GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF)（**14.53 GB**）を使い、KV は **FP16**、最大コンテキストは **128K** です。MTP・Vision はありません。空き VRAM に合わせたエキスパートキャッシュ、CPU でのエキスパート計算、入力時の重みのストリーミング、CUDA Graph を利用し、モデルが選んだエキスパートは省略しません。既定値は `temperature=0.1`、`top_k=50`、`repetition_penalty=1.05` で、思考は常に有効です。設定は Qwen と LFM で別々に保持します。LFM エンジンは検証中であり、llama.cpp や CPU・GPU の配置が異なる場合と同じトークン列になることは保証しません。
+
+<details>
+<summary>LFM の実行ファイルがない場合の手動ビルド</summary>
+
+CUDA を導入した x64 Visual Studio 開発者ターミナルで、このリポジトリから実行してください。
+
+```powershell
+cmake -S . -B ..\TinyStrata-work\build -DTINYSTRATA_BACKEND=CUDA
+cmake --build ..\TinyStrata-work\build --config Release --target tinystrata-lfm2 --parallel 4
+```
+
+初めから LFM で起動する場合は `run-api.bat --model-family lfm2 --port 18080` を実行します。手元のファイルを使う場合は `--model "C:\models\LFM2.5-24B-A2B-Q4_K_M.gguf"` を追加してください。
+
+</details>
 
 ## インストール方法
 
@@ -69,7 +58,26 @@ Windows を再起動したあとに再び起動するには、次のコマンド
 
 または、AI エージェントに [TinyStrata の GitHub リポジトリ](https://github.com/kbc20f11/TinyStrata)のリンクを渡し、導入を任せることもできます。
 
-## 実測速度
+### 起動したままモデルを切り替える
+
+インストーラーは既定で Qwen を起動します。同じ API サーバーで LFM を使うには、まずダウンロードを開始し、進捗を確認します。
+
+```powershell
+$api = 'http://127.0.0.1:18080'
+Invoke-RestMethod "$api/v1/model/download" -Method Post -ContentType 'application/json' -Body '{"model":"lfm2.5-24b-a2b"}'
+Invoke-RestMethod "$api/v1/model/download?model=lfm2.5-24b-a2b"
+```
+
+進捗確認を繰り返して `state` が `ready` になったら、明示的に切り替えます。使用中でないモデルのダウンロードは準備だけを行い、自動では切り替わりません。
+
+```powershell
+Invoke-RestMethod "$api/v1/model/switch" -Method Post -ContentType 'application/json' -Body '{"model":"lfm2.5-24b-a2b"}'
+Invoke-RestMethod "$api/v1/model/switch"
+```
+
+`GET /v1/model/switch` で `state` が `ready` になるまで確認してください。Qwen に戻す場合は、同じ切り替えリクエストに `{"model":"qwen3.6-35b-a3b"}` を指定します。ダウンロード・切り替えの開始時は `202`、生成中の切り替え要求は `409` を返すので、生成終了後に再試行してください。切り替え中の推論リクエストは `503` になります。ポートと認証設定はそのままです。モデルの選択は今回の起動中だけ有効で、再起動時はランチャーで選んだモデルを使用します。
+
+## 実測速度 — Qwen3.6
 
 次の測定は、2026-10-19 に Windows、RTX PRO 4000 Blackwell SFF Edition（24 GB）、Ryzen 9 7945HX3D、固定の Unsloth MTP UD-IQ3_XXS モデルで行いました。画像エンコーダを GPU に常駐させた通常の API 起動で、テキスト生成の速度を測定しています。
 
@@ -92,7 +100,7 @@ Windows を再起動したあとに再び起動するには、次のコマンド
 | **RTX 3060 クラス以上の GPU** と **64 GB 以上のシステム RAM** の両方を備えている。 | [Strata（上流プロジェクト）](https://github.com/Niko1221/Strata) をお勧めします。 |
 | **チャット UI が同梱されたもの**を使いたい。 | [Strata（上流プロジェクト）](https://github.com/Niko1221/Strata) をお勧めします。 |
 
-## メモリの分担
+## メモリの分担 — Qwen3.6
 
 MoE モデルには、トークンごとに選ばれる小さなニューラルネットワークである**エキスパート**（Experts）が多数含まれています。TinyStrata は、できるだけ多くのエキスパートを GPU メモリ（VRAM）に保持します。生成中は、選択されたエキスパートがキャッシュされていない場合、システム RAM を使って CPU で計算できます。大きな入力バッチを処理するときは、代わりに RAM から一時的な GPU バッファへエキスパートの重みをストリーミングできます。モデルが選択したエキスパートは計算から除外されません。
 
@@ -110,7 +118,7 @@ MoE モデルには、トークンごとに選ばれる小さなニューラル�
 
 KV キャッシュは VRAM に保持され、このオフロードの仕組みではシステム RAM がエキスパートのデータを保持します。そのため、長い会話には、KV キャッシュに必要な十分な GPU メモリが引き続き必要です。
 
-## 自動設定
+## 自動設定 — Qwen3.6
 
 新しい構成では、KV/Attention とコンテキスト容量が自動で選択されます。8 GB、12 GB、16 GB 向けの設定を自分で選ぶ必要はありません。
 
@@ -134,19 +142,15 @@ MTP は greedy 生成と温度付きサンプリングの両方に対応して�
 
 **TinyStrata は API 専用です。** OpenAI 互換の Chat Completions（`/v1/chat/completions`）と Responses（`/v1/responses`）API、および Anthropic 互換の Messages API（`/v1/messages`）を提供し、ストリーミング生成にも対応しています。API クライアントや外部のフロントエンドを接続してください。TinyStrata にチャット UI は同梱されていません。
 
-デフォルトでは思考が有効で、`temperature=0.7`、`top_p=0.95`、`top_k=20`、`min_p=0.0`、`presence_penalty=1.5`、`repetition_penalty=1.0`、思考を含む最大出力は **32,768 トークン**です。リクエストごとの設定が優先されます。
+Qwen は既定で思考が有効で、`temperature=0.7`、`top_p=0.95`、`top_k=20`、`min_p=0.0`、`presence_penalty=1.5`、`repetition_penalty=1.0`、思考を含む最大出力は **32,768 トークン**です。リクエストごとの設定が優先されます。
 
 API は、デフォルトで `http://127.0.0.1:18080` で待ち受けます。別のポートを使うには、インストール先の TinyStrata フォルダで `run-api.bat --port 18081` を実行してください。
 
-`run-api.bat --vision gpu` で GPU（新規構成の既定）、`--vision cpu` で CPU による画像処理を選べます。`--vision no` は画像を無効にし、`--vision-tokens N` は画像トークン数の上限（既定 4096）を指定します。選択は保存され、次回以降は省略しても維持されます。
+Qwen では `run-api.bat --vision gpu` で GPU（新規構成の既定）、`--vision cpu` で CPU による画像処理を選べます。`--vision no` は画像を無効にし、`--vision-tokens N` は画像トークン数の上限（既定 4096）を指定します。選択は保存され、次回以降は省略しても維持されます。
 
 API はモデルファイルをインストールする前でも起動できます。Qwen を選択している場合、`POST /v1/model/download` に空の JSON ボディ（`{}`）を指定すると、固定の [Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS 言語モデル](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf)（MTP の重みを含む 14.1 GB）と、その[ビジョンプロジェクタ](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/mmproj-F16.gguf)（0.9 GB）、合計約 **15.0 GB** をダウンロードします。両方のファイルの SHA-256 チェックサムを検証し、トークナイザーを抽出して読み込みます。`GET /v1/model/download` で進捗を確認でき、中断したダウンロードは再開できます。ダウンロードを繰り返し要求した場合は、実行中のジョブを再利用します。`POST /v1/model/download/cancel` で転送や検証をキャンセルできます。ダウンロード完了は推論の準備完了を意味しません。ダウンロード状態が `ready` になり、`/health` が `loaded: true`（画像が有効なら `images: true` も）を返すまで待ってください。
 
-両方のエンジンが用意されていれば、API サーバーを再起動せずにモデルを切り替えられます。`POST /v1/model/download` に `{"model":"lfm2.5-24b-a2b"}` を送り、`GET /v1/model/download?model=lfm2.5-24b-a2b` で `ready` になるまで確認してください。使用中でないモデルは準備だけを行い、自動では切り替わりません。続いて `POST /v1/model/switch` に同じ JSON を送り、`GET /v1/model/switch` で `ready` になるまで確認します。Qwen に戻す場合は `{"model":"qwen3.6-35b-a3b"}` を指定します。
-
-ダウンロード・切り替えの開始時は `202` を返します。生成中に切り替えを要求すると `409` になるので、生成終了後に再試行してください。切り替え中の推論リクエストは `503` になります。ポートと認証設定はそのままです。設定はモデルごとに分けて保持され、切り替えたモデルは今回の起動中だけ有効です。再起動時はランチャーで選んだモデルを使用します。
-
-インストーラーは、エンジンと GPU ランタイムライブラリを準備し、両方のモデルファイルを自動でダウンロードします。既存の構成では、明示的に変更するまで、選択済みのローカルモデルを使用し続けます。
+インストーラーはエンジンの実行ファイルと GPU ランタイムライブラリを準備し、既定で Qwen とそのビジョンプロジェクタをダウンロードします。既存の構成では、明示的に変更するまで、選択済みのローカルモデルを使用し続けます。
 
 ## 謝辞
 

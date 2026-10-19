@@ -376,7 +376,7 @@ function Invoke-TinyStrataPortableBuild {
         $env:CUDA_PATH = $cudaRoot
         $env:PATH = (Join-Path $cudaRoot 'bin') + ';' + (Join-Path $cudaRoot 'bin\x64') + ';' + $env:PATH
         $env:VSLANG = '1033'
-        $configure = @('-S', $sourceRoot, '-B', $buildRoot, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', '-DTINYSTRATA_BACKEND=CUDA', '-DSTRATA_PORTABLE=ON', "-DCMAKE_CUDA_ARCHITECTURES=$Architectures", "-DCMAKE_MAKE_PROGRAM=$($tools.Ninja)", "-DCMAKE_CUDA_COMPILER=$nvcc", "-DCUDAToolkit_ROOT=$cudaRoot")
+        $configure = @('-S', $sourceRoot, '-B', $buildRoot, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', '-DTINYSTRATA_BACKEND=CUDA', '-DTINYSTRATA_LFM2=ON', '-DSTRATA_PORTABLE=ON', "-DCMAKE_CUDA_ARCHITECTURES=$Architectures", "-DCMAKE_MAKE_PROGRAM=$($tools.Ninja)", "-DCMAKE_CUDA_COMPILER=$nvcc", "-DCUDAToolkit_ROOT=$cudaRoot")
         Write-Host "Building TinyStrata for CUDA architecture(s) $Architectures. This can take several minutes."
         & $tools.CMake @configure | Out-Host
         if ($LASTEXITCODE -ne 0) { throw 'TinyStrata CMake configuration failed.' }
@@ -387,10 +387,13 @@ function Invoke-TinyStrataPortableBuild {
         $exe = Join-Path $buildRoot 'tinystrata.exe'
         $kq = Join-Path $buildRoot 'strata_kq.dll'
         $visionExe = Join-Path $buildRoot 'tinystrata-vision.exe'
+        $lfmExe = Join-Path $buildRoot 'tinystrata-lfm2.exe'
         if (-not (Test-Path -LiteralPath $exe -PathType Leaf) -or -not (Test-Path -LiteralPath $kq -PathType Leaf) -or
-            -not (Test-Path -LiteralPath $visionExe -PathType Leaf)) { throw 'Expected engine or vision build outputs are missing.' }
+            -not (Test-Path -LiteralPath $visionExe -PathType Leaf) -or -not (Test-Path -LiteralPath $lfmExe -PathType Leaf)) {
+            throw 'Expected Qwen, LFM or vision build outputs are missing.'
+        }
         if (-not (Test-TinyStrataVisionCuda -ExecutablePath $visionExe)) { throw 'The image encoder was not built with CUDA support.' }
-        return [pscustomobject]@{ Exe = $exe; VisionExe = $visionExe; QuantizedKernels = $kq; CudaDirectory = $cudaRoot; Architectures = $Architectures }
+        return [pscustomobject]@{ Exe = $exe; LfmExe = $lfmExe; VisionExe = $visionExe; QuantizedKernels = $kq; CudaDirectory = $cudaRoot; Architectures = $Architectures }
     }
     finally {
         foreach ($entry in @(Get-ChildItem Env:)) {
@@ -760,6 +763,7 @@ function Invoke-TinyStrataInstaller {
             foreach ($candidate in $candidates) {
                 if ((Test-Path -LiteralPath $candidate -PathType Leaf) -and
                     (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $candidate) 'strata_kq.dll') -PathType Leaf) -and
+                    (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $candidate) 'tinystrata-lfm2.exe') -PathType Leaf) -and
                     (Test-TinyStrataVisionCuda -ExecutablePath (Join-Path (Split-Path -Parent $candidate) 'tinystrata-vision.exe') -SearchDirectories $search)) { $exe = $candidate; break }
             }
         }
