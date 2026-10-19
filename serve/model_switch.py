@@ -1,4 +1,4 @@
-"""Switch the two supported model profiles without restarting the HTTP server."""
+"""Switch supported model profiles without restarting the HTTP server."""
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -195,9 +195,11 @@ class ModelSwitcher:
         exe = resolve_executable(cfg)
         if exe is None:
             raise ValueError('the selected model engine has not been built')
-        want_vision = profile.arch == 'qwen35moe' and cfg.get('vision_mode', 'gpu') != 'no'
+        want_vision = profile.arch in ('qwen35moe', 'gemma4') and cfg.get('vision_mode', 'gpu') != 'no'
         if cfg.get('vision_download_required') or (want_vision and not cfg.get('vision')):
             raise ValueError('the image projector or vision executable is missing; download or build image support first')
+        if cfg.get('assistant_download_required'):
+            raise ValueError('the matching Gemma QAT assistant is missing or invalid; download the model bundle first')
         if (api.gpu_list(cfg) or [0]) != (getattr(svc, 'gpu_indices', None) or [0]):
             raise ValueError('live switching requires both model profiles to use this server GPU')
         tok = api.model_tokenizer(Path(cfg['tokenizer']))
@@ -364,22 +366,30 @@ class ModelSwitcher:
     def _downloader(self, model):
         if model in self._downloads:
             return self._downloads[model]
-        from serve.model_download import FixedModelBundleDownloader, FixedModelDownloader, manifest_for_arch
+        from serve.model_download import FixedGemma4BundleDownloader, FixedModelBundleDownloader, FixedModelDownloader, manifest_for_arch
         from serve.model_setup import model_path
         profile = self.profiles.get(model)
         cfg = profile.config
         existing = model_path(cfg)
         directory = cfg['download_dir']
 
-        def prepared(path, projector=None):
+        def prepared(path, projector=None, assistant=None):
             # Inactive download completion only prepares its profile. The
             # selected model and native processes are changed by start().
-            self.profiles.prepare(model, model_path=path, projector=projector, projector_verified=True)
+            extra = {'assistant': assistant, 'assistant_verified': True} if profile.arch == 'gemma4' else {}
+            self.profiles.prepare(model, model_path=path, projector=projector, projector_verified=True, **extra)
 
         if profile.arch == 'lfm2moe':
             manager = FixedModelDownloader(directory, on_ready=prepared,
                                            existing_paths=(existing,) if existing is not None else (),
                                            _manifest=manifest_for_arch(profile.arch))
+        elif profile.arch == 'gemma4':
+            projector = (cfg.get('vision') or {}).get('mmproj') or cfg.get('vision_mmproj')
+            assistant = cfg.get('draft_model')
+            manager = FixedGemma4BundleDownloader(directory, on_ready=prepared,
+                                                 existing_paths=(existing,) if existing is not None else (),
+                                                 projector_paths=(Path(projector),) if projector else (),
+                                                 assistant_paths=(Path(assistant),) if assistant else ())
         else:
             projector = (cfg.get('vision') or {}).get('mmproj') or cfg.get('vision_mmproj')
             manager = FixedModelBundleDownloader(directory, on_ready=prepared,

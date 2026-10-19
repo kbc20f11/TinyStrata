@@ -23,7 +23,7 @@ def model_architecture(path: str | Path) -> str:
 
 def shared_library_dirs(cfg: dict) -> dict:
     """Reuse an installed portable CUDA runtime for a separate LFM config."""
-    if cfg.get("arch") != "lfm2moe" or "lib_dirs" in cfg:
+    if cfg.get("arch") not in ("lfm2moe", "gemma4") or "lib_dirs" in cfg:
         return cfg
     work = ROOT.with_name(ROOT.name + "-work")
     directories = []
@@ -58,7 +58,7 @@ def resolve_executable(cfg: dict) -> Path | None:
         return path.resolve() if path.is_file() else None
     suffix = ".exe" if os.name == "nt" else ""
     work = ROOT.with_name(ROOT.name + "-work")
-    name = "tinystrata-lfm2" if cfg.get("arch") == "lfm2moe" else "tinystrata"
+    name = {"lfm2moe": "tinystrata-lfm2", "gemma4": "tinystrata-gemma4"}.get(cfg.get("arch"), "tinystrata")
     for folder in (work / "build", work / "build/Release", work / "build-cuda-132",
                    ROOT / "bin", ROOT / "build", ROOT / "build/Release"):
         candidate = folder / (name + suffix)
@@ -103,8 +103,8 @@ def _extract_tokenizer(model: Path, cache: Path) -> None:
     from serve.tokenizer import extract
 
     md = GGUFFile(model).metadata
-    if md.get("general.architecture") not in ("qwen35moe", "lfm2moe"):
-        raise ValueError("This launcher supports qwen35moe and lfm2moe GGUF models")
+    if md.get("general.architecture") not in ("qwen35moe", "lfm2moe", "gemma4"):
+        raise ValueError("This launcher supports qwen35moe, lfm2moe and gemma4 GGUF models")
     if not md.get("tokenizer.chat_template"):
         raise ValueError("The GGUF does not contain its chat template")
     print("Extracting the model tokenizer and chat template ...", flush=True)
@@ -125,7 +125,7 @@ def configure_vision(cfg: dict, model: Path, *, projector: Path | None = None,
     A GPU encoder starts and warms before the language engine, so its weights
     and workspace are included in the free-VRAM budget. Off needs no assets.
     """
-    from serve.model_download import MMPROJ_FILENAME, MMPROJ_SHA256, MMPROJ_SIZE
+    from serve.model_download import FIXED_GEMMA4_MMPROJ, FIXED_MMPROJ
     from serve.tinyconfig import VISION_POLICY_VERSION, check_vision_options, disable_vision
 
     mode = check_vision_options(cfg)
@@ -141,18 +141,21 @@ def configure_vision(cfg: dict, model: Path, *, projector: Path | None = None,
         new["vision_mmproj"] = previous["mmproj"]
     if mode == "no":
         return disable_vision(new)
-    projector = Path(new.get("vision_mmproj") or Path(cfg["download_dir"]) / MMPROJ_FILENAME)
+    artifact = FIXED_GEMMA4_MMPROJ if cfg.get("arch") == "gemma4" else FIXED_MMPROJ
+    projector = Path(new.get("vision_mmproj") or Path(cfg["download_dir"]) / artifact.filename)
     encoder = resolve_vision_executable(new)
-    valid = projector.is_file() and projector.stat().st_size == MMPROJ_SIZE
+    valid = projector.is_file() and projector.stat().st_size == artifact.size
     if valid and not verified:
         digest = hashlib.sha256()
         with projector.open("rb") as source:
             for block in iter(lambda: source.read(4 * 1024 * 1024), b""):
                 digest.update(block)
-        valid = digest.hexdigest() == MMPROJ_SHA256
+        valid = digest.hexdigest() == artifact.sha256
     if valid and encoder is not None:
         new["vision"] = {**previous, "exe": str(encoder), "mmproj": str(projector.resolve()),
                          "model": str(model), "gpu": mode == "gpu"}
+        if cfg.get("arch") == "gemma4":
+            new["vision"].setdefault("max_tokens", 1120)
         if "vision_tokens" in cfg:
             new["vision"]["max_tokens"] = cfg["vision_tokens"]
         new["vision_policy_version"] = VISION_POLICY_VERSION
@@ -164,8 +167,42 @@ def configure_vision(cfg: dict, model: Path, *, projector: Path | None = None,
     return new
 
 
+def configure_assistant(cfg: dict, *, assistant: Path | None = None, verified: bool = False) -> dict:
+    """Attach only the matching pinned QAT assistant to Gemma's native MTP path."""
+    if cfg.get("arch") != "gemma4":
+        return cfg
+    from serve.model_download import FIXED_GEMMA4_ASSISTANT as artifact
+
+    new = {**cfg, "args": list(cfg["args"])}
+    args = new["args"]
+    configured = args[args.index("--draft-model") + 1] if "--draft-model" in args[:-1] else cfg.get("draft_model")
+    path = Path(assistant or configured or Path(cfg["download_dir"]) / artifact.filename).expanduser()
+    if not path.is_absolute():
+        path = Path(cfg.get("cwd") or ROOT) / path
+    path = path.resolve()
+    new["draft_model"] = str(path)
+    if "--draft-model" in args[:-1]:
+        args[args.index("--draft-model") + 1] = str(path)
+    else:
+        args.extend(("--draft-model", str(path)))
+    enabled = config.value_of(new, "mtp") not in (None, 0)
+    valid = path.is_file() and path.stat().st_size == artifact.size
+    if enabled and valid and not verified:
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            for block in iter(lambda: source.read(4 * 1024 * 1024), b""):
+                digest.update(block)
+        valid = digest.hexdigest() == artifact.sha256
+    if enabled and not valid:
+        new["assistant_download_required"] = True
+    else:
+        new.pop("assistant_download_required", None)
+    return new
+
+
 def prepare_installed_model(cfg: dict, config_path: str | Path, model_path: str | Path, *,
-                            projector: Path | None = None, projector_verified: bool = False) -> dict:
+                            projector: Path | None = None, projector_verified: bool = False,
+                            assistant: Path | None = None, assistant_verified: bool = False) -> dict:
     """Extract a verified/downloaded or local GGUF tokenizer, then save settings.
 
     A missing executable does not prevent downloading or preparing the model.
@@ -182,15 +219,16 @@ def prepare_installed_model(cfg: dict, config_path: str | Path, model_path: str 
     identity = f"{model}\n{st.st_size}\n{st.st_mtime_ns}"
     cache = path.parent / "models" / hashlib.sha256(identity.encode()).hexdigest()[:16]
     tokenizer = cache / "tokenizer"
-    if not all((tokenizer / name).is_file() for name in TOKENIZER_FILES):
+    required = TOKENIZER_FILES + (("merges.json",) if actual_arch == "gemma4" else ())
+    if not all((tokenizer / name).is_file() for name in required):
         _extract_tokenizer(model, cache)
-    if not all((tokenizer / name).is_file() for name in TOKENIZER_FILES):
+    if not all((tokenizer / name).is_file() for name in required):
         raise ValueError("The GGUF tokenizer extraction did not produce all required files")
     new = shared_library_dirs(configure_download(cfg, path))
     args = new["args"]
     args[args.index("--model") + 1] = str(model)
     new["tokenizer"] = str(tokenizer)
-    new["log"] = str(path.parent / ("engine-lfm2.log" if actual_arch == "lfm2moe" else "engine.log"))
+    new["log"] = str(path.parent / {"lfm2moe": "engine-lfm2.log", "gemma4": "engine-gemma4.log"}.get(actual_arch, "engine.log"))
     exe = resolve_executable(new)
     if exe is not None:
         new["exe"] = str(exe)
@@ -201,5 +239,6 @@ def prepare_installed_model(cfg: dict, config_path: str | Path, model_path: str 
     else:
         new["model_bootstrap"] = True
     new = configure_vision(new, model, projector=projector, verified=projector_verified)
+    new = configure_assistant(new, assistant=assistant, verified=assistant_verified)
     save_settings(path, new)
     return new

@@ -15,7 +15,10 @@ DEFAULT_SAMPLING = {
     "presence_penalty": 1.5, "repetition_penalty": 1.0,
 }
 LFM2_SAMPLING = {"temperature": 0.1, "top_k": 50, "repetition_penalty": 1.05}
-MODEL_NAMES = {"qwen35moe": "qwen3.6-35b-a3b", "lfm2moe": "lfm2.5-24b-a2b"}
+GEMMA4_SAMPLING = {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0,
+                   "presence_penalty": 0.0, "repetition_penalty": 1.0}
+MODEL_NAMES = {"qwen35moe": "qwen3.6-35b-a3b", "lfm2moe": "lfm2.5-24b-a2b",
+               "gemma4": "gemma-4-26b-a4b-it"}
 
 
 def migrate_generation_settings(cfg: dict) -> tuple[dict, bool]:
@@ -28,10 +31,10 @@ def migrate_generation_settings(cfg: dict) -> tuple[dict, bool]:
     if sampling is not None and not isinstance(sampling, dict):
         raise ValueError("sampling must be an object")
     sampling = dict(sampling or {})
-    if cfg.get("arch") != "lfm2moe" and cfg.get("generation_policy_version") != GENERATION_POLICY_VERSION and \
+    if cfg.get("arch", "qwen35moe") == "qwen35moe" and cfg.get("generation_policy_version") != GENERATION_POLICY_VERSION and \
             sampling == {"temperature": 0}:
         sampling = {}
-    defaults = dict(LFM2_SAMPLING if cfg.get("arch") == "lfm2moe" else DEFAULT_SAMPLING)
+    defaults = dict({"lfm2moe": LFM2_SAMPLING, "gemma4": GEMMA4_SAMPLING}.get(cfg.get("arch"), DEFAULT_SAMPLING))
     # Preserve the upstream spelling as well as the canonical spelling.
     if sampling.get("repeat_penalty") is not None:
         defaults.pop("repetition_penalty")
@@ -161,7 +164,7 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         raise ValueError("max_tokens must be a positive whole number")
     arch = cfg.get("arch", "qwen35moe")
     if arch not in MODEL_NAMES:
-        raise ValueError("TinyStrata supports qwen35moe and lfm2moe models")
+        raise ValueError("TinyStrata supports qwen35moe, lfm2moe and gemma4 models")
     if arch == "lfm2moe" and cfg.get("enable_thinking", True) is False:
         raise ValueError("LFM2.5-24B-A2B always uses thinking")
     for key in ("images", "replicas", "layer_split", "vram_elastic", "slot_save_path",
@@ -184,7 +187,7 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
     args = cfg.get("args")
     if not isinstance(args, list) or not all(isinstance(x, str) for x in args):
         raise ValueError("args must be a list of engine argument strings")
-    values = {"--model", "--max-context", "--kv-type", "--chunk", "--mtp", "--expert-vram",
+    values = {"--model", "--draft-model", "--max-context", "--kv-type", "--chunk", "--mtp", "--expert-vram",
               "--expert-slots", "--cpu-threads", "--hybrid-rows", "--vram-reserve-mib"}
     switches = {"--no-graph", "--no-warmup", "--hybrid-graph", "--no-hybrid-graph", "--vision"}
     seen = set()
@@ -221,8 +224,19 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
             raise ValueError("LFM2.5 supports at most 131072 context tokens")
         if config.value_of(cfg, "mtp") not in (None, 0):
             raise ValueError("LFM2.5 has no published MTP head; --mtp must be 0")
+    elif arch == "gemma4":
+        unsupported = seen.intersection({"--hybrid-graph", "--no-hybrid-graph", "--hybrid-rows",
+                                         "--expert-slots", "--no-warmup"})
+        if unsupported:
+            raise ValueError("Unsupported Gemma 4 engine option: " + ", ".join(sorted(unsupported)))
+        if kv not in (None, "auto", "fp16", "int8"):
+            raise ValueError("Gemma 4 supports --kv-type auto, fp16 or int8")
+        if config.value_of(cfg, "mtp") not in (None, 0) and "--draft-model" not in seen and not allow_uninstalled:
+            raise ValueError("Gemma 4 MTP requires its matching QAT assistant (--draft-model)")
     elif kv == "fp16":
         raise ValueError("Qwen3.6 does not support --kv-type fp16")
+    if arch != "gemma4" and "--draft-model" in seen:
+        raise ValueError("--draft-model is only supported by the Gemma 4 engine")
 
 
 def check_files(cfg: dict, *, allow_uninstalled: bool = False) -> None:
@@ -243,3 +257,11 @@ def check_files(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         path = path if path.is_absolute() else base / path
         if not path.is_file():
             raise ValueError(f"TinyStrata vision {key} not found: {path}")
+    if cfg.get("arch") == "gemma4" and config.value_of(cfg, "mtp") not in (None, 0):
+        args = cfg.get("args", [])
+        name = args[args.index("--draft-model") + 1] if "--draft-model" in args[:-1] else ""
+        path = Path(name) if name else None
+        path = (path if path.is_absolute() else base / path) if path is not None else None
+        if path is None or not path.is_file():
+            if not allow_uninstalled:
+                raise ValueError("Gemma 4 QAT assistant is missing; download the model bundle first")

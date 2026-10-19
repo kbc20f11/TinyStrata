@@ -24,11 +24,13 @@ TinyStrata 将开发精力集中在 Windows 上的高速本地推理及其 API �
 
 ## 重点支持的模型
 
-[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) 仍是默认模型，适合在配备主流显卡的 PC 上兼顾速度、内存效率和回答质量。TinyStrata 专注于较小的 MoE 模型，并新增了对 **LFM2.5-24B-A2B 的实验性支持**。
+[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) 仍是默认模型，适合在配备主流显卡的 PC 上兼顾速度、内存效率和回答质量。TinyStrata 专注于较小的 MoE 模型，并新增了对 **LFM2.5-24B-A2B 和 Gemma 4 26B-A4B-it 的实验性支持**。
 
-LFM 使用官方 [LiquidAI Q4_K_M GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF)（**14.53 GB**）、**FP16 KV**，最大上下文为 **128K**，不支持 MTP 或 Vision。它利用自动 VRAM 专家缓存、CPU 专家计算、输入阶段权重流式传输和 CUDA Graph，不省略模型选中的专家。默认值为 `temperature=0.1`、`top_k=50`、`repetition_penalty=1.05`，思考始终启用。Qwen 与 LFM 的设置分别保存。LFM 引擎仍在验证中，不保证与 llama.cpp 或不同 CPU/GPU 分配下的输出 token 完全一致。
+LFM 使用官方 [LiquidAI Q4_K_M GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF)（**14.53 GB**）、**FP16 KV**，最大上下文为 **128K**，不支持 MTP 或 Vision。它利用自动 VRAM 专家缓存、CPU 专家计算、输入阶段权重流式传输和 CUDA Graph，不省略模型选中的专家。默认值为 `temperature=0.1`、`top_k=50`、`repetition_penalty=1.05`，思考始终启用。Qwen、LFM 与 Gemma 的设置分别保存。LFM 引擎仍在验证中，不保证与 llama.cpp 或不同 CPU/GPU 分配下的输出 token 完全一致。
 
-LFM 可执行文件缺失时，请参见[手动构建说明](README.md#model-focus)。
+**Gemma 4 26B-A4B-it QAT Q4_0** 使用 [Google 官方主模型及视觉投影器](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf)，以及[匹配的 Unsloth QAT Q4_0 MTP 助手](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF/blob/7b92b5b28818151e8669af2e45e88d6086f490dd/mtp-gemma-4-26B-A4B-it.gguf)。三个文件共 **15.886 GB**：主模型 14.439 GB、投影器 1.195 GB、助手 0.252 GB。引擎支持 GPU 常驻图像编码器、自适应 GPU 专家缓存、利用系统 RAM 的 CPU 专家计算及 MTP 3，均通过同一 API 使用，不省略模型选中的专家。Gemma 支持 **FP16 和 INT8 KV**，目前自动选择 **FP16**。实现已加入，正在进行实模型验证，仍属实验性支持。
+
+额外模型的可执行文件缺失时，请参见[手动构建说明](README.md#model-focus)。
 
 ## 安装方法
 
@@ -62,6 +64,8 @@ Invoke-RestMethod "$api/v1/model/download?model=lfm2.5-24b-a2b"
 Invoke-RestMethod "$api/v1/model/switch" -Method Post -ContentType 'application/json' -Body '{"model":"lfm2.5-24b-a2b"}'
 Invoke-RestMethod "$api/v1/model/switch"
 ```
+
+使用 Gemma 时，将上述下载、进度查询和切换请求中的 `lfm2.5-24b-a2b` 替换为 `gemma-4-26b-a4b-it`。也可通过 `run-api.bat --model-family gemma4` 直接启动 Gemma，默认 API 地址为 `http://127.0.0.1:18082/v1`。
 
 轮询 `GET /v1/model/switch`，直到 `state` 为 `ready`。切回 Qwen 时，向相同切换接口发送 `{"model":"qwen3.6-35b-a3b"}`。下载或切换开始时返回 `202`；生成期间的切换请求返回 `409`，请在生成结束后重试。切换期间的推理请求返回 `503`。端口和身份验证保持不变。模型选择只在当前服务会话中有效，重启后使用启动器选择的模型。
 

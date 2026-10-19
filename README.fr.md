@@ -24,11 +24,13 @@ Il existe déjà de nombreuses interfaces et de nombreux environnements d’exé
 
 ## Modèle privilégié
 
-[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) reste le modèle par défaut, pour son équilibre entre vitesse, consommation de mémoire et qualité des réponses sur les PC équipés de cartes graphiques grand public. TinyStrata se concentre sur les petits modèles MoE et prend également en charge **LFM2.5-24B-A2B à titre expérimental**.
+[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) reste le modèle par défaut, pour son équilibre entre vitesse, consommation de mémoire et qualité des réponses sur les PC équipés de cartes graphiques grand public. TinyStrata se concentre sur les petits modèles MoE et prend également en charge **LFM2.5-24B-A2B et Gemma 4 26B-A4B-it à titre expérimental**.
 
-LFM utilise le [GGUF Q4_K_M officiel de LiquidAI](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF) (**14.53 GB**), un **KV FP16** et jusqu’à **128K de contexte**, sans MTP ni Vision. Il bénéficie du cache automatique d’experts en VRAM, du calcul d’experts sur CPU, du streaming des poids à l’entrée et des CUDA Graphs ; aucun expert sélectionné n’est omis. Ses valeurs par défaut sont `temperature=0.1`, `top_k=50` et `repetition_penalty=1.05`, avec le raisonnement toujours activé. Les paramètres Qwen et LFM sont conservés séparément. Le moteur LFM est encore en cours de validation et ne garantit pas les mêmes tokens que llama.cpp ou entre différentes répartitions CPU/GPU.
+LFM utilise le [GGUF Q4_K_M officiel de LiquidAI](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF) (**14.53 GB**), un **KV FP16** et jusqu’à **128K de contexte**, sans MTP ni Vision. Il bénéficie du cache automatique d’experts en VRAM, du calcul d’experts sur CPU, du streaming des poids à l’entrée et des CUDA Graphs ; aucun expert sélectionné n’est omis. Ses valeurs par défaut sont `temperature=0.1`, `top_k=50` et `repetition_penalty=1.05`, avec le raisonnement toujours activé. Les paramètres Qwen, LFM et Gemma sont conservés séparément. Le moteur LFM est encore en cours de validation et ne garantit pas les mêmes tokens que llama.cpp ou entre différentes répartitions CPU/GPU.
 
-Si l’exécutable LFM manque, consultez les [instructions de compilation manuelle](README.md#model-focus).
+**Gemma 4 26B-A4B-it QAT Q4_0** utilise [le modèle cible et le projecteur de vision officiels de Google](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf) avec [l’assistant MTP QAT Q4_0 correspondant d’Unsloth](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF/blob/7b92b5b28818151e8669af2e45e88d6086f490dd/mtp-gemma-4-26B-A4B-it.gguf). Les trois fichiers totalisent **15.886 GB** : cible 14.439 GB, projecteur 1.195 GB et assistant 0.252 GB. Le moteur prend en charge l’encodeur d’images résident sur GPU, un cache adaptatif d’experts en VRAM, leur calcul sur CPU depuis la RAM et MTP 3 via la même API. Aucun expert sélectionné n’est omis. Gemma accepte un **KV FP16 ou INT8** ; le choix automatique actuel est **FP16**. L’implémentation est disponible et sa validation sur le modèle réel est en cours ; la prise en charge reste expérimentale.
+
+Si l’exécutable d’un modèle supplémentaire manque, consultez les [instructions de compilation manuelle](README.md#model-focus).
 
 ## Installation
 
@@ -62,6 +64,8 @@ Répétez la consultation jusqu’à `state: ready`, puis demandez explicitement
 Invoke-RestMethod "$api/v1/model/switch" -Method Post -ContentType 'application/json' -Body '{"model":"lfm2.5-24b-a2b"}'
 Invoke-RestMethod "$api/v1/model/switch"
 ```
+
+Pour Gemma, remplacez `lfm2.5-24b-a2b` par `gemma-4-26b-a4b-it` dans les requêtes de téléchargement, de progression et de changement ci-dessus. Pour démarrer directement avec Gemma, exécutez `run-api.bat --model-family gemma4` ; l’adresse par défaut de l’API est `http://127.0.0.1:18082/v1`.
 
 Consultez `GET /v1/model/switch` jusqu’à `state: ready`. Pour revenir à Qwen, envoyez la même requête avec `{"model":"qwen3.6-35b-a3b"}`. Le démarrage d’un téléchargement ou d’un changement renvoie `202` ; un changement pendant une génération renvoie `409`, réessayez après sa fin. Les requêtes d’inférence pendant le changement reçoivent `503`. Le port et l’authentification restent inchangés. La sélection vaut pour la session actuelle du serveur ; au redémarrage, le modèle choisi dans le lanceur est utilisé.
 

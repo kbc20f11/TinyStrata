@@ -24,18 +24,20 @@ LLM 向けの API に対応した UI やエージェントハーネスは、す�
 
 ## 対象モデル
 
-一般的なグラフィックボードを搭載した PC での速度・省メモリ性・回答品質のバランスを重視し、[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) を既定のモデルとしています。比較的小さな MoE モデルに注力し、**LFM2.5-24B-A2B にも実験的に対応しています**。
+一般的なグラフィックボードを搭載した PC での速度・省メモリ性・回答品質のバランスを重視し、[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) を既定のモデルとしています。比較的小さな MoE モデルに注力し、**LFM2.5-24B-A2B と Gemma 4 26B-A4B-it にも実験的に対応しています**。
 
-LFM は公式の [LiquidAI Q4_K_M GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF)（**14.53 GB**）を使い、KV は **FP16**、最大コンテキストは **128K** です。MTP・Vision はありません。空き VRAM に合わせたエキスパートキャッシュ、CPU でのエキスパート計算、入力時の重みのストリーミング、CUDA Graph を利用し、モデルが選んだエキスパートは省略しません。既定値は `temperature=0.1`、`top_k=50`、`repetition_penalty=1.05` で、思考は常に有効です。設定は Qwen と LFM で別々に保持します。LFM エンジンは検証中であり、llama.cpp や CPU・GPU の配置が異なる場合と同じトークン列になることは保証しません。
+LFM は公式の [LiquidAI Q4_K_M GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF)（**14.53 GB**）を使い、KV は **FP16**、最大コンテキストは **128K** です。MTP・Vision はありません。空き VRAM に合わせたエキスパートキャッシュ、CPU でのエキスパート計算、入力時の重みのストリーミング、CUDA Graph を利用し、モデルが選んだエキスパートは省略しません。既定値は `temperature=0.1`、`top_k=50`、`repetition_penalty=1.05` で、思考は常に有効です。設定は Qwen・LFM・Gemma で別々に保持します。LFM エンジンは検証中であり、llama.cpp や CPU・GPU の配置が異なる場合と同じトークン列になることは保証しません。
+
+**Gemma 4 26B-A4B-it QAT Q4_0** は、[Google 公式の本体・ビジョンプロジェクタ](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf)と、対応する [Unsloth の QAT Q4_0 MTP アシスタント](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF/blob/7b92b5b28818151e8669af2e45e88d6086f490dd/mtp-gemma-4-26B-A4B-it.gguf)を使います。ダウンロードは本体 14.439 GB、プロジェクタ 1.195 GB、アシスタント 0.252 GB の 3 ファイル、合計 **15.886 GB** です。画像エンコーダの GPU 常駐、空き VRAM に合わせたエキスパートキャッシュ、システム RAM を使った CPU でのエキスパート計算、MTP 3 に対応し、共通の API から利用できます。モデルが選んだエキスパートは省略しません。KV は **FP16・INT8** に対応し、現在の自動選択は **FP16** です。実装は追加済みで、実モデルでの検証を進めているため、実験対応として扱っています。
 
 <details>
-<summary>LFM の実行ファイルがない場合の手動ビルド</summary>
+<summary>追加モデルの実行ファイルがない場合の手動ビルド</summary>
 
 CUDA を導入した x64 Visual Studio 開発者ターミナルで、このリポジトリから実行してください。
 
 ```powershell
 cmake -S . -B ..\TinyStrata-work\build -DTINYSTRATA_BACKEND=CUDA
-cmake --build ..\TinyStrata-work\build --config Release --target tinystrata-lfm2 --parallel 4
+cmake --build ..\TinyStrata-work\build --config Release --target tinystrata-lfm2 tinystrata-gemma4 --parallel 4
 ```
 
 初めから LFM で起動する場合は `run-api.bat --model-family lfm2 --port 18080` を実行します。手元のファイルを使う場合は `--model "C:\models\LFM2.5-24B-A2B-Q4_K_M.gguf"` を追加してください。
@@ -74,6 +76,8 @@ Invoke-RestMethod "$api/v1/model/download?model=lfm2.5-24b-a2b"
 Invoke-RestMethod "$api/v1/model/switch" -Method Post -ContentType 'application/json' -Body '{"model":"lfm2.5-24b-a2b"}'
 Invoke-RestMethod "$api/v1/model/switch"
 ```
+
+Gemma を使う場合は、上のダウンロード・進捗確認・切り替えリクエストの `lfm2.5-24b-a2b` を `gemma-4-26b-a4b-it` に置き換えてください。初めから Gemma で起動する場合は `run-api.bat --model-family gemma4` を実行します。既定の API アドレスは `http://127.0.0.1:18082/v1` です。
 
 `GET /v1/model/switch` で `state` が `ready` になるまで確認してください。Qwen に戻す場合は、同じ切り替えリクエストに `{"model":"qwen3.6-35b-a3b"}` を指定します。ダウンロード・切り替えの開始時は `202`、生成中の切り替え要求は `409` を返すので、生成終了後に再試行してください。切り替え中の推論リクエストは `503` になります。ポートと認証設定はそのままです。モデルの選択は今回の起動中だけ有効で、再起動時はランチャーで選んだモデルを使用します。
 

@@ -66,7 +66,8 @@ def prepare(a) -> tuple[dict, Path]:
 
     selected = getattr(a, "model_family", None)
     requested_arch = {"qwen36": "qwen35moe", "qwen3.6": "qwen35moe",
-                      "lfm2": "lfm2moe", "lfm2.5": "lfm2moe"}.get(selected)
+                      "lfm2": "lfm2moe", "lfm2.5": "lfm2moe",
+                      "gemma4": "gemma4", "gemma-4": "gemma4"}.get(selected)
     if a.model:
         local = a.model.expanduser().resolve()
         if not local.is_file():
@@ -77,10 +78,12 @@ def prepare(a) -> tuple[dict, Path]:
         requested_arch = actual_arch
     config_path = getattr(a, "config", None)
     path = (config_path or RUNTIME / ".tinystrata" /
-            ("config-lfm2.json" if requested_arch == "lfm2moe" else "config.json")).expanduser().resolve()
+            {"lfm2moe": "config-lfm2.json", "gemma4": "config-gemma4.json"}
+            .get(requested_arch, "config.json")).expanduser().resolve()
     arch = requested_arch or "qwen35moe"
     cfg = config.load(path) if path.exists() else {
-        "arch": arch, "model_name": "lfm2.5-24b-a2b" if arch == "lfm2moe" else "qwen3.6-35b-a3b",
+        "arch": arch, "model_name": {"lfm2moe": "lfm2.5-24b-a2b", "gemma4": "gemma-4-26b-a4b-it"}
+                                    .get(arch, "qwen3.6-35b-a3b"),
         "cwd": str(ROOT),
         "args": ["--max-context", "auto", "--kv-type", "auto", "--chunk", "auto"] +
                 ([] if arch == "lfm2moe" else ["--mtp", "3"]),
@@ -90,11 +93,13 @@ def prepare(a) -> tuple[dict, Path]:
     if requested_arch is not None and cfg.get("arch", "qwen35moe") != requested_arch:
         raise ValueError("This config belongs to another model family; choose a separate --config path")
     cfg, migrated = migrate_settings(cfg)
-    cfg.setdefault("port", 18081 if cfg.get("arch") == "lfm2moe" else 18080)
+    cfg.setdefault("port", {"lfm2moe": 18081, "gemma4": 18082}.get(cfg.get("arch"), 18080))
     if a.model:
         set_arg(cfg, "--model", a.model.expanduser().resolve())
         # An explicit local selection keeps the existing eager-launch behavior.
         cfg.pop("model_bootstrap", None)
+    if getattr(a, "draft_model", None):
+        set_arg(cfg, "--draft-model", a.draft_model.expanduser().resolve())
     if a.exe:
         cfg["exe"] = str(a.exe.expanduser().resolve())
     elif not cfg.get("exe"):
@@ -133,7 +138,8 @@ def prepare(a) -> tuple[dict, Path]:
     check_files(cfg, allow_uninstalled=True)
     if a.model and not model.is_file():
         raise ValueError(f"TinyStrata model not found: {model}")
-    cfg["log"] = str(path.parent / ("engine-lfm2.log" if cfg.get("arch") == "lfm2moe" else "engine.log"))
+    cfg["log"] = str(path.parent / {"lfm2moe": "engine-lfm2.log", "gemma4": "engine-gemma4.log"}
+                    .get(cfg.get("arch"), "engine.log"))
     if model.is_file():
         cfg = prepare_installed_model(cfg, path, model)
     else:
@@ -148,8 +154,9 @@ def prepare(a) -> tuple[dict, Path]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", type=Path, help="existing supported GGUF (the local header selects its model family)")
-    ap.add_argument("--model-family", choices=("qwen36", "qwen3.6", "lfm2", "lfm2.5"),
-                    help="Qwen3.6 (default) or LFM2.5; LFM uses a separate config-lfm2.json")
+    ap.add_argument("--model-family", choices=("qwen36", "qwen3.6", "lfm2", "lfm2.5", "gemma4", "gemma-4"),
+                    help="Qwen3.6 (default), LFM2.5 or Gemma4; settings are separate per family")
+    ap.add_argument("--draft-model", type=Path, help="existing Gemma4 QAT assistant GGUF for MTP")
     ap.add_argument("--exe", type=Path, help="built tinystrata executable")
     ap.add_argument("--vision-exe", type=Path, help="built tinystrata-vision image encoder")
     ap.add_argument("--vision", choices=("gpu", "cpu", "no", "yes", "none"),

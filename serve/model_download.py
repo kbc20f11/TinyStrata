@@ -1,4 +1,4 @@
-"""Download the pinned Unsloth MTP UD-IQ3_XXS model without an inference process.
+"""Download TinyStrata's pinned model artifacts without an inference process.
 
 This module accepts no model URL, repository, filename or destination from an
 HTTP request.  The manifest is deliberately fixed; its private override exists
@@ -54,13 +54,49 @@ FIXED_LFM2_MODEL = _Manifest(
     f"https://huggingface.co/{LFM2_MODEL_REPO}/resolve/{LFM2_MODEL_REVISION}/{LFM2_MODEL_FILENAME}?download=true",
 )
 
+# Google publishes the QAT Q4_0 target/projector directly. Its matching QAT
+# assistant is converted to GGUF by Unsloth (not a non-QAT or abliterated model).
+# Source: https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf
+# Assistant compatibility: a QAT target requires the same-precision QAT assistant.
+# Source: https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF
+GEMMA4_MODEL_REPO = "google/gemma-4-26B-A4B-it-qat-q4_0-gguf"
+GEMMA4_MODEL_REVISION = "d1c082be9cf3c8a514acf63b8761f4b41935842e"
+GEMMA4_MODEL_FILENAME = "gemma-4-26B_q4_0-it.gguf"
+GEMMA4_MODEL_SIZE = 14_439_363_584
+GEMMA4_MODEL_SHA256 = "3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d"
+FIXED_GEMMA4_MODEL = _Manifest(
+    GEMMA4_MODEL_REPO, GEMMA4_MODEL_REVISION, GEMMA4_MODEL_FILENAME,
+    GEMMA4_MODEL_SIZE, GEMMA4_MODEL_SHA256,
+    f"https://huggingface.co/{GEMMA4_MODEL_REPO}/resolve/{GEMMA4_MODEL_REVISION}/{GEMMA4_MODEL_FILENAME}?download=true",
+)
+GEMMA4_MMPROJ_FILENAME = "gemma-4-26B-it-mmproj.gguf"
+GEMMA4_MMPROJ_SIZE = 1_194_828_160
+GEMMA4_MMPROJ_SHA256 = "a359953a076b877db30c31dbbb4c6d93b4a6e017ee5db5784247e4d4c0dd4f3b"
+FIXED_GEMMA4_MMPROJ = _Manifest(
+    GEMMA4_MODEL_REPO, GEMMA4_MODEL_REVISION, GEMMA4_MMPROJ_FILENAME,
+    GEMMA4_MMPROJ_SIZE, GEMMA4_MMPROJ_SHA256,
+    f"https://huggingface.co/{GEMMA4_MODEL_REPO}/resolve/{GEMMA4_MODEL_REVISION}/{GEMMA4_MMPROJ_FILENAME}?download=true",
+)
+GEMMA4_ASSISTANT_REPO = "unsloth/gemma-4-26B-A4B-it-qat-GGUF"
+GEMMA4_ASSISTANT_REVISION = "7b92b5b28818151e8669af2e45e88d6086f490dd"
+GEMMA4_ASSISTANT_FILENAME = "mtp-gemma-4-26B-A4B-it.gguf"
+GEMMA4_ASSISTANT_SIZE = 251_939_328
+GEMMA4_ASSISTANT_SHA256 = "7272d97595f0d4c74bd7b623492b7dbdaafd8b7c72f329a8270ba4eca68f768a"
+FIXED_GEMMA4_ASSISTANT = _Manifest(
+    GEMMA4_ASSISTANT_REPO, GEMMA4_ASSISTANT_REVISION, GEMMA4_ASSISTANT_FILENAME,
+    GEMMA4_ASSISTANT_SIZE, GEMMA4_ASSISTANT_SHA256,
+    f"https://huggingface.co/{GEMMA4_ASSISTANT_REPO}/resolve/{GEMMA4_ASSISTANT_REVISION}/{GEMMA4_ASSISTANT_FILENAME}?download=true",
+)
+
 
 def manifest_for_arch(arch: str = "qwen35moe") -> _Manifest:
-    """The server-selected fixed artifact, never selected by HTTP request data."""
+    """Resolve a supported model family to a fixed, trusted artifact."""
     if arch == "qwen35moe":
         return FIXED_MODEL
     if arch == "lfm2moe":
         return FIXED_LFM2_MODEL
+    if arch == "gemma4":
+        return FIXED_GEMMA4_MODEL
     raise ValueError(f"Unsupported TinyStrata model architecture: {arch}")
 
 
@@ -395,3 +431,23 @@ class FixedModelBundleDownloader(FixedModelDownloader):
             with self._lock:
                 self._state = "error"
                 self._error = str(exc) or type(exc).__name__
+
+
+class FixedGemma4BundleDownloader(FixedModelBundleDownloader):
+    """Verify Gemma's target, projector and QAT assistant before activation.
+
+    ``on_ready`` receives ``(model, projector, assistant)``. Existing Qwen bundle
+    callbacks retain their two-argument interface. Every artifact independently
+    resumes and verifies its pinned size/SHA-256 before the callback can run.
+    """
+
+    def __init__(self, directory: Path, on_ready: Callable[[Path, Path, Path], None] | None = None,
+                 existing_paths: Iterable[Path] = (), projector_paths: Iterable[Path] = (),
+                 assistant_paths: Iterable[Path] = (), *,
+                 _manifests: tuple[_Manifest, _Manifest, _Manifest] | None = None, **transfer_options):
+        model, projector, assistant = _manifests or (
+            FIXED_GEMMA4_MODEL, FIXED_GEMMA4_MMPROJ, FIXED_GEMMA4_ASSISTANT)
+        super().__init__(directory, on_ready=on_ready, existing_paths=existing_paths,
+                         projector_paths=projector_paths, _manifests=(model, projector), **transfer_options)
+        self._assets += (FixedModelDownloader(directory, existing_paths=assistant_paths,
+                                              _manifest=assistant, **transfer_options),)

@@ -24,11 +24,13 @@ Já existem muitas interfaces e ambientes de agentes compatíveis com APIs para 
 
 ## Foco de modelos
 
-O [Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) continua sendo o modelo padrão pelo equilíbrio entre velocidade, consumo de memória e qualidade das respostas em PCs com placas de vídeo comuns. O TinyStrata se concentra em modelos MoE pequenos e também oferece **suporte experimental ao LFM2.5-24B-A2B**.
+O [Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) continua sendo o modelo padrão pelo equilíbrio entre velocidade, consumo de memória e qualidade das respostas em PCs com placas de vídeo comuns. O TinyStrata se concentra em modelos MoE pequenos e também oferece **suporte experimental ao LFM2.5-24B-A2B e ao Gemma 4 26B-A4B-it**.
 
-O LFM usa o [GGUF Q4_K_M oficial da LiquidAI](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF) (**14.53 GB**), **KV FP16** e até **128K de contexto**, sem MTP ou Vision. Usa cache automático de especialistas na VRAM, cálculo de especialistas na CPU, streaming de pesos durante a entrada e CUDA Graphs; os especialistas selecionados não são omitidos. Os padrões são `temperature=0.1`, `top_k=50` e `repetition_penalty=1.05`, com raciocínio sempre ativado. As configurações de Qwen e LFM são salvas separadamente. O motor LFM ainda está em validação e não garante tokens idênticos ao llama.cpp nem entre diferentes distribuições CPU/GPU.
+O LFM usa o [GGUF Q4_K_M oficial da LiquidAI](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF) (**14.53 GB**), **KV FP16** e até **128K de contexto**, sem MTP ou Vision. Usa cache automático de especialistas na VRAM, cálculo de especialistas na CPU, streaming de pesos durante a entrada e CUDA Graphs; os especialistas selecionados não são omitidos. Os padrões são `temperature=0.1`, `top_k=50` e `repetition_penalty=1.05`, com raciocínio sempre ativado. As configurações de Qwen, LFM e Gemma são salvas separadamente. O motor LFM ainda está em validação e não garante tokens idênticos ao llama.cpp nem entre diferentes distribuições CPU/GPU.
 
-Se o executável do LFM não estiver disponível, veja as [instruções de compilação manual](README.md#model-focus).
+O **Gemma 4 26B-A4B-it QAT Q4_0** usa [o modelo principal e o projetor de visão oficiais do Google](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf) com [o assistente MTP QAT Q4_0 correspondente da Unsloth](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF/blob/7b92b5b28818151e8669af2e45e88d6086f490dd/mtp-gemma-4-26B-A4B-it.gguf). Os três arquivos somam **15.886 GB**: modelo 14.439 GB, projetor 1.195 GB e assistente 0.252 GB. O motor oferece codificador de imagens residente na GPU, cache adaptativo de especialistas na GPU, cálculo de especialistas na CPU a partir da RAM e MTP 3 pela mesma API. Os especialistas selecionados não são omitidos. O Gemma aceita **KV FP16 e INT8**; a seleção automática atual é **FP16**. A implementação está disponível e a validação com o modelo real está em andamento; o suporte continua experimental.
+
+Se o executável de um modelo adicional não estiver disponível, veja as [instruções de compilação manual](README.md#model-focus).
 
 ## Como instalar
 
@@ -62,6 +64,8 @@ Repita a consulta até `state` ser `ready` e então solicite a troca explicitame
 Invoke-RestMethod "$api/v1/model/switch" -Method Post -ContentType 'application/json' -Body '{"model":"lfm2.5-24b-a2b"}'
 Invoke-RestMethod "$api/v1/model/switch"
 ```
+
+Para usar o Gemma, substitua `lfm2.5-24b-a2b` por `gemma-4-26b-a4b-it` nos pedidos de download, progresso e troca acima. Para iniciar diretamente com o Gemma, execute `run-api.bat --model-family gemma4`; o endereço padrão da API é `http://127.0.0.1:18082/v1`.
 
 Consulte `GET /v1/model/switch` até `state` ser `ready`. Para voltar ao Qwen, envie o mesmo pedido com `{"model":"qwen3.6-35b-a3b"}`. Iniciar um download ou uma troca retorna `202`; uma troca durante uma geração retorna `409`, então tente novamente quando ela terminar. Pedidos de inferência durante a troca recebem `503`. A porta e a autenticação não mudam. A seleção vale para a sessão atual do servidor; ao reiniciar, é usado o modelo escolhido no inicializador.
 

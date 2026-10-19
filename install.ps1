@@ -13,6 +13,7 @@ policy changes are made. Runtime data stays in the sibling TinyStrata-work folde
 param(
     [string]$SourceDir,
     [string]$WorkDir,
+    [ValidateSet('qwen36', 'qwen3.6', 'lfm2', 'lfm2.5', 'gemma4', 'gemma-4')][string]$ModelFamily = 'qwen36',
     [ValidateRange(0, 65535)][int]$Port = 0,
     [switch]$NoStart,
     [switch]$SkipModelDownload,
@@ -376,7 +377,7 @@ function Invoke-TinyStrataPortableBuild {
         $env:CUDA_PATH = $cudaRoot
         $env:PATH = (Join-Path $cudaRoot 'bin') + ';' + (Join-Path $cudaRoot 'bin\x64') + ';' + $env:PATH
         $env:VSLANG = '1033'
-        $configure = @('-S', $sourceRoot, '-B', $buildRoot, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', '-DTINYSTRATA_BACKEND=CUDA', '-DTINYSTRATA_LFM2=ON', '-DSTRATA_PORTABLE=ON', "-DCMAKE_CUDA_ARCHITECTURES=$Architectures", "-DCMAKE_MAKE_PROGRAM=$($tools.Ninja)", "-DCMAKE_CUDA_COMPILER=$nvcc", "-DCUDAToolkit_ROOT=$cudaRoot")
+        $configure = @('-S', $sourceRoot, '-B', $buildRoot, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', '-DTINYSTRATA_BACKEND=CUDA', '-DTINYSTRATA_LFM2=ON', '-DTINYSTRATA_GEMMA4=ON', '-DSTRATA_PORTABLE=ON', "-DCMAKE_CUDA_ARCHITECTURES=$Architectures", "-DCMAKE_MAKE_PROGRAM=$($tools.Ninja)", "-DCMAKE_CUDA_COMPILER=$nvcc", "-DCUDAToolkit_ROOT=$cudaRoot")
         Write-Host "Building TinyStrata for CUDA architecture(s) $Architectures. This can take several minutes."
         & $tools.CMake @configure | Out-Host
         if ($LASTEXITCODE -ne 0) { throw 'TinyStrata CMake configuration failed.' }
@@ -388,12 +389,14 @@ function Invoke-TinyStrataPortableBuild {
         $kq = Join-Path $buildRoot 'strata_kq.dll'
         $visionExe = Join-Path $buildRoot 'tinystrata-vision.exe'
         $lfmExe = Join-Path $buildRoot 'tinystrata-lfm2.exe'
+        $gemmaExe = Join-Path $buildRoot 'tinystrata-gemma4.exe'
         if (-not (Test-Path -LiteralPath $exe -PathType Leaf) -or -not (Test-Path -LiteralPath $kq -PathType Leaf) -or
-            -not (Test-Path -LiteralPath $visionExe -PathType Leaf) -or -not (Test-Path -LiteralPath $lfmExe -PathType Leaf)) {
-            throw 'Expected Qwen, LFM or vision build outputs are missing.'
+            -not (Test-Path -LiteralPath $visionExe -PathType Leaf) -or -not (Test-Path -LiteralPath $lfmExe -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $gemmaExe -PathType Leaf)) {
+            throw 'Expected Qwen, LFM, Gemma or vision build outputs are missing.'
         }
         if (-not (Test-TinyStrataVisionCuda -ExecutablePath $visionExe)) { throw 'The image encoder was not built with CUDA support.' }
-        return [pscustomobject]@{ Exe = $exe; LfmExe = $lfmExe; VisionExe = $visionExe; QuantizedKernels = $kq; CudaDirectory = $cudaRoot; Architectures = $Architectures }
+        return [pscustomobject]@{ Exe = $exe; LfmExe = $lfmExe; GemmaExe = $gemmaExe; VisionExe = $visionExe; QuantizedKernels = $kq; CudaDirectory = $cudaRoot; Architectures = $Architectures }
     }
     finally {
         foreach ($entry in @(Get-ChildItem Env:)) {
@@ -685,13 +688,30 @@ function Invoke-TinyStrataApi {
 
 function Test-TinyStrataInferenceReady {
     param($Health, $Configuration)
-    $requireImages = -not ($Configuration -and $Configuration.vision_mode -eq 'no')
+    $requireImages = -not ($Configuration -and ($Configuration.vision_mode -eq 'no' -or $Configuration.arch -eq 'lfm2moe'))
     return [bool]($Health.loaded -and (-not $requireImages -or $Health.images))
+}
+
+function Get-TinyStrataModelFamily {
+    param([string]$Name = 'qwen36')
+    switch ($Name) {
+        { $_ -in @('qwen36', 'qwen3.6') } {
+            return [pscustomobject]@{ Name = 'qwen36'; ConfigFile = 'config.json'; StateFile = 'server-state.json'; NativeFile = 'tinystrata.exe'; Port = 18080 }
+        }
+        { $_ -in @('lfm2', 'lfm2.5') } {
+            return [pscustomobject]@{ Name = 'lfm2'; ConfigFile = 'config-lfm2.json'; StateFile = 'server-state-lfm2.json'; NativeFile = 'tinystrata-lfm2.exe'; Port = 18081 }
+        }
+        { $_ -in @('gemma4', 'gemma-4') } {
+            return [pscustomobject]@{ Name = 'gemma4'; ConfigFile = 'config-gemma4.json'; StateFile = 'server-state-gemma4.json'; NativeFile = 'tinystrata-gemma4.exe'; Port = 18082 }
+        }
+        default { throw "Unsupported TinyStrata model family: $Name" }
+    }
 }
 
 function Invoke-TinyStrataInstaller {
     param([string]$SourceDirectory, [string]$WorkingDirectory, [int]$ApiPort,
-          [bool]$DoNotStart, [bool]$DoNotDownload, [bool]$InspectOnly, [bool]$BuildAgain, [bool]$RefreshSource)
+          [bool]$DoNotStart, [bool]$DoNotDownload, [bool]$InspectOnly, [bool]$BuildAgain, [bool]$RefreshSource,
+          [string]$Family = 'qwen36')
     if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitProcess) { throw 'Run this installer in 64-bit Windows PowerShell or PowerShell.' }
     $sourceRoot = [IO.Path]::GetFullPath($SourceDirectory).TrimEnd('\')
     $sourceReady = Test-TinyStrataSource -Directory $sourceRoot
@@ -700,10 +720,11 @@ function Invoke-TinyStrataInstaller {
     $workRoot = [IO.Path]::GetFullPath($WorkingDirectory).TrimEnd('\')
     if ($workRoot -eq $sourceRoot -or $workRoot.StartsWith($sourceRoot + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'WorkDir must be outside the source directory.' }
     $runtimeRoot = Join-Path $workRoot 'runtime'
-    $configPath = Join-Path $runtimeRoot '.tinystrata\config.json'
-    $statePath = Join-Path $runtimeRoot 'server-state.json'
+    $selectedFamily = Get-TinyStrataModelFamily -Name $Family
+    $configPath = Join-Path (Join-Path $runtimeRoot '.tinystrata') $selectedFamily.ConfigFile
+    $statePath = Join-Path $runtimeRoot $selectedFamily.StateFile
     $cfg = Get-TinyStrataConfig -Path $configPath
-    if ($ApiPort -eq 0) { $ApiPort = if ($cfg -and $cfg.port) { [int]$cfg.port } else { 18080 } }
+    if ($ApiPort -eq 0) { $ApiPort = if ($cfg -and $cfg.port) { [int]$cfg.port } else { $selectedFamily.Port } }
     if ($ApiPort -lt 1 -or $ApiPort -gt 65535) { throw 'Port must be between 1 and 65535.' }
     $baseUrl = "http://127.0.0.1:$ApiPort"
     if ($InspectOnly) {
@@ -756,7 +777,7 @@ function Invoke-TinyStrataInstaller {
             if ($cfg -and $cfg.exe) {
                 $savedExe = [string]$cfg.exe
                 if (-not [IO.Path]::IsPathRooted($savedExe)) { $savedExe = Join-Path $sourceRoot $savedExe }
-                $candidates += $savedExe
+                $candidates += Join-Path (Split-Path -Parent $savedExe) 'tinystrata.exe'
             }
             foreach ($folder in @('build', 'build\Release', 'build-cuda-132', 'build-cuda')) { $candidates += Join-Path $workRoot ($folder + '\tinystrata.exe') }
             foreach ($folder in @('bin', 'build', 'build\Release')) { $candidates += Join-Path $sourceRoot ($folder + '\tinystrata.exe') }
@@ -764,6 +785,7 @@ function Invoke-TinyStrataInstaller {
                 if ((Test-Path -LiteralPath $candidate -PathType Leaf) -and
                     (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $candidate) 'strata_kq.dll') -PathType Leaf) -and
                     (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $candidate) 'tinystrata-lfm2.exe') -PathType Leaf) -and
+                    (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $candidate) 'tinystrata-gemma4.exe') -PathType Leaf) -and
                     (Test-TinyStrataVisionCuda -ExecutablePath (Join-Path (Split-Path -Parent $candidate) 'tinystrata-vision.exe') -SearchDirectories $search)) { $exe = $candidate; break }
             }
         }
@@ -779,7 +801,9 @@ function Invoke-TinyStrataInstaller {
         $search += $runtimeRoot
         $dllDirs = @(Initialize-TinyStrataRuntime -RuntimeRoot $runtimeRoot -CacheRoot $cacheRoot -SearchDirectories $search -EngineDirectory (Split-Path -Parent $exe))
         if ($cfg -and $cfg.lib_dirs) { $dllDirs = @(@($cfg.lib_dirs) + $dllDirs | Select-Object -Unique) }
-        $arguments = @('-B', (Join-Path $sourceRoot 'run.py'), '--config', $configPath, '--exe', $exe, '--configure-only')
+        $selectedExe = Join-Path (Split-Path -Parent $exe) $selectedFamily.NativeFile
+        $arguments = @('-B', (Join-Path $sourceRoot 'run.py'), '--model-family', $selectedFamily.Name,
+                       '--config', $configPath, '--exe', $selectedExe, '--configure-only')
         $arguments += @('--vision-exe', (Join-Path (Split-Path -Parent $exe) 'tinystrata-vision.exe'))
         foreach ($directory in $dllDirs) { $arguments += @('--lib-dir', $directory) }
         $arguments += @('--port', [string]$ApiPort)
@@ -816,7 +840,7 @@ function Invoke-TinyStrataInstaller {
     }
     if (-not $health) { throw "API startup timed out. See logs in $runtimeRoot." }
     if (-not (Test-TinyStrataInferenceReady -Health $health -Configuration $cfg) -and -not $DoNotDownload) {
-        Write-Host 'Installing the fixed Unsloth MTP model and vision projector through the API...'
+        Write-Host ("Installing the pinned {0} model artifacts through the API..." -f $selectedFamily.Name)
         $null = Invoke-TinyStrataApi -BaseUrl $baseUrl -Path '/v1/model/download' -Method POST -Headers $headers
         $deadline = [DateTime]::UtcNow.AddHours(4)
         $lastUpdate = [DateTime]::MinValue
@@ -852,7 +876,7 @@ try {
         elseif (Test-TinyStrataSource -Directory (Get-Location).Path) { $SourceDir = (Get-Location).Path }
         else { $SourceDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'TinyStrata' }
     }
-    Invoke-TinyStrataInstaller -SourceDirectory $SourceDir -WorkingDirectory $WorkDir -ApiPort $Port -DoNotStart $NoStart.IsPresent -DoNotDownload $SkipModelDownload.IsPresent -InspectOnly $CheckOnly.IsPresent -BuildAgain $Rebuild.IsPresent -RefreshSource $Update.IsPresent
+    Invoke-TinyStrataInstaller -SourceDirectory $SourceDir -WorkingDirectory $WorkDir -ApiPort $Port -DoNotStart $NoStart.IsPresent -DoNotDownload $SkipModelDownload.IsPresent -InspectOnly $CheckOnly.IsPresent -BuildAgain $Rebuild.IsPresent -RefreshSource $Update.IsPresent -Family $ModelFamily
 } finally {
     $ErrorActionPreference = $tinyStrataOldErrorAction
     [Net.ServicePointManager]::SecurityProtocol = $tinyStrataOldSecurityProtocol

@@ -24,11 +24,13 @@ Es gibt bereits viele Benutzeroberflächen und Agenten-Laufzeitumgebungen, die A
 
 ## Modellschwerpunkt
 
-[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) bleibt das Standardmodell und bietet auf PCs mit gängigen Grafikkarten ein ausgewogenes Verhältnis von Geschwindigkeit, Speicherbedarf und Antwortqualität. TinyStrata konzentriert sich auf kompakte MoE-Modelle und unterstützt zusätzlich **LFM2.5-24B-A2B experimentell**.
+[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) bleibt das Standardmodell und bietet auf PCs mit gängigen Grafikkarten ein ausgewogenes Verhältnis von Geschwindigkeit, Speicherbedarf und Antwortqualität. TinyStrata konzentriert sich auf kompakte MoE-Modelle und unterstützt zusätzlich **LFM2.5-24B-A2B und Gemma 4 26B-A4B-it experimentell**.
 
-LFM verwendet die offizielle [LiquidAI Q4_K_M GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF) (**14.53 GB**), **FP16-KV** und bis zu **128K Kontext**, ohne MTP oder Vision. Automatischer VRAM-Expertencache, CPU-Expertenberechnung, Gewichtsstreaming bei der Eingabe und CUDA Graphs werden genutzt; ausgewählte Experten werden nicht ausgelassen. Die Standardwerte sind `temperature=0.1`, `top_k=50` und `repetition_penalty=1.05`; Reasoning ist immer aktiv. Qwen- und LFM-Einstellungen werden getrennt gespeichert. Die LFM-Engine wird noch validiert und garantiert keine identischen Tokenfolgen zu llama.cpp oder bei unterschiedlicher CPU/GPU-Aufteilung.
+LFM verwendet die offizielle [LiquidAI Q4_K_M GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF) (**14.53 GB**), **FP16-KV** und bis zu **128K Kontext**, ohne MTP oder Vision. Automatischer VRAM-Expertencache, CPU-Expertenberechnung, Gewichtsstreaming bei der Eingabe und CUDA Graphs werden genutzt; ausgewählte Experten werden nicht ausgelassen. Die Standardwerte sind `temperature=0.1`, `top_k=50` und `repetition_penalty=1.05`; Reasoning ist immer aktiv. Die Einstellungen für Qwen, LFM und Gemma werden getrennt gespeichert. Die LFM-Engine wird noch validiert und garantiert keine identischen Tokenfolgen zu llama.cpp oder bei unterschiedlicher CPU/GPU-Aufteilung.
 
-Fehlt die LFM-Programmdatei, siehe die [Anleitung zum manuellen Build](README.md#model-focus).
+**Gemma 4 26B-A4B-it QAT Q4_0** verwendet [Googles offizielles Zielmodell und den Vision-Projektor](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf) zusammen mit einem [passenden Unsloth-QAT-Q4_0-MTP-Assistenten](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF/blob/7b92b5b28818151e8669af2e45e88d6086f490dd/mtp-gemma-4-26B-A4B-it.gguf). Die drei Downloads umfassen **15.886 GB**: Zielmodell 14.439 GB, Projektor 1.195 GB und Assistent 0.252 GB. Unterstützt werden ein GPU-residenter Bildencoder, ein adaptiver GPU-Expertencache, CPU-Expertenberechnung aus dem Arbeitsspeicher und MTP 3 über dieselbe API. Ausgewählte Experten werden nicht ausgelassen. Gemma unterstützt **FP16- und INT8-KV**; die automatische Auswahl verwendet derzeit **FP16**. Die Implementierung ist verfügbar und wird mit dem realen Modell validiert; die Unterstützung bleibt experimentell.
+
+Fehlt die Programmdatei eines zusätzlichen Modells, siehe die [Anleitung zum manuellen Build](README.md#model-focus).
 
 ## Installation
 
@@ -62,6 +64,8 @@ Wiederholen Sie die Fortschrittsabfrage bis `state` den Wert `ready` hat und wec
 Invoke-RestMethod "$api/v1/model/switch" -Method Post -ContentType 'application/json' -Body '{"model":"lfm2.5-24b-a2b"}'
 Invoke-RestMethod "$api/v1/model/switch"
 ```
+
+Für Gemma ersetzen Sie `lfm2.5-24b-a2b` in den obigen Download-, Fortschritts- und Wechselanfragen durch `gemma-4-26b-a4b-it`. Mit `run-api.bat --model-family gemma4` starten Sie direkt mit Gemma; die Standardadresse der API ist `http://127.0.0.1:18082/v1`.
 
 Fragen Sie `GET /v1/model/switch` bis `state: ready` ab. Zum Zurückwechseln senden Sie dieselbe Wechselanfrage mit `{"model":"qwen3.6-35b-a3b"}`. Der Start eines Downloads oder Wechsels liefert `202`; ein Wechsel während einer Generierung liefert `409`, daher nach deren Ende erneut versuchen. Inferenzanfragen während des Wechsels liefern `503`. Port und Authentifizierung bleiben unverändert. Die Auswahl gilt für die aktuelle Serversitzung; nach einem Neustart wird das im Launcher gewählte Modell verwendet.
 

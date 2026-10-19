@@ -73,6 +73,12 @@ LFM2_PATTERN = (
     r"|\s+"
 )
 
+# Gemma uses UTF-8 pieces and SentencePiece's visible space, rather than
+# GPT-2's byte alphabet. Adapted from PolyStrata tools/strata_tokenizer.py
+# at 51dc242725d9e64e791146f1d13133d5faedb0ce (MIT); merges may contain newlines.
+GEMMA4_PATTERN = r"[^\n]+|\n+"
+SPACE = "\u2581"
+
 
 class Tokenizer:
     def __init__(self, tokens: list[str], merges: list[str], token_types: list[int] | None = None,
@@ -81,6 +87,7 @@ class Tokenizer:
                  ignore_merges: bool | None = None):
         self.tokens = tokens
         self.pre = pre
+        self.raw = pre == "gemma4"
         self.token_types = token_types
         self.special_ids = special_ids or {}
         self.bos_token_id = self.special_ids.get("tokenizer.ggml.bos_token_id")
@@ -88,7 +95,7 @@ class Tokenizer:
         self.add_bos_token = pre == "lfm2" if add_bos_token is None else bool(add_bos_token)
         self.add_eos_token = bool(add_eos_token)
         self.ignore_merges = pre == "lfm2" if ignore_merges is None else bool(ignore_merges)
-        self.pre_pattern = LFM2_PATTERN if pre == "lfm2" else QWEN35_PATTERN
+        self.pre_pattern = GEMMA4_PATTERN if self.raw else LFM2_PATTERN if pre == "lfm2" else QWEN35_PATTERN
         self.template_tokens = {name: tokens[index] for name, index in
                                 (("bos_token", self.bos_token_id), ("eos_token", self.eos_token_id))
                                 if isinstance(index, int) and 0 <= index < len(tokens)}
@@ -96,6 +103,19 @@ class Tokenizer:
         if len(self.ids) != len(tokens):
             raise ValueError("vocabulary has duplicate tokens: %d entries, %d unique"
                              % (len(tokens), len(self.ids)))
+        if self.raw and token_types:
+            # Match pinned llama-vocab.cpp's effective Gemma attributes, not
+            # just the GGUF types: EOG markers are CONTROL even when the file
+            # calls them USER_DEFINED. </s> is ordinary text in this family.
+            # Apply on restore too, so previously extracted tokenizers work.
+            token_types = list(token_types)
+            for marker in ("<eos>", "<turn|>", "<|tool_response>"):
+                index = self.ids.get(marker)
+                if index is not None:
+                    token_types[index] = 3
+            if "<|tool_response>" in self.ids and "</s>" in self.ids:
+                token_types[self.ids["</s>"]] = 1
+            self.token_types = token_types
         # Merge rules as (left, right) -> rank.  A merge list that is not a total order over its pairs, or one
         # naming a token that is not in the vocabulary, would make BPE silently produce different ids than the
         # model was trained with, so both are checked here rather than discovered as a bad answer later.
@@ -104,7 +124,7 @@ class Tokenizer:
             parts = m.split(" ")
             if len(parts) != 2:
                 raise ValueError("merge %d is not a pair: %r" % (i, m))
-            if parts[0] not in self.ids or parts[1] not in self.ids:
+            if not self.raw and (parts[0] not in self.ids or parts[1] not in self.ids):
                 raise ValueError("merge %d names a token outside the vocabulary: %r" % (i, m))
             self.ranks[(parts[0], parts[1])] = i
         self._re = regex.compile(self.pre_pattern)
@@ -153,11 +173,11 @@ class Tokenizer:
         if missing:
             raise ValueError("GGUF is missing %s; it does not carry a tokenizer" % ", ".join(missing))
         model = md.get("tokenizer.ggml.model")
-        if model != "gpt2":
-            raise ValueError("expected a byte-level BPE tokenizer (model 'gpt2'), got %r" % model)
+        if model not in ("gpt2", "gemma4"):
+            raise ValueError("expected a gpt2 or gemma4 BPE tokenizer, got %r" % model)
         special = {k: int(md[k]) for k in md
                    if k.startswith("tokenizer.ggml.") and k.endswith("_token_id")}
-        pre = md.get("tokenizer.ggml.pre", "qwen35")
+        pre = "gemma4" if model == "gemma4" else md.get("tokenizer.ggml.pre", "qwen35")
         return cls(list(md["tokenizer.ggml.tokens"]), list(md["tokenizer.ggml.merges"]),
                    list(md.get("tokenizer.ggml.token_type") or []) or None,
                    pre, special, add_bos_token=md.get("tokenizer.ggml.add_bos_token", pre == "lfm2"),
@@ -171,7 +191,8 @@ class Tokenizer:
         tokens = [None] * len(vocab)
         for token, index in vocab.items():
             tokens[index] = token
-        merges = (path / "merges.txt").read_text(encoding="utf-8").splitlines()
+        merges = json.loads((path / "merges.json").read_text(encoding="utf-8")) if (path / "merges.json").exists() \
+            else (path / "merges.txt").read_text(encoding="utf-8").splitlines()
         types = json.loads((path / "token_type.json").read_text(encoding="utf-8"))
         meta = json.loads((path / "tokenizer.json").read_text(encoding="utf-8")) \
             if (path / "tokenizer.json").exists() else {}
@@ -252,7 +273,30 @@ class Tokenizer:
 
     PIECE_CACHE_MAX = 200_000    # pre-tokenizer pieces remembered (an agent resends its whole history every turn)
 
+    def _encode_raw(self, text: str) -> list[int]:
+        out: list[int] = []
+        cache = self._piece_ids
+        for piece in self._re.findall(text.replace(" ", SPACE)):
+            got = cache.get(piece)
+            if got is None:
+                if piece[0] == "\n" and piece in self.ids:
+                    got = [self.ids[piece]]
+                else:
+                    got = []
+                    for token in self._bpe(piece):
+                        index = self.ids.get(token)
+                        if index is not None:
+                            got.append(index)
+                        else:
+                            got.extend(self.ids["<0x%02X>" % byte] for byte in token.encode("utf-8"))
+                if len(cache) < self.PIECE_CACHE_MAX:
+                    cache[piece] = got
+            out.extend(got)
+        return out
+
     def _encode_plain(self, text: str) -> list[int]:
+        if self.raw:
+            return self._encode_raw(text)
         out: list[int] = []
         # A piece's ids depend on the piece alone, so repeated pieces (most of a resent conversation) are looked up
         # instead of merged again.  The ids are the ones _bpe gives: this only skips the work.
@@ -339,6 +383,11 @@ class Tokenizer:
         if b is None:
             if i < 0 or i >= len(self.tokens):
                 raise IndexError("token id %d is outside the vocabulary (%d)" % (i, len(self.tokens)))
+            if self.raw:
+                token = self.tokens[i]
+                byte = self.token_types and self.token_types[i] == 6 and len(token) == 6 and token.startswith("<0x")
+                b = cache[i] = bytes([int(token[3:5], 16)]) if byte else token.replace(SPACE, " ").encode("utf-8")
+                return b
             raw = bytearray()
             for ch in self.tokens[i]:
                 v = UNICODE_TO_BYTE.get(ch)
@@ -359,7 +408,7 @@ def extract(gguf_path, out_dir) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     tk = Tokenizer.from_gguf(gguf_path)
     cfg = {
-        "model": "gpt2",
+        "model": "gemma4" if tk.raw else "gpt2",
         "pre": tk.pre,
         "vocab_size": len(tk.tokens),
         "n_merges": len(tk.ranks),
@@ -369,13 +418,17 @@ def extract(gguf_path, out_dir) -> dict:
         # The pattern is SHIPPED, not recomputed by the reader: it is transcribed from llama.cpp for the
         # declared `pre` type, and a C++ port that re-derived it would be free to get `\p{M}` wrong again.
         "pre_pattern": tk.pre_pattern,
-        "pre_pattern_source": "llama.cpp src/llama-vocab.cpp (LLAMA_VOCAB_PRE_TYPE_LLAMA3)" if tk.pre == "lfm2"
+        "pre_pattern_source": "llama.cpp src/llama-vocab.cpp (LLAMA_VOCAB_PRE_TYPE_GEMMA4)" if tk.raw
+                              else "llama.cpp src/llama-vocab.cpp (LLAMA_VOCAB_PRE_TYPE_LLAMA3)" if tk.pre == "lfm2"
                               else ".ref/llama.cpp src/llama-vocab.cpp L396 (LLAMA_VOCAB_PRE_TYPE_QWEN35)",
         "ignore_merges": tk.ignore_merges,
     }
     (out / "vocab.json").write_text(json.dumps(tk.ids, ensure_ascii=False), encoding="utf-8")
     (out / "merges.txt").write_text("\n".join("%s %s" % k for k, _ in
                                               sorted(tk.ranks.items(), key=lambda kv: kv[1])), encoding="utf-8")
+    if tk.raw:
+        (out / "merges.json").write_text(json.dumps(["%s %s" % k for k, _ in
+            sorted(tk.ranks.items(), key=lambda kv: kv[1])], ensure_ascii=False), encoding="utf-8")
     (out / "token_type.json").write_text(json.dumps(tk.token_types), encoding="utf-8")
     (out / "tokenizer.json").write_text(json.dumps(cfg, ensure_ascii=False, indent=1), encoding="utf-8")
     # the model's own chat template: fine-tunes change it (Swift 1.5 differs from Qwen3.8-Flash-Next's)

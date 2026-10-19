@@ -60,3 +60,13 @@ https://github.com/VecSzn/PolyStrata
 Source commit: 26e4cb5df7996edfb5ff549a63b82d8581e1e658.
 Only the LFM model path is incorporated. Expert omission is removed.
 Original Strata and GGML copyright notices and licenses are preserved.
+
+The Gemma 4 26B-A4B native engine, QAT assistant/MTP support and UTF-8-piece
+tokenizer also adapt PolyStrata at commit
+51dc242725d9e64e791146f1d13133d5faedb0ce (MIT), from src/poly/gemma4.*, the
+shared engine/kernels and tools/strata_tokenizer.py. Only the Gemma model path
+is added; all model-selected Experts are computed. The original MIT license
+and file-level copyright notices are preserved.
+Gemma's tool-call/thought-channel parsing and one-dimensional image embedding
+format also adapt serve/frontend.py and tools/vision/strata_vision.cpp from
+the same PolyStrata commit.

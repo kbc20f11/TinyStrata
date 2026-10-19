@@ -24,18 +24,20 @@ Many API-compatible UIs and agent harnesses for LLMs already exist. TinyStrata s
 
 ## Model focus
 
-[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) remains the default model, with a balance of speed, memory efficiency and answer quality for PCs with mainstream graphics cards. TinyStrata focuses on compact MoE models and also supports **LFM2.5-24B-A2B experimentally**.
+[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) remains the default model, with a balance of speed, memory efficiency and answer quality for PCs with mainstream graphics cards. TinyStrata focuses on compact MoE models and also supports **LFM2.5-24B-A2B and Gemma 4 26B-A4B-it experimentally**.
 
-LFM uses the official [LiquidAI Q4_K_M GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF) (**14.53 GB**), **FP16 KV** and up to **128K context**, without MTP or Vision. It uses an automatic VRAM Expert cache, CPU Expert computation, prompt weight streaming and CUDA Graphs; selected Experts are not omitted. Its defaults are `temperature=0.1`, `top_k=50` and `repetition_penalty=1.05`, with reasoning always enabled. Qwen and LFM settings are kept separately. This engine is still under validation; identical tokens to llama.cpp or across CPU/GPU placements are not guaranteed.
+LFM uses the official [LiquidAI Q4_K_M GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF) (**14.53 GB**), **FP16 KV** and up to **128K context**, without MTP or Vision. It uses an automatic VRAM Expert cache, CPU Expert computation, prompt weight streaming and CUDA Graphs; selected Experts are not omitted. Its defaults are `temperature=0.1`, `top_k=50` and `repetition_penalty=1.05`, with reasoning always enabled. Qwen, LFM and Gemma settings are kept separately. This engine is still under validation; identical tokens to llama.cpp or across CPU/GPU placements are not guaranteed.
+
+**Gemma 4 26B-A4B-it QAT Q4_0** uses the [Google-official target and vision projector](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf) with a [matching Unsloth QAT Q4_0 MTP assistant](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF/blob/7b92b5b28818151e8669af2e45e88d6086f490dd/mtp-gemma-4-26B-A4B-it.gguf). The three downloads total **15.886 GB**: target 14.439 GB, projector 1.195 GB and assistant 0.252 GB. Its engine supports a GPU-resident image encoder, an adaptive GPU Expert cache with CPU computation from system RAM, and MTP 3 through the same API. Selected Experts are not omitted. Gemma supports **FP16 and INT8 KV**; its current automatic choice is **FP16**. The implementation is available, with real-model validation in progress; support remains experimental.
 
 <details>
-<summary>Build the LFM engine manually if the executable is missing</summary>
+<summary>Build additional model engines manually if an executable is missing</summary>
 
 From this checkout, use an x64 Visual Studio developer terminal with CUDA installed:
 
 ```powershell
 cmake -S . -B ..\TinyStrata-work\build -DTINYSTRATA_BACKEND=CUDA
-cmake --build ..\TinyStrata-work\build --config Release --target tinystrata-lfm2 --parallel 4
+cmake --build ..\TinyStrata-work\build --config Release --target tinystrata-lfm2 tinystrata-gemma4 --parallel 4
 ```
 
 To start directly with LFM, run `run-api.bat --model-family lfm2 --port 18080`. To use an existing file, add `--model "C:\models\LFM2.5-24B-A2B-Q4_K_M.gguf"`.
@@ -74,6 +76,8 @@ Repeat the progress request until `state` is `ready`, then switch explicitly. Do
 Invoke-RestMethod "$api/v1/model/switch" -Method Post -ContentType 'application/json' -Body '{"model":"lfm2.5-24b-a2b"}'
 Invoke-RestMethod "$api/v1/model/switch"
 ```
+
+For Gemma, replace `lfm2.5-24b-a2b` in the download, progress and switch requests above with `gemma-4-26b-a4b-it`. To start directly with Gemma, run `run-api.bat --model-family gemma4`; its default API address is `http://127.0.0.1:18082/v1`.
 
 Poll `GET /v1/model/switch` until `state` is `ready`. To return to Qwen, send the same switch request with `{"model":"qwen3.6-35b-a3b"}`. Starting a download or switch returns `202`; a switch during generation returns `409`, so retry after generation finishes. Inference during switching returns `503`. The port and authentication stay unchanged. Selection lasts for the current server session; restarting uses the model selected by the launcher.
 

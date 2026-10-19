@@ -57,7 +57,7 @@ from urllib.parse import parse_qs, urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
 from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
-                            forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages,
+                            forced_call, gemma_model_turn, images_of, literal_tags, mark_think_literals, openai_to_messages,
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import config  # noqa: E402
@@ -1158,6 +1158,9 @@ class StrataEngine:
     @staticmethod
     def sampling_keys(sampling: dict) -> str:
         keys = ""
+        pad = sampling.get("image_pad")
+        if isinstance(pad, int) and not isinstance(pad, bool) and pad >= 0:
+            keys += f" image_pad={pad}"
         t = sampling.get("temperature")
         if isinstance(t, (int, float)) and float(t) > 0.0:
             keys += f" temperature={float(t)!r}"
@@ -2955,7 +2958,7 @@ def tokenizer_stop_ids(tokenizer) -> set[int]:
     if isinstance(eos, int) and not isinstance(eos, bool) and eos >= 0:
         result.add(eos)
     known = set(getattr(tokenizer, "control_tokens", ())) | set(getattr(tokenizer, "special_tokens", ()))
-    for marker in (IM_END, "<|endoftext|>"):
+    for marker in (IM_END, "<|endoftext|>", "<turn|>", "<|tool_response>"):
         if marker in known:
             result.update(tokenizer.encode(marker, parse_special=True))
     return result
@@ -3843,7 +3846,8 @@ class Service:
         effort = kwargs.get("reasoning_effort")
         off = kwargs.get("enable_thinking") is False
         if not self.effort_end or (not off and effort in (None, "", "xhigh", "high")):
-            return self.template.render(messages, tools=tools, **kwargs)
+            prompt = self.template.render(messages, tools=tools, **kwargs)
+            return gemma_model_turn(prompt, not off) if self.call_format == "gemma" else prompt
         base = {k: v for k, v in kwargs.items() if k not in ("reasoning_effort", "enable_thinking")}
         history = self.template.render(messages, tools=tools, add_generation_prompt=False, **base)
         full = self.template.render(messages, tools=tools, add_generation_prompt=True, **kwargs)
@@ -3927,13 +3931,22 @@ class Service:
             ids = ids + self.tok.encode(force, parse_special=True)
         self.embeddings.path = None
         self.embeddings.keys = None
+        self.embeddings.pad = None
         images = images_of(messages)
         if images:
             if self.vision is None:
                 raise ValueError("this server was started without the vision encoder (run setup again and choose "
                                  "'vision'), so it cannot read images")
-            pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
-            start = self.tok.encode(VISION_START, parse_special=True)[0]
+            gemma = self.call_format == "gemma"
+            mark = "<|image|>" if gemma else IMAGE_PAD
+            def one(text):
+                values = self.tok.encode(text, parse_special=True)
+                if len(values) != 1:
+                    raise ValueError(f"the model tokenizer has no image control token {text}")
+                return values[0]
+            pad = one(mark)
+            start = None if gemma else one(VISION_START)
+            begin, end = ([one("<|image>")], [one("<image|>")]) if gemma else ([], [])
             # An image URL is downloaded first, outside the FIFO: under it, a slow server held every other request
             # for as long as urlopen waited.
             def fetch(src):
@@ -3956,14 +3969,14 @@ class Service:
             # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
             # (right after <|vision_start|>) are images: the same text inside a message (an agent reading these docs,
             # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
-            literal = self.tok.encode(IMAGE_PAD, parse_special=False)
+            literal = self.tok.encode(mark, parse_special=False)
             out, k = [], 0
             for j, t in enumerate(ids):
-                if t == pad and j > 0 and ids[j - 1] == start:
+                if t == pad and (k < len(encoded) if start is None else j > 0 and ids[j - 1] == start):
                     # more pairs than images: text parts that cut both markers apart (the literal marks keep whole ones text)
                     if k == len(encoded):
                         raise ValueError("the prompt and its images do not match")
-                    out += [pad] * encoded[k][1]
+                    out += begin + [pad] * encoded[k][1] + end
                     k += 1
                 elif t == pad:
                     out += literal
@@ -4002,6 +4015,7 @@ class Service:
             # one more for every retry of a 503.  run() deletes it; drop_embeddings() if run() never starts.
             combined = combined_embeddings_path(self.vision.dir, sum(Path(p).stat().st_size for p, _ in encoded))
             self.embeddings.path = combined             # first, so a half-written one is found as well
+            self.embeddings.pad = pad
             # #2228: each picture's key is its normalized bytes' hash (the encoder's file name), so the engine's
             # conversation cache matches a picture by what it is, not by its embedding floats: a picture encoded again
             # (an encoder restart, the cache's eviction) with other bits still matches its checkpoints
@@ -4152,6 +4166,9 @@ class Service:
             sampling = {**defaults, **req_values}
         # #123: read after the merge, so a budget shared through POST /settings is seen like the other keys
         budget = self.reasoning_budget(sampling) if thinking else None
+        think_end = "<channel|>" if self.call_format == "gemma" else THINK_END
+        reasoning_close = "\n<channel|>" if self.call_format == "gemma" else REASONING_CLOSE
+        reasoning_wrap = REASONING_WRAP_UP.replace(THINK_END, think_end)
         if budget and max_new and max_new > 0:
             # #984: a budget at or near max_tokens never fires before the reply is cut off while still thinking, so
             # it has no answer.  Close the thinking early enough to leave room for one.
@@ -4161,7 +4178,9 @@ class Service:
                       f"the answer (budget {budget})", flush=True)
                 budget = max(1, max_new - reserve)
         parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True, recover=self.tool_call_recovery,
-                              call_format=self.call_format)
+                              call_format=self.call_format,
+                              opened=self.call_format == "gemma" and
+                              self.tok.decode(ids[-32:]).endswith("<|channel>thought\n"))
         detok, n, finish = Detokenizer(self.tok), 0, "length"
         run_tok, run_len, repeated = None, 0, False     # #606: the current run of one repeated token
         thinking_n = 0                                  # tokens written while thinking (Responses' reasoning_tokens)
@@ -4198,6 +4217,9 @@ class Service:
         raw_ids = []                                    # every generated id (STRATA_DEBUG: dump raw model text)
         emb, self.embeddings.path = getattr(self.embeddings, "path", None), None   # this run's to delete now
         img_keys, self.embeddings.keys = getattr(self.embeddings, "keys", None), None
+        image_pad, self.embeddings.pad = getattr(self.embeddings, "pad", None), None
+        if emb and self.call_format == "gemma" and image_pad is not None:
+            sampling = {**(sampling or {}), "image_pad": image_pad}
         if emb and img_keys:
             sampling = {**(sampling or {}), "strata_img_keys": img_keys}   # #2228: sent beside the embeddings file
         # Only a DONE line replaces engine.last, so a request that died, errored or was disconnected must not have
@@ -4313,7 +4335,7 @@ class Service:
                                     continue
                                 n += 1
                                 if t in self.stop_ids:
-                                    if force and parser.state == "reasoning" and parser.buf == THINK_END:
+                                    if force and parser.state == "reasoning" and parser.buf == think_end:
                                         opens = True    # #537: the held </think> was the end: the call opens there
                                         break
                                     finish = "stop"
@@ -4355,7 +4377,7 @@ class Service:
                                         if self.reasoning_loop_recovery == "stop":
                                             looped = True        # #728: end the reply here, as for a repeated token
                                             break
-                                        if not emb:              # "recover": not for a request with pictures
+                                        if not emb and self.call_format != "gemma":
                                             recover_prompt = focused_recovery_prompt(self.tok, ids, raw_ids)
                                             if recover_prompt is not None:
                                                 break
@@ -4438,12 +4460,12 @@ class Service:
                             continue
                         if (self.reasoning_close_retry and thinking and finish == "stop" and not close_retried
                                 and not answered and not wrap and not opens and parser.state == "reasoning"
-                                and parser.buf != THINK_END         # #537: not after a held </think>, the end
+                                and parser.buf != think_end
                                 and (stops is None or stops.hit is None) and not cancel.is_set()):
                             # #1053: the model wrote its reasoning and stopped before </think>: the client would get
                             # an empty answer.  Close the thinking once and let it answer.
                             close_retried = True
-                            extra = self.tok.encode(REASONING_CLOSE, parse_special=True)
+                            extra = self.tok.encode(reasoning_close, parse_special=True)
                             if max_new - n - len(extra) >= 1:
                                 print("[strata] the reply ended inside its thinking with no answer: closing the "
                                       "thinking once and continuing (reasoning_close_retry)", flush=True)
@@ -4467,7 +4489,7 @@ class Service:
                         # thinking ended, after the blank line the template puts before a call.
                         if wrap:
                             budget = st["thinking_budget"] = None
-                            text = REASONING_WRAP_UP + (force or "")
+                            text = reasoning_wrap + (force or "")
                         else:
                             text = "\n" * (2 - (len(tail) - len(tail.rstrip("\n")))) + force
                         force = None
@@ -6455,7 +6477,7 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
     A bad value refuses to start the server (a typo'd config should not quietly change sampling); unknown keys
     are named at startup and ignored."""
     out = {}
-    from serve.tinyconfig import DEFAULT_SAMPLING, LFM2_SAMPLING
+    from serve.tinyconfig import DEFAULT_SAMPLING, LFM2_SAMPLING, GEMMA4_SAMPLING
     block = dict(cfg.get("sampling") or {})
     for alias, canon in SAMPLING_ALIASES.items():      # #1819: llama.cpp's names for the same two fields
         if block.get(alias) is not None:
@@ -6463,7 +6485,7 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
                 raise SystemExit(f"[strata] config sampling: both {alias!r} and {canon!r} are set; they are the same "
                                  f"setting, keep one")
             block[canon] = block.pop(alias)
-    defaults = LFM2_SAMPLING if cfg.get("arch") == "lfm2moe" else DEFAULT_SAMPLING
+    defaults = {"lfm2moe": LFM2_SAMPLING, "gemma4": GEMMA4_SAMPLING}.get(cfg.get("arch"), DEFAULT_SAMPLING)
     block = {**defaults, **{key: value for key, value in block.items() if value is not None}}
     for key, value in block.items():
         if value is None:
@@ -6595,7 +6617,7 @@ def check_request_sampling(req) -> None:
 
 
 # the API's model name per model family (the GGUF architecture, "arch" in the config) when the config names none
-FAMILY_MODEL_NAMES = {"qwen35moe": "qwen3.6-35b-a3b", "lfm2moe": "lfm2.5-24b-a2b"}
+FAMILY_MODEL_NAMES = {"qwen35moe": "qwen3.6-35b-a3b", "lfm2moe": "lfm2.5-24b-a2b", "gemma4": "gemma-4-26b-a4b-it"}
 
 
 def default_model_name(cfg: dict) -> str:
@@ -6605,7 +6627,8 @@ def default_model_name(cfg: dict) -> str:
 
 def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
     """Install the fixed GGUF and image projector before publishing inference readiness."""
-    from serve.model_download import FixedModelBundleDownloader, FixedModelDownloader, manifest_for_arch
+    from serve.model_download import (FixedModelBundleDownloader, FixedModelDownloader,
+                                      FixedGemma4BundleDownloader, manifest_for_arch)
     from serve.model_setup import model_path, prepare_installed_model, resolve_executable, save_settings
 
     existing = model_path(cfg)
@@ -6613,7 +6636,7 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
     if not directory.is_absolute():
         directory = Path(cfg.get("cwd") or ROOT) / directory
 
-    def activate(path: Path, projector: Path | None = None):
+    def activate(path: Path, projector: Path | None = None, assistant: Path | None = None):
         if svc.stopping.is_set() or getattr(svc.downloads, "closed", False):
             raise RuntimeError("the API is stopping")
         if svc.models is not None:
@@ -6621,7 +6644,9 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
             if svc.models.active_id != original:
                 # This manager can outlive its initial model selection. An
                 # inactive download prepares files only, never the live Service.
-                svc.models.profiles.prepare(original, model_path=path, projector=projector, projector_verified=True)
+                svc.models.profiles.prepare(original, model_path=path, projector=projector, projector_verified=True,
+                                            **({"assistant": assistant, "assistant_verified": True}
+                                               if assistant is not None else {}))
                 return
         # Reuse an already complete installation, without another resident model.
         # A text-only installation is upgraded only when images are requested.
@@ -6644,12 +6669,14 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
         # Retain the installer/control API if either native startup fails. Only
         # the successful publication below clears this pending activation flag.
         latest = {**latest, "model_bootstrap": True}
-        updated = prepare_installed_model(latest, config_path, path, projector=projector, projector_verified=True)
+        updated = prepare_installed_model(latest, config_path, path, projector=projector, projector_verified=True,
+                                          **({"assistant": assistant, "assistant_verified": True}
+                                             if assistant is not None else {}))
         exe = resolve_executable(updated)
         if exe is None or not Path(exe).is_file():
             raise ValueError("the model is downloaded, but the native executable is missing; build TinyStrata "
                              "and configure it with run.py --exe PATH, then retry")
-        want_vision = updated.get("vision_mode") != "no"
+        want_vision = updated.get("arch") != "lfm2moe" and updated.get("vision_mode") != "no"
         if want_vision and not updated.get("vision"):
             raise ValueError("the model and projector are verified, but tinystrata-vision is missing; "
                              "reinstall or build the image encoder, then retry")
@@ -6718,7 +6745,14 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
         print("[tinystrata] verified model" + (" and image encoder" if image_candidate is not None else "") +
               " loaded; inference API ready", flush=True)
 
-    if cfg.get("arch") == "lfm2moe":
+    if cfg.get("arch") == "gemma4":
+        projector = (cfg.get("vision") or {}).get("mmproj") or cfg.get("vision_mmproj")
+        assistant = cfg.get("draft_model")
+        svc.downloads = FixedGemma4BundleDownloader(directory, on_ready=activate,
+                    existing_paths=(existing,) if existing is not None else (),
+                    projector_paths=(Path(projector),) if projector else (),
+                    assistant_paths=(Path(assistant),) if assistant else ())
+    elif cfg.get("arch") == "lfm2moe":
         svc.downloads = FixedModelDownloader(directory, on_ready=activate,
                                              existing_paths=(existing,) if existing is not None else (),
                                              _manifest=manifest_for_arch("lfm2moe"))

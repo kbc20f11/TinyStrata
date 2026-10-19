@@ -381,6 +381,19 @@ public:
         auto it = meta_.find(key);
         return it == meta_.end() ? nullptr : &it->second;
     }
+    // Metadata arrays retain a small sample. Token lookup must instead inspect
+    // the complete mapped vocabulary, including turn terminators beyond it.
+    // No additional vocabulary copy is kept for the other model loaders.
+    int64_t token_id(const std::string& spelling) const {
+        if (!token_array_offset_) return -1;
+        Cursor c(base_ + token_array_offset_, (size_t) (size_ - token_array_offset_));
+        if ((MetaType) c.read<uint32_t>() != MetaType::STRING) return -1;
+        const uint64_t count = c.read<uint64_t>();
+        if (count > (1u << 24)) throw std::runtime_error("GGUF: implausible token array length");
+        for (uint64_t i = 0; i < count; ++i)
+            if (c.str() == spelling) return (int64_t) i;
+        return -1;
+    }
     const uint8_t* tensor_data(const TensorInfo& t) const { return base_ + data_start_ + t.offset; }
 
 private:
@@ -442,6 +455,8 @@ private:
         for (uint64_t i = 0; i < n_kv; ++i) {
             std::string key = c.str();
             MetaType t = (MetaType)c.read<uint32_t>();
+            if (key == "tokenizer.ggml.tokens" && t == MetaType::ARRAY && meta_.find(key) == meta_.end())
+                token_array_offset_ = c.pos();
             meta_.emplace(std::move(key), read_value(c, t));
         }
         tensors_.reserve((size_t)n_tensors);
@@ -488,6 +503,7 @@ private:
 #endif
     std::vector<TensorInfo> tensors_;
     std::map<std::string, MetaValue> meta_;
+    size_t token_array_offset_ = 0;
 };
 
 // Bytes of a tensor's payload from its shape and block geometry; 0 when the type is unknown, a row is not whole

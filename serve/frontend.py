@@ -63,7 +63,8 @@ class ChatTemplate:
         env.filters["tojson"] = tojson
         env.globals["raise_exception"] = raise_exception
         self.source = Path(path).read_text(encoding="utf-8")
-        self.call_format = "lfm2" if "<|tool_call_start|>" in self.source else "function"
+        self.call_format = ("lfm2" if "<|tool_call_start|>" in self.source else
+                            "gemma" if "<|turn>" in self.source else "function")
         self.template = env.from_string(self.source)
         self.caps = self._detect_caps()
 
@@ -78,6 +79,11 @@ class ChatTemplate:
         if self.call_format == "lfm2":
             messages = [{**m, "thinking": m["reasoning_content"]}
                         if "reasoning_content" in m and "thinking" not in m else m for m in messages]
+        elif self.call_format == "gemma":
+            if not messages:
+                raise ValueError("No messages provided")
+            messages = _answers_in_call_order(messages)
+            tools = [{"type": "function", "function": t} if "function" not in t else t for t in tools or []] or None
         return self.template.render(messages=messages, tools=tools, add_generation_prompt=add_generation_prompt,
                                     **kwargs)
 
@@ -103,9 +109,10 @@ class ChatTemplate:
             calls = [{"name": f"strata_caps_call_{i}", "arguments": {"arg": f"strata_caps_arg_{i}"}}
                      for i in range(count)]
             messages = [user, {"role": "assistant", "content": "",
-                               "tool_calls": [{"function": call} for call in calls]}]
+                               "tool_calls": [{"function": call, "id": f"caps_{i}"} for i, call in enumerate(calls)]}]
             replies = [f"strata_caps_result_{i}" for i in range(count)]
-            messages += [{"role": "tool", "content": reply} for reply in replies] + [user]
+            messages += [{"role": "tool", "content": reply, "tool_call_id": f"caps_{i}"}
+                         for i, reply in enumerate(replies)] + [user]
             prompt = render(messages, tools)
             # Instructions include example XML and literal tag names, which are not model output. Parse only
             # complete calls to our probe functions, using the same body parser as OutputParser.
@@ -113,6 +120,9 @@ class ChatTemplate:
                 if self.call_format == "lfm2":
                     bodies = re.findall(r"<\|tool_call_start\|>(.*?)<\|tool_call_end\|>", prompt, re.S)
                     parsed = [call for body in bodies for call in parse_lfm2_tool_calls(body)]
+                elif self.call_format == "gemma":
+                    bodies = re.findall(r"<\|tool_call>(.*?)<tool_call\|>", prompt, re.S)
+                    parsed = [parse_gemma_tool_call(body) for body in bodies]
                 else:
                     bodies = re.findall(r"<tool_call>\s*(<function=strata_caps_call_\d+>.*?</function>)\s*</tool_call>",
                                         prompt, re.S)
@@ -124,7 +134,7 @@ class ChatTemplate:
 
         history = [user, {"role": "assistant", "content": "strata_caps_answer",
                           "reasoning_content": "strata_caps_reasoning"}, user]
-        tool_markers = () if self.call_format == "lfm2" else ("<tool_call>", "<function=")
+        tool_markers = () if self.call_format in ("lfm2", "gemma") else ("<tool_call>", "<function=")
         reasoning_prompt = self.render(history, preserve_thinking=True) if self.call_format == "lfm2" else render(history)
         return {"supports_tools": all(s in tool_prompt for s in
                                       ("strata_caps_call_0", "strata_caps_description", *tool_markers)),
@@ -263,7 +273,8 @@ THINK_TAGS = {"<think>": "\U000F0E01", "</think>": "\U000F0E02"}
 # item; the same strings in a message's text (an agent reading chat_template.jinja, a tool result quoting it) became
 # the same special ids, so text with <|vision_start|><|image_pad|> before a picture took that picture's embeddings
 VISION_TAGS = {"<|vision_start|>": "\U000F0E03", "<|image_pad|>": "\U000F0E04", "<|vision_end|>": "\U000F0E05",
-               "<|video_pad|>": "\U000F0E06"}
+               "<|video_pad|>": "\U000F0E06", "<|image|>": "\U000F0E0B", "<|image>": "\U000F0E0C",
+               "<image|>": "\U000F0E0D"}
 # #2026: `</tool_call>` the same way.  A user asking for the string verbatim handed the model the real end-of-call token
 # (type 4, matched everywhere); it copied that token into its answer and the reply came back empty.  An assistant
 # message keeps its own: a client replaying the model's raw call text sends the tokens the model wrote.
@@ -523,6 +534,25 @@ def _tool_list(value, wrapper: str | None) -> list[dict]:
     return _stable_tool_order(tools, lambda t: (t.get(wrapper, t) if wrapper and t.get("type") == wrapper else t)["name"])
 
 
+def _answers_in_call_order(messages: list[dict]) -> list[dict]:
+    """Gemma writes tool results without IDs, so match their order to the preceding calls."""
+    out, i = [], 0
+    while i < len(messages):
+        out.append(messages[i])
+        ids = [c.get("id") for c in messages[i].get("tool_calls") or []]
+        i += 1
+        end = i
+        while end < len(messages) and messages[end].get("role") == "tool":
+            end += 1
+        run = messages[i:end]
+        named = [t.get("tool_call_id") for t in run]
+        if len(run) > 1 and all(ids) and len(set(named)) == len(named) and set(named) <= set(ids):
+            run = sorted(run, key=lambda t: ids.index(t["tool_call_id"]))
+        out += run
+        i = end
+    return out
+
+
 def tool_arguments(raw) -> dict:
     """A call's arguments from a client's history -> the mapping the template renders (both APIs).  A JSON object
     (as text or already parsed) is used as it is; empty is {}; anything else (cut-off or malformed JSON, a list, a
@@ -560,8 +590,11 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
                 fn = c.get("function", c)
                 if not isinstance(fn, dict):
                     raise ValueError("tool_calls must be a list of objects (each with a \"function\" object)")
-                calls.append({"function": {"name": fn.get("name"), "arguments": tool_arguments(fn.get("arguments"))}})
+                calls.append({"function": {"name": fn.get("name"), "arguments": tool_arguments(fn.get("arguments"))},
+                              **({"id": c["id"]} if c.get("id") else {})})
             out["tool_calls"] = calls
+        if role == "tool" and m.get("tool_call_id"):
+            out["tool_call_id"] = m["tool_call_id"]
         messages.append(out)
     tools = [t.get("function", t) if t.get("type") == "function" else t
              for t in _tool_list(req.get("tools"), "function")] or None
@@ -638,12 +671,14 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
             elif kind == "thinking":
                 reasoning.append(block.get("thinking", ""))
             elif kind == "tool_use":
-                calls.append({"function": {"name": block.get("name"), "arguments": tool_arguments(block.get("input"))}})
+                calls.append({"function": {"name": block.get("name"), "arguments": tool_arguments(block.get("input"))},
+                              **({"id": block["id"]} if block.get("id") else {})})
             elif kind == "tool_result":
                 # A tool's image (Claude Code's Read of a picture) reaches the encoder like a user's, as the OpenAI
                 # path's tool messages already do; a text-only result is one string, as before.
                 messages.append({"role": "tool", "content": _parts_of(_check_parts(
-                    block.get("content"), f"messages[{i}].content[{j}].content", TEXT_PARTS + IMAGE_PARTS))})
+                    block.get("content"), f"messages[{i}].content[{j}].content", TEXT_PARTS + IMAGE_PARTS)),
+                                 **({"tool_call_id": block["tool_use_id"]} if block.get("tool_use_id") else {})})
         if text or calls or reasoning or parts:
             # an image sent beside tool results stays in this turn instead of being dropped
             out = {"role": m["role"], "content": _parts_of(parts) if _has_image(parts) else "".join(text)}
@@ -877,10 +912,14 @@ def forced_call(tool_choice, tools: list[dict] | None, call_format: str = "funct
     if kind == "required" and names:
         if call_format == "lfm2":
             return LFM2_CALL + "["
+        if call_format == "gemma":
+            return GEMMA_CALL + "call:"
         return CALL_START + "\n<function="
     if kind == "named" and name in names:
         if call_format == "lfm2":
             return LFM2_CALL + f"[{name}("
+        if call_format == "gemma":
+            return GEMMA_CALL + f"call:{name}{{"
         return CALL_START + f"\n<function={name}>\n"
     print(f"[strata] tool_choice {json.dumps(tool_choice)[:200]} is not supported here (or names no tool of the "
           "request): the model decides, as with \"auto\"", flush=True)
@@ -980,6 +1019,85 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
     return ToolCall(name=name, arguments=args)
 
 
+# Gemma tool notation and prompt continuation adapted from PolyStrata (MIT; see NOTICE).
+
+GEMMA_CALL, GEMMA_CALL_END, GEMMA_QUOTE = "<|tool_call>", "<tool_call|>", '<|"|>'
+
+def gemma_call_name(text: str) -> str | None:
+    """A Gemma call's name, or None while it is still arriving."""
+    at = [i for i in (text.find("{"), text.find(GEMMA_CALL_END)) if i >= 0]
+    return text[:min(at)].strip().removeprefix("call:") if at else None
+
+def gemma_call_end(text: str) -> int:
+    """Where a Gemma tool call's body ends: the first `<tool_call|>` that is not inside a string.  -1: not yet."""
+    pos = 0
+    while True:
+        quote, end = text.find(GEMMA_QUOTE, pos), text.find(GEMMA_CALL_END, pos)
+        if end >= 0 and (quote < 0 or end < quote):
+            return end
+        close = text.find(GEMMA_QUOTE, quote + len(GEMMA_QUOTE)) if quote >= 0 else -1
+        if close < 0:
+            return -1
+        pos = close + len(GEMMA_QUOTE)
+
+def _gemma_value(s: str, i: int):
+    """The value of Gemma's call notation that starts at s[i] -> (value, the index after it).  Text that ends
+    early (a call the output stopped in) gives what was there."""
+    while i < len(s) and s[i].isspace():
+        i += 1
+    if s.startswith(GEMMA_QUOTE, i):
+        i += len(GEMMA_QUOTE)
+        end = s.find(GEMMA_QUOTE, i)
+        return (s[i:], len(s)) if end < 0 else (s[i:end], end + len(GEMMA_QUOTE))
+    if s.startswith(("{", "["), i):
+        mapping, close = s[i] == "{", "}" if s[i] == "{" else "]"
+        out, i = ({} if mapping else []), i + 1
+        while True:
+            while i < len(s) and (s[i].isspace() or s[i] == ","):
+                i += 1
+            if i >= len(s) or s[i] == close:
+                return out, i + 1
+            if mapping:
+                colon = s.find(":", i)
+                if colon < 0:
+                    return out, len(s)
+                key, i = s[i:colon].strip().removeprefix(GEMMA_QUOTE).removesuffix(GEMMA_QUOTE), colon + 1
+                out[key], i = _gemma_value(s, i)
+            else:
+                value, i = _gemma_value(s, i)
+                out.append(value)
+    end = i
+    while end < len(s) and s[end] not in ",}]":
+        end += 1
+    word = s[i:end].strip()
+    try:
+        return json.loads(word), end
+    except ValueError:
+        return word, end
+
+def parse_gemma_tool_call(body: str, schema: dict | None = None) -> ToolCall:
+    """`call:NAME{key:value,...}` -> ToolCall.  A parameter the tool's schema declares a string stays one when the
+    model wrote it bare."""
+    brace = body.find("{")
+    args = _gemma_value(body, brace)[0] if brace >= 0 else {}
+    props = ((schema or {}).get("parameters") or {}).get("properties") or {}
+    for key, value in args.items():
+        if (props.get(key) or {}).get("type") == "string" and not isinstance(value, str):
+            args[key] = json.dumps(value, ensure_ascii=False)
+    return ToolCall(name=gemma_call_name(body + GEMMA_CALL_END), arguments=args)
+
+def gemma_model_turn(prompt: str, thinking: bool) -> str:
+    """Gemma's template opens no turn for the model after an answer that came with text, tool calls and their
+    results: the prompt ends on that closed turn and, with thinking on, on a thought opened outside any turn.  This
+    ends it as the template ends every other prompt.  (llama.cpp adds the turn too, in the case without thinking.)"""
+    thought = "<|channel>thought\n"
+    if prompt.endswith("<turn|>\n" + thought):
+        prompt = prompt[:-len(thought)]
+    if prompt.endswith("<turn|>\n"):
+        prompt += "<|turn>model\n" + ("" if thinking else thought + "<channel|>")
+    return prompt
+
+
 RCALL_MAX = 32768        # the most of a `<tool_call>` inside the reasoning that is held while waiting for its end (#804)
 
 
@@ -988,10 +1106,11 @@ class OutputParser:
     until it is complete, so clients never see `<tool_` or `</thi`."""
 
     def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
-                 recover: bool = False, call_format: str = "function"):
+                 recover: bool = False, call_format: str = "function", opened: bool = False):
         self.call_format = call_format
         self.lfm_opening = call_format == "lfm2"
-        self.state = "reasoning" if thinking else "content"
+        self.gemma_opening = call_format == "gemma" and not opened
+        self.state = "reasoning" if thinking and (call_format != "gemma" or opened) else "content"
         self.buf = ""
         self.lead = call_format == "lfm2" and not thinking
         self.schemas = {t.get("name"): t for t in tools or []}
@@ -1357,9 +1476,92 @@ class OutputParser:
                 self.scall = None
                 self.state, self.lead = "content", True
 
+    def _gemma_end(self) -> int:
+        """Scan a call once; an end marker inside Gemma's quoted strings is text."""
+        while self.gemma_scan < len(self.buf):
+            i = self.gemma_scan
+            if self.buf[i] != "<":
+                self.gemma_scan += 1
+                continue
+            rest = self.buf[i:]
+            if rest.startswith(GEMMA_QUOTE):
+                self.gemma_quoted = not self.gemma_quoted
+                self.gemma_scan += len(GEMMA_QUOTE)
+            elif GEMMA_QUOTE.startswith(rest):
+                return -1
+            elif not self.gemma_quoted and rest.startswith(GEMMA_CALL_END):
+                return i
+            elif not self.gemma_quoted and GEMMA_CALL_END.startswith(rest):
+                return -1
+            else:
+                self.gemma_scan += 1
+        return -1
+
+    def _feed_gemma(self, delta: str) -> list[Event]:
+        self.buf += delta
+        out = []
+        thought, end_thought = "<|channel>thought\n", "<channel|>"
+        while True:
+            if self.gemma_opening:
+                if self.buf.startswith(thought):
+                    self.buf, self.state = self.buf[len(thought):], "reasoning"
+                elif thought.startswith(self.buf):
+                    return out
+                self.gemma_opening = False
+            if self.state == "reasoning":
+                end = self.buf.find(end_thought)
+                if end < 0:
+                    keep = self._hold(self.buf, (end_thought,))
+                    text, self.buf = self.buf[:len(self.buf) - keep], self.buf[len(self.buf) - keep:]
+                    if text:
+                        out.append(Event("reasoning", text))
+                    return out
+                if end:
+                    out.append(Event("reasoning", self.buf[:end]))
+                self.buf = self.buf[end + len(end_thought):]
+                self.state, self.lead = "content", True
+            elif self.state == "content":
+                if self.lead:
+                    self.buf = self.buf.lstrip("\r\n")
+                    if not self.buf:
+                        return out
+                    self.lead = False
+                start = self.buf.find(GEMMA_CALL) if self.schemas else -1
+                if start < 0:
+                    keep = self._hold(self.buf, (GEMMA_CALL,)) if self.schemas else 0
+                    text, self.buf = self.buf[:len(self.buf) - keep], self.buf[len(self.buf) - keep:]
+                    if text:
+                        out.append(Event("content", text))
+                    return out
+                if start:
+                    out.append(Event("content", self.buf[:start]))
+                self.buf = self.buf[start + len(GEMMA_CALL):]
+                self.state = "gemma_call"
+                self.gemma_scan, self.gemma_quoted = 0, False
+            elif self.state == "gemma_call":
+                if self.stream_tools and self.scall is None:
+                    name = gemma_call_name(self.buf)
+                    if name:
+                        self.scall = ToolCall(name=name, arguments={})
+                        out.append(Event("tool_start", call=self.scall))
+                end = self._gemma_end()
+                if end < 0:
+                    return out
+                body, self.buf = self.buf[:end], self.buf[end + len(GEMMA_CALL_END):]
+                name = gemma_call_name(body + GEMMA_CALL_END)
+                call = parse_gemma_tool_call(body, self.schemas.get(name))
+                if self.scall is not None:
+                    call.id = self.scall.id
+                    out.append(Event("tool_args", json.dumps(call.arguments, ensure_ascii=False), call=self.scall))
+                out.append(Event("tool_call", call=call))
+                self.scall = None
+                self.state, self.lead = "content", True
+
     def feed(self, delta: str) -> list[Event]:
         if self.call_format == "lfm2":
             return self._feed_lfm2(delta)
+        if self.call_format == "gemma":
+            return self._feed_gemma(delta)
         self.buf += delta
         out: list[Event] = []
         while True:
@@ -1586,11 +1788,13 @@ class OutputParser:
         already announced stays unfinished: its JSON is not closed and no "tool_call" follows it, #211).  `reason` is
         how the turn ended: calls waiting from the reasoning become real calls only on a natural stop (None = stop);
         a turn cut by max tokens (or cancelled, or failed) keeps them as reasoning text (#1058)."""
-        if self.call_format == "lfm2":
-            if self.state == "lfm_call" and self.scall is not None:
+        if self.call_format in ("lfm2", "gemma"):
+            call_state = "gemma_call" if self.call_format == "gemma" else "lfm_call"
+            call_mark = GEMMA_CALL if self.call_format == "gemma" else LFM2_CALL
+            if self.state == call_state and self.scall is not None:
                 self.buf = ""
                 return []
-            text = LFM2_CALL + self.buf if self.state == "lfm_call" else self.buf
+            text = call_mark + self.buf if self.state == call_state else self.buf
             kind = "reasoning" if self.state == "reasoning" else "content"
             self.buf = ""
             return [Event(kind, text)] if text else []

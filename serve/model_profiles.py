@@ -1,4 +1,4 @@
-"""Local profiles for TinyStrata's two fixed model families.
+"""Local profiles for TinyStrata's fixed model families.
 
 Model names select these records, never an arbitrary path or download URL.
 This module prepares files/configuration only; it never starts a native process.
@@ -17,14 +17,17 @@ from serve.model_download import manifest_for_arch
 _MODELS = {
     "qwen3.6-35b-a3b": "qwen35moe",
     "lfm2.5-24b-a2b": "lfm2moe",
+    "gemma-4-26b-a4b-it": "gemma4",
 }
 # Supported model/engine ceilings, not automatically allocated KV capacities.
-_CONTEXT_LIMITS = {"qwen35moe": 262144, "lfm2moe": 131072}
+_CONTEXT_LIMITS = {"qwen35moe": 262144, "lfm2moe": 131072, "gemma4": 262144}
 _ALIASES = {
     "qwen36": "qwen3.6-35b-a3b", "qwen3.6": "qwen3.6-35b-a3b",
     "qwen35moe": "qwen3.6-35b-a3b",
     "lfm2": "lfm2.5-24b-a2b", "lfm2.5": "lfm2.5-24b-a2b",
     "lfm2moe": "lfm2.5-24b-a2b",
+    "gemma4": "gemma-4-26b-a4b-it", "gemma-4": "gemma-4-26b-a4b-it",
+    "gemma4-26b-a4b": "gemma-4-26b-a4b-it", "gemma4-26b-a4b-it": "gemma-4-26b-a4b-it",
 }
 
 
@@ -80,7 +83,7 @@ class ModelProfiles:
     @staticmethod
     def resolve(name: str) -> str:
         if not isinstance(name, str):
-            raise ValueError("model must be one of TinyStrata's two supported model names")
+            raise ValueError("model must be one of TinyStrata's supported model names")
         key = name.strip().lower()
         if key in _MODELS:
             return key
@@ -95,8 +98,9 @@ class ModelProfiles:
 
     @staticmethod
     def _profile_path(parent: Path, arch: str, current: Path) -> Path:
-        names = (("config.json", "config-qwen36.json") if arch == "qwen35moe" else
-                 ("config-lfm2.json", "config-lfm2-profile.json"))
+        names = {"qwen35moe": ("config.json", "config-qwen36.json"),
+                 "lfm2moe": ("config-lfm2.json", "config-lfm2-profile.json"),
+                 "gemma4": ("config-gemma4.json", "config-gemma4-profile.json")}[arch]
         for filename in names:
             path = parent / filename
             if path == current:
@@ -109,13 +113,13 @@ class ModelProfiles:
 
     def _defaults(self, name: str, arch: str) -> dict:
         args = ["--max-context", "auto", "--kv-type", "auto", "--chunk", "auto"]
-        if arch == "qwen35moe":
+        if arch in ("qwen35moe", "gemma4"):
             args += ["--mtp", "3"]
         result = {"arch": arch, "model_name": name, "cwd": str(model_setup.ROOT),
                   "args": args, "memory_policy_version": tinyconfig.MEMORY_POLICY_VERSION,
                   **deepcopy(self._hardware)}
         if self._engine is not None:
-            filename = "tinystrata-lfm2" if arch == "lfm2moe" else "tinystrata"
+            filename = {"lfm2moe": "tinystrata-lfm2", "gemma4": "tinystrata-gemma4"}.get(arch, "tinystrata")
             sibling = self._engine.with_name(filename + self._engine.suffix)
             if sibling.is_file():
                 result["exe"] = str(sibling)
@@ -144,6 +148,14 @@ class ModelProfiles:
             result["args"][index] = str(existing.resolve())
         else:
             result["model_bootstrap"] = True
+        if profile.arch == "gemma4":
+            from serve.model_download import FIXED_GEMMA4_ASSISTANT, FIXED_GEMMA4_MMPROJ
+            for field, artifact in (("draft_model", FIXED_GEMMA4_ASSISTANT), ("vision_mmproj", FIXED_GEMMA4_MMPROJ)):
+                if not result.get(field):
+                    folders = ((existing.parent,) if existing is not None else ()) + self._directories
+                    found = next((folder / artifact.filename for folder in folders if (folder / artifact.filename).is_file()), None)
+                    if found is not None:
+                        result[field] = str(found)
         return result
 
     def get(self, name: str) -> ModelProfile:
@@ -174,7 +186,7 @@ class ModelProfiles:
                             "executable": str(exe) if exe is not None else None,
                             "config_path": str(profile.path), "shared_settings_path": str(profile.shared_path),
                             "context": self.context_info(profile.id),
-                            "vision": profile.arch == "qwen35moe" and profile.config.get("vision_mode", "gpu") != "no"})
+                            "vision": profile.arch in ("qwen35moe", "gemma4") and profile.config.get("vision_mode", "gpu") != "no"})
         return entries
 
     def update(self, name: str, cfg: dict, *, save: bool = False) -> ModelProfile:
@@ -188,7 +200,8 @@ class ModelProfiles:
         return profile
 
     def prepare(self, name: str, model_path: str | Path | None = None, *,
-                projector: str | Path | None = None, projector_verified: bool = False) -> dict:
+                projector: str | Path | None = None, projector_verified: bool = False,
+                assistant: str | Path | None = None, assistant_verified: bool = False) -> dict:
         """Prepare and save only the chosen profile; no native process is started.
 
         Missing executables remain a downloadable/prepared bootstrap profile.
@@ -204,9 +217,11 @@ class ModelProfiles:
         if model_path is not None:
             cfg["args"][cfg["args"].index("--model") + 1] = str(model)
         tinyconfig.validate(cfg, allow_uninstalled=True)
+        extra = {"assistant": Path(assistant) if assistant is not None else None,
+                 "assistant_verified": assistant_verified} if profile.arch == "gemma4" else {}
         prepared = model_setup.prepare_installed_model(cfg, profile.path, model,
                     projector=Path(projector) if projector is not None else None,
-                    projector_verified=projector_verified)
+                    projector_verified=projector_verified, **extra)
         tinyconfig.validate(prepared, allow_uninstalled=True)
         tinyconfig.check_files(prepared, allow_uninstalled=True)
         self.update(profile.id, prepared)

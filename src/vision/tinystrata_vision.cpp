@@ -4,7 +4,7 @@
 //
 // Turns an image into the embeddings the text model reads in place of its <|image_pad|> tokens, with llama.cpp's
 // mtmd library and the model's mmproj file (vision encoder + projector).  The engine does the rest: it places the
-// rows at the image's pad tokens and gives them their 2-D M-RoPE positions (see --serve GENI in generate.cpp).
+// rows at the image's pad tokens. Qwen uses a 2-D M-RoPE grid; Gemma uses a 1-D span and image attention.
 //
 //   tinystrata-vision --mmproj <mmproj.gguf> --model <text model .gguf, first split> [--gpu] [--threads N]
 //                 [--device CUDA0] [--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto]
@@ -14,7 +14,8 @@
 //   ENC <image path> <output path>   ->  "OK <n_tokens> <nx> <ny> <ms>"  or  "ERR <message>"
 //   QUIT
 // The output file is  int32 {0x31455653 'SVE1', n_tokens, nx, ny, n_embd}  then float32 [n_tokens][n_embd],
-// row i at grid position (x = i % nx, y = i / nx).  The text model is opened vocab-only (no weights).
+// Qwen row i has grid position (x = i % nx, y = i / nx); Gemma writes nx=n_tokens, ny=1.
+// The text model is opened vocab-only (no weights).
 #include "ggml-cpu.h"
 #include "ggml-backend.h"
 #include "gguf.h"
@@ -154,6 +155,15 @@ int main(int argc, char** argv) {
     mp.vocab_only = true;
     llama_model* text = llama_model_load_from_file(model.c_str(), mp);
     if (!text) { std::printf("ERR cannot open the text model %s\n", model.c_str()); std::fflush(stdout); return 1; }
+    bool gemma = false;
+    {
+        gguf_init_params gp{true, nullptr};
+        gguf_context* gg = gguf_init_from_file(model.c_str(), gp);
+        const int64_t arch = gg ? gguf_find_key(gg, "general.architecture") : -1;
+        gemma = arch >= 0 && gguf_get_kv_type(gg, arch) == GGUF_TYPE_STRING &&
+                std::strcmp(gguf_get_val_str(gg, arch), "gemma4") == 0;
+        if (gg) gguf_free(gg);
+    }
 
     mtmd_context_params cp = mtmd_context_params_default();
     cp.use_gpu = gpu;
@@ -173,12 +183,13 @@ int main(int argc, char** argv) {
     // The pinned Qwen-VL preprocessor already defaults to 4096 output tokens.
     // Making that limit explicit allows the GPU warm-up to reserve its full
     // workspace without reducing the current image resolution.
-    const int token_limit = max_tokens > 0 ? max_tokens : 4096;
+    const int token_limit = max_tokens > 0 ? max_tokens : gemma ? 1120 : 4096;
     if (min_tokens > token_limit) {
         std::printf("ERR image min tokens exceeds max tokens\n"); std::fflush(stdout); return 1;
     }
     cp.image_max_tokens = token_limit;
     if (min_tokens > 0) cp.image_min_tokens = min_tokens;
+    else if (gemma) cp.image_min_tokens = std::min(70, token_limit);
     mtmd_context* ctx = mtmd_init_from_file(mmproj.c_str(), text, cp);
     if (!ctx || !mtmd_support_vision(ctx)) {
         std::printf("ERR cannot load the vision encoder %s\n", mmproj.c_str());
@@ -198,6 +209,12 @@ int main(int argc, char** argv) {
         const int64_t merge = gg ? gguf_find_key(gg, "clip.vision.spatial_merge_size") : -1;
         if (patch >= 0) patch_size = (int) gguf_get_val_u32(gg, patch);
         if (merge >= 0) merge_size = (int) gguf_get_val_u32(gg, merge);
+        if (gemma) {
+            // Gemma4V pools 3x3 patches; unified V performs that merge in the
+            // patch convolution. Match mtmd's projector metadata handling.
+            const int64_t factor = gg ? gguf_find_key(gg, "clip.vision.projector.scale_factor") : -1;
+            merge_size = factor >= 0 ? (int) gguf_get_val_u32(gg, factor) : 3;
+        }
         if (gg) gguf_free(gg);
     }
     if (n_embd <= 0) { std::printf("ERR the vision encoder has no projection_dim\n"); std::fflush(stdout); return 1; }
@@ -287,8 +304,10 @@ int main(int argc, char** argv) {
             const int n = (int) mtmd_input_chunk_get_n_tokens(ichunk);
             // the grid from the decoder positions (nx/ny getters are deprecated): x and y of the last token
             const mtmd_decoder_pos last = mtmd_image_tokens_get_decoder_pos(it, 0, (size_t) n - 1);
-            const int nx = (int) last.x + 1, ny = (int) last.y + 1;
-            if (nx * ny != n) err = "the image grid is not rectangular (" + std::to_string(n) + " tokens)";
+            const int nx = gemma ? n : (int) last.x + 1, ny = gemma ? 1 : (int) last.y + 1;
+            if ((int64_t) nx * ny != n ||
+                (gemma && (last.x != (uint32_t) (n - 1) || last.y != (uint32_t) (n - 1))))
+                err = "the image decoder positions do not match the model (" + std::to_string(n) + " tokens)";
             const float* embd = mtmd_get_output_embd(ctx);
             FILE* f = err.empty() ? std::fopen(out.c_str(), "wb") : nullptr;
             if (err.empty() && !f) err = "cannot write " + out;
