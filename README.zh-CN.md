@@ -26,6 +26,8 @@ TinyStrata 将开发精力集中在 Windows 上的高速本地推理及其 API �
 
 [Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) 仍是默认模型，适合在配备主流显卡的 PC 上兼顾速度、内存效率和回答质量。TinyStrata 专注于较小的 MoE 模型，并支持 **Gemma 4 26B-A4B-it 和 LFM2.5-24B-A2B**。
 
+**Qwen3.6-35B-A3B UD-IQ3_XXS** 使用固定版本的 [Unsloth MTP GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf) 和视觉投影器 `mmproj-F16.gguf`。两个文件共约 **15.0 GB**：包含 MTP 权重的语言模型为 14.1 GB，投影器为 0.9 GB。引擎支持 GPU 常驻图像编码器、根据空闲显存自动调整的专家缓存、利用系统 RAM 的 CPU 专家计算、输入处理阶段的权重流式传输、自动选择的最高 **256K 上下文容量**及 **MTP 3**，不省略模型选中的专家。KV 缓存支持 **FP32、INT8 和 FP8**；GPU 与已编译内核支持原生 FP8 时自动选用 FP8，否则使用 INT8。MTP 同时支持 greedy 解码和带温度的采样。
+
 **Gemma 4 26B-A4B-it QAT Q4_0** 使用 [Google 官方主模型及视觉投影器](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf)，以及[匹配的 Unsloth QAT Q4_0 MTP 助手](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF/blob/7b92b5b28818151e8669af2e45e88d6086f490dd/mtp-gemma-4-26B-A4B-it.gguf)。三个文件共 **15.886 GB**：主模型 14.439 GB、投影器 1.195 GB、助手 0.252 GB。引擎支持 GPU 常驻图像编码器、自适应 GPU 专家缓存、利用系统 RAM 的 CPU 专家计算及 MTP 3，均通过同一 API 使用，不省略模型选中的专家。Gemma 支持 **FP16 和 INT8 KV**，目前自动选择 **FP16**。已使用实际模型测试图像输入、MTP 3、RAM 混合计算和模型切换。
 
 LFM 使用官方 [LiquidAI Q4_K_M GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF)（**14.53 GB**）、**FP16 KV**，最大上下文为 **128K**，不支持 MTP 或 Vision。它利用自动 VRAM 专家缓存、CPU 专家计算、输入阶段权重流式传输和 CUDA Graph，不省略模型选中的专家。默认值为 `temperature=0.1`、`top_k=50`、`repetition_penalty=1.05`，思考始终启用。Qwen、Gemma 与 LFM 的设置分别保存。LFM 引擎仍在验证中，不保证与 llama.cpp 或不同 CPU/GPU 分配下的输出 token 完全一致。
