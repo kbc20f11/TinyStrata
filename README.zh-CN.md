@@ -75,7 +75,7 @@ MoE 模型包含许多**专家（Experts）**，它们是针对每个 token 选�
 
 ![TinyStrata 如何在 GPU 显存与系统内存之间分配内存](assets/memory-sharing.png)
 
-这是一张布局示意图，并不表示各部分大小固定。每次加载模型时，TinyStrata 都会先启动并预热 GPU 视觉编码器，再加载语言模型；编码器的权重和预热后的工作缓冲区保持常驻。随后分配 KV 缓存、其他权重和工作缓冲区，并根据剩余空闲显存确定专家缓存容量。在 Windows 上，若能同时取得 CUDA 的空闲内存和 NVIDIA 驱动的空闲专用显存读数，则使用较小值。
+这是默认 GPU 图像模式下的布局示意图，并不表示各部分大小固定。每次加载模型时，TinyStrata 都会先启动并预热 GPU 视觉编码器，再加载语言模型；编码器的权重和预热后的工作缓冲区保持常驻。随后分配 KV 缓存、其他权重和工作缓冲区，并根据剩余空闲显存确定专家缓存容量。在 Windows 上，若能同时取得 CUDA 的空闲内存和 NVIDIA 驱动的空闲专用显存读数，则使用较小值。
 
 随着使用的专家发生变化，缓存内容也会改变；缓存容量则会在重新加载模型时重新计算。之后打开的其他应用仍可能占用显存。
 
@@ -113,7 +113,9 @@ MTP 同时支持贪心生成和基于温度的采样，包括重复惩罚、频�
 
 API 默认监听 `http://127.0.0.1:18080`。要使用其他端口，请在已安装的 TinyStrata 文件夹中运行 `run-api.bat --port 18081`。
 
-模型文件尚未安装时，API 也可以启动。调用 `POST /v1/model/download` 并使用空 JSON 请求体（`{}`），会下载固定的 [Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS 语言模型](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf)（14.1 GB，包含 MTP 权重）及其[视觉投影器](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/mmproj-F16.gguf)（0.9 GB），总计约 **15.0 GB**。它会验证两个文件的 SHA-256 校验和，提取分词器并加载模型文件。`GET /v1/model/download` 可报告进度；中断的下载可以续传。重复的下载请求会复用当前任务，`POST /v1/model/download/cancel` 可以取消传输或校验。下载完成并不意味着推理已就绪：请等待下载状态变为 `ready`，且 `/health` 报告 `loaded: true` 和 `images: true`。
+`run-api.bat --vision gpu` 使用 GPU 处理图像（新配置的默认值）；`--vision cpu` 使用 CPU，`--vision no` 禁用图像。`--vision-tokens N` 设置图像 token 上限（默认 4096）。这些选择会保存，后续启动时省略参数也会保留。
+
+模型文件尚未安装时，API 也可以启动。调用 `POST /v1/model/download` 并使用空 JSON 请求体（`{}`），会下载固定的 [Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS 语言模型](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf)（14.1 GB，包含 MTP 权重）及其[视觉投影器](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/mmproj-F16.gguf)（0.9 GB），总计约 **15.0 GB**。它会验证两个文件的 SHA-256 校验和，提取分词器并加载模型文件。`GET /v1/model/download` 可报告进度；中断的下载可以续传。重复的下载请求会复用当前任务，`POST /v1/model/download/cancel` 可以取消传输或校验。下载完成并不意味着推理已就绪：请等待下载状态变为 `ready`，且 `/health` 报告 `loaded: true`（启用图像时还需 `images: true`）。
 
 安装程序会准备引擎和 GPU 运行时库，并自动下载两个模型文件。现有配置会继续使用已选择的本地模型，直到你明确更改它。
 

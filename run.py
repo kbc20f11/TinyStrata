@@ -48,10 +48,21 @@ def chunk_size(value: str):
         raise argparse.ArgumentTypeError("expected auto or a whole-number input chunk from 1 to 4096") from e
 
 
+def vision_tokens(value: str) -> int:
+    try:
+        tokens = int(value)
+        if tokens > 0:
+            return tokens
+    except ValueError:
+        pass
+    raise argparse.ArgumentTypeError("expected a positive whole-number image token limit")
+
+
 def prepare(a) -> tuple[dict, Path]:
     from serve import config
     from serve.tinyconfig import MEMORY_POLICY_VERSION, automatic_experts, check_files, migrate_settings, validate
-    from serve.model_setup import configure_download, model_path, prepare_installed_model, resolve_executable, save_settings
+    from serve.model_setup import (configure_download, configure_vision, model_path, prepare_installed_model,
+                                   resolve_executable, save_settings)
 
     path = a.config.expanduser().resolve()
     cfg = config.load(path) if path.exists() else {
@@ -75,6 +86,10 @@ def prepare(a) -> tuple[dict, Path]:
             cfg["exe"] = str(candidate)
     if getattr(a, "vision_exe", None):
         cfg["vision_exe"] = str(a.vision_exe.expanduser().resolve())
+    if getattr(a, "vision", None) is not None:
+        cfg["vision_mode"] = {"yes": "gpu", "none": "no"}.get(a.vision, a.vision)
+    if getattr(a, "vision_tokens", None) is not None:
+        cfg["vision_tokens"] = a.vision_tokens
     for key in ("max_context", "kv_type", "mtp", "expert_vram", "vram_reserve_mib", "chunk"):
         value = getattr(a, key)
         if value is not None:
@@ -93,9 +108,11 @@ def prepare(a) -> tuple[dict, Path]:
     if a.gpu is not None:
         cfg["gpu"] = a.gpu
     cfg = configure_download(cfg, path)
+    model = model_path(cfg)
+    if cfg.get("vision_mode") == "no":
+        cfg = configure_vision(cfg, model)
     validate(cfg, allow_uninstalled=True)
     check_files(cfg, allow_uninstalled=True)
-    model = model_path(cfg)
     if a.model and not model.is_file():
         raise ValueError(f"TinyStrata model not found: {model}")
     cfg["log"] = str(path.parent / "engine.log")
@@ -115,6 +132,10 @@ def main() -> int:
     ap.add_argument("--model", type=Path, help="existing Qwen3.6 GGUF (optional; download the fixed model through the API)")
     ap.add_argument("--exe", type=Path, help="built tinystrata executable")
     ap.add_argument("--vision-exe", type=Path, help="built tinystrata-vision image encoder")
+    ap.add_argument("--vision", choices=("gpu", "cpu", "no", "yes", "none"),
+                    help="image encoder: gpu (default), cpu or no; yes = gpu, none = no; saved for later starts")
+    ap.add_argument("--vision-tokens", type=vision_tokens, metavar="N",
+                    help="maximum image tokens per picture (default: 4096); saved for later starts")
     ap.add_argument("--config", type=Path, default=RUNTIME / ".tinystrata/config.json")
     ap.add_argument("--max-context", type=context_limit, metavar="auto|TOKENS",
                     help="choose context capacity from available GPU memory (default: auto), or set a token limit")
@@ -126,7 +147,7 @@ def main() -> int:
     ap.add_argument("--vram-reserve-mib", type=int,
                     help="override the automatic VRAM reserve (default: 768 MiB; upstream near-fit path: 256 MiB)")
     ap.add_argument("--chunk", type=chunk_size, metavar="auto|TOKENS",
-                    help="use the upstream engine's automatic chunk selection (default: auto), or fix 1–4096 tokens")
+                    help="use the upstream engine's automatic chunk selection (default: auto), or fix 1-4096 tokens")
     ap.add_argument("--gpu", type=int, help="GPU index")
     ap.add_argument("--lib-dir", type=Path, action="append", help="CUDA runtime DLL directory (repeatable)")
     ap.add_argument("--port", type=int, help="API port (default: saved setting or 18080)")

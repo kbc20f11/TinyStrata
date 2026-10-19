@@ -36,7 +36,7 @@ def resolve_executable(cfg: dict) -> Path | None:
 
 
 def resolve_vision_executable(cfg: dict) -> Path | None:
-    """The GPU image encoder is built and installed alongside the engine."""
+    """The image encoder is built and installed alongside the engine."""
     selected = cfg.get("vision_exe") or (cfg.get("vision") or {}).get("exe")
     if selected:
         path = Path(selected).expanduser()
@@ -88,18 +88,29 @@ def save_settings(config_path: str | Path, cfg: dict) -> None:
 
 def configure_vision(cfg: dict, model: Path, *, projector: Path | None = None,
                      verified: bool = False) -> dict:
-    """Enable resident GPU image encoding with the pinned, verified projector.
+    """Apply the selected image mode with the pinned, verified projector.
 
-    The server starts and warms the encoder before the language engine, so its
-    weights and image workspace are already included in the free-VRAM budget.
+    A GPU encoder starts and warms before the language engine, so its weights
+    and workspace are included in the free-VRAM budget. Off needs no assets.
     """
     from serve.model_download import MMPROJ_FILENAME, MMPROJ_SHA256, MMPROJ_SIZE
-    from serve.tinyconfig import VISION_POLICY_VERSION
+    from serve.tinyconfig import VISION_POLICY_VERSION, check_vision_options, disable_vision
 
-    new = {**cfg, "args": list(cfg["args"])}
+    mode = check_vision_options(cfg)
+    new = {**cfg, "args": [arg for arg in cfg["args"] if arg != "--vision"], "vision_mode": mode}
     previous = cfg.get("vision") or {}
-    projector = projector or Path(previous.get("mmproj") or Path(cfg["download_dir"]) / MMPROJ_FILENAME)
-    encoder = resolve_vision_executable(cfg)
+    if not isinstance(previous, dict):
+        raise ValueError("vision must be an object")
+    if previous.get("exe") and not new.get("vision_exe"):
+        new["vision_exe"] = previous["exe"]
+    if projector is not None:
+        new["vision_mmproj"] = str(projector)
+    elif previous.get("mmproj") and not new.get("vision_mmproj"):
+        new["vision_mmproj"] = previous["mmproj"]
+    if mode == "no":
+        return disable_vision(new)
+    projector = Path(new.get("vision_mmproj") or Path(cfg["download_dir"]) / MMPROJ_FILENAME)
+    encoder = resolve_vision_executable(new)
     valid = projector.is_file() and projector.stat().st_size == MMPROJ_SIZE
     if valid and not verified:
         digest = hashlib.sha256()
@@ -107,10 +118,11 @@ def configure_vision(cfg: dict, model: Path, *, projector: Path | None = None,
             for block in iter(lambda: source.read(4 * 1024 * 1024), b""):
                 digest.update(block)
         valid = digest.hexdigest() == MMPROJ_SHA256
-    new["args"] = [arg for arg in new["args"] if arg != "--vision"]
     if valid and encoder is not None:
-        new["vision"] = {"exe": str(encoder), "mmproj": str(projector.resolve()),
-                         "model": str(model), "gpu": True}
+        new["vision"] = {**previous, "exe": str(encoder), "mmproj": str(projector.resolve()),
+                         "model": str(model), "gpu": mode == "gpu"}
+        if "vision_tokens" in cfg:
+            new["vision"]["max_tokens"] = cfg["vision_tokens"]
         new["vision_policy_version"] = VISION_POLICY_VERSION
         new["args"].append("--vision")
         new.pop("vision_download_required", None)

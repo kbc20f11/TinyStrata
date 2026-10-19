@@ -91,6 +91,37 @@ def migrate_chunk_settings(cfg: dict) -> tuple[dict, bool]:
     return new, new != cfg
 
 
+def check_vision_options(cfg: dict) -> str:
+    """Validate launcher preferences independently of installed image assets."""
+    mode = cfg.get("vision_mode", "gpu")
+    if mode not in ("gpu", "cpu", "no"):
+        raise ValueError("vision_mode must be gpu, cpu or no")
+    if "vision_tokens" in cfg:
+        tokens = cfg["vision_tokens"]
+        if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
+            raise ValueError("vision_tokens must be a positive whole number")
+    return mode
+
+
+def disable_vision(cfg: dict) -> dict:
+    """Remove active image configuration while retaining paths for re-enabling."""
+    new = {**cfg, "vision_mode": "no"}
+    previous = cfg.get("vision")
+    if isinstance(previous, dict):
+        if previous.get("exe") and not new.get("vision_exe"):
+            new["vision_exe"] = previous["exe"]
+        if previous.get("mmproj") and not new.get("vision_mmproj"):
+            new["vision_mmproj"] = previous["mmproj"]
+        tokens = previous.get("max_tokens")
+        if "vision_tokens" not in new and isinstance(tokens, int) and not isinstance(tokens, bool) and tokens > 0:
+            new["vision_tokens"] = tokens
+    if isinstance(new.get("args"), list):
+        new["args"] = [arg for arg in new["args"] if arg != "--vision"]
+    new.pop("vision", None)
+    new.pop("vision_download_required", None)
+    return new
+
+
 def migrate_settings(cfg: dict) -> tuple[dict, bool]:
     """Retain backend preferences while removing settings for the retired web UI."""
     # Check the existing memory-policy marker before the memory migration adds it.
@@ -99,22 +130,24 @@ def migrate_settings(cfg: dict) -> tuple[dict, bool]:
     changed = changed or memory_changed
     new, generation_changed = migrate_generation_settings(new)
     changed = changed or generation_changed
-    # The first image-capable installer wrote CPU-only encoding unconditionally.
-    # Upgrade those saved configurations too: run-api.bat must not leave old
-    # installs on the CPU after a GPU-capable encoder has been installed.
-    if isinstance(new.get("vision"), dict) and new["vision"] and \
-            new.get("vision_policy_version") != VISION_POLICY_VERSION:
-        new = {**new, "vision": {**new["vision"], "gpu": True},
+    # Old configs default to GPU encoding; explicit CPU/off preferences survive
+    # both migration and model preparation on every subsequent launch.
+    mode = check_vision_options(new)
+    new = {**new, "vision_mode": mode}
+    if mode == "no":
+        new = disable_vision(new)
+    elif isinstance(new.get("vision"), dict) and new["vision"]:
+        new = {**new, "vision": {**new["vision"], "gpu": mode == "gpu"},
                "vision_policy_version": VISION_POLICY_VERSION}
-        changed = True
     retired = {"open_browser", "api_monitor"}
     if retired.intersection(new):
         new = {key: value for key, value in new.items() if key not in retired}
         changed = True
-    return new, changed
+    return new, changed or new != cfg
 
 
 def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
+    check_vision_options(cfg)
     if not isinstance(cfg.get("enable_thinking", True), bool):
         raise ValueError("enable_thinking must be true or false")
     max_tokens = cfg.get("max_tokens", DEFAULT_MAX_TOKENS)

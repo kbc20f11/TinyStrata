@@ -680,6 +680,12 @@ function Invoke-TinyStrataApi {
     return Invoke-RestMethod @request
 }
 
+function Test-TinyStrataInferenceReady {
+    param($Health, $Configuration)
+    $requireImages = -not ($Configuration -and $Configuration.vision_mode -eq 'no')
+    return [bool]($Health.loaded -and (-not $requireImages -or $Health.images))
+}
+
 function Invoke-TinyStrataInstaller {
     param([string]$SourceDirectory, [string]$WorkingDirectory, [int]$ApiPort,
           [bool]$DoNotStart, [bool]$DoNotDownload, [bool]$InspectOnly, [bool]$BuildAgain, [bool]$RefreshSource)
@@ -805,7 +811,7 @@ function Invoke-TinyStrataInstaller {
         Start-Sleep -Milliseconds 500
     }
     if (-not $health) { throw "API startup timed out. See logs in $runtimeRoot." }
-    if ((-not $health.loaded -or -not $health.images) -and -not $DoNotDownload) {
+    if (-not (Test-TinyStrataInferenceReady -Health $health -Configuration $cfg) -and -not $DoNotDownload) {
         Write-Host 'Installing the fixed Unsloth MTP model and vision projector through the API...'
         $null = Invoke-TinyStrataApi -BaseUrl $baseUrl -Path '/v1/model/download' -Method POST -Headers $headers
         $deadline = [DateTime]::UtcNow.AddHours(4)
@@ -823,7 +829,9 @@ function Invoke-TinyStrataInstaller {
         }
         if ($job.state -ne 'ready') { throw 'Model installation timed out; the API remains available for retry.' }
         $health = Invoke-TinyStrataApi -BaseUrl $baseUrl -Path '/health'
-        if (-not $health.loaded -or -not $health.images) { throw 'The download finished but image inference is not ready; inspect the API logs.' }
+        if (-not (Test-TinyStrataInferenceReady -Health $health -Configuration $cfg)) {
+            throw 'The download finished but inference is not ready for the selected vision mode; inspect the API logs.'
+        }
     }
     Write-Host "API:    $baseUrl/v1"
     Write-Host "Config: $configPath"

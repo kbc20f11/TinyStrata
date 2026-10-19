@@ -6546,11 +6546,14 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
         if svc.stopping.is_set() or getattr(svc.downloads, "closed", False):
             raise RuntimeError("the API is stopping")
         # Reuse an already complete installation, without another resident model.
-        # A text-only installation is upgraded under the same request FIFO below.
+        # A text-only installation is upgraded only when images are requested.
         if not isinstance(svc.engine, UnavailableEngine):
             current = model_path(cfg)
             if current is not None and current.resolve() == path.resolve():
-                if svc.vision is not None and getattr(svc.engine, "info", {}).get("vision") == 1:
+                if cfg.get("vision_mode") == "no" and svc.vision is None:
+                    return
+                if cfg.get("vision_mode") != "no" and svc.vision is not None and \
+                        getattr(svc.engine, "info", {}).get("vision") == 1:
                     return
             else:
                 raise ValueError(f'the downloaded model is verified; restart run.py --model "{path}" '
@@ -6568,7 +6571,8 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
         if exe is None or not Path(exe).is_file():
             raise ValueError("the model is downloaded, but the native executable is missing; build TinyStrata "
                              "and configure it with run.py --exe PATH, then retry")
-        if not updated.get("vision"):
+        want_vision = updated.get("vision_mode") != "no"
+        if want_vision and not updated.get("vision"):
             raise ValueError("the model and projector are verified, but tinystrata-vision is missing; "
                              "reinstall or build the image encoder, then retry")
         tpath = Path(updated["tokenizer"])
@@ -6582,9 +6586,10 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
         candidate = StrataEngine(str(exe), engine_args(updated) + (effort or []), cwd=updated.get("cwd"),
                                  log=updated.get("log"), env=child_env(updated), lazy=True)
         candidate.silence_s = engine_silence_s(updated)
-        image_candidate = Vision(updated["vision"],
-                                 log=open(updated["log"], "a", encoding="utf-8") if updated.get("log") else None,
-                                 env=vision_env(updated, child_env(updated)), lazy=True)
+        image_candidate = (Vision(updated["vision"],
+                                  log=open(updated["log"], "a", encoding="utf-8") if updated.get("log") else None,
+                                  env=vision_env(updated, child_env(updated)), lazy=True)
+                           if want_vision else None)
         if getattr(svc, "telemetry", None) is not None and hasattr(candidate, "gpu_busy"):
             candidate.gpu_busy = lambda: (svc.telemetry.snapshot()["now"].get("gpu_util") or 0) >= 10
         # In bootstrap, requests remain 503 until the native process is ready.
@@ -6600,9 +6605,10 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
                     svc.engine, svc.vision = UnavailableEngine(), None
                     svc.model_available = False
                 svc.check_load_policy()
-                image_candidate.restart()
+                if image_candidate is not None:
+                    image_candidate.restart()
                 candidate.restart()
-                if candidate.info.get("vision") != 1:
+                if image_candidate is not None and candidate.info.get("vision") != 1:
                     raise ValueError("the native engine does not support image embeddings; rebuild TinyStrata")
                 with svc.install_lock:
                     if svc.stopping.is_set() or getattr(svc.downloads, "closed", False):
@@ -6626,10 +6632,12 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
                     svc.model_available = True
             except BaseException:
                 candidate.close()
-                image_candidate.shutdown()
+                if image_candidate is not None:
+                    image_candidate.shutdown()
                 raise
         svc.start_idle_unload()
-        print("[tinystrata] verified model and image encoder loaded; inference API ready", flush=True)
+        print("[tinystrata] verified model" + (" and image encoder" if image_candidate is not None else "") +
+              " loaded; inference API ready", flush=True)
 
     projector = (cfg.get("vision") or {}).get("mmproj")
     svc.downloads = FixedModelBundleDownloader(directory, on_ready=activate,
