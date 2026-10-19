@@ -57,12 +57,6 @@ Die folgenden Messungen wurden am 2026-10-19 unter Windows mit einer RTX PRO 400
 | ca. 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | 12 GiB separat belegt; Experten auf CPU und GPU |
 | ca. 8 GB | 64K | 66.30 tok/s | 63.85 tok/s | 16 GiB separat belegt; Experten auf CPU und GPU |
 
-Die 8-GB-Zeile wurde mit den aktuellen automatischen Einstellungen erneut gemessen. Je nach freiem Speicher beim Start betrug der GPU-Expertencache 455 MiB für INT8 und 364 MiB für FP8; der Vergleich umfasst daher auch Unterschiede bei der Platzierung und nicht nur beim KV-Format. Die Zeilen 24/16/12 GB behalten die Ergebnisse vom selben Tag vor der aktuellen Speicherstrategie beim Start bei.
-
-Die Dekodiergeschwindigkeiten entsprechen der Gesamtzahl erzeugter Token geteilt durch die summierten nativen Dekodierzeiten. Dieselben drei Texte (32, 44 und 1,597 Prompt-Token mit aktiviertem Thinking) erzeugten jeweils zweimal 128 Token, einschließlich Reasoning-Token. Die einzige Request-Überschreibung war `max_tokens: 128` als Benchmark-Grenze; der Standardwert 32768 wurde nicht verwendet. Sampling-Parameter und Seed wurden im Request ausgelassen. Die Requests enthielten nur Text; Laden, Eingabeverarbeitung und Bildkodierung sind nicht enthalten. **Die Kontextwerte sind zugewiesene Cache-Kapazitäten, keine Eingabelängen.** Die Zeilen mit reduziertem Speicher nutzten separate Speicherreservierungen auf derselben 24-GB-GPU; die erfolgreichen Läufe führten tatsächlich Expertenberechnungen auf der CPU aus.
-
-Die Tabelle zeigt die tatsächlich gewählten Kontextkapazitäten und Expertenplatzierungen. Auch die Kontextkapazität beeinflusst die Geschwindigkeit. Die Unterschiede zwischen FP8 und INT8 gelten für diese Messbedingungen und sind weder eine allgemeine Geschwindigkeitsgarantie noch ein Qualitätsvergleich.
-
 ## Welches Projekt sollte ich verwenden?
 
 | Ihr Ziel und Ihre Hardware | Projekt |

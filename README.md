@@ -59,12 +59,6 @@ Default thinking and sampling settings (temperature 0.7), MTP 3, 512-token promp
 | Approximately 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | GPU and CPU Expert computation |
 | Approximately 8 GB | 64K | 66.30 tok/s | 63.85 tok/s | GPU and CPU Expert computation |
 
-The 8 GB row was remeasured with the current automatic settings. Available memory at startup produced GPU Expert caches of 455 MiB for INT8 and 364 MiB for FP8, so this comparison includes placement differences as well as KV format. The 24/16/12 GB rows retain earlier results from the same date, before the current startup-memory policy.
-
-Each of the three prompts (32, 44 and 1,597 tokens) generated 128 tokens twice, including reasoning tokens. The benchmark set `max_tokens` to 128 instead of the default 32768; other generation parameters were left unspecified. Rates are total generated tokens divided by summed native decode time, excluding loading and input processing. Reduced-memory rows reserved 8, 12 or 16 GiB on the same 24 GB GPU and performed real CPU Expert work.
-
-The table shows the context capacity actually selected from free VRAM after the vision encoder starts. **These are allocated cache capacities, not input lengths.** The speed differences apply to this hardware and workload; they do not compare answer quality.
-
 ## Which project should I use?
 
 | Your goal and hardware                                                                                                                       | Project                                                               |

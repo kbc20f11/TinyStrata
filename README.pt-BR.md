@@ -59,12 +59,6 @@ As solicitações omitiram os parâmetros de amostragem e a semente. A única al
 | Aprox. 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | 12 GiB reservados; cálculo de especialistas na CPU e na GPU |
 | Aprox. 8 GB | 64K | 66.30 tok/s | 63.85 tok/s | 16 GiB reservados; cálculo de especialistas na CPU e na GPU |
 
-A linha de 8 GB foi medida novamente com a configuração automática atual. Conforme a memória livre ao iniciar, o cache de especialistas na GPU foi de 455 MiB com INT8 e 364 MiB com FP8; a comparação inclui, portanto, diferenças de alocação além do formato KV. As linhas de 24/16/12 GB mantêm os resultados da mesma data, anteriores à política atual de memória na inicialização.
-
-Essas são velocidades agregadas de decodificação: o total de tokens gerados dividido pelo tempo de decodificação registrado pelo mecanismo, excluindo o carregamento e o processamento da entrada. Foram usados os mesmos três textos, com 32, 44 e 1,597 tokens após aplicar o template de raciocínio, cada um gerando 128 tokens duas vezes, incluindo os tokens de raciocínio. **As capacidades da tabela são capacidades de cache alocadas, não comprimentos de entrada.** As linhas com memória reduzida reservaram separadamente 8, 12 ou 16 GiB na mesma GPU de 24 GB e realizaram trabalho real de especialistas na CPU.
-
-O contexto e a alocação de especialistas indicados são os selecionados durante cada execução. A capacidade de contexto também afeta a velocidade, portanto essas linhas mostram diferentes configurações práticas. Os resultados de FP8 se limitam a essas condições e não garantem maior velocidade em geral nem comparam a qualidade.
-
 ## Qual projeto devo usar?
 
 | Seu objetivo e seu hardware | Projeto |
