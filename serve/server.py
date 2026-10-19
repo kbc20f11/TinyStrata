@@ -67,6 +67,7 @@ from serve.structured import StructuredOutputError, prepare_format, validated_js
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
 from serve import images as images_api  # noqa: E402
+from serve.model_switch import ModelControlError, ModelSwitcher  # noqa: E402
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
@@ -3116,6 +3117,7 @@ class Service:
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
         self.downloads = None                         # fixed-model installer; never accepts a client URL or path
+        self.models = None                            # resident model selection; HTTP/network settings stay fixed
         self.model_available = not isinstance(engine, UnavailableEngine)
         self.stopping = threading.Event()
         self.install_lock = threading.Lock()
@@ -5304,10 +5306,30 @@ def make_handler(svc: Service):
             return False
 
         def do_GET(self):
+            try:
+                path = self.path.split("?")[0].rstrip("/")
+                control = path in ("/v1/model/switch", "/v1/model/download", "/v1/models", "/models",
+                                   "/health", "/api/health")
+                with svc.models.admit() if svc.models is not None and not control else contextlib.nullcontext():
+                    self._get()
+            except (ModelControlError, ValueError) as e:
+                self._json(getattr(e, "status", 400), {"error": {"type": "invalid_request_error", "message": str(e)}})
+
+        def _get(self):
             path = self.path.split("?")[0].rstrip("/")
+            if path == "/v1/model/switch":
+                if self._authorized():
+                    if svc.models is None:
+                        self._json(404, {"error": {"message": "model switching is not configured"}})
+                    else:
+                        self._json(200, svc.models.status())
+                return
             if path == "/v1/model/download":
                 if self._authorized():
-                    if svc.downloads is None:
+                    if svc.models is not None:
+                        model = parse_qs(urlsplit(self.path).query).get("model", [None])[0]
+                        self._json(200, svc.models.download(model))
+                    elif svc.downloads is None:
                         self._json(404, {"error": {"message": "model installation is not configured"}})
                     else:
                         self._json(200, svc.downloads.status())
@@ -5346,6 +5368,12 @@ def make_handler(svc: Service):
                     self._json(200, svc.mcp.status() if svc.mcp else {"servers": [], "tools": 0})
                 return
             if path in ("/health", "/api/health"):
+                control = svc.models.status() if svc.models is not None else {}
+                if control.get("switching"):
+                    self._json(200, {"status": "switching", "model": control["model"], "target": control["target"],
+                                     "phase": control["phase"], "loaded": False, "images": False,
+                                     "max_context": 0, "api_key": bool(svc.api_key), "service": "strata"})
+                    return
                 self._json(200, {"status": "ok", "max_context": svc.reported_ctx(), "model": svc.model,
                                  "images": svc.vision is not None, "api_key": bool(svc.api_key),
                                  "image_generation": svc.images is not None,
@@ -5379,6 +5407,9 @@ def make_handler(svc: Service):
                 self._json(200, s)
             elif path in ("/v1/models", "/models"):
                 if self._authorized():
+                    if svc.models is not None:
+                        self._json(200, {"object": "list", "data": svc.models.catalog()})
+                        return
                     loaded = svc.loaded()
                     model = {"id": svc.model, "object": "model", "status": {"value": "loaded"},
                              "meta": {"n_ctx": svc.reported_ctx()},
@@ -5425,7 +5456,13 @@ def make_handler(svc: Service):
 
         def do_POST(self):
             try:
-                self._post()
+                path = self.path.split("?")[0].rstrip("/")
+                control = path in ("/v1/model/switch", "/v1/model/download", "/v1/model/download/cancel")
+                with svc.models.admit() if svc.models is not None and not control else contextlib.nullcontext():
+                    self._post()
+            except ModelControlError as e:
+                self._json(e.status, {"error": {"type": "server_error" if e.status == 503 else "invalid_request_error",
+                                              "message": str(e)}})
             except BadBody as e:                              # #893: a malformed or oversized chunked body
                 self._json(e.status, {"error": {"type": "invalid_request_error", "message": str(e)}})
 
@@ -5469,18 +5506,36 @@ def make_handler(svc: Service):
                 req = json.loads(self._body() or b"{}")
                 if not isinstance(req, dict):
                     raise ValueError("send a JSON object")
+                if path == "/v1/model/switch":
+                    if not self._own_page("the active model can be changed"):
+                        return
+                    if set(req) != {"model"}:
+                        raise ValueError("send a JSON object containing only model")
+                    if svc.models is None:
+                        self._json(404, {"error": {"message": "model switching is not configured"}})
+                    else:
+                        state = svc.models.start(req["model"])
+                        self._json(202 if state["switching"] else 200, state)
+                    return
                 if path in ("/v1/model/download", "/v1/model/download/cancel"):
                     if not self._own_page("the fixed model can be downloaded or its download cancelled"):
                         return
-                    if req:
-                        raise ValueError("send an empty JSON object; the model source and destination are fixed")
-                    if svc.downloads is None:
+                    if set(req) - {"model"} or (req and svc.models is None):
+                        raise ValueError("send {} or a supported model name; the model source and destination are fixed")
+                    if svc.models is not None:
+                        state = svc.models.download(req.get("model"), start=not path.endswith("/cancel"),
+                                                    cancel=path.endswith("/cancel"))
+                        self._json(200 if state.get("state") in ("ready", "cancelled", "idle", "error") else 202, state)
+                    elif svc.downloads is None:
                         self._json(404, {"error": {"message": "model installation is not configured"}})
                     else:
                         state = svc.downloads.cancel() if path.endswith("/cancel") else svc.downloads.start()
                         self._json(200 if state.get("state") in ("ready", "cancelled", "idle", "error") else 202,
                                    state)
                     return
+                if svc.models is not None and path in ("/v1/chat/completions", "/v1/messages", "/v1/responses",
+                                                       "/v1/messages/count_tokens"):
+                    svc.models.check_model(req)
                 if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses",
                             "/v1/messages/count_tokens") and not svc.model_available:
                     raise GpuBusy("the model is not ready; POST /v1/model/download, then poll GET /v1/model/download")
@@ -6561,6 +6616,13 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
     def activate(path: Path, projector: Path | None = None):
         if svc.stopping.is_set() or getattr(svc.downloads, "closed", False):
             raise RuntimeError("the API is stopping")
+        if svc.models is not None:
+            original = svc.models.profiles.resolve(cfg.get("arch", "qwen35moe"))
+            if svc.models.active_id != original:
+                # This manager can outlive its initial model selection. An
+                # inactive download prepares files only, never the live Service.
+                svc.models.profiles.prepare(original, model_path=path, projector=projector, projector_verified=True)
+                return
         # Reuse an already complete installation, without another resident model.
         # A text-only installation is upgraded only when images are requested.
         if not isinstance(svc.engine, UnavailableEngine):
@@ -6976,6 +7038,7 @@ def main() -> int:
         atexit.register(hub.close)                      # the servers Strata started end with it
     if a.engine == "strata" and a.config:
         configure_model_downloads(svc, cfg, a.config)
+        svc.models = ModelSwitcher(svc, cfg, a.config, sys.modules[__name__])
     httpd = serve(svc, host=a.host, port=a.port)
     svc.start_idle_unload()
     svc.start_vision_idle()
@@ -7015,7 +7078,8 @@ def main() -> int:
         print("\n[strata] stopping (Ctrl+C again to end the engine at once) ...", flush=True)
         with svc.install_lock:
             svc.stopping.set()
-        closers = [httpd.shutdown, svc.downloads.close if svc.downloads is not None else None,
+        closers = [httpd.shutdown, svc.models.close if svc.models is not None else
+                   svc.downloads.close if svc.downloads is not None else None,
                    lambda: svc.engine.close() if hasattr(svc.engine, "close") else None,
                    lambda: svc.vision.shutdown() if svc.vision is not None else None,
                    hub.close if hub is not None else None]

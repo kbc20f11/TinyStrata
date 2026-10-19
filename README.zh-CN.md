@@ -117,7 +117,11 @@ API 默认监听 `http://127.0.0.1:18080`。要使用其他端口，请在已安
 
 `run-api.bat --vision gpu` 使用 GPU 处理图像（新配置的默认值）；`--vision cpu` 使用 CPU，`--vision no` 禁用图像。`--vision-tokens N` 设置图像 token 上限（默认 4096）。这些选择会保存，后续启动时省略参数也会保留。
 
-模型文件尚未安装时，API 也可以启动。调用 `POST /v1/model/download` 并使用空 JSON 请求体（`{}`），会下载固定的 [Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS 语言模型](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf)（14.1 GB，包含 MTP 权重）及其[视觉投影器](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/mmproj-F16.gguf)（0.9 GB），总计约 **15.0 GB**。它会验证两个文件的 SHA-256 校验和，提取分词器并加载模型文件。`GET /v1/model/download` 可报告进度；中断的下载可以续传。重复的下载请求会复用当前任务，`POST /v1/model/download/cancel` 可以取消传输或校验。下载完成并不意味着推理已就绪：请等待下载状态变为 `ready`，且 `/health` 报告 `loaded: true`（启用图像时还需 `images: true`）。
+模型文件尚未安装时，API 也可以启动。选择 Qwen 时，调用 `POST /v1/model/download` 并使用空 JSON 请求体（`{}`），会下载固定的 [Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS 语言模型](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf)（14.1 GB，包含 MTP 权重）及其[视觉投影器](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/mmproj-F16.gguf)（0.9 GB），总计约 **15.0 GB**。它会验证两个文件的 SHA-256 校验和，提取分词器并加载模型文件。`GET /v1/model/download` 可报告进度；中断的下载可以续传。重复的下载请求会复用当前任务，`POST /v1/model/download/cancel` 可以取消传输或校验。下载完成并不意味着推理已就绪：请等待下载状态变为 `ready`，且 `/health` 报告 `loaded: true`（启用图像时还需 `images: true`）。
+
+两个引擎均已准备好后，无需重启 API 服务即可切换模型。向 `POST /v1/model/download` 发送 `{"model":"lfm2.5-24b-a2b"}`，并轮询 `GET /v1/model/download?model=lfm2.5-24b-a2b`，直到状态为 `ready`。下载未启用的模型只会完成准备，不会自动切换。然后向 `POST /v1/model/switch` 发送相同 JSON，并轮询 `GET /v1/model/switch`，直到状态为 `ready`。切回 Qwen 时使用 `{"model":"qwen3.6-35b-a3b"}`。
+
+下载或切换开始时返回 `202`。生成期间请求切换会返回 `409`，请在生成结束后重试；切换期间的推理请求返回 `503`。端口和身份验证设置保持不变。各模型的设置独立保存；切换只在当前服务会话中有效，重启后使用启动器选择的模型。
 
 安装程序会准备引擎和 GPU 运行时库，并自动下载两个模型文件。现有配置会继续使用已选择的本地模型，直到你明确更改它。
 

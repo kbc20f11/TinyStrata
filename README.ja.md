@@ -16,14 +16,14 @@ cmake --build ..\TinyStrata-work\build --config Release --target tinystrata-lfm2
 .\run-api.bat --model-family lfm2 --port 18081
 ```
 
-設定は独立した `config-lfm2.json` に保存します。`--model-family lfm2` で起動したサーバーのダウンロード API は、公式の LFM Q4_K_M を取得します。ポート 18081 に対して、次のコマンドで開始・進捗確認ができます。
+LFM の設定は独立した `config-lfm2.json` に保存します。公式 LFM Q4_K_M のダウンロードは、ポート 18081 に対して次のコマンドで開始・進捗確認ができます。
 
 ```powershell
-Invoke-RestMethod 'http://127.0.0.1:18081/v1/model/download' -Method Post -ContentType 'application/json' -Body '{}'
-Invoke-RestMethod 'http://127.0.0.1:18081/v1/model/download'
+Invoke-RestMethod 'http://127.0.0.1:18081/v1/model/download' -Method Post -ContentType 'application/json' -Body '{"model":"lfm2.5-24b-a2b"}'
+Invoke-RestMethod 'http://127.0.0.1:18081/v1/model/download?model=lfm2.5-24b-a2b'
 ```
 
-中断後の再開と SHA-256 検証に対応し、一致するファイルが手元にある場合は再利用します。トークナイザーの準備とエンジンの読み込みが成功すると、状態が `ready` になります。転送・検証を中断する場合は、同じサーバーの `POST /v1/model/download/cancel` に `{}` を送ってください。
+中断後の再開と SHA-256 検証に対応し、一致するファイルが手元にある場合は再利用します。使用中でないモデルのダウンロードは準備だけを行い、現在のモデルは切り替えません。準備できたら、[同じ API サーバーから切り替えられます](#api-サーバー)。このダウンロードを中断する場合は、`POST /v1/model/download/cancel` に `{"model":"lfm2.5-24b-a2b"}` を送ってください。
 
 手元のファイルを使う場合は、起動コマンドに `--model "C:\models\LFM2.5-24B-A2B-Q4_K_M.gguf"` を追加してください。以下の `main` 用インストーラーが導入するのは Qwen 版です。LFM の既定値は `temperature=0.1`、`top_k=50`、`repetition_penalty=1.05` で、思考は常に有効です。新しいエンジンは検証中であり、llama.cpp や CPU・GPU の配置が異なる場合と同じトークン列になることは保証しません。
 
@@ -140,7 +140,11 @@ API は、デフォルトで `http://127.0.0.1:18080` で待ち受けます。�
 
 `run-api.bat --vision gpu` で GPU（新規構成の既定）、`--vision cpu` で CPU による画像処理を選べます。`--vision no` は画像を無効にし、`--vision-tokens N` は画像トークン数の上限（既定 4096）を指定します。選択は保存され、次回以降は省略しても維持されます。
 
-API はモデルファイルをインストールする前でも起動できます。`POST /v1/model/download` に空の JSON ボディ（`{}`）を指定すると、固定の [Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS 言語モデル](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf)（MTP の重みを含む 14.1 GB）と、その[ビジョンプロジェクタ](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/mmproj-F16.gguf)（0.9 GB）、合計約 **15.0 GB** をダウンロードします。両方のファイルの SHA-256 チェックサムを検証し、トークナイザーを抽出して読み込みます。`GET /v1/model/download` で進捗を確認でき、中断したダウンロードは再開できます。ダウンロードを繰り返し要求した場合は、実行中のジョブを再利用します。`POST /v1/model/download/cancel` で転送や検証をキャンセルできます。ダウンロード完了は推論の準備完了を意味しません。ダウンロード状態が `ready` になり、`/health` が `loaded: true`（画像が有効なら `images: true` も）を返すまで待ってください。
+API はモデルファイルをインストールする前でも起動できます。Qwen を選択している場合、`POST /v1/model/download` に空の JSON ボディ（`{}`）を指定すると、固定の [Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS 言語モデル](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf)（MTP の重みを含む 14.1 GB）と、その[ビジョンプロジェクタ](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/mmproj-F16.gguf)（0.9 GB）、合計約 **15.0 GB** をダウンロードします。両方のファイルの SHA-256 チェックサムを検証し、トークナイザーを抽出して読み込みます。`GET /v1/model/download` で進捗を確認でき、中断したダウンロードは再開できます。ダウンロードを繰り返し要求した場合は、実行中のジョブを再利用します。`POST /v1/model/download/cancel` で転送や検証をキャンセルできます。ダウンロード完了は推論の準備完了を意味しません。ダウンロード状態が `ready` になり、`/health` が `loaded: true`（画像が有効なら `images: true` も）を返すまで待ってください。
+
+両方のエンジンが用意されていれば、API サーバーを再起動せずにモデルを切り替えられます。`POST /v1/model/download` に `{"model":"lfm2.5-24b-a2b"}` を送り、`GET /v1/model/download?model=lfm2.5-24b-a2b` で `ready` になるまで確認してください。使用中でないモデルは準備だけを行い、自動では切り替わりません。続いて `POST /v1/model/switch` に同じ JSON を送り、`GET /v1/model/switch` で `ready` になるまで確認します。Qwen に戻す場合は `{"model":"qwen3.6-35b-a3b"}` を指定します。
+
+ダウンロード・切り替えの開始時は `202` を返します。生成中に切り替えを要求すると `409` になるので、生成終了後に再試行してください。切り替え中の推論リクエストは `503` になります。ポートと認証設定はそのままです。設定はモデルごとに分けて保持され、切り替えたモデルは今回の起動中だけ有効です。再起動時はランチャーで選んだモデルを使用します。
 
 インストーラーは、エンジンと GPU ランタイムライブラリを準備し、両方のモデルファイルを自動でダウンロードします。既存の構成では、明示的に変更するまで、選択済みのローカルモデルを使用し続けます。
 

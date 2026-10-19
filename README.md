@@ -16,14 +16,14 @@ cmake --build ..\TinyStrata-work\build --config Release --target tinystrata-lfm2
 .\run-api.bat --model-family lfm2 --port 18081
 ```
 
-The API uses a separate `config-lfm2.json`. The server started with `--model-family lfm2` selects the official LFM Q4_K_M for its download API. Start the download and check progress on port 18081:
+LFM settings use a separate `config-lfm2.json`. Start the official LFM Q4_K_M download and check progress on port 18081:
 
 ```powershell
-Invoke-RestMethod 'http://127.0.0.1:18081/v1/model/download' -Method Post -ContentType 'application/json' -Body '{}'
-Invoke-RestMethod 'http://127.0.0.1:18081/v1/model/download'
+Invoke-RestMethod 'http://127.0.0.1:18081/v1/model/download' -Method Post -ContentType 'application/json' -Body '{"model":"lfm2.5-24b-a2b"}'
+Invoke-RestMethod 'http://127.0.0.1:18081/v1/model/download?model=lfm2.5-24b-a2b'
 ```
 
-Downloads resume after interruption and are SHA-256 verified. A matching local file is reused. The state becomes `ready` after tokenizer preparation and engine loading succeed. To cancel a transfer or verification, send `POST /v1/model/download/cancel` with `{}` to the same server.
+Downloads resume after interruption and are SHA-256 verified. A matching local file is reused. Downloading an inactive model prepares it without changing the active model; [switch it through the same API server](#api-server) when ready. To cancel this download, send `POST /v1/model/download/cancel` with `{"model":"lfm2.5-24b-a2b"}`.
 
 To use an existing file, add `--model "C:\models\LFM2.5-24B-A2B-Q4_K_M.gguf"` to the launcher. The `main` installer below still installs the Qwen release. LFM defaults are `temperature=0.1`, `top_k=50` and `repetition_penalty=1.05`; its reasoning is always enabled. This new engine is under validation and does not promise token-identical output to llama.cpp or between CPU/GPU placements.
 
@@ -140,7 +140,11 @@ The API listens on `http://127.0.0.1:18080` by default. To use another port, run
 
 `run-api.bat --vision gpu` uses GPU image processing (the default for new setups); `--vision cpu` uses the CPU and `--vision no` disables images. `--vision-tokens N` sets the image-token limit (default: 4096). These choices are saved and reused when omitted on later starts.
 
-The API can start before the model files are installed. `POST /v1/model/download` with an empty JSON body (`{}`) downloads the fixed [Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS language model](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf) (14.1 GB, including MTP weights) and its [vision projector](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/mmproj-F16.gguf) (0.9 GB), about **15.0 GB in total**. It verifies both files' SHA-256 checksums, extracts the tokenizer and loads them. `GET /v1/model/download` reports progress; interrupted downloads can resume. A repeated download request reuses the active job, and `POST /v1/model/download/cancel` can cancel transfer or verification. Download completion is not inference readiness: wait for the download state to become `ready` and `/health` to report `loaded: true`, plus `images: true` when images are enabled.
+The API can start before the model files are installed. With Qwen selected, `POST /v1/model/download` with an empty JSON body (`{}`) downloads the fixed [Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS language model](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf) (14.1 GB, including MTP weights) and its [vision projector](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/mmproj-F16.gguf) (0.9 GB), about **15.0 GB in total**. It verifies both files' SHA-256 checksums, extracts the tokenizer and loads them. `GET /v1/model/download` reports progress; interrupted downloads can resume. A repeated download request reuses the active job, and `POST /v1/model/download/cancel` can cancel transfer or verification. Download completion is not inference readiness: wait for the download state to become `ready` and `/health` to report `loaded: true`, plus `images: true` when images are enabled.
+
+With both engines available, you can switch models on the same running API server. Send `POST /v1/model/download` with `{"model":"lfm2.5-24b-a2b"}` and poll `GET /v1/model/download?model=lfm2.5-24b-a2b` until `ready`. Downloading an inactive model prepares it without activating it. Then send `POST /v1/model/switch` with the same JSON and poll `GET /v1/model/switch` until `ready`. To switch back, use `{"model":"qwen3.6-35b-a3b"}`.
+
+Starting a download or switch returns `202`. A switch requested during generation returns `409`; retry after generation finishes. Inference requests during switching return `503`. The port and authentication stay unchanged. Settings are kept separately for each model; the selection lasts for the current server session, and restarting uses the model selected by the launcher.
 
 The installer prepares the engine and GPU runtime libraries and downloads both model files automatically. Existing configurations keep their selected local model until you explicitly change it.
 
