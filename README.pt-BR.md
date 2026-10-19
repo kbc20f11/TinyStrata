@@ -57,9 +57,9 @@ As solicitações omitiram os parâmetros de amostragem e a semente. A única al
 | 24 GB | 256K | 118.40 tok/s | 131.82 tok/s | Todos os pesos residentes na VRAM |
 | Aprox. 16 GB | 128K | 95.09 tok/s | 99.39 tok/s | 8 GiB reservados; cálculo de especialistas na CPU e na GPU |
 | Aprox. 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | 12 GiB reservados; cálculo de especialistas na CPU e na GPU |
-| Aprox. 8 GB | — | — | — | 16 GiB reservados; inicialização rejeitada por falta de margem de VRAM |
+| Aprox. 8 GB | — | — | — | 16 GiB reservados; medição anterior: inicialização rejeitada por falta de margem de VRAM |
 
-Nesta condição medida de aproximadamente 8 GB, a seleção padrão de 64K e o codificador de visão residente na GPU deixaram espaço insuficiente para a reserva padrão de 768 MiB; nem INT8 nem FP8 puderam iniciar.
+Esses resultados são anteriores à liberação dos buffers de trabalho de visão e ao ajuste automático do tamanho dos blocos. Naquela simulação de aproximadamente 8 GB, os 64K selecionados automaticamente e o codificador de visão residente na GPU deixaram espaço insuficiente para a reserva padrão de 768 MiB; nem INT8 nem FP8 puderam iniciar. Desde então, a inicialização da compilação atual com IQ3 e 64K na simulação de 8 GB foi verificada. Novas medições de velocidade comparáveis ainda estão pendentes.
 
 Essas são velocidades agregadas de decodificação: o total de tokens gerados dividido pelo tempo de decodificação registrado pelo mecanismo, excluindo o carregamento e o processamento da entrada. Foram usados os mesmos três textos, com 32, 44 e 1,597 tokens após aplicar o template de raciocínio, cada um gerando 128 tokens duas vezes, incluindo os tokens de raciocínio. **As capacidades da tabela são capacidades de cache alocadas, não comprimentos de entrada.** As linhas com memória reduzida reservaram separadamente 8, 12 ou 16 GiB na mesma GPU de 24 GB; as de aproximadamente 16 e 12 GB realizaram trabalho real de especialistas na CPU.
 
@@ -96,6 +96,8 @@ Novas configurações escolhem KV/Attention e a capacidade de contexto automatic
 ![Configurações automáticas de hardware para Attention, cache KV e capacidade de contexto](assets/automatic-settings.png)
 
 Uma RTX 3060 seleciona INT8. Ambientes compatíveis com RTX das séries 40/50 podem selecionar FP8 nativo; o mecanismo verifica os kernels compilados e os recursos da GPU, além da geração do hardware. Se o FP8 nativo não estiver disponível, o modo automático usa INT8. Isso escolhe um caminho compatível sem executar um teste de velocidade ou qualidade na inicialização. **Attention com FP8 nativo continua experimental.**
+
+A divisão automática da entrada começa com blocos de 512 tokens. Somente se a inicialização indicar VRAM insuficiente, o TinyStrata tenta novamente com 256, 128, 64, 32 e, por fim, 16 tokens, sem alterar o modelo, a capacidade de contexto selecionada nem a reserva de VRAM. Blocos menores podem tornar o processamento da entrada mais lento. `run-api.bat --chunk N` fixa o tamanho; `run-api.bat --chunk auto` restaura o ajuste automático.
 
 A capacidade de contexto é o espaço máximo reservado para a entrada e a saída gerada em conjunto. Uma capacidade maior usa mais memória KV mesmo com uma conversa curta, deixando menos VRAM para os especialistas. A capacidade também não implica velocidade igual para todos os comprimentos de conversa: processar um documento longo de fato exige mais trabalho. Como referência, apenas o KV em INT8 ocupa cerca de **0.71 GiB em 64K, 1.42 GiB em 128K e 2.84 GiB em 256K**, incluindo a camada MTP; os demais pesos e buffers de trabalho são adicionais. Nesta implementação, o FP8 nativo usa aproximadamente o mesmo armazenamento KV que o INT8; seu benefício é um caminho de cálculo diferente, em vez de um cache substancialmente menor.
 

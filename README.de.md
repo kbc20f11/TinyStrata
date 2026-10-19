@@ -55,13 +55,13 @@ Die folgenden Messungen wurden am 2026-10-19 unter Windows mit einer RTX PRO 400
 | 24 GB | 256K | 118.40 tok/s | 131.82 tok/s | Alle Gewichte im VRAM |
 | ca. 16 GB | 128K | 95.09 tok/s | 99.39 tok/s | 8 GiB separat belegt; Experten auf CPU und GPU |
 | ca. 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | 12 GiB separat belegt; Experten auf CPU und GPU |
-| ca. 8 GB | — | — | — | 16 GiB separat belegt; Start wegen zu geringer VRAM-Reserve abgelehnt |
+| ca. 8 GB | — | — | — | 16 GiB separat belegt; frühere Messung: Start wegen zu geringer VRAM-Reserve abgelehnt |
 
-Bei der gemessenen 8-GB-Speicherbegrenzung ließen die standardmäßig gewählten 64K Kontext und der im GPU-Speicher verbleibende Vision-Encoder nicht genug Platz für die standardmäßige Reserve von 768 MiB; weder INT8 noch FP8 konnten starten.
+Diese Benchmark-Ergebnisse stammen aus der Zeit vor der Freigabe der Vision-Arbeitspuffer und der automatischen Anpassung der Blockgröße. Bei der damaligen 8-GB-Speicherbegrenzung ließen die automatisch gewählten 64K Kontext und der GPU-residente Vision-Encoder nicht genug Platz für die standardmäßige Reserve von 768 MiB; weder INT8 noch FP8 konnten starten. Mit dem aktuellen Build wurde der Start mit IQ3 und 64K bei einer Speicherbegrenzung auf etwa 8 GB inzwischen bestätigt. Vergleichbare neue Geschwindigkeitsmessungen stehen noch aus.
 
 Die Dekodiergeschwindigkeiten entsprechen der Gesamtzahl erzeugter Token geteilt durch die summierten nativen Dekodierzeiten. Dieselben drei Texte (32, 44 und 1,597 Prompt-Token mit aktiviertem Thinking) erzeugten jeweils zweimal 128 Token, einschließlich Reasoning-Token. Die einzige Request-Überschreibung war `max_tokens: 128` als Benchmark-Grenze; der Standardwert 32768 wurde nicht verwendet. Sampling-Parameter und Seed wurden im Request ausgelassen. Die Requests enthielten nur Text; Laden, Eingabeverarbeitung und Bildkodierung sind nicht enthalten. **Die Kontextwerte sind zugewiesene Cache-Kapazitäten, keine Eingabelängen.** Die Zeilen mit reduziertem Speicher nutzten separate Speicherreservierungen auf derselben 24-GB-GPU; die erfolgreichen Läufe führten tatsächlich Expertenberechnungen auf der CPU aus.
 
-Alle Zeilen wurden mit demselben aktuellen Build neu gemessen. Die Tabelle zeigt die tatsächlich gewählten Kontextkapazitäten und Expertenplatzierungen. Auch die Kontextkapazität beeinflusst die Geschwindigkeit. Die Unterschiede zwischen FP8 und INT8 gelten für diese Messbedingungen und sind weder eine allgemeine Geschwindigkeitsgarantie noch ein Qualitätsvergleich.
+Alle Zeilen wurden mit demselben damals verwendeten Build gemessen. Die Tabelle zeigt die tatsächlich gewählten Kontextkapazitäten und Expertenplatzierungen. Auch die Kontextkapazität beeinflusst die Geschwindigkeit. Die Unterschiede zwischen FP8 und INT8 gelten für diese Messbedingungen und sind weder eine allgemeine Geschwindigkeitsgarantie noch ein Qualitätsvergleich.
 
 ## Welches Projekt sollte ich verwenden?
 
@@ -94,6 +94,8 @@ Neue Konfigurationen wählen KV/Attention und Kontextkapazität automatisch. Sie
 ![Automatische Hardwareeinstellungen für Attention, KV-Cache und Kontextkapazität](assets/automatic-settings.png)
 
 Eine RTX 3060 wählt INT8. Unterstützte Umgebungen mit GPUs der RTX 40/50-Serie können natives FP8 wählen; die Engine prüft neben der Hardwaregeneration auch die kompilierten Kernel und die GPU-Fähigkeiten. Falls natives FP8 nicht verfügbar ist, verwendet der automatische Modus INT8. So wird ein unterstützter Pfad gewählt, ohne beim Start einen Geschwindigkeits- oder Qualitätsbenchmark auszuführen. **Native FP8-Attention bleibt experimentell.**
+
+Die automatische Eingabeverarbeitung beginnt mit Blöcken von 512 Token. Nur wenn beim Start zu wenig VRAM gemeldet wird, versucht TinyStrata nacheinander 256, 128, 64, 32 und schließlich 16 Token, ohne Modell, gewählte Kontextkapazität oder VRAM-Reserve zu ändern. Kleinere Blöcke können die Eingabeverarbeitung verlangsamen. `run-api.bat --chunk N` legt die Blockgröße fest; `run-api.bat --chunk auto` stellt die automatische Anpassung wieder her.
 
 Die Kontextkapazität ist der maximale Speicherplatz, der für Eingabe und generierte Ausgabe zusammen reserviert wird. Eine höhere Kapazität benötigt selbst bei einer kurzen Unterhaltung mehr KV-Speicher und lässt weniger VRAM für Experten übrig. Eine bestimmte Kapazität bedeutet auch nicht bei jeder Unterhaltungslänge dieselbe Geschwindigkeit: Die tatsächliche Verarbeitung eines langen Dokuments erfordert mehr Arbeit. Zur Einordnung: INT8-KV allein benötigt einschließlich der MTP-Schicht etwa **0.71 GiB bei 64K, 1.42 GiB bei 128K und 2.84 GiB bei 256K**; weitere Gewichte und Arbeitspuffer kommen hinzu. Natives FP8 benötigt in dieser Implementierung ungefähr ebenso viel KV-Speicher wie INT8; sein Vorteil liegt in einem anderen Berechnungspfad und nicht in einem wesentlich kleineren Cache.
 

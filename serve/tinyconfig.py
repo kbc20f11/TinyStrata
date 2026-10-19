@@ -8,6 +8,7 @@ from serve import config
 MEMORY_POLICY_VERSION = 1
 VISION_POLICY_VERSION = 1
 GENERATION_POLICY_VERSION = 1
+CHUNK_POLICY_VERSION = config.CHUNK_POLICY_VERSION
 DEFAULT_MAX_TOKENS = 32768
 DEFAULT_SAMPLING = {
     "temperature": 0.7, "top_p": 0.95, "top_k": 20, "min_p": 0.0,
@@ -72,9 +73,30 @@ def migrate_memory_settings(cfg: dict) -> tuple[dict, bool]:
     return automatic_experts(cfg), True
 
 
+def migrate_chunk_settings(cfg: dict) -> tuple[dict, bool]:
+    """Upgrade the old stock 512-token chunk once; retain custom chunk sizes.
+
+    Old TinyStrata launcher configs did not distinguish a saved manual 512 from
+    the stock value. Upgrade that value only for existing TinyStrata memory-policy
+    configs. The marker preserves all explicit chunk choices made after upgrade.
+    """
+    if cfg.get("chunk_policy_version") == CHUNK_POLICY_VERSION:
+        return cfg, False
+    value = config.value_of(cfg, "chunk")
+    stock = cfg.get("arch") == "qwen35moe" and cfg.get("memory_policy_version") == MEMORY_POLICY_VERSION
+    if value is None or value == 0 or (value == 512 and stock):
+        new, _ = config.apply(cfg, {"chunk": "auto"})
+    else:
+        new = {**cfg, "chunk_policy_version": CHUNK_POLICY_VERSION}
+    return new, new != cfg
+
+
 def migrate_settings(cfg: dict) -> tuple[dict, bool]:
     """Retain backend preferences while removing settings for the retired web UI."""
-    new, changed = migrate_memory_settings(cfg)
+    # Check the existing memory-policy marker before the memory migration adds it.
+    new, changed = migrate_chunk_settings(cfg)
+    new, memory_changed = migrate_memory_settings(new)
+    changed = changed or memory_changed
     new, generation_changed = migrate_generation_settings(new)
     changed = changed or generation_changed
     # The first image-capable installer wrote CPU-only encoding unconditionally.

@@ -57,9 +57,9 @@ Default thinking and sampling settings (temperature 0.7), MTP 3, 512-token promp
 | 24 GB | 256K | 118.40 tok/s | 131.82 tok/s | All weights resident in VRAM |
 | Approximately 16 GB | 128K | 95.09 tok/s | 99.39 tok/s | GPU and CPU Expert computation |
 | Approximately 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | GPU and CPU Expert computation |
-| Approximately 8 GB | — | — | — | Startup rejected: insufficient VRAM headroom |
+| Approximately 8 GB | — | — | — | Earlier measurement: startup rejected for insufficient VRAM headroom |
 
-In this 8 GB memory-proxy condition, automatic selection chose 64K, but the resident vision encoder left insufficient room for the default 768 MiB reserve. Both INT8 and FP8 were rejected before inference.
+These benchmark results predate vision-workspace release and automatic chunk adjustment. In that 8 GB memory-proxy condition, automatic selection chose 64K, but the resident vision encoder left insufficient room for the default 768 MiB reserve; both INT8 and FP8 were rejected before inference. The current build has since been verified to start with IQ3 and 64K in the 8 GB memory-proxy condition. Comparable speed benchmarks for the current build are pending.
 
 Each of the three prompts (32, 44 and 1,597 tokens) generated 128 tokens twice, including reasoning tokens. The benchmark set `max_tokens` to 128 instead of the default 32768; other generation parameters were left unspecified. Rates are total generated tokens divided by summed native decode time, excluding loading and input processing. Reduced-memory rows reserved 8, 12 or 16 GiB on the same 24 GB GPU; the successful 16 and 12 GB cases performed real CPU Expert work.
 
@@ -96,6 +96,8 @@ New configurations choose KV/Attention and context capacity automatically. You d
 ![Automatic hardware settings for Attention, KV cache and context capacity](assets/automatic-settings.png)
 
 An RTX 3060 selects INT8. Supported RTX 40/50-series environments can select native FP8; the engine checks the compiled kernels and GPU capabilities as well as the hardware generation. If native FP8 is unavailable, automatic mode uses INT8. This chooses a supported path without running a speed or quality benchmark at startup. **Native FP8 Attention remains experimental.**
+
+Automatic input chunking starts at 512 tokens. Only if startup reports insufficient VRAM does it retry with 256, 128, 64, 32 and finally 16 tokens, keeping the model, selected context capacity and VRAM reserve unchanged. Smaller chunks can slow input processing. `run-api.bat --chunk N` fixes the chunk size; `run-api.bat --chunk auto` restores automatic adjustment.
 
 Context capacity is the maximum space reserved for the input and generated output together. A longer capacity uses more KV memory even with a short conversation, leaving less VRAM for Experts. Capacity also does not imply equal speed at every conversation length: actually processing a long document takes more work. For scale, INT8 KV alone takes about **0.71 GiB at 64K, 1.42 GiB at 128K and 2.84 GiB at 256K**, including the MTP layer; other weights and work buffers are additional. Native FP8 uses approximately the same KV storage as INT8 in this implementation; its benefit is a different computation path, rather than a substantially smaller cache.
 

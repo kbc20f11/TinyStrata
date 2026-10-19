@@ -7,6 +7,8 @@ import os
 import shutil
 from pathlib import Path
 
+CHUNK_POLICY_VERSION = 1
+
 ENGINE_OPTIONS = {
     "kv_type": ("--kv-type", ("auto", "fp32", "fp8", "fp8-mma", "int8")),
     "max_context": ("--max-context", 16, 262144, True),
@@ -40,8 +42,10 @@ def check(key: str, value, cfg: dict):
         if value not in spec[1]:
             raise ValueError(f"{key}: expected one of {', '.join(spec[1])}, not {value!r}")
         return value
-    if key == "max_context" and value == "auto":
+    if key in ("max_context", "chunk") and value == "auto":
         return value
+    if key == "chunk" and not isinstance(value, bool) and isinstance(value, (int, float)) and value == 0:
+        return "auto"
     _, lo, hi, whole = spec
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or \
             (whole and value != int(value)) or value < lo or (hi is not None and value > hi):
@@ -56,6 +60,9 @@ def apply(cfg: dict, changes: dict) -> tuple[dict, list[str]]:
         raise ValueError("Expected at least one engine setting")
     checked = {key: check(key, value, cfg) for key, value in changes.items()}
     new = json.loads(json.dumps(cfg))
+    if "chunk" in checked:
+        # A saved explicit choice, including 512, must survive later migrations.
+        new["chunk_policy_version"] = CHUNK_POLICY_VERSION
     changed = []
     for key, value in checked.items():
         if value_of(new, key) == value:

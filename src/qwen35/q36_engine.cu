@@ -79,10 +79,36 @@ namespace MMQ = strata::prefill::mmq;
 namespace P = strata::qwen35::environment_policy;
 namespace V = strata::qwen35::vision;
 
+// Only the startup workspace/placement window can ask the API supervisor to
+// retry with a smaller prompt chunk. Model loading and inference errors remain
+// ordinary failures; each retry starts a fresh child and releases its memory.
+struct StartupFit {
+    bool active = false, protocol = false;
+    int context = 0, chunk = 0;
+} startup_fit;
+
+void report_startup_fit(const char* reason) {
+    if (!startup_fit.active || !startup_fit.protocol) return;
+    std::printf("FIT_RETRY context=%d chunk=%d reason=%s\n", startup_fit.context, startup_fit.chunk, reason);
+    std::fflush(stdout);
+}
+
+void report_startup_cuda_failure(cudaError_t status, const char* operation) {
+    // Pinned-host allocations can also return cudaErrorMemoryAllocation. They
+    // are RAM failures, not evidence that the GPU prompt workspace is too big.
+    if (status == cudaErrorMemoryAllocation &&
+        (std::strncmp(operation, "cudaMalloc(", 11) == 0 ||
+         std::strncmp(operation, "cudaMemset(", 11) == 0 ||
+         std::strncmp(operation, "cudaMemcpy(", 11) == 0 ||
+         std::strncmp(operation, "cudaDeviceSynchronize(", 22) == 0))
+        report_startup_fit("allocation");
+}
+
 #define CK(x)                                                                                                          \
     do {                                                                                                               \
         cudaError_t e_ = (x);                                                                                          \
         if (e_ != cudaSuccess) {                                                                                       \
+            report_startup_cuda_failure(e_, #x);                                                                       \
             std::fprintf(stderr, "tinystrata: %s failed: %s (%s:%d)\n", #x, cudaGetErrorString(e_), __FILE__, __LINE__); \
             std::exit(1);                                                                                              \
         }                                                                                                              \
@@ -2660,7 +2686,8 @@ struct Engine {
 /// reserve), else the hybrid mode - every expert in host memory, the same number of VRAM slots per layer, a decode
 /// batch's other experts on the CPU pool and a prompt chunk's streamed through two staging buffers.
 bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid_t, int slots,
-                   size_t reserve, std::string& err) {
+                   size_t reserve, std::string& err, bool& fit_failure) {
+    fit_failure = false;
     const auto t0 = Clock::now();
     const auto& g = m.g;
     const int64_t ne = g.n_expert;
@@ -2906,11 +2933,16 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         const auto status = allocate_arenas(counts);
         if (status == ArenaResult::ready) break;
         if (!automatic || status == ArenaResult::error) return false;
-        if (attempt >= 13) { err = "automatic expert placement could not preserve the VRAM reserve after retries"; return false; }
+        if (attempt >= 13) {
+            fit_failure = true;
+            err = "automatic expert placement could not preserve the VRAM reserve after retries";
+            return false;
+        }
         if (S == 0) {
             if (!mtp_only) {
                 err = "weights, KV and workspaces leave less than the requested VRAM reserve even with all experts "
                       "on the CPU; lower --max-context/--chunk or --vram-reserve-mib";
+                fit_failure = true;
                 return false;
             }
             mtp_only = false;
@@ -3069,11 +3101,11 @@ int serve(Engine& E) {
     std::printf("INFO version=0.1.0 kv=%s expert_slots=%d expert_cache_mib=%zu expert_cache_bytes=%zu "
                 "expert_arena_bytes=%zu expert_auto=%d vram_free_bytes=%zu vram_cuda_free_bytes=%zu "
                 "vram_physical_free_bytes=%zu vram_free_source=%s vram_reserve_mib=%zu mtp=%d "
-                "kv_auto=%d context_auto=%d gpu_cc=%d vision=%d\n",
+                "kv_auto=%d context_auto=%d gpu_cc=%d vision=%d chunk=%d\n",
                 E.kv_name(), expert_slots, expert_bytes >> 20, expert_bytes, arena_bytes, E.expert_auto ? 1 : 0,
                 memory.free, memory.cuda_free, memory.physical ? memory.physical_free : memory.cuda_free,
                 memory.source(), E.vram_reserve >> 20, E.mtp_d,
-                E.kv_auto ? 1 : 0, E.context_auto ? 1 : 0, E.gpu_cc, E.vision_enabled ? 1 : 0);
+                E.kv_auto ? 1 : 0, E.context_auto ? 1 : 0, E.gpu_cc, E.vision_enabled ? 1 : 0, E.tmax);
     std::printf("READY %d stop\n", E.ctx);
     std::fflush(stdout);
     std::mutex mu;
@@ -3472,11 +3504,15 @@ int strata::qwen35::run(int argc, char** argv) {
             std::fprintf(stderr, "tinystrata: chunk rule: free %.2f GiB (with %.2f packed), main experts %.2f GiB\n",
                          fr / 1073741824.0, packed / 1073741824.0, experts / 1073741824.0);
     }
+    startup_fit = {true, serve_mode, ctx, chunk};
     E.init(m, ctx, chunk);
-    if (!place_experts(m, E, expert_vram, cpu_threads, hybrid_rows, expert_slots, vram_reserve, err)) {
+    bool fit_failure = false;
+    if (!place_experts(m, E, expert_vram, cpu_threads, hybrid_rows, expert_slots, vram_reserve, err, fit_failure)) {
+        if (fit_failure) report_startup_fit("reserve");
         std::fprintf(stderr, "tinystrata: %s\n", err.c_str());
         return 1;
     }
+    startup_fit.active = false;
     std::fprintf(stderr, "tinystrata: decode graphs %s (requested %s; main experts %s)\n",
                  E.use_graph ? "enabled" : "disabled", graph ? "on" : "off",
                  E.main_hybrid ? "CPU/GPU hybrid" : "GPU resident");
