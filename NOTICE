@@ -45,3 +45,11 @@ persistent launch worker. Original copyright and MIT license are retained.
 Qwen3.6 native-server consumed-history tracking follows Strata Flash-Next's
 src/program/generate.cpp at the base commit listed above (MIT), recording the
 whole committed speculative prefix before emitting a potentially shorter reply.
+
+Additional Qwen3.6 small-row Q8 products, fused decode kernels and GDN prompt
+optimizations adapt src/qwen35/q36_kernels.cuh and src/qwen35/q36_engine.cu from
+Niko1221/Strata at 477ac13cbe8e582c20484871ce459d20d82df09d (MIT).
+The optional AVX2 singleton IQ expert path adapts src/kernels/cpu/iq_avx2.cpp,
+src/kernels/cpu/iq_avx2_rows.inl, src/kernels/cpu/native_expert.cpp and the
+corresponding header from the same commit. Original copyright and MIT license
+notices are retained.
