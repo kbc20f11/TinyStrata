@@ -72,6 +72,7 @@ class ModelSwitcher:
         with self._lock:
             return {'state': self._state, 'phase': self._phase, 'model': self.active_id,
                     'target': self._target, 'loaded': self.svc.loaded(), 'error': self._error,
+                    'context': self.context_info(),
                     'rolled_back': self._rollback, 'started_at': self._started,
                     'finished_at': self._finished, 'in_flight': self._requests,
                     'switching': self._busy}
@@ -114,6 +115,24 @@ class ModelSwitcher:
             if target != self.active_id:
                 raise ModelControlError(409, 'model is not active; POST /v1/model/switch with its model id first')
 
+    def context_info(self, model=None):
+        """Only a loaded active model has an observed allocated KV capacity."""
+        with self._lock:
+            try:
+                target = self.profiles.resolve(model) if model is not None else self.active_id
+            except ValueError:
+                if model not in self.svc.model_names():
+                    raise
+                target = self.active_id
+            context = self.profiles.context_info(target)
+            if target == self.active_id and not self._busy and self.svc.loaded():
+                # reported_ctx() may return a previous READY while restarting.
+                # Discovery of an allocation must use this engine's actual value.
+                actual = getattr(self.svc.engine, 'max_context', 0)
+                if isinstance(actual, int) and not isinstance(actual, bool) and actual > 0:
+                    context['allocated_tokens'] = actual
+            return context
+
     def catalog(self):
         with self._lock:
             items = []
@@ -124,12 +143,14 @@ class ModelSwitcher:
                 value = 'loaded' if loaded else 'unloaded' if row['installed'] else 'not_installed'
                 if self._busy and model == self._target:
                     value = 'loading'
+                context = self.context_info(model)
                 items.append({'id': model, 'arch': row['arch'], 'installed': row['installed'],
                               'object': 'model', 'active': active,
                               'status': {'value': value},
                               'architecture': {'input_modalities': ['text', 'image'] if row['vision'] else ['text'],
                                                'output_modalities': ['text']},
-                              'meta': {'n_ctx': self.svc.reported_ctx() if loaded else 0}})
+                              'context': context,
+                              'meta': {'n_ctx': context['allocated_tokens'] or 0}})
             return items
 
     def start(self, model) -> dict:

@@ -18,6 +18,8 @@ _MODELS = {
     "qwen3.6-35b-a3b": "qwen35moe",
     "lfm2.5-24b-a2b": "lfm2moe",
 }
+# Supported model/engine ceilings, not automatically allocated KV capacities.
+_CONTEXT_LIMITS = {"qwen35moe": 262144, "lfm2moe": 131072}
 _ALIASES = {
     "qwen36": "qwen3.6-35b-a3b", "qwen3.6": "qwen3.6-35b-a3b",
     "qwen35moe": "qwen3.6-35b-a3b",
@@ -147,6 +149,19 @@ class ModelProfiles:
     def get(self, name: str) -> ModelProfile:
         return self._profiles[self.resolve(name)]
 
+    def context_info(self, name: str) -> dict:
+        """Configured context and model ceiling; allocation requires native READY."""
+        profile = self.get(name)
+        limit = _CONTEXT_LIMITS[profile.arch]
+        requested = config.value_of(profile.config, "max_context")
+        if requested in (None, "auto", 0):
+            requested = "auto"
+        else:
+            requested = config.check("max_context", requested, profile.config)
+            if requested > limit:
+                raise ValueError(f"{profile.id} supports at most {limit} context tokens")
+        return {"allocated_tokens": None, "model_limit": limit, "requested": requested}
+
     def list(self) -> list[dict]:
         """Cheap availability metadata; no checksums, GGUF reads or processes."""
         entries = []
@@ -158,6 +173,7 @@ class ModelProfiles:
                             "path": str(model) if model is not None else None,
                             "executable": str(exe) if exe is not None else None,
                             "config_path": str(profile.path), "shared_settings_path": str(profile.shared_path),
+                            "context": self.context_info(profile.id),
                             "vision": profile.arch == "qwen35moe" and profile.config.get("vision_mode", "gpu") != "no"})
         return entries
 
