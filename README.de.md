@@ -97,14 +97,14 @@ Fragen Sie `GET /v1/model/switch` bis `state: ready` ab. Zum Zurückwechseln sen
 
 ## Gemessene Geschwindigkeit — Qwen3.6
 
-Gemessen am **2026-10-21** unter Windows mit einer RTX PRO 4000 Blackwell SFF Edition (24 GB), einem Ryzen 9 7945HX3D, 64 GB Arbeitsspeicher und dem festgelegten Unsloth-MTP-UD-IQ3_XXS-Modell. Der Bildencoder blieb bei den Textanfragen über die API auf der GPU. Thinking, die Sampling-Standardwerte des Modells (Temperatur 1.0) und MTP 3 waren aktiv. Prompt-Chunks und Expertenplatzierung wurden automatisch gewählt; die Kontextkapazität wurde entsprechend der VRAM-Klasse festgelegt. Der hybride CUDA-Graph-Pfad blieb standardmäßig aus, die normalen CUDA Graphs bei vollständigem GPU-Betrieb blieben aktiv.
+Gemessen am **2026-10-21** unter Windows mit einer RTX PRO 4000 Blackwell SFF Edition (24 GB), einem Ryzen 9 7945HX3D, 64 GB Arbeitsspeicher und dem festgelegten Unsloth-MTP-UD-IQ3_XXS-Modell. Der Bildencoder blieb bei den Textanfragen über die API auf der GPU. Thinking, die Sampling-Standardwerte des Modells (Temperatur 0.7) und MTP 3 waren aktiv. Prompt-Chunks und Expertenplatzierung wurden automatisch gewählt; die Kontextkapazität wurde entsprechend der VRAM-Klasse festgelegt. Der hybride CUDA-Graph-Pfad blieb standardmäßig aus, die normalen CUDA Graphs bei vollständigem GPU-Betrieb blieben aktiv.
 
 | Verfügbarer Speicher | Kontextkapazität | INT8-Generierung | Native FP8-Generierung | Anmerkungen |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 113.49 tok/s | 122.22 tok/s | Alle Gewichte im VRAM |
-| ca. 16 GB | 256K | 101.74 tok/s | 95.11 tok/s | 8 GiB separat belegt; Experten auf CPU und GPU |
-| ca. 12 GB | 128K | 88.99 tok/s | 93.78 tok/s | 12 GiB separat belegt; Experten auf CPU und GPU |
-| ca. 8 GB | 64K | 64.84 tok/s | 65.38 tok/s | 16 GiB separat belegt; Experten auf CPU und GPU |
+| 24 GB | 256K | 117.80 tok/s | 128.48 tok/s | Alle Gewichte im VRAM |
+| ca. 16 GB | 256K | 98.90 tok/s | 98.11 tok/s | 8 GiB separat belegt; Experten auf CPU und GPU |
+| ca. 12 GB | 128K | 87.99 tok/s | 89.44 tok/s | 12 GiB separat belegt; Experten auf CPU und GPU |
+| ca. 8 GB | 64K | 60.69 tok/s | 61.60 tok/s | 16 GiB separat belegt; Experten auf CPU und GPU |
 
 Dieselben drei Eingabetexte wurden je zweimal pro FP8-/INT8-Konfiguration mit den Sampling-Standardwerten des Modells verwendet und jeweils 128 Token einschließlich Thinking generiert. Die Geschwindigkeit ergibt sich aus der gesamten Tokenzahl geteilt durch die gesamte Decodierzeit, ohne Laden und Eingabeverarbeitung; Kontextwerte sind Cachekapazitäten. Die Zeilen mit weniger Speicher reservieren 8, 12 oder 16 GiB auf derselben 24-GB-GPU und verwenden die Kontextkapazität der jeweiligen VRAM-Klasse; sie sind keine Benchmarks physischer 16-/12-/8-GB-GPUs.
 
@@ -190,11 +190,11 @@ Explizite Einstellungen überschreiben die automatische Auswahl, und bereits man
 
 **TinyStrata bietet ausschließlich eine API.** Es stellt OpenAI-kompatible APIs für Chat Completions (`/v1/chat/completions`) und Responses (`/v1/responses`) sowie eine Anthropic-kompatible Messages-API (`/v1/messages`) bereit, einschließlich gestreamter Generierung. Verbinden Sie einen API-Client oder ein externes Frontend; TinyStrata enthält keine integrierte Chat-Oberfläche.
 
-Neue Konfigurationen verwenden modellspezifische Sampling-Standardwerte auf Grundlage der offiziellen Modellkarten. Werte pro Anfrage haben Vorrang; gespeicherte benutzerdefinierte Einstellungen bleiben erhalten.
+Neue Konfigurationen verwenden modellspezifische Sampling-Standardwerte. Werte pro Anfrage haben Vorrang; gespeicherte benutzerdefinierte Einstellungen bleiben erhalten.
 
 | Einstellung | Qwen3.6 | Gemma 4 | LFM2.5 |
 | --- | ---: | ---: | ---: |
-| `temperature` | 1.0 | 1.0 | 0.1 |
+| `temperature` | 0.7 | 1.0 | 0.1 |
 | `top_p` | 0.95 | 0.95 | 1.0 |
 | `top_k` | 20 | 64 | 50 |
 | `min_p` | 0.0 | 0.0 | 0.0 |

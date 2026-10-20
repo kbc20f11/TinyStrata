@@ -109,14 +109,14 @@ Poll `GET /v1/model/switch` until `state` is `ready`. To return to Qwen, send th
 
 ## Measured speed — Qwen3.6
 
-Measured on **2026-10-21** using Windows, an RTX PRO 4000 Blackwell SFF Edition (24 GB), a Ryzen 9 7945HX3D, 64 GB of system RAM and the fixed Unsloth MTP UD-IQ3_XXS model. The image encoder stayed on the GPU during text-only API requests. Thinking, the model’s sampling defaults (temperature 1.0) and MTP 3 were enabled. Prompt chunks and Expert placement were automatic; context capacity was set for each VRAM class. Hybrid CUDA Graphs stayed at their default off; normal all-GPU CUDA Graphs remained enabled.
+Measured on **2026-10-21** using Windows, an RTX PRO 4000 Blackwell SFF Edition (24 GB), a Ryzen 9 7945HX3D, 64 GB of system RAM and the fixed Unsloth MTP UD-IQ3_XXS model. The image encoder stayed on the GPU during text-only API requests. Thinking, the model’s sampling defaults (temperature 0.7) and MTP 3 were enabled. Prompt chunks and Expert placement were automatic; context capacity was set for each VRAM class. Hybrid CUDA Graphs stayed at their default off; normal all-GPU CUDA Graphs remained enabled.
 
 | Available VRAM | Context capacity | INT8 generation | Native FP8 generation | Notes |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 113.49 tok/s | 122.22 tok/s | All weights resident in VRAM |
-| Approximately 16 GB | 256K | 101.74 tok/s | 95.11 tok/s | GPU and CPU Expert computation |
-| Approximately 12 GB | 128K | 88.99 tok/s | 93.78 tok/s | GPU and CPU Expert computation |
-| Approximately 8 GB | 64K | 64.84 tok/s | 65.38 tok/s | GPU and CPU Expert computation |
+| 24 GB | 256K | 117.80 tok/s | 128.48 tok/s | All weights resident in VRAM |
+| Approximately 16 GB | 256K | 98.90 tok/s | 98.11 tok/s | GPU and CPU Expert computation |
+| Approximately 12 GB | 128K | 87.99 tok/s | 89.44 tok/s | GPU and CPU Expert computation |
+| Approximately 8 GB | 64K | 60.69 tok/s | 61.60 tok/s | GPU and CPU Expert computation |
 
 Each of the same three input texts was run twice per FP8/INT8 configuration, generating 128 tokens including thinking; sampling settings were left at their model defaults. Speed is total generated tokens divided by total decode time, excluding loading and prompt processing; context values are cache capacities. The reduced-memory rows reserve 8, 12 or 16 GiB on the same 24 GB GPU and use the context capacity for that VRAM class; they are not physical 16/12/8 GB GPU benchmarks.
 
@@ -202,11 +202,11 @@ Explicit settings override automatic choices, and existing manually selected set
 
 **TinyStrata is API-only.** It provides OpenAI-compatible Chat Completions (`/v1/chat/completions`) and Responses (`/v1/responses`) APIs and an Anthropic-compatible Messages API (`/v1/messages`), including streamed generation. Connect an API client or an external frontend; TinyStrata does not include a bundled chat UI.
 
-New configurations use model-specific sampling defaults based on the official model cards. Per-request settings take precedence; saved custom settings remain in effect.
+New configurations use model-specific sampling defaults. Per-request settings take precedence; saved custom settings remain in effect.
 
 | Setting | Qwen3.6 | Gemma 4 | LFM2.5 |
 | --- | ---: | ---: | ---: |
-| `temperature` | 1.0 | 1.0 | 0.1 |
+| `temperature` | 0.7 | 1.0 | 0.1 |
 | `top_p` | 0.95 | 0.95 | 1.0 |
 | `top_k` | 20 | 64 | 50 |
 | `min_p` | 0.0 | 0.0 | 0.0 |

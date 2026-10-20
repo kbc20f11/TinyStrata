@@ -97,14 +97,14 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 ## 实测速度 — Qwen3.6
 
-于 **2026-10-21** 在 Windows 上测量，使用 RTX PRO 4000 Blackwell SFF Edition（24 GB）、Ryzen 9 7945HX3D、64 GB 系统内存和固定的 Unsloth MTP UD-IQ3_XXS 模型。图像编码器常驻 GPU，通过 API 输入文本；启用思考、模型默认采样设置（温度 1.0）及 MTP 3。输入分块和专家分配自动选择，上下文容量按各显存档位设置。混合 CUDA Graph 保持默认关闭，全部专家常驻 GPU 时的常规 CUDA Graph 保持启用。
+于 **2026-10-21** 在 Windows 上测量，使用 RTX PRO 4000 Blackwell SFF Edition（24 GB）、Ryzen 9 7945HX3D、64 GB 系统内存和固定的 Unsloth MTP UD-IQ3_XXS 模型。图像编码器常驻 GPU，通过 API 输入文本；启用思考、模型默认采样设置（温度 0.7）及 MTP 3。输入分块和专家分配自动选择，上下文容量按各显存档位设置。混合 CUDA Graph 保持默认关闭，全部专家常驻 GPU 时的常规 CUDA Graph 保持启用。
 
 | 可用内存条件 | 上下文容量 | INT8 生成 | 原生 FP8 生成 | 备注 |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 113.49 tok/s | 122.22 tok/s | 所有权重常驻显存 |
-| 约 16 GB | 256K | 101.74 tok/s | 95.11 tok/s | GPU 与 CPU 共同计算专家 |
-| 约 12 GB | 128K | 88.99 tok/s | 93.78 tok/s | GPU 与 CPU 共同计算专家 |
-| 约 8 GB | 64K | 64.84 tok/s | 65.38 tok/s | GPU 与 CPU 共同计算专家 |
+| 24 GB | 256K | 117.80 tok/s | 128.48 tok/s | 所有权重常驻显存 |
+| 约 16 GB | 256K | 98.90 tok/s | 98.11 tok/s | GPU 与 CPU 共同计算专家 |
+| 约 12 GB | 128K | 87.99 tok/s | 89.44 tok/s | GPU 与 CPU 共同计算专家 |
+| 约 8 GB | 64K | 60.69 tok/s | 61.60 tok/s | GPU 与 CPU 共同计算专家 |
 
 每个 FP8/INT8 配置均使用相同的三段文本各运行两次，采用模型默认采样设置，每次生成包含思考的 128 个 token。速度为总生成 token 数除以总解码时间，不含加载与输入处理；上下文值表示缓存容量。内存受限行是在同一块 24 GB GPU 上另行预留 8、12 或 16 GiB，并设置相应显存档位的上下文容量，并非使用实际的 16/12/8 GB GPU。
 
@@ -190,11 +190,11 @@ MTP 同时支持贪心生成和基于温度的采样，包括重复惩罚、频�
 
 **TinyStrata 仅提供 API。** 它提供兼容 OpenAI 的 Chat Completions（`/v1/chat/completions`）和 Responses（`/v1/responses`）API，以及兼容 Anthropic 的 Messages API（`/v1/messages`），并支持流式生成。请连接 API 客户端或外部前端；TinyStrata 不附带聊天 UI。
 
-新配置采用各模型自己的采样默认值，以官方模型卡为依据。每次请求指定的值优先；已保存的自定义设置保持不变。
+新配置采用各模型自己的采样默认值。每次请求指定的值优先；已保存的自定义设置保持不变。
 
 | 设置 | Qwen3.6 | Gemma 4 | LFM2.5 |
 | --- | ---: | ---: | ---: |
-| `temperature` | 1.0 | 1.0 | 0.1 |
+| `temperature` | 0.7 | 1.0 | 0.1 |
 | `top_p` | 0.95 | 0.95 | 1.0 |
 | `top_k` | 20 | 64 | 50 |
 | `min_p` | 0.0 | 0.0 | 0.0 |

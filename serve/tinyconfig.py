@@ -11,7 +11,7 @@ GENERATION_POLICY_VERSION = 1
 CHUNK_POLICY_VERSION = config.CHUNK_POLICY_VERSION
 DEFAULT_MAX_TOKENS = 32768
 DEFAULT_SAMPLING = {
-    "temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0,
+    "temperature": 0.7, "top_p": 0.95, "top_k": 20, "min_p": 0.0,
     "presence_penalty": 1.5, "repetition_penalty": 1.0,
 }
 LFM2_SAMPLING = {"temperature": 0.1, "top_p": 1.0, "top_k": 50, "min_p": 0.0,

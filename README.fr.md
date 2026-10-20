@@ -97,14 +97,14 @@ Consultez `GET /v1/model/switch` jusqu’à `state: ready`. Pour revenir à Qwen
 
 ## Vitesse mesurée — Qwen3.6
 
-Mesuré le **2026-10-21** sous Windows avec une RTX PRO 4000 Blackwell SFF Edition (24 GB), un Ryzen 9 7945HX3D, 64 GB de RAM et le modèle Unsloth MTP UD-IQ3_XXS fixé pour ce projet. L’encodeur d’images est resté sur GPU pendant les requêtes texte par API. Le raisonnement, les valeurs d’échantillonnage par défaut du modèle (température 1.0) et MTP 3 étaient activés. Les blocs d’entrée et la répartition des experts étaient automatiques ; la capacité de contexte était fixée selon la classe de VRAM. Le chemin hybride CUDA Graph est resté désactivé par défaut et les CUDA Graphs habituels en exécution entièrement sur GPU sont restés actifs.
+Mesuré le **2026-10-21** sous Windows avec une RTX PRO 4000 Blackwell SFF Edition (24 GB), un Ryzen 9 7945HX3D, 64 GB de RAM et le modèle Unsloth MTP UD-IQ3_XXS fixé pour ce projet. L’encodeur d’images est resté sur GPU pendant les requêtes texte par API. Le raisonnement, les valeurs d’échantillonnage par défaut du modèle (température 0.7) et MTP 3 étaient activés. Les blocs d’entrée et la répartition des experts étaient automatiques ; la capacité de contexte était fixée selon la classe de VRAM. Le chemin hybride CUDA Graph est resté désactivé par défaut et les CUDA Graphs habituels en exécution entièrement sur GPU sont restés actifs.
 
 | Mémoire disponible | Capacité de contexte | Génération INT8 | Génération FP8 native | Remarques |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 113.49 tok/s | 122.22 tok/s | Tous les poids résidents en VRAM |
-| environ 16 GB | 256K | 101.74 tok/s | 95.11 tok/s | 8 GiB occupés séparément ; experts calculés sur CPU et GPU |
-| environ 12 GB | 128K | 88.99 tok/s | 93.78 tok/s | 12 GiB occupés séparément ; experts calculés sur CPU et GPU |
-| environ 8 GB | 64K | 64.84 tok/s | 65.38 tok/s | 16 GiB occupés séparément ; experts calculés sur CPU et GPU |
+| 24 GB | 256K | 117.80 tok/s | 128.48 tok/s | Tous les poids résidents en VRAM |
+| environ 16 GB | 256K | 98.90 tok/s | 98.11 tok/s | 8 GiB occupés séparément ; experts calculés sur CPU et GPU |
+| environ 12 GB | 128K | 87.99 tok/s | 89.44 tok/s | 12 GiB occupés séparément ; experts calculés sur CPU et GPU |
+| environ 8 GB | 64K | 60.69 tok/s | 61.60 tok/s | 16 GiB occupés séparément ; experts calculés sur CPU et GPU |
 
 Les mêmes trois textes ont été exécutés deux fois par configuration FP8/INT8 avec les valeurs d’échantillonnage par défaut du modèle et 128 tokens générés par requête, raisonnement compris. La vitesse est le nombre total de tokens divisé par le temps total de décodage, hors chargement et traitement de l’entrée ; le contexte indique la capacité du cache. Les lignes avec moins de mémoire réservent 8, 12 ou 16 GiB sur le même GPU de 24 GB et utilisent le contexte de cette classe de VRAM ; ce ne sont pas des mesures de GPU physiques de 16/12/8 GB.
 
@@ -190,11 +190,11 @@ Les paramètres explicites remplacent les choix automatiques, et les paramètres
 
 **TinyStrata fonctionne exclusivement par API.** Il fournit des API Chat Completions (`/v1/chat/completions`) et Responses (`/v1/responses`) compatibles avec OpenAI ainsi qu’une API Messages (`/v1/messages`) compatible avec Anthropic, avec génération en streaming. Connectez un client API ou une interface externe ; TinyStrata ne comprend pas d’interface de chat intégrée.
 
-Les nouvelles configurations utilisent des paramètres d’échantillonnage propres à chaque modèle, fondés sur leurs fiches officielles. Les valeurs de chaque requête sont prioritaires ; les réglages personnalisés enregistrés restent inchangés.
+Les nouvelles configurations utilisent des paramètres d’échantillonnage propres à chaque modèle. Les valeurs de chaque requête sont prioritaires ; les réglages personnalisés enregistrés restent inchangés.
 
 | Paramètre | Qwen3.6 | Gemma 4 | LFM2.5 |
 | --- | ---: | ---: | ---: |
-| `temperature` | 1.0 | 1.0 | 0.1 |
+| `temperature` | 0.7 | 1.0 | 0.1 |
 | `top_p` | 0.95 | 0.95 | 1.0 |
 | `top_k` | 20 | 64 | 50 |
 | `min_p` | 0.0 | 0.0 | 0.0 |

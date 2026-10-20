@@ -109,14 +109,14 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 ## 実測速度 — Qwen3.6
 
-**2026-10-21** に Windows、RTX PRO 4000 Blackwell SFF Edition（24 GB）、Ryzen 9 7945HX3D、システム RAM 64 GB、固定の Unsloth MTP UD-IQ3_XXS モデルで計測しました。画像エンコーダを GPU に常駐させたテキスト API 入力で、思考・モデル既定のサンプリング（温度 1.0）・MTP 3 を有効にしています。入力チャンクとエキスパート配置は自動選択、コンテキスト容量は各 VRAM クラスに合わせた設定です。ハイブリッド CUDA Graph は既定の無効設定、通常の全 GPU 実行時の CUDA Graph は有効です。
+**2026-10-21** に Windows、RTX PRO 4000 Blackwell SFF Edition（24 GB）、Ryzen 9 7945HX3D、システム RAM 64 GB、固定の Unsloth MTP UD-IQ3_XXS モデルで計測しました。画像エンコーダを GPU に常駐させたテキスト API 入力で、思考・モデル既定のサンプリング（温度 0.7）・MTP 3 を有効にしています。入力チャンクとエキスパート配置は自動選択、コンテキスト容量は各 VRAM クラスに合わせた設定です。ハイブリッド CUDA Graph は既定の無効設定、通常の全 GPU 実行時の CUDA Graph は有効です。
 
 | VRAM 条件 | コンテキスト容量 | INT8 生成 | ネイティブ FP8 生成 | 備考 |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 113.49 tok/s | 122.22 tok/s | VRAM にすべての重みを常駐 |
-| VRAM を約 16 GB に制限 | 256K | 101.74 tok/s | 95.11 tok/s | GPU と CPU でエキスパートを計算 |
-| VRAM を約 12 GB に制限 | 128K | 88.99 tok/s | 93.78 tok/s | GPU と CPU でエキスパートを計算 |
-| VRAM を約 8 GB に制限 | 64K | 64.84 tok/s | 65.38 tok/s | GPU と CPU でエキスパートを計算 |
+| 24 GB | 256K | 117.80 tok/s | 128.48 tok/s | VRAM にすべての重みを常駐 |
+| VRAM を約 16 GB に制限 | 256K | 98.90 tok/s | 98.11 tok/s | GPU と CPU でエキスパートを計算 |
+| VRAM を約 12 GB に制限 | 128K | 87.99 tok/s | 89.44 tok/s | GPU と CPU でエキスパートを計算 |
+| VRAM を約 8 GB に制限 | 64K | 60.69 tok/s | 61.60 tok/s | GPU と CPU でエキスパートを計算 |
 
 同じ 3 種類の入力文を FP8・INT8 の各設定で 2 回ずつ使い、モデル既定のサンプリングで毎回、思考を含む 128 トークンを生成しました。速度は総生成トークン数を総デコード時間で割った値で、読み込み・入力処理は含みません。コンテキストはキャッシュ容量です。VRAM を制限した行は、同じ 24 GB GPU 上で別途 8・12・16 GiB を確保し、各 VRAM クラスに合わせたコンテキスト容量を設定した条件で、物理的な 16/12/8 GB GPU の測定ではありません。
 
@@ -202,11 +202,11 @@ MTP は greedy 生成と温度付きサンプリングの両方に対応して�
 
 **TinyStrata は API 専用です。** OpenAI 互換の Chat Completions（`/v1/chat/completions`）と Responses（`/v1/responses`）API、および Anthropic 互換の Messages API（`/v1/messages`）を提供し、ストリーミング生成にも対応しています。API クライアントや外部のフロントエンドを接続してください。TinyStrata にチャット UI は同梱されていません。
 
-新しい構成では、公式モデルカードをもとにしたモデルごとのサンプリング設定を使います。リクエストで指定した値が優先され、保存済みの手動設定も維持されます。
+新しい構成では、モデルごとのサンプリング設定を使います。リクエストで指定した値が優先され、保存済みの手動設定も維持されます。
 
 | 設定 | Qwen3.6 | Gemma 4 | LFM2.5 |
 | --- | ---: | ---: | ---: |
-| `temperature` | 1.0 | 1.0 | 0.1 |
+| `temperature` | 0.7 | 1.0 | 0.1 |
 | `top_p` | 0.95 | 0.95 | 1.0 |
 | `top_k` | 20 | 64 | 50 |
 | `min_p` | 0.0 | 0.0 | 0.0 |
