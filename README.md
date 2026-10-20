@@ -126,12 +126,12 @@ Measured on the same Windows PC with 64 GB of system RAM, using Gemma 4 26B-A4B-
 
 Native FP8 and INT8 were measured on **2026-10-21**.
 
-| Available VRAM | Context capacity | Native FP8 (experimental) | INT8 (default) | Notes |
+| Available VRAM | Context capacity | INT8 (default) | Native FP8 (experimental) | Notes |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 108.14 tok/s | 113.20 tok/s | FP8 / INT8: Experts computed on the GPU |
-| Approximately 16 GB | 256K | 94.53 tok/s | 100.08 tok/s | FP8 / INT8: GPU and CPU Expert computation |
-| Approximately 12 GB | 128K | 85.34 tok/s | 81.66 tok/s | FP8 / INT8: GPU and CPU Expert computation |
-| Approximately 8 GB | 64K | 50.52 tok/s | 51.54 tok/s | FP8 / INT8: GPU and CPU Expert computation |
+| 24 GB | 256K | 113.20 tok/s | 108.14 tok/s | INT8 / FP8: Experts computed on the GPU |
+| Approximately 16 GB | 256K | 100.08 tok/s | 94.53 tok/s | INT8 / FP8: GPU and CPU Expert computation |
+| Approximately 12 GB | 128K | 81.66 tok/s | 85.34 tok/s | INT8 / FP8: GPU and CPU Expert computation |
+| Approximately 8 GB | 64K | 51.54 tok/s | 50.52 tok/s | INT8 / FP8: GPU and CPU Expert computation |
 
 Each of the same three input texts was run twice per FP8/INT8 configuration, generating 128 tokens including thinking; sampling settings were left at their model defaults. Speed is total generated tokens divided by total decode time, excluding loading and prompt processing; context values are cache capacities. The reduced-memory rows reserve 8, 12 or 16 GiB on the same 24 GB GPU and use the context capacity for that VRAM class; they are not physical 16/12/8 GB GPU benchmarks.
 
@@ -141,12 +141,12 @@ Measured on the same Windows PC with 64 GB of system RAM, using the official LFM
 
 Native FP8 and INT8 were measured on **2026-10-21**.
 
-| Available VRAM | Context capacity | Native FP8 (default) | INT8 | Notes |
+| Available VRAM | Context capacity | INT8 | Native FP8 (default) | Notes |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 128K | 141.80 tok/s | 140.58 tok/s | FP8 / INT8: Experts computed on the GPU |
-| Approximately 16 GB | 128K | 138.21 tok/s | 135.63 tok/s | FP8 / INT8: GPU and CPU Expert computation |
-| Approximately 12 GB | 128K | 114.72 tok/s | 110.11 tok/s | FP8 / INT8: GPU and CPU Expert computation |
-| Approximately 8 GB | 64K | 73.92 tok/s | 71.10 tok/s | FP8 / INT8: GPU and CPU Expert computation |
+| 24 GB | 128K | 140.58 tok/s | 141.80 tok/s | INT8 / FP8: Experts computed on the GPU |
+| Approximately 16 GB | 128K | 135.63 tok/s | 138.21 tok/s | INT8 / FP8: GPU and CPU Expert computation |
+| Approximately 12 GB | 128K | 110.11 tok/s | 114.72 tok/s | INT8 / FP8: GPU and CPU Expert computation |
+| Approximately 8 GB | 64K | 71.10 tok/s | 73.92 tok/s | INT8 / FP8: GPU and CPU Expert computation |
 
 Each of the same three input texts was run twice per FP8/INT8 configuration, generating 128 tokens including thinking; sampling settings were left at their model defaults. Speed is total generated tokens divided by total decode time, excluding loading and prompt processing; context values are cache capacities. The reduced-memory rows reserve 8, 12 or 16 GiB on the same 24 GB GPU and use the context capacity for that VRAM class; they are not physical 16/12/8 GB GPU benchmarks.
 
