@@ -95,28 +95,16 @@ Mit `run-api.bat --model-family gemma4` starten Sie direkt mit Gemma unter `http
 
 Fragen Sie `GET /v1/model/switch` bis `state: ready` ab. Zum Zurückwechseln senden Sie dieselbe Wechselanfrage mit `{"model":"qwen3.6-35b-a3b"}`. Der Start eines Downloads oder Wechsels liefert `202`; ein Wechsel während einer Generierung liefert `409`, daher nach deren Ende erneut versuchen. Inferenzanfragen während des Wechsels liefern `503`. Port und Authentifizierung bleiben unverändert. Die Auswahl gilt für die aktuelle Serversitzung; nach einem Neustart wird das im Launcher gewählte Modell verwendet.
 
-## KV-Wachstum: gemessener Effekt
-
-Gemessen am **2026-10-21** auf demselben unten beschriebenen Windows-PC: 8 GiB der 24-GB-GPU wurden reserviert (16-GB-Klasse), und `--kv-whole` wurde mit dem standardmäßigen `--kv-grow` derselben Binärdatei verglichen. Die gleichen drei Prompts liefen jeweils zweimal mit 128 generierten Token und den Sampling-Standardwerten des Modells; Qwen/Gemma verwendeten 256K Kontext mit Bildencoder auf GPU, LFM 128K.
-
-| Modell | KV | Vollständiges KV | Wachsendes KV (Standard) | Änderung |
-| --- | --- | ---: | ---: | ---: |
-| Qwen3.6 | FP8 | 90.56 | 103.28 | +14.0% |
-| Gemma 4 | INT8 | 88.08 | 95.13 | +8.0% |
-| LFM2.5 | FP8 | 128.49 | 130.27 | +1.4% |
-
-Der Unterschied bei LFM ist klein. Die Einheit ist tok/s; die älteren Tabellen vom **2026-10-20** unten verwenden vollständige KV-Zuweisung.
-
 ## Gemessene Geschwindigkeit — Qwen3.6
 
-Gemessen am **2026-10-20** unter Windows mit einer RTX PRO 4000 Blackwell SFF Edition (24 GB), einem Ryzen 9 7945HX3D, 64 GB Arbeitsspeicher und dem festgelegten Unsloth-MTP-UD-IQ3_XXS-Modell. Der Bildencoder blieb bei den Textanfragen über die API auf der GPU. Thinking, die Sampling-Standardwerte des Modells (Temperatur 1.0) und MTP 3 waren aktiv. Prompt-Chunks und Expertenplatzierung wurden automatisch gewählt; die Kontextkapazität wurde entsprechend der VRAM-Klasse festgelegt. Der hybride CUDA-Graph-Pfad blieb standardmäßig aus, die normalen CUDA Graphs bei vollständigem GPU-Betrieb blieben aktiv.
+Gemessen am **2026-10-21** unter Windows mit einer RTX PRO 4000 Blackwell SFF Edition (24 GB), einem Ryzen 9 7945HX3D, 64 GB Arbeitsspeicher und dem festgelegten Unsloth-MTP-UD-IQ3_XXS-Modell. Der Bildencoder blieb bei den Textanfragen über die API auf der GPU. Thinking, die Sampling-Standardwerte des Modells (Temperatur 1.0) und MTP 3 waren aktiv. Prompt-Chunks und Expertenplatzierung wurden automatisch gewählt; die Kontextkapazität wurde entsprechend der VRAM-Klasse festgelegt. Der hybride CUDA-Graph-Pfad blieb standardmäßig aus, die normalen CUDA Graphs bei vollständigem GPU-Betrieb blieben aktiv.
 
 | Verfügbarer Speicher | Kontextkapazität | INT8-Generierung | Native FP8-Generierung | Anmerkungen |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 119.98 tok/s | 132.43 tok/s | Alle Gewichte im VRAM |
-| ca. 16 GB | 256K | 90.40 tok/s | 95.86 tok/s | 8 GiB separat belegt; Experten auf CPU und GPU |
-| ca. 12 GB | 128K | 78.60 tok/s | 83.62 tok/s | 12 GiB separat belegt; Experten auf CPU und GPU |
-| ca. 8 GB | 64K | 64.33 tok/s | 64.46 tok/s | 16 GiB separat belegt; Experten auf CPU und GPU |
+| 24 GB | 256K | 113.49 tok/s | 122.22 tok/s | Alle Gewichte im VRAM |
+| ca. 16 GB | 256K | 101.74 tok/s | 95.11 tok/s | 8 GiB separat belegt; Experten auf CPU und GPU |
+| ca. 12 GB | 128K | 88.99 tok/s | 93.78 tok/s | 12 GiB separat belegt; Experten auf CPU und GPU |
+| ca. 8 GB | 64K | 64.84 tok/s | 65.38 tok/s | 16 GiB separat belegt; Experten auf CPU und GPU |
 
 Dieselben drei Eingabetexte wurden je zweimal pro FP8-/INT8-Konfiguration mit den Sampling-Standardwerten des Modells verwendet und jeweils 128 Token einschließlich Thinking generiert. Die Geschwindigkeit ergibt sich aus der gesamten Tokenzahl geteilt durch die gesamte Decodierzeit, ohne Laden und Eingabeverarbeitung; Kontextwerte sind Cachekapazitäten. Die Zeilen mit weniger Speicher reservieren 8, 12 oder 16 GiB auf derselben 24-GB-GPU und verwenden die Kontextkapazität der jeweiligen VRAM-Klasse; sie sind keine Benchmarks physischer 16-/12-/8-GB-GPUs.
 
@@ -124,14 +112,14 @@ Dieselben drei Eingabetexte wurden je zweimal pro FP8-/INT8-Konfiguration mit de
 
 Gemessen auf demselben Windows-PC mit 64 GB Arbeitsspeicher, Gemma 4 26B-A4B-it QAT Q4_0 und dem passenden QAT-MTP-Assistenten. Bei den Texteingaben über die API blieb der Bildencoder auf der GPU. MTP 3, CUDA Graphs sowie die modellspezifischen Thinking- und Sampling-Standardwerte waren aktiv; die Kontextkapazität wurde entsprechend der VRAM-Klasse festgelegt, Prompt-Chunks und Expertenplatzierung wurden automatisch gewählt.
 
-Natives FP8 und INT8 wurden am **2026-10-20** gemessen.
+Natives FP8 und INT8 wurden am **2026-10-21** gemessen.
 
 | Verfügbarer VRAM | Kontextkapazität | Natives FP8 (experimentell) | INT8 (Standard) | Hinweise |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 116.07 tok/s | 119.38 tok/s | FP8 / INT8: Expertenberechnung auf der GPU |
-| Ungefähr 16 GB | 256K | 87.18 tok/s | 93.40 tok/s | FP8 / INT8: Expertenberechnung auf GPU und CPU |
-| Ungefähr 12 GB | 128K | 74.99 tok/s | 76.22 tok/s | FP8 / INT8: Expertenberechnung auf GPU und CPU |
-| Ungefähr 8 GB | 64K | 48.32 tok/s | 52.75 tok/s | FP8 / INT8: Expertenberechnung während der Generierung auf der CPU |
+| 24 GB | 256K | 108.14 tok/s | 113.20 tok/s | FP8 / INT8: Expertenberechnung auf der GPU |
+| Ungefähr 16 GB | 256K | 94.53 tok/s | 100.08 tok/s | FP8 / INT8: Expertenberechnung auf GPU und CPU |
+| Ungefähr 12 GB | 128K | 85.34 tok/s | 81.66 tok/s | FP8 / INT8: Expertenberechnung auf GPU und CPU |
+| Ungefähr 8 GB | 64K | 50.52 tok/s | 51.54 tok/s | FP8 / INT8: Expertenberechnung auf GPU und CPU |
 
 Dieselben drei Eingabetexte wurden je zweimal pro FP8-/INT8-Konfiguration mit den Sampling-Standardwerten des Modells verwendet und jeweils 128 Token einschließlich Thinking generiert. Die Geschwindigkeit ergibt sich aus der gesamten Tokenzahl geteilt durch die gesamte Decodierzeit, ohne Laden und Eingabeverarbeitung; Kontextwerte sind Cachekapazitäten. Die Zeilen mit weniger Speicher reservieren 8, 12 oder 16 GiB auf derselben 24-GB-GPU und verwenden die Kontextkapazität der jeweiligen VRAM-Klasse; sie sind keine Benchmarks physischer 16-/12-/8-GB-GPUs.
 
@@ -139,14 +127,14 @@ Dieselben drei Eingabetexte wurden je zweimal pro FP8-/INT8-Konfiguration mit de
 
 Gemessen auf demselben Windows-PC mit 64 GB Arbeitsspeicher und dem offiziellen LFM2.5-24B-A2B Q4_K_M, ohne MTP oder Vision. CUDA Graphs sowie die modellspezifischen Thinking- und Sampling-Standardwerte waren aktiv; die Kontextkapazität wurde entsprechend der VRAM-Klasse festgelegt, Prompt-Chunks und Expertenplatzierung wurden automatisch gewählt.
 
-Natives FP8 und INT8 wurden am **2026-10-20** gemessen.
+Natives FP8 und INT8 wurden am **2026-10-21** gemessen.
 
 | Verfügbarer VRAM | Kontextkapazität | Natives FP8 (Standard) | INT8 | Hinweise |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 128K | 151.41 tok/s | 148.29 tok/s | FP8 / INT8: Expertenberechnung auf der GPU |
-| Ungefähr 16 GB | 128K | 137.32 tok/s | 134.61 tok/s | FP8 / INT8: Expertenberechnung auf GPU und CPU |
-| Ungefähr 12 GB | 128K | 105.97 tok/s | 101.45 tok/s | FP8 / INT8: Expertenberechnung auf GPU und CPU |
-| Ungefähr 8 GB | 64K | 73.48 tok/s | 70.81 tok/s | FP8 / INT8: Expertenberechnung auf GPU und CPU |
+| 24 GB | 128K | 141.80 tok/s | 140.58 tok/s | FP8 / INT8: Expertenberechnung auf der GPU |
+| Ungefähr 16 GB | 128K | 138.21 tok/s | 135.63 tok/s | FP8 / INT8: Expertenberechnung auf GPU und CPU |
+| Ungefähr 12 GB | 128K | 114.72 tok/s | 110.11 tok/s | FP8 / INT8: Expertenberechnung auf GPU und CPU |
+| Ungefähr 8 GB | 64K | 73.92 tok/s | 71.10 tok/s | FP8 / INT8: Expertenberechnung auf GPU und CPU |
 
 Dieselben drei Eingabetexte wurden je zweimal pro FP8-/INT8-Konfiguration mit den Sampling-Standardwerten des Modells verwendet und jeweils 128 Token einschließlich Thinking generiert. Die Geschwindigkeit ergibt sich aus der gesamten Tokenzahl geteilt durch die gesamte Decodierzeit, ohne Laden und Eingabeverarbeitung; Kontextwerte sind Cachekapazitäten. Die Zeilen mit weniger Speicher reservieren 8, 12 oder 16 GiB auf derselben 24-GB-GPU und verwenden die Kontextkapazität der jeweiligen VRAM-Klasse; sie sind keine Benchmarks physischer 16-/12-/8-GB-GPUs.
 
