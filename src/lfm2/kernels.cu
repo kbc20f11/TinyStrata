@@ -164,6 +164,54 @@ __global__ void store_f16_kernel(const float* __restrict__ x, half* __restrict__
 }
 
 // Rows from the position the card holds when the launch runs.
+// Rows from the position the card holds when the launch runs.
+// Q8_0: d = amax/127 a 32-value block; codes = clamp(rint(x/d), -127, 127); scale stored fp16.
+__global__ void store_q8_kernel(const float* __restrict__ x, int8_t* __restrict__ codes,
+                                half* __restrict__ scales, int n, int rows, int nb) {
+    const int gb = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gb >= nb * rows) return;
+    const int row = gb / nb, blk = gb % nb;
+    const float* xr = x + (size_t) row * n + blk * 32;
+    float amax = 0.f;
+#pragma unroll
+    for (int j = 0; j < 32; ++j) amax = fmaxf(amax, fabsf(xr[j]));
+    const float d = amax / 127.0f;
+    const float id = d > 0.f ? 1.0f / d : 0.0f;
+    scales[(size_t) row * nb + blk] = __float2half(d);
+    int8_t* cr = codes + (size_t) row * n + blk * 32;
+#pragma unroll
+    for (int j = 0; j < 32; ++j) {
+        float q = rintf(xr[j] * id);
+        q = fminf(fmaxf(q, -127.0f), 127.0f);
+        cr[j] = (int8_t) q;
+    }
+}
+
+// Rows from the position the card holds when the launch runs.
+__global__ void store_q8_at_kernel(const float* __restrict__ x, int8_t* __restrict__ codes,
+                                   half* __restrict__ scales, int n, int rows, int nb,
+                                   const long long* __restrict__ at, int ring) {
+    const int gb = blockIdx.x * blockDim.x + threadIdx.x;
+    if (gb >= nb * rows) return;
+    const int trow = gb / nb, blk = gb % nb;
+    const long long row = ring > 0 ? (*at + trow) % ring : *at + trow;
+    const float* xr = x + (size_t) trow * n + blk * 32;
+    float amax = 0.f;
+#pragma unroll
+    for (int j = 0; j < 32; ++j) amax = fmaxf(amax, fabsf(xr[j]));
+    const float d = amax / 127.0f;
+    const float id = d > 0.f ? 1.0f / d : 0.0f;
+    scales[(size_t) row * nb + blk] = __float2half(d);
+    int8_t* cr = codes + (size_t) row * n + blk * 32;
+#pragma unroll
+    for (int j = 0; j < 32; ++j) {
+        float q = rintf(xr[j] * id);
+        q = fminf(fmaxf(q, -127.0f), 127.0f);
+        cr[j] = (int8_t) q;
+    }
+}
+
+
 __global__ void store_f16_at_kernel(const float* __restrict__ x, half* __restrict__ cache, int n, int rows,
                                     const long long* __restrict__ at, int ring) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1329,6 +1377,25 @@ void store_f16(const float* x, uint16_t* cache, int n, int64_t pos, int rows, vo
     store_f16_kernel<<<grid(all, 256), 256, 0, cs(stream)>>>(x, (half*) cache + size_t(pos) * n, int(all));
 }
 
+void store_q8(const float* x, int8_t* codes, uint16_t* scales, int n, int64_t pos, int rows, void* stream) {
+    if ((n & 31) != 0) throw std::invalid_argument("store_q8: n is not a multiple of 32");
+    const int nb = n >> 5;
+    const size_t all = (size_t) nb * rows;
+    if (!all) return;
+    store_q8_kernel<<<grid(all, 256), 256, 0, cs(stream)>>>(x, codes + (size_t) pos * n,
+                                                            (half*) scales + (size_t) pos * nb, n, rows, nb);
+}
+
+void store_q8_at(const float* x, int8_t* codes, uint16_t* scales, int n, const long long* at, int rows, int ring,
+                 void* stream) {
+    if ((n & 31) != 0) throw std::invalid_argument("store_q8_at: n is not a multiple of 32");
+    const int nb = n >> 5;
+    const size_t all = (size_t) nb * rows;
+    if (!all) return;
+    store_q8_at_kernel<<<grid(all, 256), 256, 0, cs(stream)>>>(x, codes, (half*) scales, n, rows, nb, at, ring);
+}
+
+
 void store_f16_at(const float* x, uint16_t* cache, int n, const long long* at, int rows, int ring, void* stream) {
     store_f16_at_kernel<<<grid(size_t(n) * rows, 256), 256, 0, cs(stream)>>>(x, (half*) cache, n, rows, at, ring);
 }
@@ -1511,8 +1578,8 @@ void attend_batch(void* blas, const float* q, const uint16_t* kcache, const uint
                   float scale, void* stream, int window, int ring, bool whole, Kvq8 kq8, Kvq8 vq8, uint16_t* kwork,
                   uint16_t* vwork, size_t work_halves) {
     const int per = n_head / kv_heads, width = kv_heads * dim;
-    // The fp16-only dim==64 fast path reads the fp16 caches, which are null under q8 (a q8 cache is load-restricted
-    // to qwen35moe's head_dim 128, so it never reaches here); guard explicitly so it is provably not taken for q8.
+    // The dim==64 fast path reads FP16 caches. Quantized caches instead use the
+    // bounded restoration workspace below, without allocating another full cache.
     if (dim == 64 && per == 4 && window == 0 && ring == 0 && !whole && kq8.codes == nullptr && vq8.codes == nullptr &&
         tensor_cores()) {
         attn_flash64_kernel<<<dim3(grid(rows, FLASH_TOKENS), kv_heads), 4 * WARP, 0, cs(stream)>>>(

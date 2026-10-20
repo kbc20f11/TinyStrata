@@ -167,7 +167,7 @@ def main() -> int:
     ap.add_argument("--max-context", type=context_limit, metavar="auto|TOKENS",
                     help="choose context capacity from available GPU memory (default: auto), or set a token limit")
     ap.add_argument("--kv-type", choices=("auto", "fp16", "fp32", "fp8", "fp8-mma", "int8"),
-                    help="automatic supported KV path; LFM2.5 currently uses FP16")
+                    help="default auto: native FP8 Attention when supported, otherwise INT8 (all models)")
     ap.add_argument("--mtp", type=int)
     ap.add_argument("--expert-vram", type=expert_budget, metavar="auto|GiB",
                     help="fit experts to available VRAM (default: auto), or set an advanced GiB limit; 0 = CPU experts")

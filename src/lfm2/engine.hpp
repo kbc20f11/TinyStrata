@@ -38,8 +38,8 @@ namespace strata::lfm2 {
 class Shards;
 struct Likeliest;
 
-/// The attention caches' storing format: fp16 (default) or ggml Q8_0; opt-in via --kv.
-enum class KvFmt { kFp16 = 0, kQ8_0 = 1 };
+/// The attention caches' storing format. FP8 uses native E4M3 tensor-core attention.
+enum class KvFmt { kAuto = -1, kFp16 = 0, kQ8_0 = 1, kFp8 = 2 };
 
 struct Options {
     std::string model;
@@ -74,7 +74,7 @@ struct Options {
     bool graphs = true;           ///< a token's fixed launches are recorded once, a CUDA graph a layer, and replayed
     bool kv_grow = true;          ///< the attention caches get VRAM as the sequence grows, where the card can map it
                                   ///< so; false: for the whole context at load, as the expert cache gets the rest
-    KvFmt kv_format = KvFmt::kFp16;   ///< the K and V caches' format; fp16 by default (byte-identical path)
+    KvFmt kv_format = KvFmt::kAuto;   ///< native FP8 when available, otherwise Q8_0 INT8
     int window = 1;               ///< the most tokens window() takes: the known one and guesses after it; 1: none;
                                   ///< 0: 8, or 4 where every guess keeps a copy of the recurrent state
     bool draft = false;           ///< LFM2.5 has no MTP block; kept false by this engine
@@ -176,6 +176,7 @@ public:
     }
     int n_embd() const { return n_embd_; }
     int max_context() const { return opt_.max_context; }
+    KvFmt kv_format() const { return opt_.kv_format; }
     int threads() const { return workers_ ? workers_->threads() : 0; }
     /// The NUMA node the CPU threads were kept on, and the share of the experts' pages it holds; -1: no node chosen.
     int numa_node() const { return node_; }

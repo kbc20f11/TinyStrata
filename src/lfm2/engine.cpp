@@ -987,8 +987,8 @@ std::unique_ptr<Engine> Engine::open(const Options& o) {
     const Shards file(o.model);
     const MetaValue* arch = file.get("general.architecture");
     const std::string name = arch ? arch->s : std::string();
-    if (o.kv_format != KvFmt::kFp16)
-        throw std::runtime_error("LFM2.5 currently supports FP16 KV only");
+    if (o.kv_format != KvFmt::kAuto && o.kv_format != KvFmt::kFp16 && o.kv_format != KvFmt::kQ8_0 && o.kv_format != KvFmt::kFp8)
+        throw std::runtime_error("LFM2.5 supports FP16, INT8 or native FP8 KV");
     const auto make = [&]() -> std::unique_ptr<Engine> {
         if (name == "lfm2moe") return std::make_unique<Lfm2Moe>();
         throw std::runtime_error(o.model + " is a '" + name + "' model, which this engine does not run");
@@ -1642,8 +1642,8 @@ void Engine::load(const Options& o) {
     if (!std::isfinite(opt_.expert_vram_gib) || (opt_.expert_vram_gib < 0 && opt_.expert_vram_gib != -1))
         throw std::runtime_error("Expert cache budget must be -1 (auto) or nonnegative GiB");
     if (opt_.expert_vram_gib == 0) opt_.gpu_experts = false;
-    if (opt_.kv_format != KvFmt::kFp16)
-        throw std::runtime_error("LFM2.5 currently supports FP16 KV only");
+    if (opt_.kv_format != KvFmt::kAuto && opt_.kv_format != KvFmt::kFp16 && opt_.kv_format != KvFmt::kQ8_0 && opt_.kv_format != KvFmt::kFp8)
+        throw std::runtime_error("LFM2.5 supports FP16, INT8 or native FP8 KV");
     if (opt_.draft || !opt_.draft_model.empty())
         throw std::runtime_error("LFM2.5 has no MTP block or draft model");
     if (opt_.dump || std::min(opt_.prompt_batch, opt_.max_context) == 1) opt_.window = 1;

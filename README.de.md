@@ -26,11 +26,23 @@ Es gibt bereits viele Benutzeroberflächen und Agenten-Laufzeitumgebungen, die A
 
 [Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) bleibt das Standardmodell und bietet auf PCs mit gängigen Grafikkarten ein ausgewogenes Verhältnis von Geschwindigkeit, Speicherbedarf und Antwortqualität. TinyStrata konzentriert sich auf kompakte MoE-Modelle und unterstützt zusätzlich **Gemma 4 26B-A4B-it und LFM2.5-24B-A2B**.
 
-**Qwen3.6-35B-A3B UD-IQ3_XXS** verwendet den festgelegten [Unsloth-MTP-GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf) und den Vision-Projektor `mmproj-F16.gguf`. Die beiden Dateien umfassen zusammen etwa **15.0 GB**: Sprachmodell einschließlich MTP-Gewichten 14.1 GB und Projektor 0.9 GB. Unterstützt werden ein GPU-residenter Bildencoder, ein automatisch an den freien VRAM angepasster Expertencache, CPU-Expertenberechnung aus dem Arbeitsspeicher, Gewichtsstreaming bei der Eingabeverarbeitung, eine automatisch gewählte Kontextkapazität von bis zu **256K** und **MTP 3**. Ausgewählte Experten werden nicht ausgelassen. Der KV-Cache unterstützt **FP32, INT8 und FP8**; die automatische Auswahl verwendet natives FP8, wenn GPU und kompilierte Kernel dies unterstützen, andernfalls INT8. MTP funktioniert sowohl mit Greedy-Decodierung als auch mit temperaturbasiertem Sampling.
+**Qwen3.6-35B-A3B UD-IQ3_XXS** verwendet den festgelegten [Unsloth-MTP-GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf). Die zwei Downloads umfassen zusammen etwa **15.0 GB**: Sprachmodell einschließlich MTP-Gewichten **14.1 GB** und Vision-Projektor (`mmproj-F16.gguf`) **0.9 GB**.
 
-**Gemma 4 26B-A4B-it QAT Q4_0** verwendet [Googles offizielles Zielmodell und den Vision-Projektor](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf) zusammen mit einem [passenden Unsloth-QAT-Q4_0-MTP-Assistenten](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF/blob/7b92b5b28818151e8669af2e45e88d6086f490dd/mtp-gemma-4-26B-A4B-it.gguf). Die drei Downloads umfassen **15.886 GB**: Zielmodell 14.439 GB, Projektor 1.195 GB und Assistent 0.252 GB. Unterstützt werden ein GPU-residenter Bildencoder, ein adaptiver GPU-Expertencache, CPU-Expertenberechnung aus dem Arbeitsspeicher und MTP 3 über dieselbe API. Ausgewählte Experten werden nicht ausgelassen. Gemma unterstützt **FP16- und INT8-KV**; die automatische Auswahl verwendet derzeit **FP16**. Bildeingabe, MTP 3, RAM-Mitnutzung und Modellwechsel wurden mit dem realen Modell getestet.
+**Gemma 4 26B-A4B-it QAT Q4_0** verwendet [Googles offizielles Modell und den Vision-Projektor](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf) mit dem [passenden Unsloth-QAT-MTP-Assistenten](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF/blob/7b92b5b28818151e8669af2e45e88d6086f490dd/mtp-gemma-4-26B-A4B-it.gguf). Die drei Downloads umfassen **15.886 GB**: Modell **14.439 GB**, Projektor **1.195 GB** und Assistent **0.252 GB**.
 
-LFM verwendet die offizielle [LiquidAI Q4_K_M GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF) (**14.53 GB**), **FP16-KV** und bis zu **128K Kontext**, ohne MTP oder Vision. Automatischer VRAM-Expertencache, CPU-Expertenberechnung, Gewichtsstreaming bei der Eingabe und CUDA Graphs werden genutzt; ausgewählte Experten werden nicht ausgelassen. Die Standardwerte sind `temperature=0.1`, `top_k=50` und `repetition_penalty=1.05`; Reasoning ist immer aktiv. Die Einstellungen für Qwen, Gemma und LFM werden getrennt gespeichert. Die LFM-Engine wird noch validiert und garantiert keine identischen Tokenfolgen zu llama.cpp oder bei unterschiedlicher CPU/GPU-Aufteilung.
+**LFM2.5-24B-A2B Q4_K_M** verwendet den offiziellen [LiquidAI-GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF). Der einzelne Sprachmodell-Download ist **14.53 GB** groß.
+
+Alle drei Engines verwenden einen automatischen VRAM-Expertencache, CPU-Expertenberechnung aus dem Arbeitsspeicher, Gewichtsstreaming bei der Eingabe und CUDA Graphs. Sie nutzen dieselbe API und unterstützen Modellwechsel im laufenden Betrieb; die Einstellungen werden pro Modell gespeichert. Ausgewählte Experten werden nicht ausgelassen.
+
+| Funktion | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) |
+| --- | --- | --- | --- |
+| Maximaler Kontext | 256K | 256K | 128K |
+| Bildeingabe | Ja; Bildencoder standardmäßig auf der GPU | Ja; Bildencoder standardmäßig auf der GPU | Nein |
+| MTP | 3 | 3 | Nein |
+| KV-Formate | FP32 / INT8 / natives FP8 | FP16 / INT8 / natives FP8 | FP16 / INT8 / natives FP8 |
+| Automatische KV-Auswahl (Standard) | FP8 → INT8 | FP8 → INT8 | FP8 → INT8 |
+
+Die Spaltenüberschriften verlinken auf die offiziellen Modellkarten. **FP8 → INT8** bedeutet FP8-KV und native FP8-Tensor-Core-Attention, wenn GPU und kompilierte Kernel dies unterstützen, andernfalls INT8. KV-Präzision und GGUF-Gewichtsquantisierung sind unabhängig; niedriger präzises KV kann die Ausgabe gegenüber FP32 (Qwen) beziehungsweise FP16 (Gemma/LFM) verändern.
 
 Fehlt die Programmdatei eines zusätzlichen Modells, siehe die [Anleitung zum manuellen Build](README.md#model-focus).
 
@@ -73,7 +85,7 @@ Fragen Sie `GET /v1/model/switch` bis `state: ready` ab. Zum Zurückwechseln sen
 
 ## Gemessene Geschwindigkeit — Qwen3.6
 
-Die folgenden Messungen wurden am 2026-10-19 unter Windows mit einer RTX PRO 4000 Blackwell SFF Edition (24 GB), einem Ryzen 9 7945HX3D und dem festgelegten Unsloth MTP UD-IQ3_XXS-Modell durchgeführt. Modell und GPU-Vision-Projektor waren geladen und aufgewärmt. Verwendet wurden die API-Standardeinstellungen: Thinking aktiviert, Sampling mit Temperatur 0.7, MTP 3, Prompt-Blöcke mit 512 Token sowie automatische Expertenplatzierung und Kontextauswahl. Der optionale hybride CUDA-Graph-Pfad war standardmäßig ausgeschaltet; die normalen CUDA Graphs bei vollständigem GPU-Betrieb blieben aktiv. Auf dieser GPU wählte `auto` natives FP8; für die INT8-Spalte wurde nur der KV-Typ erzwungen.
+Die folgenden Messungen wurden am 2026-10-19 unter Windows mit einer RTX PRO 4000 Blackwell SFF Edition (24 GB), einem Ryzen 9 7945HX3D und dem festgelegten Unsloth MTP UD-IQ3_XXS-Modell durchgeführt. Modell und GPU-Vision-Projektor waren geladen und aufgewärmt. Verwendet wurden die API-Standardeinstellungen zum Messzeitpunkt: Thinking aktiviert, Sampling mit Temperatur 0.7, MTP 3, Prompt-Blöcke mit 512 Token sowie automatische Expertenplatzierung und Kontextauswahl. Der optionale hybride CUDA-Graph-Pfad war standardmäßig ausgeschaltet; die normalen CUDA Graphs bei vollständigem GPU-Betrieb blieben aktiv. Auf dieser GPU wählte `auto` natives FP8; für die INT8-Spalte wurde nur der KV-Typ erzwungen.
 
 **Messungen auf realen Systemen mit 8-GB-, 12-GB- und 16-GB-GPUs sind geplant.** Die Zeilen mit reduziertem Speicher in der folgenden Tabelle wurden auf derselben 24-GB-GPU mit begrenztem verfügbarem Speicher gemessen und sind keine Benchmarks physischer GPUs mit 8/12/16 GB.
 
@@ -86,29 +98,33 @@ Die folgenden Messungen wurden am 2026-10-19 unter Windows mit einer RTX PRO 400
 
 ## Gemessene Geschwindigkeit — Gemma 4
 
-Gemessen am 2026-10-19 auf demselben Windows-PC mit RTX PRO 4000 Blackwell SFF Edition (24 GB), Ryzen 9 7945HX3D und 64 GB Arbeitsspeicher. Verwendet wurden Googles Gemma 4 26B-A4B-it QAT Q4_0 und der passende Unsloth-QAT-MTP-Assistent, ein GPU-residenter Bildencoder, Texteingaben über die API, MTP 3 und aktivierte CUDA Graphs. Es gelten die Google-Standardwerte: Thinking aktiv, `temperature=1.0`, `top_p=0.95`, `top_k=64`. Kontext und Expertenplatzierung wurden automatisch gewählt; die automatischen Prompt-Chunks umfassten 1120 Token.
+Gemessen auf demselben Windows-PC mit 64 GB Arbeitsspeicher, Gemma 4 26B-A4B-it QAT Q4_0 und dem passenden QAT-MTP-Assistenten. Bei den Texteingaben über die API blieb der Bildencoder auf der GPU. MTP 3, CUDA Graphs sowie die modellspezifischen Thinking- und Sampling-Standardwerte waren aktiv; Kontext, Prompt-Chunks und Expertenplatzierung wurden automatisch gewählt.
 
-| Verfügbarer VRAM | Kontextkapazität | FP16-Generierung | INT8-Generierung | Hinweise |
-| --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 105.56 tok/s | 118.62 tok/s | FP16: Expertenberechnung auf GPU und CPU; INT8: alle Experten im GPU-Speicher |
-| Etwa 16 GB | 128K | 88.46 tok/s | 86.67 tok/s | Expertenberechnung auf GPU und CPU |
-| Etwa 12 GB | 64K | 68.16 tok/s | 76.47 tok/s | Expertenberechnung auf GPU und CPU |
-| Etwa 8 GB | 64K | 48.22 tok/s | 48.97 tok/s | Expertenberechnung während der Generierung auf der CPU |
+Natives FP8 und INT8 wurden am **2026-10-20** gemessen; die FP16-Werte bleiben als Referenz vom **2026-10-19** erhalten.
 
-Drei feste Eingabetexte wurden jeweils einmal mit 128 Ausgabetoken einschließlich Thinking ausgeführt. Die Geschwindigkeit ist die gesamte Tokenzahl geteilt durch die gesamte Decodierzeit, ohne Laden und Eingabeverarbeitung. Für die Bedingungen mit weniger verfügbarem Speicher wurden separat 8, 12 bzw. 16 GiB auf derselben 24-GB-GPU reserviert; es sind keine Benchmarks physischer 16-, 12- oder 8-GB-GPUs. 64K/128K/256K bezeichnet die Cache-Kapazität, nicht die Eingabelänge.
+| Verfügbarer VRAM | Kontextkapazität | Natives FP8 (Standard) | INT8 | FP16 (Referenz) | Hinweise |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 24 GB | 256K | 105.42 tok/s | 117.16 tok/s | 105.56 tok/s | FP8 / INT8: Expertenberechnung auf der GPU |
+| Ungefähr 16 GB | 128K | 84.24 tok/s | 85.90 tok/s | 88.46 tok/s | FP8 / INT8: Expertenberechnung auf GPU und CPU |
+| Ungefähr 12 GB | 64K | 68.78 tok/s | 76.09 tok/s | 68.16 tok/s | FP8 / INT8: Expertenberechnung auf GPU und CPU |
+| Ungefähr 8 GB | 64K | 47.18 tok/s | 48.98 tok/s | 48.22 tok/s | FP8 / INT8: Expertenberechnung während der Generierung auf der CPU |
 
-## Gemessene Geschwindigkeit — LFM2.5 (experimentell)
+Für jede FP8-/INT8-Konfiguration wurden dieselben drei Eingabetexte je einmal verwendet und jeweils 128 Token einschließlich Thinking generiert. Die Geschwindigkeit ergibt sich aus der gesamten Tokenzahl geteilt durch die gesamte Decodierzeit, ohne Laden und Eingabeverarbeitung; Kontextwerte sind Cachekapazitäten. Die Zeilen mit weniger Speicher reservieren 8, 12 oder 16 GiB auf derselben 24-GB-GPU und sind keine Messungen physischer 16-/12-/8-GB-GPUs.
 
-Gemessen auf demselben Windows-PC mit 64 GB Arbeitsspeicher und dem offiziellen LFM2.5-24B-A2B Q4_K_M, FP16-KV, ohne MTP oder Vision, mit aktivierten CUDA Graphs. Es gelten die aktuellen API-Standardwerte: Thinking aktiv, `temperature=0.1`, `top_k=50`, `repetition_penalty=1.05`. Kontextkapazität, Prompt-Chunks (jeweils 256 Token) und Expertenverteilung wurden automatisch gewählt.
+## Gemessene Geschwindigkeit — LFM2.5
 
-| Verfügbarer VRAM | Kontextkapazität | FP16-Generierung | Hinweise |
-| --- | ---: | ---: | --- |
-| 24 GB | 128K | 151.71 tok/s | Alle Gewichte im VRAM |
-| Etwa 16 GB | 128K | 111.71 tok/s | Expertenberechnung auf GPU und CPU |
-| Etwa 12 GB | 128K | 70.80 tok/s | Expertenberechnung auf GPU und CPU |
-| Etwa 8 GB | 64K | 51.20 tok/s | Expertenberechnung auf GPU und CPU |
+Gemessen auf demselben Windows-PC mit 64 GB Arbeitsspeicher und dem offiziellen LFM2.5-24B-A2B Q4_K_M, ohne MTP oder Vision. CUDA Graphs sowie die modellspezifischen Thinking- und Sampling-Standardwerte waren aktiv; Kontext, Prompt-Chunks und Expertenplatzierung wurden automatisch gewählt.
 
-Die gleichen drei Eingabetexte wie beim Qwen-Benchmark wurden jeweils zweimal ausgeführt, mit je 128 generierten Token einschließlich Thinking. Die Geschwindigkeit ist die gesamte Tokenzahl geteilt durch die gesamte Decodierzeit, ohne Laden und Prompt-Verarbeitung. Die Zeilen mit weniger Speicher begrenzen den verfügbaren VRAM derselben 24-GB-GPU und sind keine Benchmarks physischer 8-/12-/16-GB-GPUs. Modell und Sampling-Einstellungen unterscheiden sich von der Qwen-Tabelle.
+Natives FP8 und INT8 wurden am **2026-10-20** gemessen; die FP16-Werte bleiben als Referenz vom **2026-10-19** erhalten.
+
+| Verfügbarer VRAM | Kontextkapazität | Natives FP8 (Standard) | INT8 | FP16 (Referenz) | Hinweise |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 24 GB | 128K | 147.60 tok/s | 143.22 tok/s | 151.71 tok/s | FP8 / INT8: Expertenberechnung auf der GPU |
+| Ungefähr 16 GB | 128K | 124.51 tok/s | 125.42 tok/s | 111.71 tok/s | FP8 / INT8: Expertenberechnung auf GPU und CPU |
+| Ungefähr 12 GB | 128K | 95.89 tok/s | 90.16 tok/s | 70.80 tok/s | FP8 / INT8: Expertenberechnung auf GPU und CPU |
+| Ungefähr 8 GB | 64K | 63.77 tok/s | 63.18 tok/s | 51.20 tok/s | FP8 / INT8: Expertenberechnung auf GPU und CPU |
+
+Für jede FP8-/INT8-Konfiguration wurden dieselben drei Eingabetexte je einmal verwendet und jeweils 128 Token einschließlich Thinking generiert. Die Geschwindigkeit ergibt sich aus der gesamten Tokenzahl geteilt durch die gesamte Decodierzeit, ohne Laden und Eingabeverarbeitung; Kontextwerte sind Cachekapazitäten. Die Zeilen mit weniger Speicher reservieren 8, 12 oder 16 GiB auf derselben 24-GB-GPU und sind keine Messungen physischer 16-/12-/8-GB-GPUs.
 
 ## Welches Projekt sollte ich verwenden?
 
@@ -140,7 +156,7 @@ Der KV-Cache bleibt im VRAM; für diesen Auslagerungsmechanismus hält der Arbei
 
 Neue Konfigurationen wählen KV/Attention und Kontextkapazität automatisch. Sie müssen kein Profil für 8 GB, 12 GB oder 16 GB auswählen.
 
-Eine RTX 3060 wählt INT8. Unterstützte Umgebungen mit GPUs der RTX 40/50-Serie können natives FP8 wählen; die Engine prüft neben der Hardwaregeneration auch die kompilierten Kernel und die GPU-Fähigkeiten. Falls natives FP8 nicht verfügbar ist, verwendet der automatische Modus INT8. So wird ein unterstützter Pfad gewählt, ohne beim Start einen Geschwindigkeits- oder Qualitätsbenchmark auszuführen. **Native FP8-Attention bleibt experimentell.**
+Eine RTX 3060 wählt INT8. Unterstützte Umgebungen mit GPUs der RTX 40/50-Serie können natives FP8 wählen; die Engine prüft neben der Hardwaregeneration auch die kompilierten Kernel und die GPU-Fähigkeiten. Falls natives FP8 nicht verfügbar ist, verwendet der automatische Modus INT8. So wird ein unterstützter Pfad gewählt, ohne beim Start einen Geschwindigkeits- oder Qualitätsbenchmark auszuführen.
 
 Die native Engine schätzt beim Start anhand des freien VRAM, der Kontextkapazität und des Platzbedarfs der GPU-Experten eine Blockgröße von 512, 1024, 2048 oder 4096 Token. Größere Blöcke können wiederholte Gewichtstransfers vom RAM zur GPU während der Eingabeverarbeitung reduzieren. `run-api.bat --chunk N` legt die Größe fest; `run-api.bat --chunk auto` stellt die native automatische Auswahl wieder her.
 
@@ -160,7 +176,18 @@ Explizite Einstellungen überschreiben die automatische Auswahl, und bereits man
 
 **TinyStrata bietet ausschließlich eine API.** Es stellt OpenAI-kompatible APIs für Chat Completions (`/v1/chat/completions`) und Responses (`/v1/responses`) sowie eine Anthropic-kompatible Messages-API (`/v1/messages`) bereit, einschließlich gestreamter Generierung. Verbinden Sie einen API-Client oder ein externes Frontend; TinyStrata enthält keine integrierte Chat-Oberfläche.
 
-Bei Qwen ist Thinking standardmäßig aktiviert, mit `temperature=0.7`, `top_p=0.95`, `top_k=20`, `min_p=0.0`, `presence_penalty=1.5`, `repetition_penalty=1.0` und maximal **32,768 Ausgabetoken** einschließlich Thinking. Einstellungen pro Anfrage haben Vorrang.
+Neue Konfigurationen verwenden modellspezifische Sampling-Standardwerte auf Grundlage der offiziellen Modellkarten. Werte pro Anfrage haben Vorrang; gespeicherte benutzerdefinierte Einstellungen bleiben erhalten.
+
+| Einstellung | Qwen3.6 | Gemma 4 | LFM2.5 |
+| --- | ---: | ---: | ---: |
+| `temperature` | 1.0 | 1.0 | 0.1 |
+| `top_p` | 0.95 | 0.95 | 1.0 |
+| `top_k` | 20 | 64 | 50 |
+| `min_p` | 0.0 | 0.0 | 0.0 |
+| `presence_penalty` | 1.5 | 0.0 | 0.0 |
+| `repetition_penalty` | 1.0 | 1.0 | 1.05 |
+| `enable_thinking` | true | true | true (immer aktiv) |
+| `max_tokens` (einschließlich Thinking) | 32768 | 32768 | 32768 |
 
 Die API lauscht standardmäßig unter `http://127.0.0.1:18080`. Um einen anderen Port zu verwenden, führen Sie `run-api.bat --port 18081` im installierten TinyStrata-Ordner aus.
 

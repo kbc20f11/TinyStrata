@@ -6,6 +6,7 @@
 #include "runtime.hpp"
 #include "strata/gemma4/kernels.hpp"
 #include "strata/gemma4/matvec.hpp"
+#include "strata/common/fp8_attention.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -76,6 +77,13 @@ void Gemma4::load_geometry() {
     need(window_ > 0 && dim_full_ > 0 && dim_swa_ > 0, "bad attention.sliding_window or key lengths");
     need(shape_i("attention.value_length") == dim_full_ && shape_i("attention.value_length_swa") == dim_swa_,
          "the attention's keys and values differ in length");
+    const bool native_fp8 = strata::fp8_attention::available(dim_full_) &&
+                            strata::fp8_attention::available(dim_swa_);
+    if (opt_.kv_format == KvFmt::kAuto) opt_.kv_format = native_fp8 ? KvFmt::kFp8 : KvFmt::kQ8_0;
+    need(opt_.kv_format == KvFmt::kFp16 || opt_.kv_format == KvFmt::kQ8_0 || opt_.kv_format == KvFmt::kFp8,
+         "unknown KV format");
+    if (opt_.kv_format == KvFmt::kFp8 && !native_fp8)
+        throw std::runtime_error("native FP8 Attention is not available for this GPU and build; use --kv-type int8");
     need(rot_full_ % 2 == 0 && rot_full_ <= dim_full_ && rot_swa_ % 2 == 0 && rot_swa_ <= dim_swa_,
          "bad rope.dimension_count");
     const MetaValue* shared = find("attention.shared_kv_layers");
@@ -257,7 +265,7 @@ void Gemma4::alloc_caches() {
         const auto buffer = [&](size_t bytes) -> void* {
             return B.swa ? dmalloc(bytes * ring_, "the window attention cache") : kv_alloc(bytes, 1);
         };
-        if (opt_.kv_format == KvFmt::kQ8_0) {
+        if (opt_.kv_format != KvFmt::kFp16) {
             B.k_codes = (int8_t*) buffer(row); B.v_codes = (int8_t*) buffer(row);
             B.k_scales = (uint16_t*) buffer(row / 32 * sizeof(uint16_t));
             B.v_scales = (uint16_t*) buffer(row / 32 * sizeof(uint16_t));
@@ -281,7 +289,10 @@ void Gemma4::assign_scratch() {
     vraw_ = fbuf(kv);
     v_ = fbuf(kv);
     att_ = fbuf(heads);
-    score_ = fbuf((size_t) chunk_ * n_head_ * opt_.max_context);
+    if (opt_.kv_format == KvFmt::kFp8) {
+        fp8_scratch_bytes_ = strata::fp8_attention::scratch_bytes(std::min(rows_, 8), n_head_, std::max(dim_full_, dim_swa_));
+        fp8_scratch_ = fbuf((fp8_scratch_bytes_ + sizeof(float) - 1) / sizeof(float));
+    } else score_ = fbuf((size_t) chunk_ * n_head_ * opt_.max_context);
     mlp_ = fbuf(n * n_embd_);
     rin_ = fbuf(n * n_embd_);
     if (!guess_.empty()) {   // one token at a time
@@ -290,7 +301,7 @@ void Gemma4::assign_scratch() {
         dg_up_ = fbuf((size_t) d_ff_);
         dg_h_ = fbuf((size_t) d_ff_);
     }
-    if (rows_ >= kStageRows) {
+    if (rows_ >= kStageRows && opt_.kv_format != KvFmt::kFp8) {
         awork_ = fbuf(heads + heads / 2 + 1 + 3 * n * n_head_);
         if (opt_.kv_format == KvFmt::kQ8_0) {
             size_t width = 0;
@@ -306,7 +317,7 @@ size_t Gemma4::card_row_bytes() const {
     size_t b = 0;
     for (const Block& B : blocks_) if (!B.swa) {
         const size_t row = (size_t) B.n_kv * B.dim;
-        b += opt_.kv_format == KvFmt::kQ8_0 ? 2 * (row + row / 32 * 2) : 2 * row * 2;
+        b += opt_.kv_format != KvFmt::kFp16 ? 2 * (row + row / 32 * 2) : 2 * row * 2;
     }
     return b;
 }
@@ -325,7 +336,7 @@ void Gemma4::save_card_rows(int64_t first, int64_t n, uint8_t* dst) {
     if (first < 0 || n < 0 || first > opt_.max_context - n) throw std::logic_error("save_rows: outside context");
     ck(cudaStreamSynchronize(cs(st_)), "save rows");
     for (const Block& B : blocks_) if (!B.swa) {
-        cache_spans(opt_.kv_format == KvFmt::kQ8_0, B.keys, B.vals, B.k_codes, B.v_codes, B.k_scales, B.v_scales,
+        cache_spans(opt_.kv_format != KvFmt::kFp16, B.keys, B.vals, B.k_codes, B.v_codes, B.k_scales, B.v_scales,
                     (size_t) B.n_kv * B.dim, [&](uint8_t* p, size_t row) {
             ck(cudaMemcpy(dst, p + (size_t) first * row, (size_t) n * row, cudaMemcpyDeviceToHost), "save rows");
             dst += (size_t) n * row;
@@ -338,7 +349,7 @@ void Gemma4::load_card_rows(const uint8_t* src, int64_t from, int64_t count, int
         throw std::logic_error("load_rows: outside saved context");
     cover(first + n); ck(cudaStreamSynchronize(cs(st_)), "load rows");
     for (const Block& B : blocks_) if (!B.swa) {
-        cache_spans(opt_.kv_format == KvFmt::kQ8_0, B.keys, B.vals, B.k_codes, B.v_codes, B.k_scales, B.v_scales,
+        cache_spans(opt_.kv_format != KvFmt::kFp16, B.keys, B.vals, B.k_codes, B.v_codes, B.k_scales, B.v_scales,
                     (size_t) B.n_kv * B.dim, [&](uint8_t* p, size_t row) {
             ck(cudaMemcpy(p + (size_t) first * row, src + (size_t) (first - from) * row, (size_t) n * row,
                           cudaMemcpyHostToDevice), "load rows");
@@ -359,7 +370,7 @@ size_t Gemma4::extra_bytes() const {
     size_t b = 0;
     for (const Block& B : blocks_) if (B.swa) {
         const size_t width = (size_t) B.n_kv * B.dim;
-        b += (size_t) keep_ * (opt_.kv_format == KvFmt::kQ8_0 ? 2 * (width + width / 32 * 2) : 4 * width);
+        b += (size_t) keep_ * (opt_.kv_format != KvFmt::kFp16 ? 2 * (width + width / 32 * 2) : 4 * width);
     }
     return b;
 }
@@ -369,7 +380,7 @@ void Gemma4::save_layer(int il, int64_t pos, uint8_t* dst) {
     dst += state_n_ * sizeof(float);
     for (int j = 0; j <= il; ++j) {
         const Block& B = blocks_[(size_t) j]; if (!B.swa) continue;
-        cache_spans(opt_.kv_format == KvFmt::kQ8_0, B.keys, B.vals, B.k_codes, B.v_codes, B.k_scales, B.v_scales,
+        cache_spans(opt_.kv_format != KvFmt::kFp16, B.keys, B.vals, B.k_codes, B.v_codes, B.k_scales, B.v_scales,
                     (size_t) B.n_kv * B.dim, [&](uint8_t* p, size_t row) {
             if (j == il) {
                 std::memset(dst, 0, (size_t) keep_ * row);
@@ -384,7 +395,7 @@ void Gemma4::save_layer(int il, int64_t pos, uint8_t* dst) {
 
 void Gemma4::load_extra(const uint8_t* src, int64_t pos) {
     for (const Block& B : blocks_) if (B.swa) {
-        cache_spans(opt_.kv_format == KvFmt::kQ8_0, B.keys, B.vals, B.k_codes, B.v_codes, B.k_scales, B.v_scales,
+        cache_spans(opt_.kv_format != KvFmt::kFp16, B.keys, B.vals, B.k_codes, B.v_codes, B.k_scales, B.v_scales,
                     (size_t) B.n_kv * B.dim, [&](uint8_t* p, size_t row) {
             window_runs(pos, [&](size_t slot, size_t at, size_t m) {
                 ck(cudaMemcpy(p + at * row, src + slot * row, m * row, cudaMemcpyHostToDevice), "load state");
@@ -446,6 +457,22 @@ void Gemma4::attn(Block& B, int64_t pos, int n) {
         values = vraw_;
     }
     head_norm_rope(values, B.dim, nullptr, v_, B.dim, B.n_kv, 0, 1.f, pos, n, rms_eps_, st_);
+    if (opt_.kv_format == KvFmt::kFp8) {
+        const auto* device_pos = reinterpret_cast<const int64_t*>(at);
+        const int ring = B.swa ? ring_ : 0;
+        strata::fp8_attention::store(k_, reinterpret_cast<uint8_t*>(B.k_codes), B.k_scales,
+                                     B.n_kv * B.dim, pos, n, device_pos, ring, st_);
+        strata::fp8_attention::store(v_, reinterpret_cast<uint8_t*>(B.v_codes), B.v_scales,
+                                     B.n_kv * B.dim, pos, n, device_pos, ring, st_);
+        const strata::fp8_attention::Cache cache{reinterpret_cast<const uint8_t*>(B.k_codes),
+                                                reinterpret_cast<const uint8_t*>(B.v_codes),
+                                                B.k_scales, B.v_scales};
+        strata::fp8_attention::run(q_, cache, pos, n, n_head_, B.n_kv, B.dim, opt_.max_context, 1.f,
+                                   att_, device_pos, ring, B.swa ? window_ : 0, sees_all,
+                                   fp8_scratch_, fp8_scratch_bytes_, st_);
+        lin(B.wo, att_, ao_, n);
+        return;
+    }
     const bool q8 = opt_.kv_format == KvFmt::kQ8_0;
     if (q8) {
         const auto write = [&](const float* x, int8_t* c, uint16_t* sc) {
@@ -572,10 +599,19 @@ void Gemma4::draft_step(int32_t token, int i) {
         head_norm_rope(qraw_, G.dim, fp(G.q_norm), q_, G.dim, n_head_, G.n_rot, G.theta_scale, pos_, 1, d_eps_, st_,
                        G.swa ? nullptr : fp(d_freq_));
         // a window layer's token attends itself and the window_ - 1 before it; the asking token has no row
-        attend(q_, B.keys, B.vals, pos_ - 1, 1, score_, chunk_, att_, G.dim, n_head_, B.n_kv, 1.f, st_,
-               G.swa ? window_ - 1 : 0, G.swa ? ring_ : 0, false, nullptr, 0, 0,
-               opt_.kv_format == KvFmt::kQ8_0 ? Kvq8{B.k_codes, B.k_scales} : Kvq8{},
-               opt_.kv_format == KvFmt::kQ8_0 ? Kvq8{B.v_codes, B.v_scales} : Kvq8{});
+        if (opt_.kv_format == KvFmt::kFp8) {
+            const strata::fp8_attention::Cache cache{reinterpret_cast<const uint8_t*>(B.k_codes),
+                                                    reinterpret_cast<const uint8_t*>(B.v_codes),
+                                                    B.k_scales, B.v_scales};
+            strata::fp8_attention::run(q_, cache, pos_ - 1, 1, n_head_, B.n_kv, G.dim, opt_.max_context, 1.f,
+                                       att_, nullptr, G.swa ? ring_ : 0, G.swa ? window_ - 1 : 0, false,
+                                       fp8_scratch_, fp8_scratch_bytes_, st_);
+        } else {
+            attend(q_, B.keys, B.vals, pos_ - 1, 1, score_, chunk_, att_, G.dim, n_head_, B.n_kv, 1.f, st_,
+                   G.swa ? window_ - 1 : 0, G.swa ? ring_ : 0, false, nullptr, 0, 0,
+                   opt_.kv_format == KvFmt::kQ8_0 ? Kvq8{B.k_codes, B.k_scales} : Kvq8{},
+                   opt_.kv_format == KvFmt::kQ8_0 ? Kvq8{B.v_codes, B.v_scales} : Kvq8{});
+        }
         lin(G.wo, att_, ao_, 1);
         rms_norm(ao_, fp(G.post_attn), cur_, a, 1, d_eps_, st_);
         axpy(cur_, 1.f, x, a, true, st_);

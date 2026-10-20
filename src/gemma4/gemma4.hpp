@@ -103,6 +103,8 @@ private:
     float* q8work_ = nullptr;
     size_t work_halves_ = 0;
     float* awork_ = nullptr;   ///< a prompt batch's attention (attend_batch)
+    void* fp8_scratch_ = nullptr;   ///< native split-K Attention, also used by assistant queries
+    size_t fp8_scratch_bytes_ = 0;
 
 
     // the draft model: its width and its MLPs', its layers, the projections in and out, its output norm and its

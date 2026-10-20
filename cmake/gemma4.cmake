@@ -22,7 +22,7 @@ set_source_files_properties(src/gemma4/matvec.cu PROPERTIES COMPILE_OPTIONS "--u
 target_include_directories(tinystrata_gemma4 PRIVATE include third_party/ggml "${_gemma_gg}/include")
 target_compile_options(tinystrata_gemma4 PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
 target_link_libraries(tinystrata_gemma4 PRIVATE strata_artifact strata_kernels tinystrata_gemma4_mmq
-  ggml-cpu ggml-base CUDA::cudart CUDA::cuda_driver CUDA::cublas Threads::Threads)
+  ggml-cpu ggml-base CUDA::cudart CUDA::cuda_driver CUDA::cublas Threads::Threads tinystrata_fp8_attention)
 add_executable(tinystrata-gemma4 src/gemma4/main.cpp)
 target_include_directories(tinystrata-gemma4 PRIVATE include)
 target_link_libraries(tinystrata-gemma4 PRIVATE tinystrata_gemma4 CUDA::cudart)

@@ -38,8 +38,8 @@ namespace strata::gemma4 {
 class Shards;
 struct Likeliest;
 
-/// The attention caches' storing format: fp16 (default) or ggml Q8_0; opt-in via --kv.
-enum class KvFmt { kFp16 = 0, kQ8_0 = 1 };
+/// Auto selects native E4M3 FP8 Attention where supported, otherwise Q8_0 INT8.
+enum class KvFmt { kAuto = -1, kFp16 = 0, kQ8_0 = 1, kFp8 = 2 };
 
 struct Options {
     std::string model;
@@ -74,7 +74,7 @@ struct Options {
     bool graphs = true;           ///< a token's fixed launches are recorded once, a CUDA graph a layer, and replayed
     bool kv_grow = true;          ///< the attention caches get VRAM as the sequence grows, where the card can map it
                                   ///< so; false: for the whole context at load, as the expert cache gets the rest
-    KvFmt kv_format = KvFmt::kFp16;   ///< the K and V caches' format; fp16 by default (byte-identical path)
+    KvFmt kv_format = KvFmt::kAuto;   ///< E4M3 FP8 by default where available; otherwise Q8_0 INT8
     int window = 1;               ///< the most tokens window() takes: the known one and guesses after it; 1: none;
                                   ///< 0: 8, or 4 where every guess keeps a copy of the recurrent state
     bool draft = false;           ///< use a matching gemma4-assistant GGUF for MTP proposals
@@ -166,6 +166,7 @@ public:
     /// the other calls that touch the device.
     static std::unique_ptr<Engine> open(const Options& o);
     void load(const Options& o);
+    KvFmt kv_format() const { return opt_.kv_format; }
 
     int n_vocab() const { return n_vocab_; }
     /// The rows of the output a guess is picked from.  A guess that is never right costs a window's place and no

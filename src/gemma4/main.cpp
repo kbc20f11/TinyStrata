@@ -272,7 +272,9 @@ void sampling_key(Sampling& s, const std::string& word) {
 int serve(Engine& e, const Options& o) {
     std::printf("INFO version=0.1.0 family=gemma4 model=gemma-4-26b-a4b-it kv=%s mtp=%d vision=%d expert_slots=%d "
                 "expert_cache_mib=%lld expert_auto=%d chunk=%d vram_reserve_mib=%d graph=%d prompt_logits_first=1\n",
-                o.kv_format == strata::gemma4::KvFmt::kQ8_0 ? "int8" : "fp16", e.drafts() ? e.max_window() - 1 : 0, e.sees(),
+                e.kv_format() == strata::gemma4::KvFmt::kFp8 ? "fp8-mma" :
+                    e.kv_format() == strata::gemma4::KvFmt::kQ8_0 ? "int8" : "fp16",
+                e.drafts() ? e.max_window() - 1 : 0, e.sees(),
                 e.cached_experts(), (long long) (e.cached_gib() * 1024), o.expert_vram_gib < 0 && o.gpu_experts,
                 e.max_rows(), e.reserve_mib(), o.graphs);
     std::printf("READY %d stop\n", e.max_context());
@@ -493,7 +495,7 @@ int main(int argc, char** argv) {
                           "  --expert-vram auto|GiB Expert GPU cache budget; overflow runs on CPU\n"
                           "  --vram-reserve-mib N   Leave VRAM headroom (default 768 MiB)\n"
                           "  --cpu-threads N --no-graph --no-gpu-experts\n"
-                          "  --kv-type auto|fp16|int8    Gemma KV supports FP16 and Q8_0 INT8\n"
+                          "  --kv-type auto|fp8|int8|fp16  Auto: native FP8 where supported, otherwise INT8\n"
                           "  --stage-mib N          Prompt Expert streaming buffer (default 256 MiB)");
                 return 0;
             } else if (arg == "--model" || arg == "--native") opt.model = next();
@@ -523,8 +525,10 @@ int main(int argc, char** argv) {
             else if (arg == "--kv-type") {
                 const auto s = next();
                 if (s == "int8" || s == "q8_0") opt.kv_format = strata::gemma4::KvFmt::kQ8_0;
-                else if (s == "auto" || s == "fp16") opt.kv_format = strata::gemma4::KvFmt::kFp16;
-                else throw std::invalid_argument("Gemma KV supports auto/fp16/int8 only");
+                else if (s == "fp8" || s == "fp8-mma") opt.kv_format = strata::gemma4::KvFmt::kFp8;
+                else if (s == "fp16") opt.kv_format = strata::gemma4::KvFmt::kFp16;
+                else if (s == "auto") opt.kv_format = strata::gemma4::KvFmt::kAuto;
+                else throw std::invalid_argument("Gemma KV supports auto/fp8/int8/fp16 only");
             } else if (arg == "--mtp") {
                 mtp = bounded_integer(next(), "MTP draft count", 0, 7);
             } else throw std::invalid_argument("unknown option: " + arg);

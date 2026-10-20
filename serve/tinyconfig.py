@@ -11,10 +11,11 @@ GENERATION_POLICY_VERSION = 1
 CHUNK_POLICY_VERSION = config.CHUNK_POLICY_VERSION
 DEFAULT_MAX_TOKENS = 32768
 DEFAULT_SAMPLING = {
-    "temperature": 0.7, "top_p": 0.95, "top_k": 20, "min_p": 0.0,
+    "temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0,
     "presence_penalty": 1.5, "repetition_penalty": 1.0,
 }
-LFM2_SAMPLING = {"temperature": 0.1, "top_k": 50, "repetition_penalty": 1.05}
+LFM2_SAMPLING = {"temperature": 0.1, "top_p": 1.0, "top_k": 50, "min_p": 0.0,
+                 "presence_penalty": 0.0, "repetition_penalty": 1.05}
 GEMMA4_SAMPLING = {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0,
                    "presence_penalty": 0.0, "repetition_penalty": 1.0}
 MODEL_NAMES = {"qwen35moe": "qwen3.6-35b-a3b", "lfm2moe": "lfm2.5-24b-a2b",
@@ -217,8 +218,8 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
             raise ValueError("Unsupported LFM2.5 engine option: " + ", ".join(sorted(qwen_only)))
         if "--vision" in seen:
             raise ValueError("LFM2.5-24B-A2B is text-only; remove --vision")
-        if kv not in (None, "auto", "fp16"):
-            raise ValueError("LFM2.5 currently supports --kv-type auto or fp16; INT8/FP8 are not implemented")
+        if kv not in (None, "auto", "fp16", "int8", "fp8", "fp8-mma"):
+            raise ValueError("LFM2.5 supports --kv-type auto, fp16, int8, fp8 or fp8-mma")
         context = config.value_of(cfg, "max_context")
         if context not in (None, "auto") and context > 131072:
             raise ValueError("LFM2.5 supports at most 131072 context tokens")
@@ -229,8 +230,8 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
                                          "--expert-slots", "--no-warmup"})
         if unsupported:
             raise ValueError("Unsupported Gemma 4 engine option: " + ", ".join(sorted(unsupported)))
-        if kv not in (None, "auto", "fp16", "int8"):
-            raise ValueError("Gemma 4 supports --kv-type auto, fp16 or int8")
+        if kv not in (None, "auto", "fp16", "int8", "fp8", "fp8-mma"):
+            raise ValueError("Gemma 4 supports --kv-type auto, fp16, int8, fp8 or fp8-mma")
         if config.value_of(cfg, "mtp") not in (None, 0) and "--draft-model" not in seen and not allow_uninstalled:
             raise ValueError("Gemma 4 MTP requires its matching QAT assistant (--draft-model)")
     elif kv == "fp16":

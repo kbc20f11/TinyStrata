@@ -26,11 +26,23 @@ TinyStrata 会根据你的硬件自动选择推理和内存设置，因此无需
 
 [Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) 仍是默认模型，适合在配备主流显卡的 PC 上兼顾速度、内存效率和回答质量。TinyStrata 专注于较小的 MoE 模型，并支持 **Gemma 4 26B-A4B-it 和 LFM2.5-24B-A2B**。
 
-**Qwen3.6-35B-A3B UD-IQ3_XXS** 使用固定版本的 [Unsloth MTP GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf) 和视觉投影器 `mmproj-F16.gguf`。两个文件共约 **15.0 GB**：包含 MTP 权重的语言模型为 14.1 GB，投影器为 0.9 GB。引擎支持 GPU 常驻图像编码器、根据空闲显存自动调整的专家缓存、利用系统 RAM 的 CPU 专家计算、输入处理阶段的权重流式传输、自动选择的最高 **256K 上下文容量**及 **MTP 3**，不省略模型选中的专家。KV 缓存支持 **FP32、INT8 和 FP8**；GPU 与已编译内核支持原生 FP8 时自动选用 FP8，否则使用 INT8。MTP 同时支持 greedy 解码和带温度的采样。
+**Qwen3.6-35B-A3B UD-IQ3_XXS** 使用固定版本的 [Unsloth MTP GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf)。两个文件共约 **15.0 GB**：包含 MTP 权重的语言模型 **14.1 GB**，视觉投影器（`mmproj-F16.gguf`）**0.9 GB**。
 
-**Gemma 4 26B-A4B-it QAT Q4_0** 使用 [Google 官方主模型及视觉投影器](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf)，以及[匹配的 Unsloth QAT Q4_0 MTP 助手](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF/blob/7b92b5b28818151e8669af2e45e88d6086f490dd/mtp-gemma-4-26B-A4B-it.gguf)。三个文件共 **15.886 GB**：主模型 14.439 GB、投影器 1.195 GB、助手 0.252 GB。引擎支持 GPU 常驻图像编码器、自适应 GPU 专家缓存、利用系统 RAM 的 CPU 专家计算及 MTP 3，均通过同一 API 使用，不省略模型选中的专家。Gemma 支持 **FP16 和 INT8 KV**，目前自动选择 **FP16**。已使用实际模型测试图像输入、MTP 3、RAM 混合计算和模型切换。
+**Gemma 4 26B-A4B-it QAT Q4_0** 使用 [Google 官方模型及视觉投影器](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf)，以及[匹配的 Unsloth QAT MTP 助手](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF/blob/7b92b5b28818151e8669af2e45e88d6086f490dd/mtp-gemma-4-26B-A4B-it.gguf)。三个文件共 **15.886 GB**：模型 **14.439 GB**、投影器 **1.195 GB**、助手 **0.252 GB**。
 
-LFM 使用官方 [LiquidAI Q4_K_M GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF)（**14.53 GB**）、**FP16 KV**，最大上下文为 **128K**，不支持 MTP 或 Vision。它利用自动 VRAM 专家缓存、CPU 专家计算、输入阶段权重流式传输和 CUDA Graph，不省略模型选中的专家。默认值为 `temperature=0.1`、`top_k=50`、`repetition_penalty=1.05`，思考始终启用。Qwen、Gemma 与 LFM 的设置分别保存。LFM 引擎仍在验证中，不保证与 llama.cpp 或不同 CPU/GPU 分配下的输出 token 完全一致。
+**LFM2.5-24B-A2B Q4_K_M** 使用官方 [LiquidAI GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF)。仅需下载一个语言模型文件，大小为 **14.53 GB**。
+
+三个引擎均支持根据空闲显存自动调整的专家缓存、利用系统 RAM 的 CPU 专家计算、输入阶段权重流式传输及 CUDA Graph。它们使用相同的 API，支持运行中切换模型，并分别保存各模型的设置。不省略模型选中的专家。
+
+| 功能 | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) |
+| --- | --- | --- | --- |
+| 最大上下文 | 256K | 256K | 128K |
+| 图像输入 | 支持；默认编码器常驻 GPU | 支持；默认编码器常驻 GPU | 不支持 |
+| MTP | 3 | 3 | 不支持 |
+| KV 格式 | FP32 / INT8 / 原生 FP8 | FP16 / INT8 / 原生 FP8 | FP16 / INT8 / 原生 FP8 |
+| KV 自动选择（默认） | FP8 → INT8 | FP8 → INT8 | FP8 → INT8 |
+
+表头中的模型名称链接到官方模型卡。**FP8 → INT8** 表示 GPU 与已编译内核支持时使用 FP8 KV 和原生 FP8 Tensor Core Attention，否则使用 INT8。KV 精度与 GGUF 权重量化相互独立；低精度 KV 可能产生与 FP32（Qwen）或 FP16（Gemma/LFM）不同的输出。
 
 额外模型的可执行文件缺失时，请参见[手动构建说明](README.md#model-focus)。
 
@@ -75,7 +87,7 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 以下测量于 2026-10-19 在 Windows 上完成，使用 RTX PRO 4000 Blackwell SFF Edition（24 GB）、Ryzen 9 7945HX3D，以及固定的 Unsloth MTP UD-IQ3_XXS 模型。通过正常启动的 API 测量纯文本生成速度，视觉编码器始终常驻 GPU。
 
-采用默认的思考和采样设置（温度 0.7）、MTP 3、512 token 的提示词分块，并自动选择上下文容量和专家放置。混合 CUDA Graph 保持默认关闭。FP8 列使用本 GPU 自动选择的 KV 路径；INT8 列仅将 KV 类型改为 INT8，以便比较。
+采用测量时的默认思考和采样设置（温度 0.7）、MTP 3、512 token 的提示词分块，并自动选择上下文容量和专家放置。混合 CUDA Graph 保持默认关闭。FP8 列使用本 GPU 自动选择的 KV 路径；INT8 列仅将 KV 类型改为 INT8，以便比较。
 
 **我们计划今后在搭载 8 GB、12 GB、16 GB 显存 GPU 的实机上进行测量。** 下表中减少可用内存的行，是在同一块 24 GB GPU 上限制空闲容量后测得的结果，并非物理 8/12/16 GB GPU 的基准测试。
 
@@ -88,29 +100,33 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 ## 实测速度 — Gemma 4
 
-于 2026-10-19 在同一台 Windows PC 上测量，配置为 RTX PRO 4000 Blackwell SFF Edition（24 GB）、Ryzen 9 7945HX3D、64 GB 系统内存。使用 Google Gemma 4 26B-A4B-it QAT Q4_0 及对应的 Unsloth QAT MTP 助手，图像编码器常驻 GPU，通过 API 输入文本，启用 MTP 3 和 CUDA Graph。采用 Google 默认采样设置：启用思考、`temperature=1.0`、`top_p=0.95`、`top_k=64`；自动选择上下文容量及专家分配，自动输入分块为 1120 个 token。
+在同一台 Windows PC（64 GB 系统内存）上使用 Gemma 4 26B-A4B-it QAT Q4_0 及匹配的 QAT MTP 助手测量。图像编码器常驻 GPU，通过 API 输入文本，启用 MTP 3、CUDA Graph 及模型自身的默认思考和采样设置；上下文容量、输入分块及专家分配均自动选择。
 
-| 可用显存 | 上下文容量 | FP16 生成 | INT8 生成 | 备注 |
-| --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 105.56 tok/s | 118.62 tok/s | FP16：GPU 和 CPU 计算专家；INT8：所有专家常驻 GPU |
-| 约 16 GB | 128K | 88.46 tok/s | 86.67 tok/s | GPU 和 CPU 计算专家 |
-| 约 12 GB | 64K | 68.16 tok/s | 76.47 tok/s | GPU 和 CPU 计算专家 |
-| 约 8 GB | 64K | 48.22 tok/s | 48.97 tok/s | 生成时由 CPU 计算专家 |
+原生 FP8 和 INT8 于 **2026-10-20** 测量；FP16 保留 **2026-10-19** 的参考值。
 
-三个固定输入各运行一次，每次生成包含思考在内的 128 个 token。速度为生成 token 总数除以解码总时间，不含加载和输入处理。较低可用显存的条件是在同一块 24 GB GPU 上另行预留 8、12 或 16 GiB 来模拟的，并非物理 16、12 或 8 GB GPU 的实测。64K/128K/256K 是缓存容量，不是输入长度。
+| 可用显存 | 上下文容量 | 原生 FP8（默认） | INT8 | FP16（参考） | 备注 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 24 GB | 256K | 105.42 tok/s | 117.16 tok/s | 105.56 tok/s | FP8 / INT8: GPU 计算专家 |
+| 约 16 GB | 128K | 84.24 tok/s | 85.90 tok/s | 88.46 tok/s | FP8 / INT8: GPU 和 CPU 计算专家 |
+| 约 12 GB | 64K | 68.78 tok/s | 76.09 tok/s | 68.16 tok/s | FP8 / INT8: GPU 和 CPU 计算专家 |
+| 约 8 GB | 64K | 47.18 tok/s | 48.98 tok/s | 48.22 tok/s | FP8 / INT8: 生成阶段由 CPU 计算专家 |
 
-## 实测速度 — LFM2.5（实验性支持）
+FP8/INT8 的每个配置均使用相同的三段文本各运行一次，每次生成包含思考的 128 个 token。速度为总生成 token 数除以总解码时间，不含加载与输入处理；上下文值表示缓存容量。内存受限行是在同一块 24 GB GPU 上另行预留 8、12 或 16 GiB，并非使用实际的 16/12/8 GB GPU。
 
-在同一台 Windows PC（64 GB 系统内存）上使用官方 LFM2.5-24B-A2B Q4_K_M、FP16 KV 测量，不使用 MTP 或 Vision，启用 CUDA Graph。采用当前 API 默认值：启用思考、`temperature=0.1`、`top_k=50`、`repetition_penalty=1.05`；上下文容量、输入分块（各条件均为 256 个 token）和专家分配均自动选择。
+## 实测速度 — LFM2.5
 
-| 可用显存 | 上下文容量 | FP16 生成 | 备注 |
-| --- | ---: | ---: | --- |
-| 24 GB | 128K | 151.71 tok/s | 所有权重常驻显存 |
-| 约 16 GB | 128K | 111.71 tok/s | GPU 和 CPU 计算专家 |
-| 约 12 GB | 128K | 70.80 tok/s | GPU 和 CPU 计算专家 |
-| 约 8 GB | 64K | 51.20 tok/s | GPU 和 CPU 计算专家 |
+在同一台 Windows PC（64 GB 系统内存）上使用官方 LFM2.5-24B-A2B Q4_K_M 测量，不使用 MTP 或 Vision。启用 CUDA Graph 及模型自身的默认思考和采样设置；上下文容量、输入分块及专家分配均自动选择。
 
-与 Qwen 测量相同的 3 个输入文本各运行 2 次，每次生成包含思考在内的 128 个 token。速度为生成 token 总数除以解码总时间，不含加载及输入处理。减少显存的行同样在这张 24 GB GPU 上限制可用显存，并非实际 8/12/16 GB GPU 的基准测试。模型和采样设置与 Qwen 表不同。
+原生 FP8 和 INT8 于 **2026-10-20** 测量；FP16 保留 **2026-10-19** 的参考值。
+
+| 可用显存 | 上下文容量 | 原生 FP8（默认） | INT8 | FP16（参考） | 备注 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 24 GB | 128K | 147.60 tok/s | 143.22 tok/s | 151.71 tok/s | FP8 / INT8: GPU 计算专家 |
+| 约 16 GB | 128K | 124.51 tok/s | 125.42 tok/s | 111.71 tok/s | FP8 / INT8: GPU 和 CPU 计算专家 |
+| 约 12 GB | 128K | 95.89 tok/s | 90.16 tok/s | 70.80 tok/s | FP8 / INT8: GPU 和 CPU 计算专家 |
+| 约 8 GB | 64K | 63.77 tok/s | 63.18 tok/s | 51.20 tok/s | FP8 / INT8: GPU 和 CPU 计算专家 |
+
+FP8/INT8 的每个配置均使用相同的三段文本各运行一次，每次生成包含思考的 128 个 token。速度为总生成 token 数除以总解码时间，不含加载与输入处理；上下文值表示缓存容量。内存受限行是在同一块 24 GB GPU 上另行预留 8、12 或 16 GiB，并非使用实际的 16/12/8 GB GPU。
 
 ## 我应该使用哪个项目？
 
@@ -142,7 +158,7 @@ KV 缓存始终保留在显存中；在这一卸载机制中，系统内存用�
 
 新配置会自动选择 KV/Attention 和上下文容量，无需选择适用于 8 GB、12 GB 或 16 GB 的配置方案。
 
-RTX 3060 会选择 INT8。受支持的 RTX 40/50 系列环境可以选择原生 FP8；引擎会检查已编译的内核和 GPU 功能，以及硬件代际。如果原生 FP8 不可用，自动模式会使用 INT8。这一过程会选择受支持的路径，而无需在启动时运行速度或质量基准测试。**原生 FP8 Attention 仍属于实验性功能。**
+RTX 3060 会选择 INT8。受支持的 RTX 40/50 系列环境可以选择原生 FP8；引擎会检查已编译的内核和 GPU 功能，以及硬件代际。如果原生 FP8 不可用，自动模式会使用 INT8。这一过程会选择受支持的路径，而无需在启动时运行速度或质量基准测试。
 
 原生引擎在启动时，根据空闲显存、上下文容量以及专家能否装入 GPU，从 512、1024、2048 或 4096 token 中估算并选择输入分块大小。较大的分块可以减少输入处理期间重复从 RAM 向 GPU 传输权重的次数。`run-api.bat --chunk N` 可固定大小；`run-api.bat --chunk auto` 可恢复原生自动选择。
 
@@ -162,7 +178,18 @@ MTP 同时支持贪心生成和基于温度的采样，包括重复惩罚、频�
 
 **TinyStrata 仅提供 API。** 它提供兼容 OpenAI 的 Chat Completions（`/v1/chat/completions`）和 Responses（`/v1/responses`）API，以及兼容 Anthropic 的 Messages API（`/v1/messages`），并支持流式生成。请连接 API 客户端或外部前端；TinyStrata 不附带聊天 UI。
 
-Qwen 默认启用思考，设置为 `temperature=0.7`、`top_p=0.95`、`top_k=20`、`min_p=0.0`、`presence_penalty=1.5`、`repetition_penalty=1.0`，包含思考在内最多输出 **32,768 个 token**。每个请求中的设置优先。
+新配置采用各模型自己的采样默认值，以官方模型卡为依据。每次请求指定的值优先；已保存的自定义设置保持不变。
+
+| 设置 | Qwen3.6 | Gemma 4 | LFM2.5 |
+| --- | ---: | ---: | ---: |
+| `temperature` | 1.0 | 1.0 | 0.1 |
+| `top_p` | 0.95 | 0.95 | 1.0 |
+| `top_k` | 20 | 64 | 50 |
+| `min_p` | 0.0 | 0.0 | 0.0 |
+| `presence_penalty` | 1.5 | 0.0 | 0.0 |
+| `repetition_penalty` | 1.0 | 1.0 | 1.05 |
+| `enable_thinking` | true | true | true（始终启用） |
+| `max_tokens`（包含思考） | 32768 | 32768 | 32768 |
 
 API 默认监听 `http://127.0.0.1:18080`。要使用其他端口，请在已安装的 TinyStrata 文件夹中运行 `run-api.bat --port 18081`。
 

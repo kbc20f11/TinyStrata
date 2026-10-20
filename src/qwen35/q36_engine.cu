@@ -3229,7 +3229,7 @@ int strata::qwen35::run(int argc, char** argv) {
                         "  --vision                 Accept SVE1 image embeddings through GENI in --serve\n"
                         "  --bench-pp N --bench-tg N Benchmark prompt and generation\n"
                         "  --max-context auto|N     KV capacity (default: auto, free VRAM selects 64K/128K/256K)\n"
-                        "  --kv-type auto|fp32|fp8|int8|fp8-mma  KV storage (default: auto, native FP8 when supported)\n"
+                        "  --kv-type auto|fp32|int8|fp8|fp8-mma  Default auto: native FP8, otherwise INT8; fp8 = fp8-mma\n"
                         "  --chunk auto|N           Prompt chunk size (default: auto)\n"
                         "  --mtp N                  MTP drafts, 0..7 (default: 0)\n"
                         "  --expert-vram auto|GiB   Routed expert budget (default: available VRAM)\n"
@@ -3277,7 +3277,7 @@ int strata::qwen35::run(int argc, char** argv) {
                 std::fprintf(stderr, "tinystrata: --kv-type takes auto, fp32, fp8, int8 or fp8-mma\n");
                 return 2;
             }
-            kv_format = v == "auto" ? P::kAutomaticKv : v == "fp8-mma" ? 3 : v == "int8" ? 2 : v == "fp8" ? 1 : 0;
+            kv_format = v == "auto" ? P::kAutomaticKv : (v == "fp8-mma" || v == "fp8") ? 3 : v == "int8" ? 2 : 0;
         }
         else if (a == "--mtp") {
             // The MTP weights come from this model's GGUF.

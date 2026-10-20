@@ -22,6 +22,10 @@ int sum_threads(int n);
 
 void store_f16(const float* x, uint16_t* cache, int n, int64_t pos, int rows, void* stream);
 
+void store_q8(const float* x, int8_t* codes, uint16_t* scales, int n, int64_t pos, int rows, void* stream);
+void store_q8_at(const float* x, int8_t* codes, uint16_t* scales, int n, const long long* at, int rows, int ring,
+                 void* stream);
+
 void store_f16_at(const float* x, uint16_t* cache, int n, const long long* at, int rows, int ring, void* stream);
 
 void* blas_create(void* stream);

@@ -6,8 +6,7 @@
 // Reference: SageAttention's separate FP32 outer accumulation; its kernel is
 // not copied here. The native MMA wrapper is adapted from FlashInfer (BSD-3).
 // Experimental opt-in: see docs/fp8-native-attention.md.
-// REVIEW CANDIDATE: row-wise P*V-scale quantization and real-unit FP32
-// outer accumulation. Not CUDA-compiled or GPU-validated in this review.
+// Row-wise P*V-scale quantization and real-unit FP32 outer accumulation.
 #include "strata/qwen35/fp8_attention.hpp"
 #include "strata/qwen35/fp8_mma.cuh"
 #include <cmath>
@@ -16,6 +15,13 @@
 namespace strata::qwen35::fp8_attention {
 namespace {
 constexpr int HD = 256, DCH = 32, KV_Q8_GROUP = 64;
+__global__ void compiled_target_kernel(int *target) {
+#if defined(__CUDA_ARCH__)
+    *target = __CUDA_ARCH__;
+#else
+    *target = 0;
+#endif
+}
 #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 890
 #define FP8_MMA_SUPPORTED 1
 #else
@@ -412,11 +418,18 @@ bool available() {
     if (cudaGetDevice(&dev) != cudaSuccess || cudaGetDeviceProperties(&p, dev) != cudaSuccess ||
         p.major * 10 + p.minor < 89)
         return false;
-    cudaFuncAttributes attr{};
     // A compute_86-only build can JIT on a newer GPU, but its compiled kernel
-    // contains the unsupported-instruction branch. Check the selected image.
-    if (cudaFuncGetAttributes(&attr, prompt_attn_dense_kernel<true, 8, false>) != cudaSuccess || attr.ptxVersion < 89)
+    // contains the unsupported-instruction branch. The PTX ISA version alone
+    // does not identify that compilation target.
+    int *probe = nullptr, target = 0;
+    if (cudaMalloc(&probe, sizeof(int)) != cudaSuccess) { cudaGetLastError(); return false; }
+    compiled_target_kernel<<<1, 1>>>(probe);
+    const auto status = cudaMemcpy(&target, probe, sizeof(target), cudaMemcpyDeviceToHost);
+    cudaFree(probe);
+    if (status != cudaSuccess || target < 890) {
+        cudaGetLastError();
         return false;
+    }
     return cudaFuncSetAttribute(prompt_attn_dense_kernel<true, 8, false>, cudaFuncAttributeMaxDynamicSharedMemorySize,
                                 sizeof(SmemD<8>)) == cudaSuccess &&
            cudaFuncSetAttribute(prompt_attn_dense_kernel<true, 2, true>, cudaFuncAttributeMaxDynamicSharedMemorySize,

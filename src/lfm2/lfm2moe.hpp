@@ -52,6 +52,10 @@ private:
         Dev wq, wk, wv, q_norm, k_norm;
         uint16_t* keys = nullptr;   ///< max_context * n_kv * head_dim, fp16
         uint16_t* vals = nullptr;
+        uint8_t* k_codes = nullptr; ///< INT8 or FP8 E4M3, token-major; FP16 scale for each 32 values
+        uint8_t* v_codes = nullptr;
+        uint16_t* k_scales = nullptr;
+        uint16_t* v_scales = nullptr;
         // a dense layer's FFN
         Dev ffn_gate, ffn_up, ffn_down;
         // routed experts: the bias their pick adds to the gates
@@ -79,6 +83,10 @@ private:
           *score_ = nullptr;
     float* awork_ = nullptr;   ///< a prompt batch's attention (attend_batch)
     size_t score_n_ = 0;       ///< the floats of score_: room for attend()'s blocks of rows too
+    float* q8work_ = nullptr;  ///< INT8 prefill: bounded K/V restoration workspace, not a full FP16 cache
+    size_t work_halves_ = 0;
+    float* fp8work_ = nullptr; ///< native FP8 split-K decode partials; shared by one layer at a time
+    size_t fp8work_bytes_ = 0;
 };
 
 }  // namespace strata::lfm2

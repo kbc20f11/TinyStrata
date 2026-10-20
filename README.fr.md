@@ -26,11 +26,23 @@ Il existe déjà de nombreuses interfaces et de nombreux environnements d’exé
 
 [Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) reste le modèle par défaut, pour son équilibre entre vitesse, consommation de mémoire et qualité des réponses sur les PC équipés de cartes graphiques grand public. TinyStrata se concentre sur les petits modèles MoE et prend également en charge **Gemma 4 26B-A4B-it et LFM2.5-24B-A2B**.
 
-**Qwen3.6-35B-A3B UD-IQ3_XXS** utilise le [GGUF MTP d’Unsloth fixé](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf) et le projecteur de vision `mmproj-F16.gguf`. Les deux fichiers totalisent environ **15.0 GB** : modèle de langage de 14.1 GB, poids MTP compris, et projecteur de 0.9 GB. Le moteur prend en charge l’encodeur d’images résident sur GPU, un cache d’experts adapté automatiquement à la VRAM libre, le calcul d’experts sur CPU depuis la RAM, le streaming des poids pendant le traitement des entrées, une capacité de contexte choisie automatiquement jusqu’à **256K** et **MTP 3**. Aucun expert sélectionné par le modèle n’est omis. Le cache KV accepte **FP32, INT8 et FP8** ; le choix automatique utilise le FP8 natif si le GPU et les kernels compilés le permettent, sinon INT8. MTP fonctionne aussi bien en décodage greedy qu’en échantillonnage avec température.
+**Qwen3.6-35B-A3B UD-IQ3_XXS** utilise le [GGUF MTP d’Unsloth fixé](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf). Les deux fichiers totalisent environ **15.0 GB** : modèle de langage, poids MTP compris, de **14.1 GB** et projecteur de vision (`mmproj-F16.gguf`) de **0.9 GB**.
 
-**Gemma 4 26B-A4B-it QAT Q4_0** utilise [le modèle cible et le projecteur de vision officiels de Google](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf) avec [l’assistant MTP QAT Q4_0 correspondant d’Unsloth](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF/blob/7b92b5b28818151e8669af2e45e88d6086f490dd/mtp-gemma-4-26B-A4B-it.gguf). Les trois fichiers totalisent **15.886 GB** : cible 14.439 GB, projecteur 1.195 GB et assistant 0.252 GB. Le moteur prend en charge l’encodeur d’images résident sur GPU, un cache adaptatif d’experts en VRAM, leur calcul sur CPU depuis la RAM et MTP 3 via la même API. Aucun expert sélectionné n’est omis. Gemma accepte un **KV FP16 ou INT8** ; le choix automatique actuel est **FP16**. L’entrée d’images, MTP 3, l’utilisation conjointe de la RAM et le changement de modèle ont été testés avec le modèle réel.
+**Gemma 4 26B-A4B-it QAT Q4_0** utilise [le modèle et le projecteur de vision officiels de Google](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf) avec [l’assistant MTP QAT correspondant d’Unsloth](https://huggingface.co/unsloth/gemma-4-26B-A4B-it-qat-GGUF/blob/7b92b5b28818151e8669af2e45e88d6086f490dd/mtp-gemma-4-26B-A4B-it.gguf). Les trois fichiers totalisent **15.886 GB** : modèle **14.439 GB**, projecteur **1.195 GB** et assistant **0.252 GB**.
 
-LFM utilise le [GGUF Q4_K_M officiel de LiquidAI](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF) (**14.53 GB**), un **KV FP16** et jusqu’à **128K de contexte**, sans MTP ni Vision. Il bénéficie du cache automatique d’experts en VRAM, du calcul d’experts sur CPU, du streaming des poids à l’entrée et des CUDA Graphs ; aucun expert sélectionné n’est omis. Ses valeurs par défaut sont `temperature=0.1`, `top_k=50` et `repetition_penalty=1.05`, avec le raisonnement toujours activé. Les paramètres Qwen, Gemma et LFM sont conservés séparément. Le moteur LFM est encore en cours de validation et ne garantit pas les mêmes tokens que llama.cpp ou entre différentes répartitions CPU/GPU.
+**LFM2.5-24B-A2B Q4_K_M** utilise le [GGUF officiel de LiquidAI](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF). Son unique fichier de modèle de langage pèse **14.53 GB**.
+
+Les trois moteurs utilisent un cache automatique d’experts en VRAM, le calcul d’experts sur CPU depuis la RAM, le streaming des poids à l’entrée et les CUDA Graphs. Ils partagent la même API et permettent de changer de modèle sans redémarrer, avec des paramètres enregistrés séparément pour chaque modèle. Aucun expert sélectionné n’est omis.
+
+| Fonction | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) |
+| --- | --- | --- | --- |
+| Contexte maximal | 256K | 256K | 128K |
+| Entrée d’images | Oui ; encodeur sur GPU par défaut | Oui ; encodeur sur GPU par défaut | Non |
+| MTP | 3 | 3 | Non |
+| Formats KV | FP32 / INT8 / FP8 natif | FP16 / INT8 / FP8 natif | FP16 / INT8 / FP8 natif |
+| KV automatique (par défaut) | FP8 → INT8 | FP8 → INT8 | FP8 → INT8 |
+
+Les en-têtes renvoient aux fiches officielles des modèles. **FP8 → INT8** désigne un KV FP8 et une Attention native sur Tensor Cores FP8 si le GPU et les kernels compilés le permettent, sinon INT8. La précision KV est indépendante de la quantification des poids GGUF ; une précision KV plus faible peut modifier la sortie par rapport à FP32 (Qwen) ou FP16 (Gemma/LFM).
 
 Si l’exécutable d’un modèle supplémentaire manque, consultez les [instructions de compilation manuelle](README.md#model-focus).
 
@@ -73,7 +85,7 @@ Consultez `GET /v1/model/switch` jusqu’à `state: ready`. Pour revenir à Qwen
 
 ## Vitesse mesurée — Qwen3.6
 
-Les mesures suivantes ont été effectuées le 2026-10-19 sous Windows avec une RTX PRO 4000 Blackwell SFF Edition (24 GB), un Ryzen 9 7945HX3D et le modèle Unsloth MTP UD-IQ3_XXS fixé pour ce projet. Le modèle et le projecteur de vision sur GPU étaient chargés et préchauffés. Les paramètres étaient ceux de l’API par défaut : réflexion activée, échantillonnage à température 0.7, MTP 3, blocs de prompt de 512 tokens, placement des experts et sélection du contexte automatiques. Le chemin hybride CUDA Graph optionnel était désactivé par défaut ; les CUDA Graphs habituels en exécution entièrement sur GPU restaient actifs. Sur ce GPU, `auto` sélectionnait le FP8 natif ; seule la précision KV était imposée pour la colonne INT8.
+Les mesures suivantes ont été effectuées le 2026-10-19 sous Windows avec une RTX PRO 4000 Blackwell SFF Edition (24 GB), un Ryzen 9 7945HX3D et le modèle Unsloth MTP UD-IQ3_XXS fixé pour ce projet. Le modèle et le projecteur de vision sur GPU étaient chargés et préchauffés. Les paramètres étaient ceux de l’API par défaut au moment de la mesure : réflexion activée, échantillonnage à température 0.7, MTP 3, blocs de prompt de 512 tokens, placement des experts et sélection du contexte automatiques. Le chemin hybride CUDA Graph optionnel était désactivé par défaut ; les CUDA Graphs habituels en exécution entièrement sur GPU restaient actifs. Sur ce GPU, `auto` sélectionnait le FP8 natif ; seule la précision KV était imposée pour la colonne INT8.
 
 **Des mesures sur des machines équipées de GPU physiques de 8 GB, 12 GB et 16 GB sont prévues ultérieurement.** Les lignes à mémoire réduite du tableau ci-dessous ont été mesurées en limitant la mémoire disponible sur le même GPU de 24 GB et ne sont pas des benchmarks de GPU physiques de 8/12/16 GB.
 
@@ -86,29 +98,33 @@ Les mesures suivantes ont été effectuées le 2026-10-19 sous Windows avec une 
 
 ## Vitesse mesurée — Gemma 4
 
-Mesuré le 2026-10-19 sur le même PC Windows avec RTX PRO 4000 Blackwell SFF Edition (24 GB), Ryzen 9 7945HX3D et 64 GB de RAM. Les modèles utilisés sont Gemma 4 26B-A4B-it QAT Q4_0 de Google et l’assistant MTP QAT correspondant d’Unsloth, avec l’encodeur d’images résident sur GPU, des entrées texte par API, MTP 3 et les CUDA Graphs activés. Les valeurs par défaut de Google sont conservées : réflexion activée, `temperature=1.0`, `top_p=0.95`, `top_k=64`. Le contexte et la répartition des experts sont choisis automatiquement, avec des blocs d’entrée automatiques de 1120 tokens.
+Mesuré sur le même PC Windows avec 64 GB de RAM, Gemma 4 26B-A4B-it QAT Q4_0 et son assistant MTP QAT correspondant. L’encodeur d’images est resté sur GPU pendant les requêtes texte par API. MTP 3, les CUDA Graphs et les valeurs de raisonnement et d’échantillonnage propres au modèle étaient activés ; le contexte, les blocs d’entrée et la répartition des experts étaient automatiques.
 
-| VRAM disponible | Capacité de contexte | Génération FP16 | Génération INT8 | Remarques |
-| --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 105.56 tok/s | 118.62 tok/s | FP16 : calcul des experts sur GPU et CPU ; INT8 : tous les experts résident sur GPU |
-| Environ 16 GB | 128K | 88.46 tok/s | 86.67 tok/s | Calcul des experts sur GPU et CPU |
-| Environ 12 GB | 64K | 68.16 tok/s | 76.47 tok/s | Calcul des experts sur GPU et CPU |
-| Environ 8 GB | 64K | 48.22 tok/s | 48.97 tok/s | Calcul des experts sur CPU pendant la génération |
+Le FP8 natif et INT8 ont été mesurés le **2026-10-20** ; les valeurs FP16 sont conservées comme références du **2026-10-19**.
 
-Trois entrées fixes ont été exécutées une fois chacune, avec 128 tokens de sortie, réflexion comprise. La vitesse correspond au total des tokens divisé par le temps total de décodage, hors chargement et traitement des entrées. Les conditions disposant de moins de mémoire sont obtenues en réservant séparément 8, 12 ou 16 GiB sur la même carte de 24 GB ; il ne s’agit pas de tests de cartes physiques de 16, 12 ou 8 GB. 64K/128K/256K indique la capacité du cache, pas la longueur des entrées.
+| VRAM disponible | Capacité de contexte | FP8 natif (par défaut) | INT8 | FP16 (référence) | Remarques |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 24 GB | 256K | 105.42 tok/s | 117.16 tok/s | 105.56 tok/s | FP8 / INT8: Calcul des experts sur GPU |
+| Environ 16 GB | 128K | 84.24 tok/s | 85.90 tok/s | 88.46 tok/s | FP8 / INT8: Calcul des experts sur GPU et CPU |
+| Environ 12 GB | 64K | 68.78 tok/s | 76.09 tok/s | 68.16 tok/s | FP8 / INT8: Calcul des experts sur GPU et CPU |
+| Environ 8 GB | 64K | 47.18 tok/s | 48.98 tok/s | 48.22 tok/s | FP8 / INT8: Calcul des experts sur CPU pendant la génération |
 
-## Vitesse mesurée — LFM2.5 (expérimental)
+Les mêmes trois textes ont été exécutés une fois par configuration FP8/INT8, avec 128 tokens générés par requête, raisonnement compris. La vitesse est le nombre total de tokens divisé par le temps total de décodage, hors chargement et traitement de l’entrée ; le contexte indique la capacité du cache. Les lignes avec moins de mémoire réservent 8, 12 ou 16 GiB sur le même GPU de 24 GB, sans utiliser de GPU physiques de 16/12/8 GB.
 
-Mesures sur le même PC Windows avec 64 GB de mémoire système, le LFM2.5-24B-A2B Q4_K_M officiel, un KV FP16, sans MTP ni Vision, avec CUDA Graphs activé. Les valeurs actuelles de l’API ont été utilisées : raisonnement activé, `temperature=0.1`, `top_k=50`, `repetition_penalty=1.05`. La capacité de contexte, les blocs d’entrée (256 tokens dans tous les cas) et la répartition des experts ont été choisis automatiquement.
+## Vitesse mesurée — LFM2.5
 
-| VRAM disponible | Capacité de contexte | Génération FP16 | Remarques |
-| --- | ---: | ---: | --- |
-| 24 GB | 128K | 151.71 tok/s | Tous les poids résidents en VRAM |
-| Environ 16 GB | 128K | 111.71 tok/s | Calcul des experts sur GPU et CPU |
-| Environ 12 GB | 128K | 70.80 tok/s | Calcul des experts sur GPU et CPU |
-| Environ 8 GB | 64K | 51.20 tok/s | Calcul des experts sur GPU et CPU |
+Mesuré sur le même PC Windows avec 64 GB de RAM et le LFM2.5-24B-A2B Q4_K_M officiel, sans MTP ni Vision. Les CUDA Graphs et les valeurs de raisonnement et d’échantillonnage propres au modèle étaient activés ; le contexte, les blocs d’entrée et la répartition des experts étaient automatiques.
 
-Les trois mêmes textes d’entrée que pour Qwen ont été exécutés deux fois chacun, avec 128 tokens générés par requête, raisonnement compris. La vitesse est le nombre total de tokens générés divisé par le temps total de décodage, hors chargement et traitement de l’entrée. Les lignes à mémoire réduite limitent la VRAM disponible sur la même carte de 24 GB ; ce ne sont pas des mesures sur des GPU physiques de 8/12/16 GB. Le modèle et les paramètres d’échantillonnage diffèrent du tableau Qwen.
+Le FP8 natif et INT8 ont été mesurés le **2026-10-20** ; les valeurs FP16 sont conservées comme références du **2026-10-19**.
+
+| VRAM disponible | Capacité de contexte | FP8 natif (par défaut) | INT8 | FP16 (référence) | Remarques |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 24 GB | 128K | 147.60 tok/s | 143.22 tok/s | 151.71 tok/s | FP8 / INT8: Calcul des experts sur GPU |
+| Environ 16 GB | 128K | 124.51 tok/s | 125.42 tok/s | 111.71 tok/s | FP8 / INT8: Calcul des experts sur GPU et CPU |
+| Environ 12 GB | 128K | 95.89 tok/s | 90.16 tok/s | 70.80 tok/s | FP8 / INT8: Calcul des experts sur GPU et CPU |
+| Environ 8 GB | 64K | 63.77 tok/s | 63.18 tok/s | 51.20 tok/s | FP8 / INT8: Calcul des experts sur GPU et CPU |
+
+Les mêmes trois textes ont été exécutés une fois par configuration FP8/INT8, avec 128 tokens générés par requête, raisonnement compris. La vitesse est le nombre total de tokens divisé par le temps total de décodage, hors chargement et traitement de l’entrée ; le contexte indique la capacité du cache. Les lignes avec moins de mémoire réservent 8, 12 ou 16 GiB sur le même GPU de 24 GB, sans utiliser de GPU physiques de 16/12/8 GB.
 
 ## Quel projet choisir ?
 
@@ -140,7 +156,7 @@ Le cache KV reste dans la VRAM ; la mémoire système contient les données des 
 
 Les nouvelles configurations choisissent automatiquement KV/Attention et la capacité de contexte. Vous n’avez pas besoin de sélectionner un profil pour 8 GB, 12 GB ou 16 GB.
 
-Une RTX 3060 sélectionne INT8. Les environnements RTX 40/50 pris en charge peuvent sélectionner le FP8 natif ; le moteur vérifie les noyaux compilés et les capacités du GPU ainsi que la génération matérielle. Si le FP8 natif n’est pas disponible, le mode automatique utilise INT8. Cela sélectionne un chemin pris en charge sans exécuter de benchmark de vitesse ou de qualité au démarrage. **L’Attention FP8 native reste expérimentale.**
+Une RTX 3060 sélectionne INT8. Les environnements RTX 40/50 pris en charge peuvent sélectionner le FP8 natif ; le moteur vérifie les noyaux compilés et les capacités du GPU ainsi que la génération matérielle. Si le FP8 natif n’est pas disponible, le mode automatique utilise INT8. Cela sélectionne un chemin pris en charge sans exécuter de benchmark de vitesse ou de qualité au démarrage.
 
 Le moteur natif estime la taille des blocs d’entrée au démarrage, en choisissant 512, 1024, 2048 ou 4096 tokens selon la VRAM libre, la capacité de contexte et la possibilité de placer les experts sur le GPU. Des blocs plus grands peuvent réduire les transferts répétés de poids de la RAM vers le GPU pendant le traitement des entrées. `run-api.bat --chunk N` fixe la taille ; `run-api.bat --chunk auto` rétablit la sélection automatique native.
 
@@ -160,7 +176,18 @@ Les paramètres explicites remplacent les choix automatiques, et les paramètres
 
 **TinyStrata fonctionne exclusivement par API.** Il fournit des API Chat Completions (`/v1/chat/completions`) et Responses (`/v1/responses`) compatibles avec OpenAI ainsi qu’une API Messages (`/v1/messages`) compatible avec Anthropic, avec génération en streaming. Connectez un client API ou une interface externe ; TinyStrata ne comprend pas d’interface de chat intégrée.
 
-Pour Qwen, le raisonnement est activé par défaut, avec `temperature=0.7`, `top_p=0.95`, `top_k=20`, `min_p=0.0`, `presence_penalty=1.5`, `repetition_penalty=1.0` et un maximum de **32,768 tokens de sortie**, raisonnement compris. Les paramètres définis pour chaque requête sont prioritaires.
+Les nouvelles configurations utilisent des paramètres d’échantillonnage propres à chaque modèle, fondés sur leurs fiches officielles. Les valeurs de chaque requête sont prioritaires ; les réglages personnalisés enregistrés restent inchangés.
+
+| Paramètre | Qwen3.6 | Gemma 4 | LFM2.5 |
+| --- | ---: | ---: | ---: |
+| `temperature` | 1.0 | 1.0 | 0.1 |
+| `top_p` | 0.95 | 0.95 | 1.0 |
+| `top_k` | 20 | 64 | 50 |
+| `min_p` | 0.0 | 0.0 | 0.0 |
+| `presence_penalty` | 1.5 | 0.0 | 0.0 |
+| `repetition_penalty` | 1.0 | 1.0 | 1.05 |
+| `enable_thinking` | true | true | true (toujours activé) |
+| `max_tokens` (raisonnement compris) | 32768 | 32768 | 32768 |
 
 L’API écoute par défaut sur `http://127.0.0.1:18080`. Pour utiliser un autre port, exécutez `run-api.bat --port 18081` depuis le dossier d’installation de TinyStrata.
 

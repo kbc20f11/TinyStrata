@@ -190,9 +190,11 @@ void sampling_key(Sampling& s, const std::string& word) {
 }
 
 int serve(Engine& e, const Options& o) {
-    std::printf("INFO version=0.1.0 family=lfm2moe kv=fp16 mtp=0 vision=0 expert_slots=%d "
+    const char* kv = e.kv_format() == strata::lfm2::KvFmt::kFp8 ? "fp8-mma"
+        : e.kv_format() == strata::lfm2::KvFmt::kQ8_0 ? "int8" : "fp16";
+    std::printf("INFO version=0.1.0 family=lfm2moe kv=%s mtp=0 vision=0 expert_slots=%d "
                 "expert_cache_mib=%lld expert_auto=%d chunk=%d vram_reserve_mib=%d graph=%d prompt_logits_first=1\n",
-                e.cached_experts(), (long long) (e.cached_gib() * 1024), o.expert_vram_gib < 0 && o.gpu_experts,
+                kv, e.cached_experts(), (long long) (e.cached_gib() * 1024), o.expert_vram_gib < 0 && o.gpu_experts,
                 e.max_rows(), e.reserve_mib(), o.graphs);
     std::printf("READY %d stop\n", e.max_context());
     std::fflush(stdout);
@@ -327,7 +329,7 @@ int serve(Engine& e, const Options& o) {
 int main(int argc, char** argv) {
     try {
         Options opt;
-        std::string ids_text, force_text, dump, ctx = "auto", chunk = "auto";
+        std::string ids_text, force_text, dump, ctx = "auto", chunk = "auto", kv = "auto";
         int n_gen = 64;
         bool server = false;
         opt.draft = false;
@@ -351,7 +353,8 @@ int main(int argc, char** argv) {
                           "  --expert-vram auto|GiB Expert GPU cache budget; overflow runs on CPU\n"
                           "  --vram-reserve-mib N   Leave VRAM headroom (default 768 MiB)\n"
                           "  --cpu-threads N --no-graph --no-gpu-experts\n"
-                          "  --kv-type auto|fp16    LFM attention currently uses FP16 KV\n"
+                          "  --kv-type auto|fp8|int8|fp16\n"
+                          "                        Auto: native FP8 Attention, otherwise INT8 KV\n"
                           "  --stage-mib N          Prompt Expert streaming buffer (default 256 MiB)");
                 return 0;
             } else if (arg == "--model" || arg == "--native") opt.model = next();
@@ -377,8 +380,9 @@ int main(int argc, char** argv) {
             else if (arg == "--no-graph") opt.graphs = false;
             else if (arg == "--no-gpu-experts") opt.gpu_experts = false;
             else if (arg == "--kv-type") {
-                const auto s = next();
-                if (s != "auto" && s != "fp16") throw std::invalid_argument("LFM KV supports auto/fp16 only");
+                kv = next();
+                if (kv != "auto" && kv != "fp16" && kv != "int8" && kv != "q8_0" && kv != "fp8" && kv != "fp8-mma")
+                    throw std::invalid_argument("LFM KV supports auto, fp16, int8 or fp8");
             } else if (arg == "--mtp") {
                 bounded_integer(next(), "MTP (this checkpoint has no MTP head)", 0, 0);
             } else throw std::invalid_argument("unknown option: " + arg);
@@ -398,6 +402,12 @@ int main(int argc, char** argv) {
         if (opt.max_context < 16 || opt.max_context > 131072) throw std::invalid_argument("context must be 16..131072");
         if (chunk != "auto") opt.prompt_batch = bounded_integer(chunk, "chunk", 1, 4096);
         if (opt.prompt_batch < 1 || opt.prompt_batch > 4096) throw std::invalid_argument("chunk must be 1..4096");
+        if (kv == "auto")
+            opt.kv_format = strata::lfm2::KvFmt::kAuto;
+        else if (kv == "fp8" || kv == "fp8-mma")
+            opt.kv_format = strata::lfm2::KvFmt::kFp8;
+        else
+            opt.kv_format = kv == "fp16" ? strata::lfm2::KvFmt::kFp16 : strata::lfm2::KvFmt::kQ8_0;
         auto e = Engine::open(opt);
         if (server) return serve(*e, opt);
         const auto ids = parse_ids(ids_text), forced = parse_ids(force_text);
