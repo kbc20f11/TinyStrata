@@ -3228,7 +3228,7 @@ int strata::qwen35::run(int argc, char** argv) {
                         "  --serve                  Native stdin/stdout engine protocol\n"
                         "  --vision                 Accept SVE1 image embeddings through GENI in --serve\n"
                         "  --bench-pp N --bench-tg N Benchmark prompt and generation\n"
-                        "  --max-context auto|N     KV capacity (default: auto, free VRAM selects 64K/128K/256K)\n"
+                        "  --max-context auto|N     KV capacity (default: auto, total GPU VRAM selects 64K/128K/256K)\n"
                         "  --kv-type auto|fp32|int8|fp8|fp8-mma  Default auto: native FP8, otherwise INT8; fp8 = fp8-mma\n"
                         "  --chunk auto|N           Prompt chunk size (default: auto)\n"
                         "  --mtp N                  MTP drafts, 0..7 (default: 0)\n"
@@ -3329,12 +3329,13 @@ int strata::qwen35::run(int argc, char** argv) {
     if (chunk < 0 || chunk > 4096) { std::fprintf(stderr, "tinystrata: bad --chunk\n"); return 2; }
     const bool context_auto = ctx == 0;
     if (context_auto) {
-        // Sample before model weights consume VRAM, using the same physical
-        // available-memory accounting for automatic context selection on Windows/WDDM.
+        // Installed capacity fixes the context class; other applications and
+        // Vision reduce the Expert cache, not the selected context capacity.
         const auto memory = available_vram(true);
-        ctx = P::resolve_context(ctx, memory.free);
-        std::fprintf(stderr, "tinystrata: automatic context: %.2f GiB free (%s, before model weights) -> %d tokens\n",
-                     memory.free / 1073741824.0, memory.source(), ctx);
+        ctx = P::resolve_context(ctx, memory.cuda_total);
+        std::fprintf(stderr, "tinystrata: automatic context: %.2f GiB total GPU VRAM -> %d tokens "
+                             "(%.2f GiB free, %s)\n",
+                     memory.cuda_total / 1073741824.0, ctx, memory.free / 1073741824.0, memory.source());
     }
     Model m;
     std::string err;

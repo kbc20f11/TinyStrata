@@ -46,6 +46,16 @@ Die Spaltenüberschriften verlinken auf die offiziellen Modellkarten. **FP8 → 
 
 Gemma verwendet standardmäßig INT8. Natives FP8 ist experimentell und kann mit `run-api.bat --model-family gemma4 --kv-type fp8-mma` ausdrücklich gewählt werden.
 
+Die **automatische Kontextkapazität** richtet sich wie unten gezeigt nach dem gesamten VRAM der GPU; der freie VRAM bestimmt die Größe des Expertencaches. Ein explizites `--max-context N` hat Vorrang.
+
+| Gesamter VRAM (Beispiele) | Qwen3.6 / Gemma 4 | LFM2.5 |
+| --- | ---: | ---: |
+| 8 GB | 64K | 64K |
+| 12 GB | 128K | 128K |
+| 16 GB oder mehr | 256K | 128K |
+
+Die Kapazitätsklassen berücksichtigen Unterschiede bei den Treiberangaben, sodass eine 16-GB-Karte auch bei gemeldeten 15.x GiB für Qwen und Gemma 256K auswählt.
+
 Fehlt die Programmdatei eines zusätzlichen Modells, siehe die [Anleitung zum manuellen Build](README.md#model-focus).
 
 ## Installation
@@ -86,6 +96,8 @@ Mit `run-api.bat --model-family gemma4` starten Sie direkt mit Gemma unter `http
 Fragen Sie `GET /v1/model/switch` bis `state: ready` ab. Zum Zurückwechseln senden Sie dieselbe Wechselanfrage mit `{"model":"qwen3.6-35b-a3b"}`. Der Start eines Downloads oder Wechsels liefert `202`; ein Wechsel während einer Generierung liefert `409`, daher nach deren Ende erneut versuchen. Inferenzanfragen während des Wechsels liefern `503`. Port und Authentifizierung bleiben unverändert. Die Auswahl gilt für die aktuelle Serversitzung; nach einem Neustart wird das im Launcher gewählte Modell verwendet.
 
 ## Gemessene Geschwindigkeit — Qwen3.6
+
+Die folgenden Geschwindigkeitstabellen wurden vor der Umstellung der Kontextauswahl auf den gesamten VRAM gemessen.
 
 Die folgenden Messungen wurden am 2026-10-19 unter Windows mit einer RTX PRO 4000 Blackwell SFF Edition (24 GB), einem Ryzen 9 7945HX3D und dem festgelegten Unsloth MTP UD-IQ3_XXS-Modell durchgeführt. Modell und GPU-Vision-Projektor waren geladen und aufgewärmt. Verwendet wurden die API-Standardeinstellungen zum Messzeitpunkt: Thinking aktiviert, Sampling mit Temperatur 0.7, MTP 3, Prompt-Blöcke mit 512 Token sowie automatische Expertenplatzierung und Kontextauswahl. Der optionale hybride CUDA-Graph-Pfad war standardmäßig ausgeschaltet; die normalen CUDA Graphs bei vollständigem GPU-Betrieb blieben aktiv. Auf dieser GPU wählte `auto` natives FP8; für die INT8-Spalte wurde nur der KV-Typ erzwungen.
 
@@ -164,7 +176,7 @@ Die native Engine schätzt beim Start anhand des freien VRAM, der Kontextkapazit
 
 Die Kontextkapazität ist der maximale Speicherplatz, der für Eingabe und generierte Ausgabe zusammen reserviert wird. Eine höhere Kapazität benötigt selbst bei einer kurzen Unterhaltung mehr KV-Speicher und lässt weniger VRAM für Experten übrig. Eine bestimmte Kapazität bedeutet auch nicht bei jeder Unterhaltungslänge dieselbe Geschwindigkeit: Die tatsächliche Verarbeitung eines langen Dokuments erfordert mehr Arbeit. Zur Einordnung: INT8-KV allein benötigt einschließlich der MTP-Schicht etwa **0.71 GiB bei 64K, 1.42 GiB bei 128K und 2.84 GiB bei 256K**; weitere Gewichte und Arbeitspuffer kommen hinzu. Natives FP8 benötigt in dieser Implementierung ungefähr ebenso viel KV-Speicher wie INT8; sein Vorteil liegt in einem anderen Berechnungspfad und nicht in einem wesentlich kleineren Cache.
 
-Freier VRAM bezeichnet den zum Ladezeitpunkt verfügbaren Speicher, nicht die Zahl auf der GPU-Verpackung. Andere Anwendungen können daher dazu führen, dass ein kleinerer Kontext ausgewählt wird. Falls sich die Kapazität beim erneuten Laden verringert, weist die API eine nicht mehr passende Eingabe zurück, anstatt sie stillschweigend zu kürzen. Unter Windows prüft die automatische Kontextauswahl sowohl den freien CUDA-Speicher als auch die geräteweite Angabe des NVIDIA-Treibers und verwendet den kleineren Wert, wenn beide Abfragen erfolgreich sind.
+Die Kontextkapazität wird anhand des gesamten GPU-VRAM gewählt; der Expertencache wird anschließend in den beim Laden verbleibenden freien VRAM eingepasst. Andere Anwendungen mit VRAM-Bedarf lassen weniger Platz für GPU-gecachte Experten. Die API weist Eingaben zurück, die die Kontextkapazität überschreiten, anstatt sie stillschweigend zu kürzen.
 
 Die Quantisierung der GGUF-Gewichte und die KV-Präzision sind voneinander unabhängig. Das ausgewählte UD-IQ3_XXS-Modell hat komprimierte Gewichte; INT8 oder FP8 beschreibt den Unterhaltungscache und seinen Attention-Pfad. KV mit geringerer Präzision kann Antworten verändern, daher versprechen diese Modi keine mit FP32-KV identischen Ausgaben. Die Implementierung behält alle sichtbaren Kontextpositionen und jeden vom Modell ausgewählten Experten bei.
 

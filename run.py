@@ -165,9 +165,9 @@ def main() -> int:
                     help="maximum image tokens per picture (default: 4096); saved for later starts")
     ap.add_argument("--config", type=Path, help="configuration path (default: a separate file per model family)")
     ap.add_argument("--max-context", type=context_limit, metavar="auto|TOKENS",
-                    help="choose context capacity from available GPU memory (default: auto), or set a token limit")
+                    help="choose context capacity from total GPU VRAM (default: auto), or set a token limit")
     ap.add_argument("--kv-type", choices=("auto", "fp16", "fp32", "fp8", "fp8-mma", "int8"),
-                    help="default auto: native FP8 Attention when supported, otherwise INT8 (all models)")
+                    help="default auto: Gemma uses INT8; Qwen/LFM use native FP8 when supported, otherwise INT8")
     ap.add_argument("--mtp", type=int)
     ap.add_argument("--expert-vram", type=expert_budget, metavar="auto|GiB",
                     help="fit experts to available VRAM (default: auto), or set an advanced GiB limit; 0 = CPU experts")

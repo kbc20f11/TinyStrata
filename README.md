@@ -46,6 +46,16 @@ The column headings link to the official model cards. **FP8 → INT8** means nat
 
 Gemma uses INT8 by default. Native FP8 is experimental and can be selected explicitly with `run-api.bat --model-family gemma4 --kv-type fp8-mma`.
 
+**Automatic context capacity** uses the GPU’s total VRAM as shown below; available free VRAM determines the Expert cache size. An explicit `--max-context N` takes priority.
+
+| Total VRAM (examples) | Qwen3.6 / Gemma 4 | LFM2.5 |
+| --- | ---: | ---: |
+| 8 GB | 64K | 64K |
+| 12 GB | 128K | 128K |
+| 16 GB or more | 256K | 128K |
+
+Capacity classes allow for driver reporting differences, so a 16 GB card reported as 15.x GiB still selects 256K for Qwen and Gemma.
+
 <details>
 <summary>Build additional model engines manually if an executable is missing</summary>
 
@@ -98,6 +108,8 @@ To start directly with Gemma, run `run-api.bat --model-family gemma4`; its defau
 Poll `GET /v1/model/switch` until `state` is `ready`. To return to Qwen, send the same switch request with `{"model":"qwen3.6-35b-a3b"}`. Starting a download or switch returns `202`; a switch during generation returns `409`, so retry after generation finishes. Inference during switching returns `503`. The port and authentication stay unchanged. Selection lasts for the current server session; restarting uses the model selected by the launcher.
 
 ## Measured speed — Qwen3.6
+
+The speed tables below were measured before context selection was changed to use total VRAM.
 
 Measurements were taken on 2026-10-19 using Windows, an RTX PRO 4000 Blackwell SFF Edition (24 GB), a Ryzen 9 7945HX3D and the fixed Unsloth MTP UD-IQ3_XXS model. The GPU vision encoder was resident throughout these text-only API requests.
 
@@ -178,7 +190,7 @@ The native engine estimates the prompt chunk size at startup, choosing 512, 1024
 
 Context capacity is the maximum space reserved for the input and generated output together. A longer capacity uses more KV memory even with a short conversation, leaving less VRAM for Experts. Capacity also does not imply equal speed at every conversation length: actually processing a long document takes more work. For scale, INT8 KV alone takes about **0.71 GiB at 64K, 1.42 GiB at 128K and 2.84 GiB at 256K**, including the MTP layer; other weights and work buffers are additional. Native FP8 uses approximately the same KV storage as INT8 in this implementation; its benefit is a different computation path, rather than a substantially smaller cache.
 
-Free VRAM means memory available at load time, not the number printed on the GPU box. Other applications can therefore cause a smaller context to be selected. If a reload reduces capacity, the API rejects an input that no longer fits instead of silently cutting it short. On Windows, automatic context selection checks both CUDA and the NVIDIA driver's device-wide free memory and uses the smaller value when both queries succeed.
+Context capacity is chosen from total GPU VRAM; the Expert cache then fits into the free VRAM left at load time. Other applications using VRAM leave room for fewer GPU-cached Experts. The API rejects input that exceeds the context capacity instead of silently truncating it.
 
 GGUF weight quantization and KV precision are separate. The selected UD-IQ3_XXS model has compressed weights; INT8 or FP8 describes the conversation cache and its Attention path. Lower-precision KV can change answers, so these modes do not promise identical output to FP32 KV. The implementation keeps all visible context positions and every model-selected Expert.
 

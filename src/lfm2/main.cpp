@@ -3,6 +3,7 @@
 // 26e4cb5df7996edfb5ff549a63b82d8581e1e658. See LICENSE and NOTICE.
 // Copyright (c) 2026 Niko1221 and the Strata contributors.
 #include "engine.hpp"
+#include "strata/common/context_policy.hpp"
 #include "strata/lfm2/vram.hpp"
 #include <cuda_runtime.h>
 #include <algorithm>
@@ -348,7 +349,7 @@ int main(int argc, char** argv) {
                 std::puts("TinyStrata LFM2.5-24B-A2B (text only, no MTP)\n"
                           "  --model GGUF --serve\n"
                           "  --model GGUF --tokens IDS --n N [--dump-full-logits FILE] [--force IDS]\n"
-                          "  --max-context auto|N   Context capacity, at most 131072\n"
+                          "  --max-context auto|N   Context capacity; auto by total VRAM: 8 GB 64K, 12+ GB 128K (model limit)\n"
                           "  --chunk auto|N         Prompt chunk size (auto: 256)\n"
                           "  --expert-vram auto|GiB Expert GPU cache budget; overflow runs on CPU\n"
                           "  --vram-reserve-mib N   Leave VRAM headroom (default 768 MiB)\n"
@@ -397,7 +398,11 @@ int main(int argc, char** argv) {
         if (ctx == "auto") {
             size_t free = 0, total = 0;
             if (strata::lfm2::resident_mem_info(&free, &total) != cudaSuccess) throw std::runtime_error("cannot query CUDA VRAM");
-            opt.max_context = free <= size_t(8.5 * (1ull << 30)) ? 65536 : 131072;
+            // Context follows the card's capacity class, capped by this model's
+            // 128K limit. Expert placement still uses the actual free VRAM.
+            opt.max_context = strata::context_policy::for_total_vram(total, 131072);
+            std::fprintf(stderr, "tinystrata-lfm2: automatic context: %.2f GiB total GPU VRAM -> %d tokens (%.2f GiB free)\n",
+                         total / 1073741824.0, opt.max_context, free / 1073741824.0);
         } else opt.max_context = bounded_integer(ctx, "context", 16, 131072);
         if (opt.max_context < 16 || opt.max_context > 131072) throw std::invalid_argument("context must be 16..131072");
         if (chunk != "auto") opt.prompt_batch = bounded_integer(chunk, "chunk", 1, 4096);

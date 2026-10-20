@@ -46,6 +46,16 @@ Les en-têtes renvoient aux fiches officielles des modèles. **FP8 → INT8** d�
 
 Gemma utilise INT8 par défaut. Le FP8 natif est expérimental et peut être sélectionné explicitement avec `run-api.bat --model-family gemma4 --kv-type fp8-mma`.
 
+La **capacité de contexte automatique** dépend de la VRAM totale du GPU, comme indiqué ci-dessous ; la VRAM libre détermine la taille du cache d’experts. Une valeur explicite de `--max-context N` est prioritaire.
+
+| VRAM totale (exemples) | Qwen3.6 / Gemma 4 | LFM2.5 |
+| --- | ---: | ---: |
+| 8 GB | 64K | 64K |
+| 12 GB | 128K | 128K |
+| 16 GB ou plus | 256K | 128K |
+
+Les classes de capacité tiennent compte des différences signalées par le pilote : une carte de 16 GB indiquant 15.x GiB sélectionne donc toujours 256K pour Qwen et Gemma.
+
 Si l’exécutable d’un modèle supplémentaire manque, consultez les [instructions de compilation manuelle](README.md#model-focus).
 
 ## Installation
@@ -86,6 +96,8 @@ Pour démarrer directement avec Gemma, exécutez `run-api.bat --model-family gem
 Consultez `GET /v1/model/switch` jusqu’à `state: ready`. Pour revenir à Qwen, envoyez la même requête avec `{"model":"qwen3.6-35b-a3b"}`. Le démarrage d’un téléchargement ou d’un changement renvoie `202` ; un changement pendant une génération renvoie `409`, réessayez après sa fin. Les requêtes d’inférence pendant le changement reçoivent `503`. Le port et l’authentification restent inchangés. La sélection vaut pour la session actuelle du serveur ; au redémarrage, le modèle choisi dans le lanceur est utilisé.
 
 ## Vitesse mesurée — Qwen3.6
+
+Les tableaux de vitesse ci-dessous ont été mesurés avant le passage à une sélection du contexte selon la VRAM totale.
 
 Les mesures suivantes ont été effectuées le 2026-10-19 sous Windows avec une RTX PRO 4000 Blackwell SFF Edition (24 GB), un Ryzen 9 7945HX3D et le modèle Unsloth MTP UD-IQ3_XXS fixé pour ce projet. Le modèle et le projecteur de vision sur GPU étaient chargés et préchauffés. Les paramètres étaient ceux de l’API par défaut au moment de la mesure : réflexion activée, échantillonnage à température 0.7, MTP 3, blocs de prompt de 512 tokens, placement des experts et sélection du contexte automatiques. Le chemin hybride CUDA Graph optionnel était désactivé par défaut ; les CUDA Graphs habituels en exécution entièrement sur GPU restaient actifs. Sur ce GPU, `auto` sélectionnait le FP8 natif ; seule la précision KV était imposée pour la colonne INT8.
 
@@ -164,7 +176,7 @@ Le moteur natif estime la taille des blocs d’entrée au démarrage, en choisis
 
 La capacité de contexte est l’espace maximal réservé à l’entrée et à la sortie générée réunies. Une capacité plus élevée utilise davantage de mémoire KV même avec une conversation courte, ce qui laisse moins de VRAM pour les experts. La capacité n’implique pas non plus une vitesse identique pour toutes les longueurs de conversation : traiter effectivement un long document demande davantage de travail. À titre indicatif, le cache KV INT8 seul occupe environ **0.71 GiB à 64K, 1.42 GiB à 128K et 2.84 GiB à 256K**, couche MTP comprise ; les autres poids et tampons de travail s’y ajoutent. Dans cette implémentation, le FP8 natif utilise approximativement le même espace de stockage KV que l’INT8 ; son intérêt réside dans un chemin de calcul différent, plutôt que dans un cache nettement plus petit.
 
-La VRAM libre désigne la mémoire disponible au moment du chargement, pas le chiffre imprimé sur la boîte du GPU. Les autres applications peuvent donc entraîner la sélection d’un contexte plus petit. Si un rechargement réduit la capacité, l’API rejette une entrée qui ne tient plus au lieu de la tronquer silencieusement. Sous Windows, la sélection automatique du contexte consulte la mémoire libre de CUDA et la valeur globale du périphérique indiquée par le pilote NVIDIA, puis retient la plus petite si les deux requêtes aboutissent.
+La capacité de contexte est choisie selon la VRAM totale du GPU ; le cache d’experts est ensuite ajusté à la VRAM libre restante au chargement. Les autres applications qui utilisent de la VRAM laissent moins de place aux experts en cache sur GPU. L’API rejette les entrées qui dépassent la capacité de contexte au lieu de les tronquer silencieusement.
 
 La quantification des poids GGUF et la précision KV sont distinctes. Le modèle UD-IQ3_XXS sélectionné possède des poids compressés ; INT8 ou FP8 décrit le cache de conversation et son chemin Attention. Une précision KV plus faible peut modifier les réponses ; ces modes ne promettent donc pas une sortie identique à celle du cache KV FP32. L’implémentation conserve toutes les positions de contexte visibles et chaque expert sélectionné par le modèle.
 

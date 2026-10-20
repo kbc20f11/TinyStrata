@@ -4277,8 +4277,7 @@ class Service:
                         elif not (self.loaded() and not self._vision_down()):
                             with self.fifo:
                                 self.ensure_loaded()
-                        # An automatic context can change when free VRAM changes
-                        # between prepare() and a reload. Check the new READY limit
+                        # Recheck the engine's actual READY context after a reload
                         # before sending any ids to the native process.
                         if getattr(self.engine, "context_auto", False):
                             ctx = self.engine.max_context
