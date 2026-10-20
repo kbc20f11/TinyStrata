@@ -39,10 +39,12 @@ Os três motores usam cache automático de especialistas na VRAM, cálculo de es
 | Contexto máximo | 256K | 256K | 128K |
 | Entrada de imagens | Sim; codificador na GPU por padrão | Sim; codificador na GPU por padrão | Não |
 | MTP | 3 | 3 | Não |
-| Formatos KV | FP32 / INT8 / FP8 nativo | FP16 / INT8 / FP8 nativo | FP16 / INT8 / FP8 nativo |
-| KV automático (padrão) | FP8 → INT8 | FP8 → INT8 | FP8 → INT8 |
+| Formatos KV | FP32 / INT8 / FP8 nativo | FP16 / INT8 / FP8 nativo (experimental) | FP16 / INT8 / FP8 nativo |
+| KV automático (padrão) | FP8 → INT8 | INT8 | FP8 → INT8 |
 
 Os cabeçalhos apontam para as fichas oficiais dos modelos. **FP8 → INT8** indica KV FP8 e Attention nativa com Tensor Cores FP8 quando a GPU e os kernels compilados permitem, ou INT8 caso contrário. A precisão KV independe da quantização dos pesos GGUF; KV de menor precisão pode alterar a saída em relação a FP32 (Qwen) ou FP16 (Gemma/LFM).
+
+O Gemma usa INT8 por padrão. O FP8 nativo é experimental e pode ser selecionado explicitamente com `run-api.bat --model-family gemma4 --kv-type fp8-mma`.
 
 Se o executável de um modelo adicional não estiver disponível, veja as [instruções de compilação manual](README.md#model-focus).
 
@@ -104,14 +106,14 @@ Medido no mesmo PC Windows com 64 GB de RAM, Gemma 4 26B-A4B-it QAT Q4_0 e o ass
 
 FP8 nativo e INT8 foram medidos em **2026-10-20**; os valores FP16 foram mantidos como referência de **2026-10-19**.
 
-| VRAM disponível | Capacidade de contexto | FP8 nativo (padrão) | INT8 | FP16 (referência) | Observações |
+| VRAM disponível | Capacidade de contexto | FP8 nativo (experimental) | INT8 (padrão) | FP16 (referência) | Observações |
 | --- | ---: | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 105.42 tok/s | 117.16 tok/s | 105.56 tok/s | FP8 / INT8: Cálculo de especialistas na GPU |
-| Aprox. 16 GB | 128K | 84.24 tok/s | 85.90 tok/s | 88.46 tok/s | FP8 / INT8: Cálculo de especialistas na GPU e na CPU |
-| Aprox. 12 GB | 64K | 68.78 tok/s | 76.09 tok/s | 68.16 tok/s | FP8 / INT8: Cálculo de especialistas na GPU e na CPU |
-| Aprox. 8 GB | 64K | 47.18 tok/s | 48.98 tok/s | 48.22 tok/s | FP8 / INT8: Especialistas calculados na CPU durante a geração |
+| 24 GB | 256K | 117.17 tok/s | 121.16 tok/s | 105.56 tok/s | FP8 / INT8: Cálculo de especialistas na GPU |
+| Aprox. 16 GB | 128K | 94.69 tok/s | 97.02 tok/s | 88.46 tok/s | FP8 / INT8: Cálculo de especialistas na GPU e na CPU |
+| Aprox. 12 GB | 64K | 77.20 tok/s | 82.71 tok/s | 68.16 tok/s | FP8 / INT8: Cálculo de especialistas na GPU e na CPU |
+| Aprox. 8 GB | 64K | 47.48 tok/s | 50.65 tok/s | 48.22 tok/s | FP8 / INT8: Especialistas calculados na CPU durante a geração |
 
-Os mesmos três textos foram executados uma vez por configuração FP8/INT8, gerando 128 tokens por solicitação, incluindo o raciocínio. A velocidade é o total de tokens dividido pelo tempo total de decodificação, sem carregamento nem processamento da entrada; o contexto indica capacidade de cache. As linhas com menos memória reservam 8, 12 ou 16 GiB na mesma GPU de 24 GB, sem usar GPUs físicas de 16/12/8 GB.
+Os mesmos três textos foram executados duas vezes por configuração FP8/INT8, gerando 128 tokens por solicitação, incluindo o raciocínio. A velocidade é o total de tokens dividido pelo tempo total de decodificação, sem carregamento nem processamento da entrada; o contexto indica capacidade de cache. As linhas com menos memória reservam 8, 12 ou 16 GiB na mesma GPU de 24 GB, sem usar GPUs físicas de 16/12/8 GB.
 
 ## Velocidade medida — LFM2.5
 
@@ -158,7 +160,7 @@ O cache KV permanece na VRAM; a RAM do sistema armazena os dados dos especialist
 
 Novas configurações escolhem KV/Attention e a capacidade de contexto automaticamente. Você não precisa selecionar uma receita para 8 GB, 12 GB ou 16 GB.
 
-Uma RTX 3060 seleciona INT8. Ambientes compatíveis com RTX das séries 40/50 podem selecionar FP8 nativo; o mecanismo verifica os kernels compilados e os recursos da GPU, além da geração do hardware. Se o FP8 nativo não estiver disponível, o modo automático usa INT8. Isso escolhe um caminho compatível sem executar um teste de velocidade ou qualidade na inicialização.
+No Qwen3.6, uma RTX 3060 seleciona INT8. Ambientes compatíveis com RTX das séries 40/50 podem selecionar FP8 nativo; o mecanismo verifica os kernels compilados e os recursos da GPU, além da geração do hardware. Se o FP8 nativo não estiver disponível, o modo automático usa INT8. Isso escolhe um caminho compatível sem executar um teste de velocidade ou qualidade na inicialização.
 
 O mecanismo nativo estima o tamanho dos blocos de entrada na inicialização, escolhendo 512, 1024, 2048 ou 4096 tokens conforme a VRAM livre, a capacidade de contexto e se os especialistas cabem na GPU. Blocos maiores podem reduzir transferências repetidas de pesos da RAM para a GPU durante o processamento da entrada. `run-api.bat --chunk N` fixa o tamanho; `run-api.bat --chunk auto` restaura a seleção automática nativa.
 

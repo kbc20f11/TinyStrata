@@ -39,10 +39,12 @@ All three engines use an automatic VRAM Expert cache, CPU Expert computation fro
 | Maximum context | 256K | 256K | 128K |
 | Image input | Yes; GPU-resident encoder by default | Yes; GPU-resident encoder by default | No |
 | MTP | 3 | 3 | No |
-| KV formats | FP32 / INT8 / native FP8 | FP16 / INT8 / native FP8 | FP16 / INT8 / native FP8 |
-| Automatic KV (default) | FP8 → INT8 | FP8 → INT8 | FP8 → INT8 |
+| KV formats | FP32 / INT8 / native FP8 | FP16 / INT8 / native FP8 (experimental) | FP16 / INT8 / native FP8 |
+| Automatic KV (default) | FP8 → INT8 | INT8 | FP8 → INT8 |
 
 The column headings link to the official model cards. **FP8 → INT8** means native FP8 KV and FP8 Tensor Core Attention when the GPU and compiled kernels support it, otherwise INT8. KV precision is separate from GGUF weight quantization; lower-precision KV can change outputs relative to FP32 (Qwen) or FP16 (Gemma/LFM).
+
+Gemma uses INT8 by default. Native FP8 is experimental and can be selected explicitly with `run-api.bat --model-family gemma4 --kv-type fp8-mma`.
 
 <details>
 <summary>Build additional model engines manually if an executable is missing</summary>
@@ -116,14 +118,14 @@ Measured on the same Windows PC with 64 GB of system RAM, using Gemma 4 26B-A4B-
 
 Native FP8 and INT8 were measured on **2026-10-20**; FP16 figures are retained as references from **2026-10-19**.
 
-| Available VRAM | Context capacity | Native FP8 (default) | INT8 | FP16 (reference) | Notes |
+| Available VRAM | Context capacity | Native FP8 (experimental) | INT8 (default) | FP16 (reference) | Notes |
 | --- | ---: | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 105.42 tok/s | 117.16 tok/s | 105.56 tok/s | FP8 / INT8: Experts computed on the GPU |
-| Approximately 16 GB | 128K | 84.24 tok/s | 85.90 tok/s | 88.46 tok/s | FP8 / INT8: GPU and CPU Expert computation |
-| Approximately 12 GB | 64K | 68.78 tok/s | 76.09 tok/s | 68.16 tok/s | FP8 / INT8: GPU and CPU Expert computation |
-| Approximately 8 GB | 64K | 47.18 tok/s | 48.98 tok/s | 48.22 tok/s | FP8 / INT8: Experts computed on the CPU during generation |
+| 24 GB | 256K | 117.17 tok/s | 121.16 tok/s | 105.56 tok/s | FP8 / INT8: Experts computed on the GPU |
+| Approximately 16 GB | 128K | 94.69 tok/s | 97.02 tok/s | 88.46 tok/s | FP8 / INT8: GPU and CPU Expert computation |
+| Approximately 12 GB | 64K | 77.20 tok/s | 82.71 tok/s | 68.16 tok/s | FP8 / INT8: GPU and CPU Expert computation |
+| Approximately 8 GB | 64K | 47.48 tok/s | 50.65 tok/s | 48.22 tok/s | FP8 / INT8: Experts computed on the CPU during generation |
 
-Each of the same three input texts was run once per FP8/INT8 configuration, generating 128 tokens including thinking. Speed is total generated tokens divided by total decode time, excluding loading and prompt processing; context values are cache capacities. Reduced-memory rows reserve 8, 12 or 16 GiB separately on the same 24 GB GPU, rather than using physical 16/12/8 GB GPUs.
+Each of the same three input texts was run twice per FP8/INT8 configuration, generating 128 tokens including thinking. Speed is total generated tokens divided by total decode time, excluding loading and prompt processing; context values are cache capacities. Reduced-memory rows reserve 8, 12 or 16 GiB separately on the same 24 GB GPU, rather than using physical 16/12/8 GB GPUs.
 
 ## Measured speed — LFM2.5
 
@@ -170,7 +172,7 @@ The KV cache stays in VRAM; system RAM holds Expert data for this offload mechan
 
 New configurations choose KV/Attention and context capacity automatically. You do not need to select an 8 GB, 12 GB or 16 GB recipe.
 
-An RTX 3060 selects INT8. Supported RTX 40/50-series environments can select native FP8; the engine checks the compiled kernels and GPU capabilities as well as the hardware generation. If native FP8 is unavailable, automatic mode uses INT8. This chooses a supported path without running a speed or quality benchmark at startup.
+For Qwen3.6, an RTX 3060 selects INT8. Supported RTX 40/50-series environments can select native FP8; the engine checks the compiled kernels and GPU capabilities as well as the hardware generation. If native FP8 is unavailable, automatic mode uses INT8. This chooses a supported path without running a speed or quality benchmark at startup.
 
 The native engine estimates the prompt chunk size at startup, choosing 512, 1024, 2048 or 4096 tokens from available VRAM, context capacity and whether the Experts fit on the GPU. Larger chunks can reduce repeated RAM-to-GPU weight transfers during input processing. `run-api.bat --chunk N` fixes the size; `run-api.bat --chunk auto` restores native automatic selection.
 

@@ -38,7 +38,7 @@ namespace strata::gemma4 {
 class Shards;
 struct Likeliest;
 
-/// Auto selects native E4M3 FP8 Attention where supported, otherwise Q8_0 INT8.
+/// Auto selects Q8_0 INT8; native E4M3 FP8 Attention is experimental and opt-in.
 enum class KvFmt { kAuto = -1, kFp16 = 0, kQ8_0 = 1, kFp8 = 2 };
 
 struct Options {
@@ -74,7 +74,7 @@ struct Options {
     bool graphs = true;           ///< a token's fixed launches are recorded once, a CUDA graph a layer, and replayed
     bool kv_grow = true;          ///< the attention caches get VRAM as the sequence grows, where the card can map it
                                   ///< so; false: for the whole context at load, as the expert cache gets the rest
-    KvFmt kv_format = KvFmt::kAuto;   ///< E4M3 FP8 by default where available; otherwise Q8_0 INT8
+    KvFmt kv_format = KvFmt::kAuto;   ///< Q8_0 INT8 by default; native E4M3 FP8 is experimental and opt-in
     int window = 1;               ///< the most tokens window() takes: the known one and guesses after it; 1: none;
                                   ///< 0: 8, or 4 where every guess keeps a copy of the recurrent state
     bool draft = false;           ///< use a matching gemma4-assistant GGUF for MTP proposals

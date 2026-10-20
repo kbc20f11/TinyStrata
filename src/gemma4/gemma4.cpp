@@ -77,12 +77,11 @@ void Gemma4::load_geometry() {
     need(window_ > 0 && dim_full_ > 0 && dim_swa_ > 0, "bad attention.sliding_window or key lengths");
     need(shape_i("attention.value_length") == dim_full_ && shape_i("attention.value_length_swa") == dim_swa_,
          "the attention's keys and values differ in length");
-    const bool native_fp8 = strata::fp8_attention::available(dim_full_) &&
-                            strata::fp8_attention::available(dim_swa_);
-    if (opt_.kv_format == KvFmt::kAuto) opt_.kv_format = native_fp8 ? KvFmt::kFp8 : KvFmt::kQ8_0;
+    // INT8 is the default for Gemma. Native FP8 remains an explicit experimental path.
+    if (opt_.kv_format == KvFmt::kAuto) opt_.kv_format = KvFmt::kQ8_0;
     need(opt_.kv_format == KvFmt::kFp16 || opt_.kv_format == KvFmt::kQ8_0 || opt_.kv_format == KvFmt::kFp8,
          "unknown KV format");
-    if (opt_.kv_format == KvFmt::kFp8 && !native_fp8)
+    if (opt_.kv_format == KvFmt::kFp8 && !strata::fp8_attention::available_gemma())
         throw std::runtime_error("native FP8 Attention is not available for this GPU and build; use --kv-type int8");
     need(rot_full_ % 2 == 0 && rot_full_ <= dim_full_ && rot_swa_ % 2 == 0 && rot_swa_ <= dim_swa_,
          "bad rope.dimension_count");
@@ -467,7 +466,7 @@ void Gemma4::attn(Block& B, int64_t pos, int n) {
         const strata::fp8_attention::Cache cache{reinterpret_cast<const uint8_t*>(B.k_codes),
                                                 reinterpret_cast<const uint8_t*>(B.v_codes),
                                                 B.k_scales, B.v_scales};
-        strata::fp8_attention::run(q_, cache, pos, n, n_head_, B.n_kv, B.dim, opt_.max_context, 1.f,
+        strata::fp8_attention::run_gemma(q_, cache, pos, n, n_head_, B.n_kv, B.dim, opt_.max_context, 1.f,
                                    att_, device_pos, ring, B.swa ? window_ : 0, sees_all,
                                    fp8_scratch_, fp8_scratch_bytes_, st_);
         lin(B.wo, att_, ao_, n);
@@ -603,7 +602,7 @@ void Gemma4::draft_step(int32_t token, int i) {
             const strata::fp8_attention::Cache cache{reinterpret_cast<const uint8_t*>(B.k_codes),
                                                     reinterpret_cast<const uint8_t*>(B.v_codes),
                                                     B.k_scales, B.v_scales};
-            strata::fp8_attention::run(q_, cache, pos_ - 1, 1, n_head_, B.n_kv, G.dim, opt_.max_context, 1.f,
+            strata::fp8_attention::run_gemma(q_, cache, pos_ - 1, 1, n_head_, B.n_kv, G.dim, opt_.max_context, 1.f,
                                        att_, nullptr, G.swa ? ring_ : 0, G.swa ? window_ - 1 : 0, false,
                                        fp8_scratch_, fp8_scratch_bytes_, st_);
         } else {

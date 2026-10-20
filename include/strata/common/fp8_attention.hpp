@@ -14,6 +14,10 @@ struct Cache {
 // and configures dynamic shared memory. Supports head dimensions 64, 256 and 512.
 bool available(int head_dim = 0);
 
+// Gemma 4's 256/512-dimensional heads share QK/softmax across cooperating
+// output warps and use three E4M3 components for Q/P. Prepare before capture.
+bool available_gemma();
+
 // Codes are E4M3, with one FP16 multiplier per 32 contiguous elements.
 // src is [rows,width]; cache is [position,width]. A device position, when
 // supplied, overrides pos; its first int64 element is the first query position.
@@ -34,4 +38,11 @@ void run(const float *q, Cache cache, std::int64_t pos, int rows, int q_heads, i
          int head_dim, int context, float scale, float *output,
          const std::int64_t *device_pos, int ring, int window, bool whole,
          void *scratch, std::size_t scratch_size, void *stream);
+
+// Same layout/masking contract and scratch allocation as run(). This separate
+// experimental entry point leaves the shared LFM path unchanged.
+void run_gemma(const float *q, Cache cache, std::int64_t pos, int rows, int q_heads, int kv_heads,
+               int head_dim, int context, float scale, float *output,
+               const std::int64_t *device_pos, int ring, int window, bool whole,
+               void *scratch, std::size_t scratch_size, void *stream);
 } // namespace strata::fp8_attention

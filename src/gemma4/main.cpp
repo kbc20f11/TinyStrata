@@ -495,7 +495,7 @@ int main(int argc, char** argv) {
                           "  --expert-vram auto|GiB Expert GPU cache budget; overflow runs on CPU\n"
                           "  --vram-reserve-mib N   Leave VRAM headroom (default 768 MiB)\n"
                           "  --cpu-threads N --no-graph --no-gpu-experts\n"
-                          "  --kv-type auto|fp8|int8|fp16  Auto: native FP8 where supported, otherwise INT8\n"
+                          "  --kv-type auto|fp8|int8|fp16  Auto: INT8; native FP8 is experimental and opt-in\n"
                           "  --stage-mib N          Prompt Expert streaming buffer (default 256 MiB)");
                 return 0;
             } else if (arg == "--model" || arg == "--native") opt.model = next();
@@ -554,6 +554,8 @@ int main(int argc, char** argv) {
         if (opt.prompt_batch < 1 || opt.prompt_batch > 4096) throw std::invalid_argument("chunk must be 1..4096");
         auto e = Engine::open(opt);
         if (require_vision && !e->sees()) throw std::runtime_error("this engine cannot receive image embeddings");
+        if (e->kv_format() == strata::gemma4::KvFmt::kFp8)
+            std::fprintf(stderr, "gemma4: native FP8 Attention is experimental; INT8 is the default.\n");
         if (server) return serve(*e, opt);
         const auto ids = parse_ids(ids_text), forced = parse_ids(force_text);
         check_ids(ids, *e);
