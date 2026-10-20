@@ -97,50 +97,46 @@ Consulte `GET /v1/model/switch` até `state` ser `ready`. Para voltar ao Qwen, e
 
 ## Velocidade medida — Qwen3.6
 
-As tabelas de velocidade abaixo foram medidas antes da mudança para selecionar o contexto com base na VRAM total.
-
-As medições a seguir foram feitas em 2026-10-19 no Windows, com uma RTX PRO 4000 Blackwell SFF Edition (24 GB), um Ryzen 9 7945HX3D e o modelo fixo Unsloth MTP UD-IQ3_XXS. O projetor de visão permaneceu carregado e aquecido na GPU; as solicitações continham apenas texto, sem tempo de codificação de imagens. Foram usados os padrões da API no momento da medição: raciocínio ativado, temperatura 0.7, MTP 3, blocos de entrada de 512 tokens e seleção automática de contexto e alocação de especialistas. O caminho híbrido de CUDA Graph estava desativado por padrão; os grafos normais para execução inteiramente na GPU mantiveram a configuração padrão.
-
-As solicitações omitiram os parâmetros de amostragem e a semente. A única alteração a esses padrões foi `max_tokens=128` como limite do teste, em vez de 32768. A coluna FP8 usa a seleção automática de KV nesta GPU; para a comparação com INT8, apenas o modo KV foi forçado para INT8.
-
-**Planejamos realizar medições em máquinas reais com GPUs de 8 GB, 12 GB e 16 GB no futuro.** As linhas com memória reduzida da tabela abaixo foram medidas limitando a memória disponível na mesma GPU de 24 GB; elas não são testes de desempenho de GPUs físicas de 8/12/16 GB.
+Medido em **2026-10-20** no Windows com uma RTX PRO 4000 Blackwell SFF Edition (24 GB), um Ryzen 9 7945HX3D, 64 GB de RAM e o modelo fixo Unsloth MTP UD-IQ3_XXS. O codificador de imagens permaneceu na GPU durante as solicitações de texto pela API. Foram ativados o raciocínio, os padrões de amostragem do modelo (temperatura 1.0) e MTP 3. Os blocos de entrada e a distribuição de especialistas foram automáticos; o contexto foi fixado conforme a classe de VRAM. O caminho híbrido de CUDA Graph permaneceu desativado por padrão e os grafos habituais de execução inteiramente na GPU continuaram ativos.
 
 | Condição de memória disponível | Capacidade de contexto | Geração com INT8 | Geração com FP8 nativo | Notas |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 118.40 tok/s | 131.82 tok/s | Todos os pesos residentes na VRAM |
-| Aprox. 16 GB | 128K | 95.09 tok/s | 99.39 tok/s | 8 GiB reservados; cálculo de especialistas na CPU e na GPU |
-| Aprox. 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | 12 GiB reservados; cálculo de especialistas na CPU e na GPU |
-| Aprox. 8 GB | 64K | 66.30 tok/s | 63.85 tok/s | 16 GiB reservados; cálculo de especialistas na CPU e na GPU |
+| 24 GB | 256K | 119.98 tok/s | 132.43 tok/s | Todos os pesos residentes na VRAM |
+| Aprox. 16 GB | 256K | 90.40 tok/s | 95.86 tok/s | 8 GiB reservados; cálculo de especialistas na CPU e na GPU |
+| Aprox. 12 GB | 128K | 78.60 tok/s | 83.62 tok/s | 12 GiB reservados; cálculo de especialistas na CPU e na GPU |
+| Aprox. 8 GB | 64K | 64.33 tok/s | 64.46 tok/s | 16 GiB reservados; cálculo de especialistas na CPU e na GPU |
+
+Os mesmos três textos foram executados duas vezes por configuração FP8/INT8 com os padrões de amostragem do modelo, gerando 128 tokens por solicitação, incluindo o raciocínio. A velocidade é o total de tokens dividido pelo tempo total de decodificação, sem carregamento nem processamento da entrada; o contexto indica capacidade de cache. As linhas com menos memória reservam 8, 12 ou 16 GiB na mesma GPU de 24 GB e usam o contexto dessa classe de VRAM; não são testes de GPUs físicas de 16/12/8 GB.
 
 ## Velocidade medida — Gemma 4
 
-Medido no mesmo PC Windows com 64 GB de RAM, Gemma 4 26B-A4B-it QAT Q4_0 e o assistente MTP QAT correspondente. O codificador de imagens permaneceu na GPU durante as solicitações de texto pela API. MTP 3, CUDA Graphs e os padrões de raciocínio e amostragem do modelo estavam ativados; o contexto, os blocos de entrada e a distribuição de especialistas foram escolhidos automaticamente.
+Medido no mesmo PC Windows com 64 GB de RAM, Gemma 4 26B-A4B-it QAT Q4_0 e o assistente MTP QAT correspondente. O codificador de imagens permaneceu na GPU durante as solicitações de texto pela API. MTP 3, CUDA Graphs e os padrões de raciocínio e amostragem do modelo estavam ativados; o contexto foi fixado conforme a classe de VRAM, enquanto os blocos de entrada e a distribuição de especialistas foram escolhidos automaticamente.
 
-FP8 nativo e INT8 foram medidos em **2026-10-20**; os valores FP16 foram mantidos como referência de **2026-10-19**.
+FP8 nativo e INT8 foram medidos em **2026-10-20**.
 
-| VRAM disponível | Capacidade de contexto | FP8 nativo (experimental) | INT8 (padrão) | FP16 (referência) | Observações |
-| --- | ---: | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 117.17 tok/s | 121.16 tok/s | 105.56 tok/s | FP8 / INT8: Cálculo de especialistas na GPU |
-| Aprox. 16 GB | 128K | 94.69 tok/s | 97.02 tok/s | 88.46 tok/s | FP8 / INT8: Cálculo de especialistas na GPU e na CPU |
-| Aprox. 12 GB | 64K | 77.20 tok/s | 82.71 tok/s | 68.16 tok/s | FP8 / INT8: Cálculo de especialistas na GPU e na CPU |
-| Aprox. 8 GB | 64K | 47.48 tok/s | 50.65 tok/s | 48.22 tok/s | FP8 / INT8: Especialistas calculados na CPU durante a geração |
+| VRAM disponível | Capacidade de contexto | FP8 nativo (experimental) | INT8 (padrão) | Observações |
+| --- | ---: | ---: | ---: | --- |
+| 24 GB | 256K | 116.07 tok/s | 119.38 tok/s | FP8 / INT8: Cálculo de especialistas na GPU |
+| Aprox. 16 GB | 256K | 87.18 tok/s | 93.40 tok/s | FP8 / INT8: Cálculo de especialistas na GPU e na CPU |
+| Aprox. 12 GB | 128K | 74.99 tok/s | 76.22 tok/s | FP8 / INT8: Cálculo de especialistas na GPU e na CPU |
+| Aprox. 8 GB | 64K | 48.32 tok/s | 52.75 tok/s | FP8 / INT8: Especialistas calculados na CPU durante a geração |
 
-Os mesmos três textos foram executados duas vezes por configuração FP8/INT8, gerando 128 tokens por solicitação, incluindo o raciocínio. A velocidade é o total de tokens dividido pelo tempo total de decodificação, sem carregamento nem processamento da entrada; o contexto indica capacidade de cache. As linhas com menos memória reservam 8, 12 ou 16 GiB na mesma GPU de 24 GB, sem usar GPUs físicas de 16/12/8 GB.
+Os mesmos três textos foram executados duas vezes por configuração FP8/INT8 com os padrões de amostragem do modelo, gerando 128 tokens por solicitação, incluindo o raciocínio. A velocidade é o total de tokens dividido pelo tempo total de decodificação, sem carregamento nem processamento da entrada; o contexto indica capacidade de cache. As linhas com menos memória reservam 8, 12 ou 16 GiB na mesma GPU de 24 GB e usam o contexto dessa classe de VRAM; não são testes de GPUs físicas de 16/12/8 GB.
 
 ## Velocidade medida — LFM2.5
 
-Medido no mesmo PC Windows com 64 GB de RAM e o LFM2.5-24B-A2B Q4_K_M oficial, sem MTP ou Vision. CUDA Graphs e os padrões de raciocínio e amostragem do modelo estavam ativados; o contexto, os blocos de entrada e a distribuição de especialistas foram escolhidos automaticamente.
+Medido no mesmo PC Windows com 64 GB de RAM e o LFM2.5-24B-A2B Q4_K_M oficial, sem MTP ou Vision. CUDA Graphs e os padrões de raciocínio e amostragem do modelo estavam ativados; o contexto foi fixado conforme a classe de VRAM, enquanto os blocos de entrada e a distribuição de especialistas foram escolhidos automaticamente.
 
-FP8 nativo e INT8 foram medidos em **2026-10-20**; os valores FP16 foram mantidos como referência de **2026-10-19**.
+FP8 nativo e INT8 foram medidos em **2026-10-20**.
 
-| VRAM disponível | Capacidade de contexto | FP8 nativo (padrão) | INT8 | FP16 (referência) | Observações |
-| --- | ---: | ---: | ---: | ---: | --- |
-| 24 GB | 128K | 147.60 tok/s | 143.22 tok/s | 151.71 tok/s | FP8 / INT8: Cálculo de especialistas na GPU |
-| Aprox. 16 GB | 128K | 124.51 tok/s | 125.42 tok/s | 111.71 tok/s | FP8 / INT8: Cálculo de especialistas na GPU e na CPU |
-| Aprox. 12 GB | 128K | 95.89 tok/s | 90.16 tok/s | 70.80 tok/s | FP8 / INT8: Cálculo de especialistas na GPU e na CPU |
-| Aprox. 8 GB | 64K | 63.77 tok/s | 63.18 tok/s | 51.20 tok/s | FP8 / INT8: Cálculo de especialistas na GPU e na CPU |
+| VRAM disponível | Capacidade de contexto | FP8 nativo (padrão) | INT8 | Observações |
+| --- | ---: | ---: | ---: | --- |
+| 24 GB | 128K | 151.41 tok/s | 148.29 tok/s | FP8 / INT8: Cálculo de especialistas na GPU |
+| Aprox. 16 GB | 128K | 137.32 tok/s | 134.61 tok/s | FP8 / INT8: Cálculo de especialistas na GPU e na CPU |
+| Aprox. 12 GB | 128K | 105.97 tok/s | 101.45 tok/s | FP8 / INT8: Cálculo de especialistas na GPU e na CPU |
+| Aprox. 8 GB | 64K | 73.48 tok/s | 70.81 tok/s | FP8 / INT8: Cálculo de especialistas na GPU e na CPU |
 
-Os mesmos três textos foram executados uma vez por configuração FP8/INT8, gerando 128 tokens por solicitação, incluindo o raciocínio. A velocidade é o total de tokens dividido pelo tempo total de decodificação, sem carregamento nem processamento da entrada; o contexto indica capacidade de cache. As linhas com menos memória reservam 8, 12 ou 16 GiB na mesma GPU de 24 GB, sem usar GPUs físicas de 16/12/8 GB.
+Os mesmos três textos foram executados duas vezes por configuração FP8/INT8 com os padrões de amostragem do modelo, gerando 128 tokens por solicitação, incluindo o raciocínio. A velocidade é o total de tokens dividido pelo tempo total de decodificação, sem carregamento nem processamento da entrada; o contexto indica capacidade de cache. As linhas com menos memória reservam 8, 12 ou 16 GiB na mesma GPU de 24 GB e usam o contexto dessa classe de VRAM; não são testes de GPUs físicas de 16/12/8 GB.
 
 ## Qual projeto devo usar?
 

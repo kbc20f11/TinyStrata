@@ -109,50 +109,46 @@ Poll `GET /v1/model/switch` until `state` is `ready`. To return to Qwen, send th
 
 ## Measured speed — Qwen3.6
 
-The speed tables below were measured before context selection was changed to use total VRAM.
-
-Measurements were taken on 2026-10-19 using Windows, an RTX PRO 4000 Blackwell SFF Edition (24 GB), a Ryzen 9 7945HX3D and the fixed Unsloth MTP UD-IQ3_XXS model. The GPU vision encoder was resident throughout these text-only API requests.
-
-The thinking and sampling defaults at measurement time (temperature 0.7), MTP 3, 512-token prompt chunks and automatic context and Expert placement were used. The hybrid CUDA Graph option stayed at its default off. The FP8 column uses automatic KV selection on this GPU; the INT8 column changes only the KV mode.
-
-**We plan to benchmark physical GPUs with 8 GB, 12 GB and 16 GB of VRAM.** The reduced-memory rows below were measured by limiting free memory on the same 24 GB GPU; they are not benchmarks of physical 8/12/16 GB GPUs.
+Measured on **2026-10-20** using Windows, an RTX PRO 4000 Blackwell SFF Edition (24 GB), a Ryzen 9 7945HX3D, 64 GB of system RAM and the fixed Unsloth MTP UD-IQ3_XXS model. The image encoder stayed on the GPU during text-only API requests. Thinking, the model’s sampling defaults (temperature 1.0) and MTP 3 were enabled. Prompt chunks and Expert placement were automatic; context capacity was set for each VRAM class. Hybrid CUDA Graphs stayed at their default off; normal all-GPU CUDA Graphs remained enabled.
 
 | Available VRAM | Context capacity | INT8 generation | Native FP8 generation | Notes |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 118.40 tok/s | 131.82 tok/s | All weights resident in VRAM |
-| Approximately 16 GB | 128K | 95.09 tok/s | 99.39 tok/s | GPU and CPU Expert computation |
-| Approximately 12 GB | 64K | 85.03 tok/s | 85.59 tok/s | GPU and CPU Expert computation |
-| Approximately 8 GB | 64K | 66.30 tok/s | 63.85 tok/s | GPU and CPU Expert computation |
+| 24 GB | 256K | 119.98 tok/s | 132.43 tok/s | All weights resident in VRAM |
+| Approximately 16 GB | 256K | 90.40 tok/s | 95.86 tok/s | GPU and CPU Expert computation |
+| Approximately 12 GB | 128K | 78.60 tok/s | 83.62 tok/s | GPU and CPU Expert computation |
+| Approximately 8 GB | 64K | 64.33 tok/s | 64.46 tok/s | GPU and CPU Expert computation |
+
+Each of the same three input texts was run twice per FP8/INT8 configuration, generating 128 tokens including thinking; sampling settings were left at their model defaults. Speed is total generated tokens divided by total decode time, excluding loading and prompt processing; context values are cache capacities. The reduced-memory rows reserve 8, 12 or 16 GiB on the same 24 GB GPU and use the context capacity for that VRAM class; they are not physical 16/12/8 GB GPU benchmarks.
 
 ## Measured speed — Gemma 4
 
-Measured on the same Windows PC with 64 GB of system RAM, using Gemma 4 26B-A4B-it QAT Q4_0 and its matching QAT MTP assistant. The image encoder stayed on the GPU during text-only API requests. MTP 3, CUDA Graphs and the model-specific thinking/sampling defaults were enabled; context, prompt chunks and Expert placement were automatic.
+Measured on the same Windows PC with 64 GB of system RAM, using Gemma 4 26B-A4B-it QAT Q4_0 and its matching QAT MTP assistant. The image encoder stayed on the GPU during text-only API requests. MTP 3, CUDA Graphs and the model-specific thinking/sampling defaults were enabled; context capacity was set for each VRAM class; prompt chunks and Expert placement were automatic.
 
-Native FP8 and INT8 were measured on **2026-10-20**; FP16 figures are retained as references from **2026-10-19**.
+Native FP8 and INT8 were measured on **2026-10-20**.
 
-| Available VRAM | Context capacity | Native FP8 (experimental) | INT8 (default) | FP16 (reference) | Notes |
-| --- | ---: | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 117.17 tok/s | 121.16 tok/s | 105.56 tok/s | FP8 / INT8: Experts computed on the GPU |
-| Approximately 16 GB | 128K | 94.69 tok/s | 97.02 tok/s | 88.46 tok/s | FP8 / INT8: GPU and CPU Expert computation |
-| Approximately 12 GB | 64K | 77.20 tok/s | 82.71 tok/s | 68.16 tok/s | FP8 / INT8: GPU and CPU Expert computation |
-| Approximately 8 GB | 64K | 47.48 tok/s | 50.65 tok/s | 48.22 tok/s | FP8 / INT8: Experts computed on the CPU during generation |
+| Available VRAM | Context capacity | Native FP8 (experimental) | INT8 (default) | Notes |
+| --- | ---: | ---: | ---: | --- |
+| 24 GB | 256K | 116.07 tok/s | 119.38 tok/s | FP8 / INT8: Experts computed on the GPU |
+| Approximately 16 GB | 256K | 87.18 tok/s | 93.40 tok/s | FP8 / INT8: GPU and CPU Expert computation |
+| Approximately 12 GB | 128K | 74.99 tok/s | 76.22 tok/s | FP8 / INT8: GPU and CPU Expert computation |
+| Approximately 8 GB | 64K | 48.32 tok/s | 52.75 tok/s | FP8 / INT8: Experts computed on the CPU during generation |
 
-Each of the same three input texts was run twice per FP8/INT8 configuration, generating 128 tokens including thinking. Speed is total generated tokens divided by total decode time, excluding loading and prompt processing; context values are cache capacities. Reduced-memory rows reserve 8, 12 or 16 GiB separately on the same 24 GB GPU, rather than using physical 16/12/8 GB GPUs.
+Each of the same three input texts was run twice per FP8/INT8 configuration, generating 128 tokens including thinking; sampling settings were left at their model defaults. Speed is total generated tokens divided by total decode time, excluding loading and prompt processing; context values are cache capacities. The reduced-memory rows reserve 8, 12 or 16 GiB on the same 24 GB GPU and use the context capacity for that VRAM class; they are not physical 16/12/8 GB GPU benchmarks.
 
 ## Measured speed — LFM2.5
 
-Measured on the same Windows PC with 64 GB of system RAM, using the official LFM2.5-24B-A2B Q4_K_M model, without MTP or Vision. CUDA Graphs and the model-specific thinking/sampling defaults were enabled; context, prompt chunks and Expert placement were automatic.
+Measured on the same Windows PC with 64 GB of system RAM, using the official LFM2.5-24B-A2B Q4_K_M model, without MTP or Vision. CUDA Graphs and the model-specific thinking/sampling defaults were enabled; context capacity was set for each VRAM class; prompt chunks and Expert placement were automatic.
 
-Native FP8 and INT8 were measured on **2026-10-20**; FP16 figures are retained as references from **2026-10-19**.
+Native FP8 and INT8 were measured on **2026-10-20**.
 
-| Available VRAM | Context capacity | Native FP8 (default) | INT8 | FP16 (reference) | Notes |
-| --- | ---: | ---: | ---: | ---: | --- |
-| 24 GB | 128K | 147.60 tok/s | 143.22 tok/s | 151.71 tok/s | FP8 / INT8: Experts computed on the GPU |
-| Approximately 16 GB | 128K | 124.51 tok/s | 125.42 tok/s | 111.71 tok/s | FP8 / INT8: GPU and CPU Expert computation |
-| Approximately 12 GB | 128K | 95.89 tok/s | 90.16 tok/s | 70.80 tok/s | FP8 / INT8: GPU and CPU Expert computation |
-| Approximately 8 GB | 64K | 63.77 tok/s | 63.18 tok/s | 51.20 tok/s | FP8 / INT8: GPU and CPU Expert computation |
+| Available VRAM | Context capacity | Native FP8 (default) | INT8 | Notes |
+| --- | ---: | ---: | ---: | --- |
+| 24 GB | 128K | 151.41 tok/s | 148.29 tok/s | FP8 / INT8: Experts computed on the GPU |
+| Approximately 16 GB | 128K | 137.32 tok/s | 134.61 tok/s | FP8 / INT8: GPU and CPU Expert computation |
+| Approximately 12 GB | 128K | 105.97 tok/s | 101.45 tok/s | FP8 / INT8: GPU and CPU Expert computation |
+| Approximately 8 GB | 64K | 73.48 tok/s | 70.81 tok/s | FP8 / INT8: GPU and CPU Expert computation |
 
-Each of the same three input texts was run once per FP8/INT8 configuration, generating 128 tokens including thinking. Speed is total generated tokens divided by total decode time, excluding loading and prompt processing; context values are cache capacities. Reduced-memory rows reserve 8, 12 or 16 GiB separately on the same 24 GB GPU, rather than using physical 16/12/8 GB GPUs.
+Each of the same three input texts was run twice per FP8/INT8 configuration, generating 128 tokens including thinking; sampling settings were left at their model defaults. Speed is total generated tokens divided by total decode time, excluding loading and prompt processing; context values are cache capacities. The reduced-memory rows reserve 8, 12 or 16 GiB on the same 24 GB GPU and use the context capacity for that VRAM class; they are not physical 16/12/8 GB GPU benchmarks.
 
 ## Which project should I use?
 
