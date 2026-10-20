@@ -32,7 +32,7 @@ Es gibt bereits viele Benutzeroberflächen und Agenten-Laufzeitumgebungen, die A
 
 **LFM2.5-24B-A2B Q4_K_M** verwendet den offiziellen [LiquidAI-GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF). Der einzelne Sprachmodell-Download ist **14.53 GB** groß.
 
-Alle drei Engines verwenden einen automatischen VRAM-Expertencache, CPU-Expertenberechnung aus dem Arbeitsspeicher, Gewichtsstreaming bei der Eingabe und CUDA Graphs. Sie nutzen dieselbe API und unterstützen Modellwechsel im laufenden Betrieb; die Einstellungen werden pro Modell gespeichert. Ausgewählte Experten werden nicht ausgelassen.
+Alle drei Engines verwenden einen automatischen VRAM-Expertencache, CPU-Expertenberechnung aus dem Arbeitsspeicher, Gewichtsstreaming bei der Eingabe und CUDA Graphs. Sie nutzen dieselbe API und unterstützen Modellwechsel im laufenden Betrieb; die Einstellungen werden pro Modell gespeichert. Ausgewählte Experten werden nicht ausgelassen. Sie unterstützen außerdem automatisches Wachstum des physischen KV-Speichers, ohne die maximale Kontextkapazität zu ändern.
 
 | Funktion | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) |
 | --- | --- | --- | --- |
@@ -95,6 +95,18 @@ Mit `run-api.bat --model-family gemma4` starten Sie direkt mit Gemma unter `http
 
 Fragen Sie `GET /v1/model/switch` bis `state: ready` ab. Zum Zurückwechseln senden Sie dieselbe Wechselanfrage mit `{"model":"qwen3.6-35b-a3b"}`. Der Start eines Downloads oder Wechsels liefert `202`; ein Wechsel während einer Generierung liefert `409`, daher nach deren Ende erneut versuchen. Inferenzanfragen während des Wechsels liefern `503`. Port und Authentifizierung bleiben unverändert. Die Auswahl gilt für die aktuelle Serversitzung; nach einem Neustart wird das im Launcher gewählte Modell verwendet.
 
+## KV-Wachstum: gemessener Effekt
+
+Gemessen am **2026-10-21** auf demselben unten beschriebenen Windows-PC: 8 GiB der 24-GB-GPU wurden reserviert (16-GB-Klasse), und `--kv-whole` wurde mit dem standardmäßigen `--kv-grow` derselben Binärdatei verglichen. Die gleichen drei Prompts liefen jeweils zweimal mit 128 generierten Token und den Sampling-Standardwerten des Modells; Qwen/Gemma verwendeten 256K Kontext mit Bildencoder auf GPU, LFM 128K.
+
+| Modell | KV | Vollständiges KV | Wachsendes KV (Standard) | Änderung |
+| --- | --- | ---: | ---: | ---: |
+| Qwen3.6 | FP8 | 90.56 | 103.28 | +14.0% |
+| Gemma 4 | INT8 | 88.08 | 95.13 | +8.0% |
+| LFM2.5 | FP8 | 128.49 | 130.27 | +1.4% |
+
+Der Unterschied bei LFM ist klein. Die Einheit ist tok/s; die älteren Tabellen vom **2026-10-20** unten verwenden vollständige KV-Zuweisung.
+
 ## Gemessene Geschwindigkeit — Qwen3.6
 
 Gemessen am **2026-10-20** unter Windows mit einer RTX PRO 4000 Blackwell SFF Edition (24 GB), einem Ryzen 9 7945HX3D, 64 GB Arbeitsspeicher und dem festgelegten Unsloth-MTP-UD-IQ3_XXS-Modell. Der Bildencoder blieb bei den Textanfragen über die API auf der GPU. Thinking, die Sampling-Standardwerte des Modells (Temperatur 1.0) und MTP 3 waren aktiv. Prompt-Chunks und Expertenplatzierung wurden automatisch gewählt; die Kontextkapazität wurde entsprechend der VRAM-Klasse festgelegt. Der hybride CUDA-Graph-Pfad blieb standardmäßig aus, die normalen CUDA Graphs bei vollständigem GPU-Betrieb blieben aktiv.
@@ -154,11 +166,11 @@ Die heruntergeladenen Modelldateien umfassen insgesamt etwa **15.0 GB**: **14.1 
 
 ![So teilt TinyStrata den Speicher zwischen GPU-VRAM und Arbeitsspeicher auf](assets/memory-sharing.png)
 
-Dies ist ein Schema der Speicheraufteilung im standardmäßigen GPU-Bildmodus, keine Partitionierung mit festen Größen. Bei jedem Laden des Modells startet TinyStrata den GPU-Vision-Encoder und lässt ihn warmlaufen, bevor es das Sprachmodell lädt; seine Gewichte und aufgewärmten Arbeitspuffer bleiben im Speicher. Anschließend weist es Speicher für den KV-Cache, die übrigen Gewichte und Arbeitspuffer zu und bemisst den Experten-Cache nach dem verbleibenden freien VRAM. Unter Windows verwendet es den kleineren Wert aus dem freien CUDA-Speicher und dem vom NVIDIA-Treiber gemeldeten freien dedizierten VRAM, wenn beide verfügbar sind.
+Dies ist ein Schema der Speicheraufteilung im standardmäßigen GPU-Bildmodus, keine Partitionierung mit festen Größen. Bei jedem Laden des Modells startet TinyStrata den GPU-Vision-Encoder und lässt ihn warmlaufen, bevor es das Sprachmodell lädt; seine Gewichte und aufgewärmten Arbeitspuffer bleiben im Speicher. Anschließend weist es die ersten KV-Seiten sowie Speicher für die übrigen Gewichte und Arbeitspuffer zu und bemisst den Experten-Cache nach dem verbleibenden freien VRAM. Unter Windows verwendet es den kleineren Wert aus dem freien CUDA-Speicher und dem vom NVIDIA-Treiber gemeldeten freien dedizierten VRAM, wenn beide verfügbar sind.
 
-Der Cache-Inhalt ändert sich, wenn andere Experten verwendet werden; die Cache-Kapazität wird beim erneuten Laden des Modells neu berechnet. Später gestartete Anwendungen können weiterhin VRAM belegen.
+Der Cache-Inhalt ändert sich mit den verwendeten Experten. Beim standardmäßigen KV-Wachstum lassen kurze Unterhaltungen mehr VRAM für Experten; wächst die Sequenz, gibt der Expertencache Speicher an KV zurück. Neue kürzere Anfragen können ungenutzte KV-Seiten an den Expertencache zurückgeben. `run-api.bat --kv-whole` reserviert die gesamte KV-Kapazität vorab; `run-api.bat --kv-grow` stellt das Wachstum wieder her. Andere Anwendungen können weiterhin VRAM belegen.
 
-Die Expertenplatzierung strebt normalerweise 768 MiB Reserve an. Wie Strata kann sie bei knappem Platz gepackte Q8-Gewichtskopien freigeben, einen vorhandenen Attention-Score-Puffer verkleinern und die Reserve auf 256 MiB senken, damit alle Experten des Hauptmodells in den VRAM passen; MTP-Experten können auf der CPU laufen. `--vram-reserve-mib N` legt die Reserve ausdrücklich fest. Dies ist ein Ziel bei der Platzierung, keine dauerhafte Garantie für freien Speicher.
+Die Expertenplatzierung strebt normalerweise 768 MiB Reserve an. Im Qwen-Modus `--kv-whole` kann sie wie Strata bei knappem Platz gepackte Q8-Gewichtskopien freigeben, einen vorhandenen Attention-Score-Puffer verkleinern und die Reserve auf 256 MiB senken, damit alle Experten des Hauptmodells in den VRAM passen; MTP-Experten können auf der CPU laufen. `--vram-reserve-mib N` legt die Reserve ausdrücklich fest. Dies ist ein Ziel bei der Platzierung, keine dauerhafte Garantie für freien Speicher.
 
 Mehr Experten im GPU-Speicher bedeuten normalerweise weniger CPU-Arbeit. Im Hybridmodus hält der Arbeitsspeicher auch Sicherungskopien der im VRAM zwischengespeicherten Experten vor. Zusätzlicher VRAM verringert den RAM-Verbrauch daher nicht Byte für Byte. Lassen Sie auch RAM für das Betriebssystem und andere Anwendungen frei. Mehr **RAM-Kapazität** ermöglicht es, Modelldaten vorzuhalten, doch die Geschwindigkeit hängt auch von CPU, RAM-Bandbreite und GPU ab. Der „gemeinsam genutzte GPU-Speicher“ von Windows unterscheidet sich davon, dass TinyStrata Experten gezielt auf der CPU berechnet.
 
@@ -172,7 +184,9 @@ Bei Qwen3.6 wählt eine RTX 3060 INT8. Unterstützte Umgebungen mit GPUs der RTX
 
 Die native Engine schätzt beim Start anhand des freien VRAM, der Kontextkapazität und des Platzbedarfs der GPU-Experten eine Blockgröße von 512, 1024, 2048 oder 4096 Token. Größere Blöcke können wiederholte Gewichtstransfers vom RAM zur GPU während der Eingabeverarbeitung reduzieren. `run-api.bat --chunk N` legt die Größe fest; `run-api.bat --chunk auto` stellt die native automatische Auswahl wieder her.
 
-Die Kontextkapazität ist der maximale Speicherplatz, der für Eingabe und generierte Ausgabe zusammen reserviert wird. Eine höhere Kapazität benötigt selbst bei einer kurzen Unterhaltung mehr KV-Speicher und lässt weniger VRAM für Experten übrig. Eine bestimmte Kapazität bedeutet auch nicht bei jeder Unterhaltungslänge dieselbe Geschwindigkeit: Die tatsächliche Verarbeitung eines langen Dokuments erfordert mehr Arbeit. Zur Einordnung: INT8-KV allein benötigt einschließlich der MTP-Schicht etwa **0.71 GiB bei 64K, 1.42 GiB bei 128K und 2.84 GiB bei 256K**; weitere Gewichte und Arbeitspuffer kommen hinzu. Natives FP8 benötigt in dieser Implementierung ungefähr ebenso viel KV-Speicher wie INT8; sein Vorteil liegt in einem anderen Berechnungspfad und nicht in einem wesentlich kleineren Cache.
+Die Kontextkapazität ist die logische Obergrenze für Eingabe und generierte Ausgabe zusammen. Standardmäßig wird physischer KV-Speicher mit wachsender Unterhaltung zugewiesen, statt bei einer kurzen Unterhaltung die gesamte Kapazität vorab zu belegen. Lange Dokumente erfordern weiterhin mehr Berechnungen und schließlich mehr KV-Speicher.
+
+Bei voller Kapazität benötigt Qwens INT8-KV einschließlich der MTP-Schicht etwa **0.71 GiB bei 64K, 1.42 GiB bei 128K und 2.84 GiB bei 256K**; weitere Gewichte und Arbeitspuffer kommen hinzu. Natives FP8 benötigt in dieser Implementierung ungefähr ebenso viel KV-Speicher wie INT8; sein Vorteil liegt in einem anderen Berechnungspfad und nicht in einem wesentlich kleineren Cache.
 
 Die Kontextkapazität wird anhand des gesamten GPU-VRAM gewählt; der Expertencache wird anschließend in den beim Laden verbleibenden freien VRAM eingepasst. Andere Anwendungen mit VRAM-Bedarf lassen weniger Platz für GPU-gecachte Experten. Die API weist Eingaben zurück, die die Kontextkapazität überschreiten, anstatt sie stillschweigend zu kürzen.
 

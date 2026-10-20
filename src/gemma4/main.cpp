@@ -270,14 +270,23 @@ void sampling_key(Sampling& s, const std::string& word) {
         throw std::invalid_argument("sampling value outside range");
 }
 
+void memory_info(const Engine& e) {
+    std::printf("INFO expert_slots=%d expert_cache_mib=%lld kv_grow=%d kv_committed_rows=%lld "
+                "kv_logical_bytes=%llu kv_mapped_bytes=%llu\n", e.cached_experts(),
+                (long long) (e.cached_gib() * 1024), e.kv_growing(), (long long) e.kv_committed_rows(),
+                (unsigned long long) e.kv_logical_bytes(), (unsigned long long) e.kv_mapped_bytes());
+}
+
 int serve(Engine& e, const Options& o) {
     std::printf("INFO version=0.1.0 family=gemma4 model=gemma-4-26b-a4b-it kv=%s mtp=%d vision=%d expert_slots=%d "
-                "expert_cache_mib=%lld expert_auto=%d chunk=%d vram_reserve_mib=%d graph=%d prompt_logits_first=1\n",
+                "expert_cache_mib=%lld expert_auto=%d chunk=%d vram_reserve_mib=%d graph=%d prompt_logits_first=1 "
+                "kv_grow=%d kv_committed_rows=%lld kv_logical_bytes=%llu kv_mapped_bytes=%llu\n",
                 e.kv_format() == strata::gemma4::KvFmt::kFp8 ? "fp8-mma" :
                     e.kv_format() == strata::gemma4::KvFmt::kQ8_0 ? "int8" : "fp16",
                 e.drafts() ? e.max_window() - 1 : 0, e.sees(),
                 e.cached_experts(), (long long) (e.cached_gib() * 1024), o.expert_vram_gib < 0 && o.gpu_experts,
-                e.max_rows(), e.reserve_mib(), o.graphs);
+                e.max_rows(), e.reserve_mib(), o.graphs, e.kv_growing(), (long long) e.kv_committed_rows(),
+                (unsigned long long) e.kv_logical_bytes(), (unsigned long long) e.kv_mapped_bytes());
     std::printf("READY %d stop\n", e.max_context());
     std::fflush(stdout);
     struct Inbox {
@@ -386,11 +395,16 @@ int serve(Engine& e, const Options& o) {
             if (live.size() < ids.size() && e.pos() == (int64_t) live.size() &&
                 std::equal(live.begin(), live.end(), ids.begin())) reuse = live.size();
             else { e.reset(); live.clear(); }
+            // Between requests, unused KV pages can go back to the Expert cache.
+            // trim_kv also keeps the preceding request's reach to avoid churn.
+            e.trim_kv((int64_t) ids.size());
+            e.mind_vram();
             const auto before = e.stats();
             const auto p0 = Clock::now();
             const int fresh = (int) (ids.size() - reuse);
             if (!prompt(e, ids.data() + reuse, fresh, box->stop, p0, true, geni)) {
                 e.reset(); live.clear();
+                memory_info(e);
                 std::printf("DONE 0 %zu %.1f 0 cancel 0 0 %zu 0 0 0 0 0.0 0 0\n", ids.size(), elapsed(p0), reuse);
                 std::fflush(stdout);
                 continue;
@@ -445,17 +459,22 @@ int serve(Engine& e, const Options& o) {
                 if (!more) break;
             }
             if ((int64_t) live.size() != e.pos()) throw std::logic_error("history/state mismatch");
+            memory_info(e);
             std::printf("DONE %d %zu %.1f %.1f %s %lld %lld %zu 0 0 0 0 0.0 %d 0\n", produced, ids.size(), pp,
                         elapsed(d0), finish, (long long) accepted, (long long) guessed, reuse, fresh);
             std::fflush(stdout);
             const auto& st = e.stats();
             std::fprintf(stderr, "gemma4: generated=%d decode_evaluated=%d prompt_logits_first=1 "
-                         "experts gpu=%lld cpu=%lld staged=%lld cached_batch=%lld swaps=%lld\n", produced, evaluated,
+                         "experts gpu=%lld cpu=%lld staged=%lld cached_batch=%lld swaps=%lld "
+                         "kv_grow=%d kv_committed_rows=%lld kv_logical_bytes=%llu kv_mapped_bytes=%llu expert_cache_mib=%lld\n", produced, evaluated,
                          (long long) (st.gpu_experts - before.gpu_experts),
                          (long long) (st.cpu_experts - before.cpu_experts),
                          (long long) (st.batch_staged - before.batch_staged),
                          (long long) (st.batch_cached - before.batch_cached),
-                         (long long) (st.swapped_experts - before.swapped_experts));
+                         (long long) (st.swapped_experts - before.swapped_experts),
+                         e.kv_growing(), (long long) e.kv_committed_rows(),
+                         (unsigned long long) e.kv_logical_bytes(), (unsigned long long) e.kv_mapped_bytes(),
+                         (long long) (e.cached_gib() * 1024));
         } catch (const std::exception& ex) {
             // A failed/cancelled read may leave only some recurrent layers advanced.
             // Reset before accepting another request, rather than reuse that state.
@@ -478,7 +497,6 @@ int main(int argc, char** argv) {
         opt.vram_reserve_mib = 768;
         opt.prompt_batch = 1120;
         opt.stage_mib = 256;
-        opt.kv_grow = false;
         for (int i = 1; i < argc; ++i) {
             const std::string arg = argv[i];
             auto next = [&]() -> std::string {
@@ -497,6 +515,8 @@ int main(int argc, char** argv) {
                           "  --vram-reserve-mib N   Leave VRAM headroom (default 768 MiB)\n"
                           "  --cpu-threads N --no-graph --no-gpu-experts\n"
                           "  --kv-type auto|fp8|int8|fp16  Auto: INT8; native FP8 is experimental and opt-in\n"
+                          "  --kv-grow             Grow physical KV with actual usage (default, if supported)\n"
+                          "  --kv-whole            Allocate the full context's KV at startup\n"
                           "  --stage-mib N          Prompt Expert streaming buffer (default 256 MiB)");
                 return 0;
             } else if (arg == "--model" || arg == "--native") opt.model = next();
@@ -523,6 +543,8 @@ int main(int argc, char** argv) {
             else if (arg == "--cpu-threads" || arg == "--threads") opt.threads = bounded_integer(next(), "threads", 0, 1024);
             else if (arg == "--no-graph") opt.graphs = false;
             else if (arg == "--no-gpu-experts") opt.gpu_experts = false;
+            else if (arg == "--kv-grow") opt.kv_grow = true;
+            else if (arg == "--kv-whole" || arg == "--no-kv-grow") opt.kv_grow = false;
             else if (arg == "--kv-type") {
                 const auto s = next();
                 if (s == "int8" || s == "q8_0") opt.kv_format = strata::gemma4::KvFmt::kQ8_0;

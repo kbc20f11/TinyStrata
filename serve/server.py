@@ -993,6 +993,17 @@ class StrataEngine:
                 except OSError:
                     pass
                 break                           # publish EOF, never the trailing DONE
+            if line.startswith("INFO "):
+                # A growing KV cache borrows pages from the Expert cache. Keep
+                # the current allocation visible without changing token/DONE routing.
+                if self.proc is proc:
+                    facts = {}
+                    for word in line.split()[1:]:
+                        key, separator, value = word.partition("=")
+                        if separator:
+                            facts[key] = int(value) if value.lstrip("-").isdigit() else value
+                    self.info.update(facts)
+                continue
             if line.startswith(("BT ", "BDONE ")) and slot_q:   # --batch: a batch slot's own lines
                 try:
                     slot_q[int(line.split()[1])].put(line)

@@ -278,6 +278,11 @@ public:
     int cached_experts() const { return cached_ + (next_ ? next_->cached_experts() : 0); }
     int total_experts() const { return n_moe_ * n_expert_ + (next_ ? next_->total_experts() : 0); }
     double cached_gib() const { return double(exp_at_) / double(1ull << 30) + (next_ ? next_->cached_gib() : 0); }
+    /// Logical full-attention KV capacity and its currently allocated physical VRAM.
+    bool kv_growing() const { return !kv_.empty(); }
+    int64_t kv_committed_rows() const { return kv_growing() ? kv_rows_ : opt_.max_context; }
+    size_t kv_logical_bytes() const;
+    size_t kv_mapped_bytes() const;
     /// The cache as load() filled it, which is as large as resize_cache() makes it again.
     int full_experts() const { return full_cached_ + (next_ ? next_->full_experts() : 0); }
     double full_gib() const { return double(full_bytes_) / double(1ull << 30) + (next_ ? next_->full_gib() : 0); }

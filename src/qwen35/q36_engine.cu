@@ -30,6 +30,7 @@
 #include "strata/qwen35/environment_policy.hpp"
 #include "strata/qwen35/speculative_sampling.hpp"
 #include "strata/qwen35/vision.hpp"
+#include "strata/qwen35/kv_grow.hpp"
 #if defined(STRATA_Q36_CPU_POOL)
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/cpu/pool.hpp"
@@ -1175,6 +1176,16 @@ struct Engine {
     std::vector<A::KvCache> kv;   // per layer; MTP cache at index n_layers
     int kv_format = 0; // 0 FP32, 1 FP8, 2 INT8, 3 native FP8 MMA
     bool kv_auto = false, context_auto = false;
+    bool kv_grow = true, grow_hybrid = false;
+    int64_t kv_committed_rows = 0;
+    size_t kv_logical_bytes = 0;
+    struct KvPlane {
+        std::unique_ptr<strata::qwen35::kv_grow::Range> range;
+        size_t row_bytes;
+    };
+    std::vector<KvPlane> kv_planes;
+    std::vector<std::unique_ptr<strata::qwen35::kv_grow::Range>> expert_ranges;
+    std::vector<int> grow_max_slots;
     int gpu_cc = 0;
     bool int8_prompt = false, fp8_prompt = false;
     bool tiled_prompt() const { return int8_prompt || fp8_prompt; }
@@ -1238,7 +1249,7 @@ struct Engine {
     bool lhy(size_t li) const {
         if (!m->hybrid) return false;
         const Layer& L = li < m->layers.size() ? m->layers[li] : m->mtp;
-        return L.n_slots < (int) m->g.n_expert;
+        return grow_hybrid || L.n_slots < (int) m->g.n_expert;
     }
 #if defined(STRATA_Q36_CPU_POOL)
     std::unique_ptr<strata::kernels::cpu::ExpertPool> pool;
@@ -1279,6 +1290,10 @@ struct Engine {
     void init(const Model& model, int ctx_, int tmax_) {
         m = &model;
         ctx = ctx_;
+        if (kv_grow && !strata::qwen35::kv_grow::api().ok) {
+            std::fprintf(stderr, "tinystrata: KV growth unavailable on this device/build; using whole KV allocation\n");
+            kv_grow = false;
+        }
         tmax = std::max(tmax_, kVerify);
         const auto& g = m->g;
         const size_t T = (size_t) tmax, N = (size_t) g.n_embd, Kp = (size_t) m->top_k, FF = (size_t) g.n_ff;
@@ -1396,19 +1411,39 @@ struct Engine {
         auto alloc_kv = [&]() {
             A::KvCache cache;
             const size_t slots = (size_t) g.n_head_kv * ctx;
+            const auto plane = [&](size_t bytes_per_row) -> void* {
+                const size_t bytes = slots * bytes_per_row;
+                kv_logical_bytes += bytes;
+                if (!kv_grow) {
+                    uint8_t* p = nullptr;
+                    CK(cudaMalloc(&p, bytes));
+                    CK(cudaMemset(p, 0, bytes));
+                    return p;
+                }
+                KvPlane p;
+                p.row_bytes = bytes_per_row;
+                p.range = std::make_unique<strata::qwen35::kv_grow::Range>();
+                if (!p.range->reserve(bytes)) {
+                    std::fprintf(stderr, "tinystrata: cannot reserve stable KV virtual addresses\n");
+                    std::exit(1);
+                }
+                void* base = p.range->base();
+                kv_planes.push_back(std::move(p));
+                return base;
+            };
             if (kv_format == 2 || kv_format == 3) {
-                cache.key = dalloc_t<int8_t>(slots * g.head_dim);
-                cache.value = dalloc_t<int8_t>(slots * g.head_dim);
-                cache.key_scale16 = dalloc_t<uint16_t>(slots * g.head_dim / 64);
-                cache.value_scale16 = dalloc_t<uint16_t>(slots * g.head_dim / 64);
+                cache.key = plane(g.head_dim);
+                cache.value = plane(g.head_dim);
+                cache.key_scale16 = (uint16_t*) plane(g.head_dim / 64 * sizeof(uint16_t));
+                cache.value_scale16 = (uint16_t*) plane(g.head_dim / 64 * sizeof(uint16_t));
             } else if (kv_format == 1) {
-                cache.key = dalloc_t<uint8_t>(slots * g.head_dim);
-                cache.value = dalloc_t<uint8_t>(slots * g.head_dim);
-                cache.key_scale = dalloc(slots);
-                cache.value_scale = dalloc(slots);
+                cache.key = plane(g.head_dim);
+                cache.value = plane(g.head_dim);
+                cache.key_scale = (float*) plane(sizeof(float));
+                cache.value_scale = (float*) plane(sizeof(float));
             } else {
-                cache.key = dalloc(slots * g.head_dim);
-                cache.value = dalloc(slots * g.head_dim);
+                cache.key = plane(g.head_dim * sizeof(float));
+                cache.value = plane(g.head_dim * sizeof(float));
             }
             return cache;
         };
@@ -1439,12 +1474,17 @@ struct Engine {
             pos0_m = dalloc_t<int32_t>(1);
             pick_m = dalloc_t<int32_t>(1);
         }
+        if (kv_grow) ensure_kv(std::min(ctx, 16384));
+        else kv_committed_rows = ctx;
         CK(cudaDeviceSynchronize());   // every legacy-stream cudaMemset of the buffers above is done
         const auto memory = available_vram();
         std::fprintf(stderr, "tinystrata: context %d cells, prompt chunk %d%s, %.2f GiB of VRAM free\n", ctx, tmax,
                      m->has_mtp ? ", MTP block loaded" : "", (double) memory.free / (1 << 30));
         std::fprintf(stderr, "tinystrata: KV storage %s\n",
                      kv_format == 3 ? "FP8 E4M3 (per-64 FP16 scale, native MMA)" : kv_format == 2 ? "INT8 (FP16 scale per 64 values)" : kv_format == 1 ? "FP8 E4M3 (per-token, per-head K/V scales)" : "FP32");
+        std::fprintf(stderr, "tinystrata: KV growth %s: %lld/%d rows, %.2f/%.2f GiB physically committed/logical\n",
+                     kv_grow ? "enabled" : "disabled", (long long) kv_committed_rows, ctx,
+                     kv_mapped_bytes() / 1073741824.0, kv_logical_bytes / 1073741824.0);
     }
 
     /// The recurrent state and the cache to a fresh sequence.
@@ -2328,6 +2368,163 @@ struct Engine {
         CK(cudaStreamSynchronize(st));   // slot_of's host copy is pageable: the upload is done before it changes
     }
 
+    size_t kv_mapped_bytes() const {
+        if (!kv_grow) return kv_logical_bytes;
+        size_t bytes = 0;
+        for (const auto& p : kv_planes) bytes += p.range->mapped();
+        return bytes;
+    }
+    std::vector<uint8_t> kv_mask(const KvPlane& p, int64_t rows) const {
+        return p.range->mask((size_t) rows, (size_t) m->g.n_head_kv,
+                             (size_t) ctx * p.row_bytes, p.row_bytes);
+    }
+    int64_t kv_target(int64_t end) const {
+        return std::min<int64_t>(ctx, std::max<int64_t>(16384, (end + 8191) / 8192 * 8192));
+    }
+    // Every caller is outside graph capture/replay. Virtual addresses stay fixed
+    // while the physical prefixes and the hybrid table change between launches.
+    void ensure_kv(int64_t end) {
+        if (!kv_grow || end <= kv_committed_rows) return;
+        if (end > ctx) {
+            std::fprintf(stderr, "tinystrata: KV growth exceeds logical context (%lld > %d)\n", (long long) end, ctx);
+            std::exit(1);
+        }
+        const int64_t rows = kv_target(end);
+        size_t more = 0;
+        for (const auto& p : kv_planes) more += p.range->need(kv_mask(p, rows));
+        CK(cudaDeviceSynchronize()); // includes prompt's copy stream and slot replacements
+        size_t free = 0, total = 0;
+        CK(resident_mem_info(&free, &total));
+        if (grow_hybrid && more + vram_reserve > free)
+            shrink_grow_cache(more + vram_reserve - free);
+        CK(resident_mem_info(&free, &total));
+        if (more > free) {
+            std::fprintf(stderr, "tinystrata: KV cannot grow to %lld rows: %zu MiB needed, %zu MiB dedicated VRAM free\n",
+                         (long long) rows, more >> 20, free >> 20);
+            std::exit(1);
+        }
+        for (const auto& p : kv_planes) if (!p.range->map(kv_mask(p, rows), st)) {
+            std::fprintf(stderr, "tinystrata: mapping physical KV pages failed\n");
+            std::exit(1);
+        }
+        CK(cudaStreamSynchronize(st)); // reused physical pages are zero before any graph reads them
+        kv_committed_rows = rows;
+        if (m->hybrid)
+            std::fprintf(stderr, "tinystrata: KV grown to %lld/%d rows, %zu MiB physically committed\n",
+                         (long long) rows, ctx, kv_mapped_bytes() >> 20);
+    }
+    void shrink_grow_cache(size_t bytes) {
+        if (!grow_hybrid) return;
+        CK(cudaDeviceSynchronize());
+        size_t freed = 0;
+        bool changed = true;
+        while (freed < bytes && changed) {
+            changed = false;
+            for (size_t li = 0; li < expert_ranges.size() && freed < bytes; ++li) {
+                auto& r = expert_ranges[li];
+                Layer& L = const_cast<Layer&>(layer_at((int) li));
+                Hy& H = hy[li];
+                if (!r || L.n_slots <= 0) continue;
+                changed = true;
+                const int last = L.n_slots - 1;
+                int cold = last;
+                for (int s = 0; s < last; ++s)
+                    if (H.score[(size_t) H.exp_in_slot[(size_t) s]] <
+                        H.score[(size_t) H.exp_in_slot[(size_t) cold]]) cold = s;
+                const int evicted = H.exp_in_slot[(size_t) cold];
+                const int moved = H.exp_in_slot[(size_t) last];
+                if (cold != last) {
+                    CK(cudaMemcpyAsync(L.blobs + (size_t) cold * L.stride, L.blobs + (size_t) last * L.stride,
+                                       L.L.bytes, cudaMemcpyDeviceToDevice, st));
+                    H.slot_of[(size_t) moved] = cold;
+                    H.exp_in_slot[(size_t) cold] = moved;
+                }
+                H.slot_of[(size_t) evicted] = -1;
+                H.exp_in_slot.pop_back();
+                --L.n_slots;
+                // The old last expert is now the MMQ over-read tail. Preserve
+                // the same zero padding as a newly allocated Expert arena.
+                if (L.n_slots)
+                    CK(cudaMemsetAsync(L.blobs + (size_t) L.n_slots * L.stride, 0, kMmqTail, st));
+                CK(cudaMemcpyAsync(H.slot_of_d, H.slot_of.data(), H.slot_of.size() * sizeof(int32_t),
+                                   cudaMemcpyHostToDevice, st));
+                CK(cudaStreamSynchronize(st)); // the moved blob must not be unmapped under its copy
+                const size_t before = r->mapped();
+                const size_t keep = L.n_slots ? (size_t) L.n_slots * L.stride + kMmqTail : 0;
+                if (!r->trim(r->prefix(keep))) {
+                    std::fprintf(stderr, "tinystrata: returning expert pages for KV failed\n");
+                    std::exit(1);
+                }
+                freed += before - r->mapped();
+            }
+        }
+        std::fprintf(stderr, "tinystrata: Expert cache returned %zu MiB for KV growth\n", freed >> 20);
+    }
+    // A fresh request has discarded the previous sequence, so KV pages beyond
+    // its prompt can return to the hottest missing experts. No history goes to RAM.
+    void trim_kv_for_request(int64_t end) {
+        if (!kv_grow || !grow_hybrid) return;
+        const int64_t rows = kv_target(end);
+        if (rows >= kv_committed_rows) return;
+        CK(cudaDeviceSynchronize());
+        const size_t before = kv_mapped_bytes();
+        for (const auto& p : kv_planes) if (!p.range->trim(kv_mask(p, rows))) {
+            std::fprintf(stderr, "tinystrata: trimming unused KV pages failed\n");
+            std::exit(1);
+        }
+        kv_committed_rows = rows;
+        size_t free = 0, total = 0;
+        CK(resident_mem_info(&free, &total));
+        size_t room = free > vram_reserve ? free - vram_reserve : 0;
+        for (size_t li = 0; li < expert_ranges.size(); ++li) {
+            auto& r = expert_ranges[li];
+            if (!r) continue;
+            Layer& L = const_cast<Layer&>(layer_at((int) li));
+            Hy& H = hy[li];
+            bool changed = false;
+            while (L.n_slots < grow_max_slots[li]) {
+                const auto want = r->prefix((size_t) (L.n_slots + 1) * L.stride + kMmqTail);
+                const size_t need = r->need(want);
+                if (need > room) break;
+                int best = -1;
+                for (int e = 0; e < (int) H.slot_of.size(); ++e)
+                    if (H.slot_of[(size_t) e] < 0 && (best < 0 || H.score[(size_t) e] > H.score[(size_t) best])) best = e;
+                if (best < 0) break;
+                if (!r->map(want, st)) break;
+                room -= need;
+                const int slot = L.n_slots++;
+                CK(cudaMemcpyAsync(L.blobs + (size_t) slot * L.stride, L.hblobs + (size_t) best * L.stride,
+                                   L.L.bytes, cudaMemcpyHostToDevice, st));
+                H.exp_in_slot.push_back(best);
+                H.slot_of[(size_t) best] = slot;
+                changed = true;
+            }
+            if (changed) {
+                CK(cudaMemsetAsync(L.blobs + (size_t) L.n_slots * L.stride, 0, kMmqTail, st));
+                CK(cudaMemcpyAsync(H.slot_of_d, H.slot_of.data(), H.slot_of.size() * sizeof(int32_t),
+                                   cudaMemcpyHostToDevice, st));
+            }
+        }
+        CK(cudaStreamSynchronize(st));
+        std::fprintf(stderr, "tinystrata: KV trimmed to %lld/%d rows, %zu MiB returned to Expert cache\n",
+                     (long long) rows, ctx, (before - kv_mapped_bytes()) >> 20);
+    }
+    void print_kv_info() const {
+        size_t bytes = 0, arena = 0;
+        int slots = 0;
+        const auto add = [&](const Layer& L) {
+            slots += L.n_slots;
+            bytes += (size_t) L.n_slots * L.stride;
+            if (L.n_slots) arena += (size_t) L.n_slots * L.stride + kMmqTail;
+        };
+        for (const Layer& L : m->layers) add(L);
+        if (m->has_mtp) add(m->mtp);
+        std::printf("INFO kv_grow=%d kv_logical_bytes=%zu kv_mapped_bytes=%zu kv_committed_rows=%lld "
+                    "expert_slots=%d expert_cache_bytes=%zu expert_cache_mib=%zu expert_arena_bytes=%zu\n",
+                    kv_grow ? 1 : 0, kv_logical_bytes, kv_mapped_bytes(), (long long) kv_committed_rows,
+                    slots, bytes, bytes >> 20, arena);
+    }
+
     void shrink_att(size_t floats) {
         if (tiled_prompt()) return;
         CK(cudaDeviceSynchronize());
@@ -2471,6 +2668,7 @@ struct Engine {
     /// token's logits stay in `logits` (its greedy pick in `pick`), hlast its normed hidden.  With the MTP block the
     /// prompt also runs through it (its K / V for every position: row q reads h_{q-1} and token q).
     template <class F> void process(const int32_t* toks, int64_t n, F on_chunk, bool sync_mtp = false) {
+        ensure_kv(std::min<int64_t>(ctx, pos + n + 64));
         const int N = (int) m->g.n_embd;
         const bool sampled_request = sync_mtp;
         // A resumed sampled request may append just one token to a previous
@@ -2551,6 +2749,7 @@ struct Engine {
                        int32_t* picks, Verify verify) {
         const int N = (int) m->g.n_embd;
         if (main_hybrid) D = std::min<int>(D, (int) (kRebalanceEvery - pos % kRebalanceEvery) - 1);
+        ensure_kv(std::min<int64_t>(ctx, pos + D + 64));
         const int T0 = (int) fix.size() + 1;   // the redo rows and the row of x
         CK(cudaStreamSynchronize(st));
         // rows of the first MTP call: (hmain row i, fix[i]) at positions pos - fix.size() + i, then (hlast, x) at pos
@@ -2729,6 +2928,20 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
                      (double) packed_bytes / (1 << 30));
     }
     size_t budget2 = vram_gib >= 0 ? budget : (fr > reserve ? fr - reserve : 0);
+    if (E.kv_grow) {
+        size_t future = 0;
+        for (const auto& p : E.kv_planes) future += p.range->need(E.kv_mask(p, E.ctx));
+        // If the maximum KV and every expert fit, commit it now and retain the
+        // existing all-GPU graph path. Otherwise prepare all CPU fallback state
+        // from the beginning: a later KV growth must not change graph topology.
+        const bool all_fit = slots <= 0 && total + future <= budget2 &&
+                             total + future + ((size_t) 256 << 20) <= fr;
+        if (all_fit) {
+            E.ensure_kv(E.ctx);
+            CK(resident_mem_info(&fr, &tot));
+            budget2 = vram_gib >= 0 ? budget : (fr > reserve ? fr - reserve : 0);
+        } else E.grow_hybrid = true;
+    }
     // the MAIN layers' experts fit, the MTP block's not all (UD-Q6_K_XL on 32 GB): the main layers all in VRAM - the
     // text is the all-in-VRAM text, the decode graph stays - and the MTP block's experts on slots + the CPU pool (its
     // drafts only).  When that needs it: the attention scores buffer at 64 MB instead of 256 MB (more, smaller
@@ -2737,7 +2950,7 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     size_t total_main = 0;
     for (Layer& L : m.layers) total_main += L.stride * (size_t) ne + kMmqTail;
     bool mtp_only = false;
-    if (slots <= 0 && vram_gib < 0 && m.has_mtp && total > budget2 && std::getenv("STRATA_Q36_NO_MTP_CPU") == nullptr) {
+    if (!E.grow_hybrid && slots <= 0 && vram_gib < 0 && m.has_mtp && total > budget2 && std::getenv("STRATA_Q36_NO_MTP_CPU") == nullptr) {
         const size_t att_save = score_save;   // att_s (4 B) + att_p16 (2 B), if present
         const size_t small_reserve = reserve_explicit ? reserve : (size_t) 256 << 20;
         const size_t room = fr + att_save > small_reserve ? fr + att_save - small_reserve : 0;
@@ -2755,7 +2968,7 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
                          "budget instead\n", small_reserve >> 20);
         }
     }
-    if (slots <= 0 && total <= budget2 && total + ((size_t) 256 << 20) <= fr) {
+    if (!E.grow_hybrid && slots <= 0 && total <= budget2 && total + ((size_t) 256 << 20) <= fr) {
         std::vector<uint8_t> blob;
         for (Layer* L : all) {
             CK(cudaMalloc(&L->blobs, L->stride * (size_t) ne + kMmqTail));
@@ -2827,6 +3040,10 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     }
     size_t off = 0;
     E.hy.resize(all.size());
+    if (E.grow_hybrid) {
+        E.expert_ranges.resize(all.size());
+        E.grow_max_slots.assign(all.size(), S);
+    }
     for (size_t li = 0; li < all.size(); ++li) {
         Layer& L = *all[li];
         if (mtp_only && &L != &m.mtp) {   // a main layer: every expert in VRAM, as in the all-in-VRAM placement
@@ -2845,7 +3062,17 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         std::memset(L.hblobs, 0, L.stride * (size_t) ne + kMmqTail);
         for (int64_t e = 0; e < ne; ++e) expert_blob(L, e, L.hblobs + (size_t) e * L.stride);
         L.n_slots = S;
-        if (S > 0) {
+        if (E.grow_hybrid) {
+            auto r = std::make_unique<strata::qwen35::kv_grow::Range>();
+            if (!r->reserve(L.stride * (size_t) ne + kMmqTail) ||
+                !r->map(r->prefix(S > 0 ? L.stride * (size_t) S + kMmqTail : 0), E.st)) {
+                err = "cannot commit the growable Expert cache";
+                return false;
+            }
+            L.blobs = (uint8_t*) r->base();
+            E.expert_ranges[li] = std::move(r);
+            if (S > 0) CK(cudaMemcpyAsync(L.blobs, L.hblobs, L.stride * (size_t) S, cudaMemcpyHostToDevice, E.st));
+        } else if (S > 0) {
             CK(cudaMalloc(&L.blobs, L.stride * (size_t) S + kMmqTail));
             CK(cudaMemset(L.blobs, 0, L.stride * (size_t) S + kMmqTail));
             CK(cudaMemcpy(L.blobs, L.hblobs, L.stride * (size_t) S, cudaMemcpyHostToDevice));
@@ -2993,6 +3220,7 @@ int serve(Engine& E) {
                 memory.free, memory.cuda_free, memory.physical ? memory.physical_free : memory.cuda_free,
                 memory.source(), E.vram_reserve >> 20, E.mtp_d,
                 E.kv_auto ? 1 : 0, E.context_auto ? 1 : 0, E.gpu_cc, E.vision_enabled ? 1 : 0, E.tmax);
+    E.print_kv_info();
     std::printf("READY %d stop\n", E.ctx);
     std::fflush(stdout);
     std::mutex mu;
@@ -3103,6 +3331,7 @@ int serve(Engine& E) {
         else {
             E.reset();
             live.clear();
+            E.trim_kv_for_request((int64_t) ids.size() + 64);
         }
         if (image_request) E.set_images(std::move(image_input));
         else E.clear_images();
@@ -3196,6 +3425,7 @@ int serve(Engine& E) {
             return 1;
         }
         const double decode_ms = ms_since(d0);
+        E.print_kv_info();
         std::printf("DONE %lld %zu %.1f %.1f %s %lld %lld %zu 0 0 0 0 0.0 %lld 0\n", produced, ids.size(), prompt_ms,
                     decode_ms, finish, accepted, offered, reuse, (long long) fresh);
         std::fflush(stdout);
@@ -3214,6 +3444,8 @@ int strata::qwen35::run(int argc, char** argv) {
     int kv_format = P::kAutomaticKv; // -1 auto; 0 FP32, 1 FP8, 2 INT8, 3 native FP8 MMA
     int expert_slots = 0;
     bool serve_mode = false, graph = true, vision = false;
+    bool kv_grow = true;
+    if (const char* v = std::getenv("STRATA_KV_GROW")) kv_grow = std::atoi(v) != 0;
     const char* hybrid_graph_env = std::getenv("STRATA_Q36_HYBRID_GRAPH");
     bool hybrid_graph_requested = hybrid_graph_env != nullptr && hybrid_graph_env[0] == '1';
     for (int i = 1; i < argc; ++i) {
@@ -3230,6 +3462,7 @@ int strata::qwen35::run(int argc, char** argv) {
                         "  --bench-pp N --bench-tg N Benchmark prompt and generation\n"
                         "  --max-context auto|N     KV capacity (default: auto, total GPU VRAM selects 64K/128K/256K)\n"
                         "  --kv-type auto|fp32|int8|fp8|fp8-mma  Default auto: native FP8, otherwise INT8; fp8 = fp8-mma\n"
+                        "  --kv-grow --kv-whole      Grow physical KV with sequence length (default: grow)\n"
                         "  --chunk auto|N           Prompt chunk size (default: auto)\n"
                         "  --mtp N                  MTP drafts, 0..7 (default: 0)\n"
                         "  --expert-vram auto|GiB   Routed expert budget (default: available VRAM)\n"
@@ -3247,6 +3480,8 @@ int strata::qwen35::run(int argc, char** argv) {
         else if (a == "--no-token-graph") graph = false;
         else if (a == "--hybrid-graph") hybrid_graph_requested = true;
         else if (a == "--no-hybrid-graph") hybrid_graph_requested = false;
+        else if (a == "--kv-grow") kv_grow = true;
+        else if (a == "--kv-whole" || a == "--no-kv-grow") kv_grow = false;
         else if (a == "--pool-workers") cpu_threads = std::atoi(next().c_str());
         else if (a == "--greedy") {}            // --tokens decodes greedily here anyway
         else if (a == "--serve") serve_mode = true;
@@ -3351,6 +3586,7 @@ int strata::qwen35::run(int argc, char** argv) {
         return 2;
     }
     E.vision_enabled = vision;
+    E.kv_grow = kv_grow;
     E.context_auto = context_auto;
     E.kv_auto = kv_format == P::kAutomaticKv;
 #if !defined(__HIPCC__)

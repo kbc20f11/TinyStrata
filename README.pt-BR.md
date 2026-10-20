@@ -32,7 +32,7 @@ O **Gemma 4 26B-A4B-it QAT Q4_0** usa [o modelo e o projetor de visão oficiais 
 
 O **LFM2.5-24B-A2B Q4_K_M** usa o [GGUF oficial da LiquidAI](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF). Seu único arquivo de modelo de linguagem ocupa **14.53 GB**.
 
-Os três motores usam cache automático de especialistas na VRAM, cálculo de especialistas na CPU a partir da RAM, streaming de pesos durante a entrada e CUDA Graphs. Compartilham a mesma API e permitem trocar o modelo sem reiniciar, com configurações salvas separadamente para cada modelo. Os especialistas selecionados não são omitidos.
+Os três motores usam cache automático de especialistas na VRAM, cálculo de especialistas na CPU a partir da RAM, streaming de pesos durante a entrada e CUDA Graphs. Compartilham a mesma API e permitem trocar o modelo sem reiniciar, com configurações salvas separadamente para cada modelo. Os especialistas selecionados não são omitidos. Também oferecem crescimento automático da memória KV física, sem alterar a capacidade máxima de contexto.
 
 | Recurso | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) |
 | --- | --- | --- | --- |
@@ -95,6 +95,18 @@ Para iniciar diretamente com o Gemma, execute `run-api.bat --model-family gemma4
 
 Consulte `GET /v1/model/switch` até `state` ser `ready`. Para voltar ao Qwen, envie o mesmo pedido com `{"model":"qwen3.6-35b-a3b"}`. Iniciar um download ou uma troca retorna `202`; uma troca durante uma geração retorna `409`, então tente novamente quando ela terminar. Pedidos de inferência durante a troca recebem `503`. A porta e a autenticação não mudam. A seleção vale para a sessão atual do servidor; ao reiniciar, é usado o modelo escolhido no inicializador.
 
+## Crescimento KV: efeito medido
+
+Medido em **2026-10-21** no mesmo PC Windows descrito abaixo, reservando 8 GiB da GPU de 24 GB (classe de 16 GB) e comparando `--kv-whole` com o padrão `--kv-grow` no mesmo binário. Os mesmos três textos foram executados duas vezes com 128 tokens gerados e a amostragem padrão do modelo; Qwen/Gemma usaram contexto de 256K com o codificador de imagens na GPU, e LFM usou 128K.
+
+| Modelo | KV | KV integral | KV crescente (padrão) | Variação |
+| --- | --- | ---: | ---: | ---: |
+| Qwen3.6 | FP8 | 90.56 | 103.28 | +14.0% |
+| Gemma 4 | INT8 | 88.08 | 95.13 | +8.0% |
+| LFM2.5 | FP8 | 128.49 | 130.27 | +1.4% |
+
+A diferença no LFM é pequena. As velocidades estão em tok/s; as tabelas anteriores de **2026-10-20** abaixo usam alocação integral de KV.
+
 ## Velocidade medida — Qwen3.6
 
 Medido em **2026-10-20** no Windows com uma RTX PRO 4000 Blackwell SFF Edition (24 GB), um Ryzen 9 7945HX3D, 64 GB de RAM e o modelo fixo Unsloth MTP UD-IQ3_XXS. O codificador de imagens permaneceu na GPU durante as solicitações de texto pela API. Foram ativados o raciocínio, os padrões de amostragem do modelo (temperatura 1.0) e MTP 3. Os blocos de entrada e a distribuição de especialistas foram automáticos; o contexto foi fixado conforme a classe de VRAM. O caminho híbrido de CUDA Graph permaneceu desativado por padrão e os grafos habituais de execução inteiramente na GPU continuaram ativos.
@@ -154,11 +166,11 @@ Os arquivos de modelo baixados somam cerca de **15.0 GB**: **14.1 GB** para o mo
 
 ![Como o TinyStrata compartilha a memória entre a VRAM da GPU e a RAM do sistema](assets/memory-sharing.png)
 
-Este é um diagrama de distribuição no modo padrão de imagens na GPU, não uma partição de tamanho fixo. A cada carregamento do modelo, o TinyStrata inicia e aquece o codificador de visão da GPU antes de carregar o modelo de linguagem; seus pesos e buffers de trabalho aquecidos permanecem residentes. Em seguida, aloca o cache KV, os demais pesos e os buffers de trabalho, e dimensiona o cache de especialistas conforme a VRAM livre restante. No Windows, usa o menor valor entre a memória livre informada pelo CUDA e a VRAM dedicada livre informada pelo driver NVIDIA, quando ambos estão disponíveis.
+Este é um diagrama de distribuição no modo padrão de imagens na GPU, não uma partição de tamanho fixo. A cada carregamento do modelo, o TinyStrata inicia e aquece o codificador de visão da GPU antes de carregar o modelo de linguagem; seus pesos e buffers de trabalho aquecidos permanecem residentes. Em seguida, aloca as páginas KV iniciais, os demais pesos e os buffers de trabalho, e dimensiona o cache de especialistas conforme a VRAM livre restante. No Windows, usa o menor valor entre a memória livre informada pelo CUDA e a VRAM dedicada livre informada pelo driver NVIDIA, quando ambos estão disponíveis.
 
-O conteúdo do cache muda conforme diferentes especialistas são usados; a capacidade do cache é recalculada quando o modelo é recarregado. Outros aplicativos abertos posteriormente ainda podem consumir VRAM.
+O conteúdo do cache muda conforme os especialistas usados. Com o crescimento KV padrão, conversas curtas deixam mais VRAM para especialistas; conforme a sequência cresce, o cache de especialistas devolve memória ao KV. Novas solicitações mais curtas podem devolver páginas KV não utilizadas ao cache de especialistas. `run-api.bat --kv-whole` aloca toda a capacidade KV antecipadamente; `run-api.bat --kv-grow` restaura o crescimento. Outros aplicativos ainda podem consumir VRAM.
 
-A alocação de especialistas normalmente visa uma margem de 768 MiB. Como o Strata, quando falta pouco para todos os especialistas do modelo principal caberem na VRAM, ela pode liberar as cópias empacotadas dos pesos Q8, reduzir um buffer de pontuações de Attention quando existente e diminuir a margem para 256 MiB; os especialistas MTP podem executar na CPU. `--vram-reserve-mib N` fixa a reserva explicitamente. Esse é um objetivo na alocação, não uma garantia permanente de memória livre.
+A alocação de especialistas normalmente visa uma margem de 768 MiB. No modo `--kv-whole` do Qwen, como no Strata, quando falta pouco para todos os especialistas do modelo principal caberem na VRAM, ela pode liberar as cópias empacotadas dos pesos Q8, reduzir um buffer de pontuações de Attention quando existente e diminuir a margem para 256 MiB; os especialistas MTP podem executar na CPU. `--vram-reserve-mib N` fixa a reserva explicitamente. Esse é um objetivo na alocação, não uma garantia permanente de memória livre.
 
 Mais especialistas residentes na GPU geralmente significam menos trabalho para a CPU. No modo híbrido, a RAM do sistema também mantém cópias de apoio dos especialistas armazenados em cache na VRAM, portanto adicionar VRAM não reduz o uso de RAM byte por byte. Deixe RAM também para o sistema operacional e outros aplicativos. Uma maior **capacidade de RAM** permite manter os dados do modelo, mas a velocidade também depende da CPU, da largura de banda da RAM e da GPU. A "memória de GPU compartilhada" do Windows é diferente do cálculo deliberado de especialistas na CPU feito pelo TinyStrata.
 
@@ -172,7 +184,9 @@ No Qwen3.6, uma RTX 3060 seleciona INT8. Ambientes compatíveis com RTX das sér
 
 O mecanismo nativo estima o tamanho dos blocos de entrada na inicialização, escolhendo 512, 1024, 2048 ou 4096 tokens conforme a VRAM livre, a capacidade de contexto e se os especialistas cabem na GPU. Blocos maiores podem reduzir transferências repetidas de pesos da RAM para a GPU durante o processamento da entrada. `run-api.bat --chunk N` fixa o tamanho; `run-api.bat --chunk auto` restaura a seleção automática nativa.
 
-A capacidade de contexto é o espaço máximo reservado para a entrada e a saída gerada em conjunto. Uma capacidade maior usa mais memória KV mesmo com uma conversa curta, deixando menos VRAM para os especialistas. A capacidade também não implica velocidade igual para todos os comprimentos de conversa: processar um documento longo de fato exige mais trabalho. Como referência, apenas o KV em INT8 ocupa cerca de **0.71 GiB em 64K, 1.42 GiB em 128K e 2.84 GiB em 256K**, incluindo a camada MTP; os demais pesos e buffers de trabalho são adicionais. Nesta implementação, o FP8 nativo usa aproximadamente o mesmo armazenamento KV que o INT8; seu benefício é um caminho de cálculo diferente, em vez de um cache substancialmente menor.
+A capacidade de contexto é o limite lógico para a entrada e a saída gerada em conjunto. Por padrão, a memória KV física é alocada conforme a conversa cresce, em vez de reservar toda a capacidade para uma conversa curta. Documentos longos continuam exigindo mais cálculo e, por fim, mais memória KV.
+
+Na capacidade máxima, o KV em INT8 do Qwen ocupa cerca de **0.71 GiB em 64K, 1.42 GiB em 128K e 2.84 GiB em 256K**, incluindo a camada MTP; os demais pesos e buffers de trabalho são adicionais. Nesta implementação, o FP8 nativo usa aproximadamente o mesmo armazenamento KV que o INT8; seu benefício é um caminho de cálculo diferente, em vez de um cache substancialmente menor.
 
 A capacidade de contexto é escolhida com base na VRAM total da GPU; o cache de especialistas é então ajustado à VRAM livre restante no carregamento. Outros aplicativos que usam VRAM deixam espaço para menos especialistas em cache na GPU. A API rejeita entradas que excedem a capacidade de contexto, em vez de truncá-las silenciosamente.
 

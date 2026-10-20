@@ -119,6 +119,9 @@ def prepare(a) -> tuple[dict, Path]:
                 cfg = automatic_experts(cfg)
             else:
                 cfg, _ = config.apply(cfg, {key: value})
+    if getattr(a, "kv_grow", None) is not None:
+        cfg["args"] = [x for x in cfg["args"] if x not in ("--kv-grow", "--kv-whole", "--no-kv-grow")]
+        cfg["args"].append("--kv-grow" if a.kv_grow else "--kv-whole")
     if a.lib_dir:
         cfg["lib_dirs"] = [str(p.expanduser().resolve()) for p in a.lib_dir]
     if a.port is not None:
@@ -168,6 +171,11 @@ def main() -> int:
                     help="choose context capacity from total GPU VRAM (default: auto), or set a token limit")
     ap.add_argument("--kv-type", choices=("auto", "fp16", "fp32", "fp8", "fp8-mma", "int8"),
                     help="default auto: Gemma uses INT8; Qwen/LFM use native FP8 when supported, otherwise INT8")
+    kv_allocation = ap.add_mutually_exclusive_group()
+    kv_allocation.add_argument("--kv-grow", dest="kv_grow", action="store_true", default=None,
+                               help="grow physical KV storage with the conversation (default); saved for later starts")
+    kv_allocation.add_argument("--kv-whole", "--no-kv-grow", dest="kv_grow", action="store_false",
+                               help="allocate the whole context's KV at load; saved for later starts")
     ap.add_argument("--mtp", type=int)
     ap.add_argument("--expert-vram", type=expert_budget, metavar="auto|GiB",
                     help="fit experts to available VRAM (default: auto), or set an advanced GiB limit; 0 = CPU experts")

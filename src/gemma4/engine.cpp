@@ -613,6 +613,25 @@ void* Engine::seq_alloc(size_t bytes, const char* what) {
     return p;
 }
 
+size_t Engine::kv_logical_bytes() const {
+    const auto bytes = [&](const std::vector<Buf>& bufs) {
+        size_t n = 0;
+        for (const Buf& b : bufs)
+            if (b.per) n += (size_t) ((opt_.max_context + b.per - 1) / b.per) * b.bytes;
+        return n;
+    };
+    size_t n = bytes(bufs_);
+    for (const Seq& q : seqs_) n += bytes(q.bufs);
+    return n + (next_ ? next_->kv_logical_bytes() : 0);
+}
+
+size_t Engine::kv_mapped_bytes() const {
+    if (!kv_growing()) return kv_logical_bytes();
+    size_t n = other_rows();
+    for (const Kv& k : kv_) n += k.mapped;
+    return n + (next_ ? next_->kv_mapped_bytes() : 0);
+}
+
 // The bound sequence's members to its place in seqs_, and the layers' launches recorded with its buffers.
 void Engine::park_bound() {
     Seq& q = seqs_[(size_t) bound_];
@@ -1660,6 +1679,13 @@ void Engine::load(const Options& o) {
     // CPU instead (the cache holds it, but the split is the first token's).  What it buys: greedy answers that
     // repeat bit for bit, which is what a test, a benchmark of quality or a comparison with another engine needs.
     freeze_experts_ = freeze_experts_asked_ = std::getenv("STRATA_FREEZE_EXPERTS") != nullptr;
+    if (freeze_experts_ && opt_.kv_grow) {
+        // A frozen cache cannot return pages while an answer grows. Reserve its
+        // complete KV first, so the test mode keeps a safe, unchanged split.
+        opt_.kv_grow = false;
+        std::fprintf(stderr, "tinystrata-gemma4: KV growth is disabled for STRATA_FREEZE_EXPERTS; "
+                             "the full KV capacity is allocated before freezing the expert cache\n");
+    }
     if (freeze_experts_)
         std::fprintf(stderr, "tinystrata-gemma4: the experts' split is frozen for the engine's whole run "
                              "(STRATA_FREEZE_EXPERTS): greedy answers are a function of the request alone, "

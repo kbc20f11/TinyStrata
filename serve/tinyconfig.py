@@ -190,7 +190,8 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         raise ValueError("args must be a list of engine argument strings")
     values = {"--model", "--draft-model", "--max-context", "--kv-type", "--chunk", "--mtp", "--expert-vram",
               "--expert-slots", "--cpu-threads", "--hybrid-rows", "--vram-reserve-mib"}
-    switches = {"--no-graph", "--no-warmup", "--hybrid-graph", "--no-hybrid-graph", "--vision"}
+    switches = {"--no-graph", "--no-warmup", "--hybrid-graph", "--no-hybrid-graph", "--vision",
+                "--kv-grow", "--kv-whole", "--no-kv-grow"}
     seen = set()
     i = 0
     while i < len(args):
@@ -206,6 +207,8 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
             raise ValueError(f"Unsupported or incomplete TinyStrata engine option: {flag}")
     if "--model" not in seen:
         raise ValueError("Choose a GGUF model with run.py --model PATH")
+    if len(seen.intersection({"--kv-grow", "--kv-whole", "--no-kv-grow"})) > 1:
+        raise ValueError("Choose only one KV allocation mode: --kv-grow or --kv-whole")
     for key in ("kv_type", "max_context", "expert_vram", "vram_reserve_mib", "mtp", "chunk"):
         value = config.value_of(cfg, key)
         if value is not None:
