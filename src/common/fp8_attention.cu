@@ -931,6 +931,240 @@ gemma_swa_one_kernel(const float *__restrict__ q, Cache p, std::int64_t pos,
     }
 }
 
+// MTP verification candidate: two to four causal queries occupy four to eight
+// live MMA row-a slots. The row-b slots remain zero. Single-query dispatch and
+// implementation above remain unchanged, as do bidirectional image blocks.
+template<int NQ> struct SharedGemmaSwaFew {
+    static_assert(NQ >= 2 && NQ <= 4);
+    static constexpr int HD = 256, OUT = 64, GQA = 2;
+    std::uint32_t q[3][NQ * GQA][HD / 4];
+    uint4 k[CELLS][HD / 16], v[CELLS][OUT / 16];
+    __align__(16) std::uint16_t ks[CELLS][HD / 32];
+    __align__(16) std::uint16_t vs[CELLS][OUT / 32];
+    float probability[NQ * GQA][CELLS + 1], qdown[NQ * GQA];
+};
+
+template<int NQ>
+__global__ void __launch_bounds__(32, 1)
+gemma_swa_few_kernel(const float *__restrict__ q, Cache p, std::int64_t pos,
+                     const std::int64_t *__restrict__ at, int heads, int kv_heads,
+                     int ring, int window, float scale_log2, float *__restrict__ partial) {
+    constexpr int HD = SharedGemmaSwaFew<NQ>::HD, OUT = SharedGemmaSwaFew<NQ>::OUT;
+    constexpr int GQA = SharedGemmaSwaFew<NQ>::GQA, WORDS = HD / 16, VWORDS = OUT / 16;
+    constexpr int KSW = 7, VSW = VWORDS - 1;
+    extern __shared__ __align__(16) unsigned char raw[];
+    auto &s = *reinterpret_cast<SharedGemmaSwaFew<NQ> *>(raw);
+    const int lane = threadIdx.x, gid = lane >> 2, tig = lane & 3;
+    const int kvh = blockIdx.y, slice = blockIdx.z % (HD / OUT);
+    const int split = blockIdx.z / (HD / OUT), out_dim = slice * OUT;
+    const bool live = gid < NQ * GQA;
+    const std::int64_t base = at ? at[0] : pos;
+    const std::int64_t span_lo = base >= window ? base - window + 1 : 0;
+    const std::int64_t span_hi = base + NQ;
+    // Split the same union as the generic 16-row MMA tile. Each live row
+    // still has its own causal/window mask; changing this partition per query
+    // would change both the merge contract and FP32 online accumulation order.
+    const std::int64_t query_pos = base + gid / GQA;
+    const std::int64_t query_lo = query_pos >= window ? query_pos - window + 1 : 0;
+    const std::int64_t query_hi = query_pos + 1;
+    const int span = int(span_hi - span_lo), active = gemma_split_count(span, kv_heads);
+    if (split >= active) return;
+    const int chunks = (span + CELLS - 1) / CELLS;
+    const std::int64_t begin = span_lo + (split * chunks / active) * CELLS;
+    const std::int64_t end = min(span_hi, span_lo + ((split + 1) * chunks / active) * CELLS);
+    const auto cache_row = [&](std::int64_t cell) -> std::size_t {
+        return std::size_t(ring ? cell % ring : cell) * kv_heads + kvh;
+    };
+    const auto issue = [&](bool value, std::int64_t c0) {
+        if (!value) {
+            for (int i = lane; i < CELLS * WORDS; i += 32) {
+                const int c = i / WORDS, pc = i % WORDS;
+                const bool ok = c0 + c < end;
+                const std::size_t off = ok ? cache_row(c0 + c) * HD + pc * 16 : 0;
+                copy_async<16>(&s.k[c][pc ^ (c & KSW)], p.k + off, ok);
+            }
+            const bool ok = c0 + lane < end;
+            const std::size_t off = ok ? cache_row(c0 + lane) * (HD / 32) : 0;
+            copy_async<16>(s.ks[lane], p.ks + off, ok);
+        } else {
+            for (int i = lane; i < CELLS * VWORDS; i += 32) {
+                const int c = i / VWORDS, pc = i % VWORDS;
+                const bool ok = c0 + c < end;
+                const std::size_t off = ok ? cache_row(c0 + c) * HD + out_dim + pc * 16 : 0;
+                copy_async<16>(&s.v[c][pc ^ (c & VSW)], p.v + off, ok);
+            }
+            const bool ok = c0 + lane < end;
+            const std::size_t off = ok ? cache_row(c0 + lane) * (HD / 32) + out_dim / 32 : 0;
+            copy_async<4>(s.vs[lane], p.vs + off, ok);
+        }
+    };
+    issue(false, begin); commit();
+    issue(true, begin); commit();
+#pragma unroll 1
+    for (int row = 0; row < NQ * GQA; ++row) {
+        const float *src = q + (std::size_t(row / GQA) * heads + kvh * GQA + row % GQA) * HD;
+        float m = 0.f;
+#pragma unroll
+        for (int d = lane; d < HD; d += 32) m = fmaxf(m, fabsf(src[d]));
+#pragma unroll
+        for (int o = 16; o; o >>= 1) m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, o));
+        int e = 0;
+        if (m > 0.f) frexpf(m, &e);
+        const int up = 8 - e;
+        for (int word = lane; word < HD / 4; word += 32) {
+            std::uint32_t hi = 0, lo = 0, tail = 0;
+#pragma unroll
+            for (int j = 0; j < 4; ++j) {
+                std::uint8_t h, l, t;
+                gemma_encode3(ldexpf(src[word * 4 + j], up), h, l, t);
+                hi |= std::uint32_t(h) << (8 * j);
+                lo |= std::uint32_t(l) << (8 * j);
+                tail |= std::uint32_t(t) << (8 * j);
+            }
+            const int sw = word ^ ((row & KSW) * 4);
+            s.q[0][row][sw] = hi; s.q[1][row][sw] = lo; s.q[2][row][sw] = tail;
+        }
+        if (!lane) s.qdown[row] = ldexpf(scale_log2, e - 8);
+    }
+    __syncwarp();
+    const float down = live ? s.qdown[gid] : 0.f;
+    float acc[OUT / 8][2] = {};
+    float maximum = -INFINITY, denominator = 0.f;
+#pragma unroll 1
+    for (std::int64_t c0 = begin; c0 < end; c0 += CELLS) {
+        const bool more = c0 + CELLS < end;
+        wait<1>(); __syncwarp();
+        float score[4][2] = {};
+#pragma unroll 1
+        for (int g = 0; g < HD / 32; ++g) {
+            const int word = g * 8 + tig, sw = (gid & KSW) * 4;
+            std::uint32_t a[3][4] = {};
+#pragma unroll
+            for (int part = 0; part < 3; ++part) {
+                if (live) {
+                    a[part][0] = s.q[part][gid][word ^ sw];
+                    a[part][2] = s.q[part][gid][(word + 4) ^ sw];
+                }
+            }
+#pragma unroll
+            for (int nt = 0; nt < 4; ++nt) {
+                const int c = nt * 8 + gid, d = g * 32 + 4 * tig;
+                const auto ptr = [&](int dim) {
+                    return reinterpret_cast<const std::uint8_t *>(&s.k[0][0]) + c * HD +
+                           ((dim / 16) ^ (c & KSW)) * 16 + (dim & 15);
+                };
+                std::uint32_t b[2] = {*reinterpret_cast<const std::uint32_t *>(ptr(d)),
+                                      *reinterpret_cast<const std::uint32_t *>(ptr(d + 16))};
+                float h[4] = {}, l[4] = {}, t[4] = {};
+                mma(h, a[0], b); mma(l, a[1], b); mma(t, a[2], b);
+                const int sc = nt * 8 + 2 * tig;
+                const float k0 = __half2float(__ushort_as_half(s.ks[sc][g]));
+                const float k1 = __half2float(__ushort_as_half(s.ks[sc + 1][g]));
+#pragma unroll
+                for (int j = 0; j < 2; ++j) {
+                    const float dot = fmaf(t[j], GEMMA_TAIL_DOWN, fmaf(l[j], GEMMA_RESIDUAL_DOWN, h[j]));
+                    score[nt][j] = fmaf(dot, j ? k1 : k0, score[nt][j]);
+                }
+            }
+        }
+        float mx = -INFINITY;
+#pragma unroll
+        for (int nt = 0; nt < 4; ++nt) {
+            const std::int64_t cell = c0 + nt * 8 + 2 * tig;
+            score[nt][0] = live && cell >= query_lo && cell < query_hi ? score[nt][0] * down : -INFINITY;
+            score[nt][1] = live && cell + 1 >= query_lo && cell + 1 < query_hi ? score[nt][1] * down : -INFINITY;
+            mx = fmaxf(mx, fmaxf(score[nt][0], score[nt][1]));
+        }
+#pragma unroll
+        for (int o = 1; o < 4; o <<= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffffu, mx, o));
+        const float next = fmaxf(maximum, mx);
+        const float alpha = maximum == -INFINITY ? 0.f : exp2f(maximum - next);
+        float total = 0.f;
+#pragma unroll
+        for (int nt = 0; nt < 4; ++nt) {
+            score[nt][0] = score[nt][0] == -INFINITY ? 0.f : exp2f(score[nt][0] - next);
+            score[nt][1] = score[nt][1] == -INFINITY ? 0.f : exp2f(score[nt][1] - next);
+            if (live) {
+                const int c = nt * 8 + 2 * tig;
+                s.probability[gid][c] = score[nt][0]; s.probability[gid][c + 1] = score[nt][1];
+            }
+            total += score[nt][0] + score[nt][1];
+        }
+        denominator = fmaf(denominator, alpha, total); maximum = next;
+        __syncwarp();
+        if (more) { issue(false, c0 + CELLS); commit(); }
+        if (more) wait<1>(); else wait<0>();
+        __syncwarp();
+#pragma unroll
+        for (int g = 0; g < OUT / 32; ++g) {
+            float wm = 0.f;
+#pragma unroll
+            for (int nt = 0; nt < 4; ++nt) {
+                const int c = nt * 8 + 2 * tig;
+                const float v0 = __half2float(__ushort_as_half(s.vs[c][g]));
+                const float v1 = __half2float(__ushort_as_half(s.vs[c + 1][g]));
+                const float p0 = live ? s.probability[gid][c] : 0.f;
+                const float p1 = live ? s.probability[gid][c + 1] : 0.f;
+                wm = fmaxf(wm, fmaxf(p0 * v0, p1 * v1));
+            }
+#pragma unroll
+            for (int o = 1; o < 4; o <<= 1) wm = fmaxf(wm, __shfl_xor_sync(0xffffffffu, wm, o));
+            int e = 0;
+            if (wm > 0.f) frexpf(wm, &e);
+            const int up = wm > 0.f ? 8 - e : 0;
+            std::uint32_t ph[4] = {}, pl[4] = {}, pt[4] = {};
+#pragma unroll
+            for (int reg = 0; reg < 4; reg += 2) {
+#pragma unroll
+                for (int j = 0; j < 4; ++j) {
+                    const int c = (reg / 2) * 16 + 4 * tig + j;
+                    const float prob = live ? s.probability[gid][c] : 0.f;
+                    const float vs = __half2float(__ushort_as_half(s.vs[c][g]));
+                    const float weighted = prob == 0.f ? 0.f : prob * vs;
+                    std::uint8_t h, l, t;
+                    gemma_encode3(ldexpf(weighted, up), h, l, t);
+                    ph[reg] |= std::uint32_t(h) << (j * 8);
+                    pl[reg] |= std::uint32_t(l) << (j * 8);
+                    pt[reg] |= std::uint32_t(t) << (j * 8);
+                }
+            }
+            const auto *v = reinterpret_cast<const std::uint8_t *>(&s.v[0][0]);
+#pragma unroll
+            for (int j = 0; j < 4; ++j) {
+                const int dim = g * 32 + j * 8 + gid;
+                const auto value = [&](int c) {
+                    return std::uint32_t(v[c * OUT + ((dim / 16) ^ (c & VSW)) * 16 + (dim & 15)]);
+                };
+                std::uint32_t b[2] = {};
+#pragma unroll
+                for (int k = 0; k < 4; ++k) {
+                    b[0] |= value(4 * tig + k) << (k * 8);
+                    b[1] |= value(16 + 4 * tig + k) << (k * 8);
+                }
+                float h[4] = {}, l[4] = {}, t[4] = {};
+                mma(h, ph, b); mma(l, pl, b); mma(t, pt, b);
+#pragma unroll
+                for (int k = 0; k < 2; ++k) {
+                    const float dot = fmaf(t[k], GEMMA_TAIL_DOWN, fmaf(l[k], GEMMA_RESIDUAL_DOWN, h[k]));
+                    acc[g * 4 + j][k] = fmaf(acc[g * 4 + j][k], alpha, ldexpf(dot, -up));
+                }
+            }
+        }
+        __syncwarp();
+        if (more) { issue(true, c0 + CELLS); commit(); }
+    }
+#pragma unroll
+    for (int o = 1; o < 4; o <<= 1) denominator += __shfl_xor_sync(0xffffffffu, denominator, o);
+    if (live) {
+        float *dst = partial + (((std::size_t(gid / GQA) * heads + kvh * GQA + gid % GQA) * SPLITS + split) * (HD + 2));
+        if (!slice && !tig) { dst[HD] = maximum; dst[HD + 1] = denominator; }
+#pragma unroll
+        for (int j = 0; j < OUT / 8; ++j)
+            *reinterpret_cast<float2 *>(dst + out_dim + j * 8 + 2 * tig) = make_float2(acc[j][0], acc[j][1]);
+    }
+}
+
+
 template<int HD>
 __global__ void gemma_merge_kernel(const float *__restrict__ part, float *__restrict__ out,
                                    std::int64_t pos, const std::int64_t *__restrict__ at,
@@ -982,6 +1216,20 @@ void launch_gemma(const float *q, Cache cache, std::int64_t pos, int rows, int h
                 q, cache, pos, at, heads, kv_heads, ring, window, scale * LOG2E, scratch);
             gemma_merge_kernel<HD><<<heads, 128, 0, stream>>>(scratch, out, pos, at, 1, heads, kv_heads,
                                                             gqa, window, whole);
+            return;
+        }
+        if (!whole && rows >= 2 && rows <= 4 && gqa == SharedGemmaSwaOne::GQA && window > 0 && split) {
+            const int limit = std::min(SPLITS, (GEMMA_TARGET_CTAS + kv_heads - 1) / kv_heads);
+            const auto call = [&]<int NQ>() {
+                gemma_swa_few_kernel<NQ><<<dim3(1, kv_heads, limit * (HD / SharedGemmaSwaFew<NQ>::OUT)),
+                                          32, sizeof(SharedGemmaSwaFew<NQ>), stream>>>(
+                    q, cache, pos, at, heads, kv_heads, ring, window, scale * LOG2E, scratch);
+            };
+            if (rows == 2) call.template operator()<2>();
+            else if (rows == 3) call.template operator()<3>();
+            else call.template operator()<4>();
+            gemma_merge_kernel<HD><<<rows * heads, 128, 0, stream>>>(scratch, out, pos, at, rows, heads, kv_heads,
+                                                                   gqa, window, false);
             return;
         }
     }
