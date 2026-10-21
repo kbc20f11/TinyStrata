@@ -113,10 +113,10 @@ Measured on **2026-10-21** using Windows, an RTX PRO 4000 Blackwell SFF Edition 
 
 | Available VRAM | Context capacity | INT8 generation | Native FP8 generation | Notes |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 117.80 tok/s | 128.48 tok/s | All weights resident in VRAM |
-| Approximately 16 GB | 256K | 98.90 tok/s | 98.11 tok/s | GPU and CPU Expert computation |
-| Approximately 12 GB | 128K | 87.99 tok/s | 89.44 tok/s | GPU and CPU Expert computation |
-| Approximately 8 GB | 64K | 60.69 tok/s | 61.60 tok/s | GPU and CPU Expert computation |
+| 24 GB | 256K | 117.80 tok/s | 131.34 tok/s | All weights resident in VRAM |
+| Approximately 16 GB | 256K | 98.90 tok/s | 101.68 tok/s | GPU and CPU Expert computation |
+| Approximately 12 GB | 128K | 87.99 tok/s | 86.66 tok/s | GPU and CPU Expert computation |
+| Approximately 8 GB | 64K | 60.69 tok/s | 60.69 tok/s | FP8: no GPU Expert cache |
 
 Each of the same three input texts was run twice per FP8/INT8 configuration, generating 128 tokens including thinking; sampling settings were left at their model defaults. Speed is total generated tokens divided by total decode time, excluding loading and prompt processing; context values are cache capacities. The reduced-memory rows reserve 8, 12 or 16 GiB on the same 24 GB GPU and use the context capacity for that VRAM class; they are not physical 16/12/8 GB GPU benchmarks.
 

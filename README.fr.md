@@ -101,10 +101,10 @@ Mesuré le **2026-10-21** sous Windows avec une RTX PRO 4000 Blackwell SFF Editi
 
 | Mémoire disponible | Capacité de contexte | Génération INT8 | Génération FP8 native | Remarques |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 117.80 tok/s | 128.48 tok/s | Tous les poids résidents en VRAM |
-| environ 16 GB | 256K | 98.90 tok/s | 98.11 tok/s | 8 GiB occupés séparément ; experts calculés sur CPU et GPU |
-| environ 12 GB | 128K | 87.99 tok/s | 89.44 tok/s | 12 GiB occupés séparément ; experts calculés sur CPU et GPU |
-| environ 8 GB | 64K | 60.69 tok/s | 61.60 tok/s | 16 GiB occupés séparément ; experts calculés sur CPU et GPU |
+| 24 GB | 256K | 117.80 tok/s | 131.34 tok/s | Tous les poids résidents en VRAM |
+| environ 16 GB | 256K | 98.90 tok/s | 101.68 tok/s | 8 GiB occupés séparément ; experts calculés sur CPU et GPU |
+| environ 12 GB | 128K | 87.99 tok/s | 86.66 tok/s | 12 GiB occupés séparément ; experts calculés sur CPU et GPU |
+| environ 8 GB | 64K | 60.69 tok/s | 60.69 tok/s | FP8 : pas de cache d’experts sur le GPU |
 
 Les mêmes trois textes ont été exécutés deux fois par configuration FP8/INT8 avec les valeurs d’échantillonnage par défaut du modèle et 128 tokens générés par requête, raisonnement compris. La vitesse est le nombre total de tokens divisé par le temps total de décodage, hors chargement et traitement de l’entrée ; le contexte indique la capacité du cache. Les lignes avec moins de mémoire réservent 8, 12 ou 16 GiB sur le même GPU de 24 GB et utilisent le contexte de cette classe de VRAM ; ce ne sont pas des mesures de GPU physiques de 16/12/8 GB.
 

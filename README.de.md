@@ -101,10 +101,10 @@ Gemessen am **2026-10-21** unter Windows mit einer RTX PRO 4000 Blackwell SFF Ed
 
 | Verfügbarer Speicher | Kontextkapazität | INT8-Generierung | Native FP8-Generierung | Anmerkungen |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 117.80 tok/s | 128.48 tok/s | Alle Gewichte im VRAM |
-| ca. 16 GB | 256K | 98.90 tok/s | 98.11 tok/s | 8 GiB separat belegt; Experten auf CPU und GPU |
-| ca. 12 GB | 128K | 87.99 tok/s | 89.44 tok/s | 12 GiB separat belegt; Experten auf CPU und GPU |
-| ca. 8 GB | 64K | 60.69 tok/s | 61.60 tok/s | 16 GiB separat belegt; Experten auf CPU und GPU |
+| 24 GB | 256K | 117.80 tok/s | 131.34 tok/s | Alle Gewichte im VRAM |
+| ca. 16 GB | 256K | 98.90 tok/s | 101.68 tok/s | 8 GiB separat belegt; Experten auf CPU und GPU |
+| ca. 12 GB | 128K | 87.99 tok/s | 86.66 tok/s | 12 GiB separat belegt; Experten auf CPU und GPU |
+| ca. 8 GB | 64K | 60.69 tok/s | 60.69 tok/s | FP8: kein Expert-Cache auf der GPU |
 
 Dieselben drei Eingabetexte wurden je zweimal pro FP8-/INT8-Konfiguration mit den Sampling-Standardwerten des Modells verwendet und jeweils 128 Token einschließlich Thinking generiert. Die Geschwindigkeit ergibt sich aus der gesamten Tokenzahl geteilt durch die gesamte Decodierzeit, ohne Laden und Eingabeverarbeitung; Kontextwerte sind Cachekapazitäten. Die Zeilen mit weniger Speicher reservieren 8, 12 oder 16 GiB auf derselben 24-GB-GPU und verwenden die Kontextkapazität der jeweiligen VRAM-Klasse; sie sind keine Benchmarks physischer 16-/12-/8-GB-GPUs.
 
