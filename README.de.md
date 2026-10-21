@@ -116,10 +116,10 @@ Natives FP8 und INT8 wurden am **2026-10-21** gemessen.
 
 | Verfügbarer VRAM | Kontextkapazität | INT8 (Standard) | Natives FP8 (experimentell) | Hinweise |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 113.20 tok/s | 108.14 tok/s | INT8 / FP8: Expertenberechnung auf der GPU |
-| Ungefähr 16 GB | 256K | 100.08 tok/s | 94.53 tok/s | INT8 / FP8: Expertenberechnung auf GPU und CPU |
-| Ungefähr 12 GB | 128K | 81.66 tok/s | 85.34 tok/s | INT8 / FP8: Expertenberechnung auf GPU und CPU |
-| Ungefähr 8 GB | 64K | 51.54 tok/s | 50.52 tok/s | INT8 / FP8: Expertenberechnung auf GPU und CPU |
+| 24 GB | 256K | 113.20 tok/s | 112.31 tok/s | INT8 / FP8: Expertenberechnung auf der GPU |
+| Ungefähr 16 GB | 256K | 100.08 tok/s | 96.67 tok/s | INT8 / FP8: Expertenberechnung auf GPU und CPU |
+| Ungefähr 12 GB | 128K | 81.66 tok/s | 82.08 tok/s | INT8 / FP8: Expertenberechnung auf GPU und CPU |
+| Ungefähr 8 GB | 64K | 51.54 tok/s | 53.41 tok/s | INT8 / FP8: Expertenberechnung auf GPU und CPU |
 
 Dieselben drei Eingabetexte wurden je zweimal pro FP8-/INT8-Konfiguration mit den Sampling-Standardwerten des Modells verwendet und jeweils 128 Token einschließlich Thinking generiert. Die Geschwindigkeit ergibt sich aus der gesamten Tokenzahl geteilt durch die gesamte Decodierzeit, ohne Laden und Eingabeverarbeitung; Kontextwerte sind Cachekapazitäten. Die Zeilen mit weniger Speicher reservieren 8, 12 oder 16 GiB auf derselben 24-GB-GPU und verwenden die Kontextkapazität der jeweiligen VRAM-Klasse; sie sind keine Benchmarks physischer 16-/12-/8-GB-GPUs.
 

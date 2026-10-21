@@ -116,10 +116,10 @@ Le FP8 natif et INT8 ont été mesurés le **2026-10-21**.
 
 | VRAM disponible | Capacité de contexte | INT8 (par défaut) | FP8 natif (expérimental) | Remarques |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 113.20 tok/s | 108.14 tok/s | INT8 / FP8: Calcul des experts sur GPU |
-| Environ 16 GB | 256K | 100.08 tok/s | 94.53 tok/s | INT8 / FP8: Calcul des experts sur GPU et CPU |
-| Environ 12 GB | 128K | 81.66 tok/s | 85.34 tok/s | INT8 / FP8: Calcul des experts sur GPU et CPU |
-| Environ 8 GB | 64K | 51.54 tok/s | 50.52 tok/s | INT8 / FP8: Calcul des experts sur GPU et CPU |
+| 24 GB | 256K | 113.20 tok/s | 112.31 tok/s | INT8 / FP8: Calcul des experts sur GPU |
+| Environ 16 GB | 256K | 100.08 tok/s | 96.67 tok/s | INT8 / FP8: Calcul des experts sur GPU et CPU |
+| Environ 12 GB | 128K | 81.66 tok/s | 82.08 tok/s | INT8 / FP8: Calcul des experts sur GPU et CPU |
+| Environ 8 GB | 64K | 51.54 tok/s | 53.41 tok/s | INT8 / FP8: Calcul des experts sur GPU et CPU |
 
 Les mêmes trois textes ont été exécutés deux fois par configuration FP8/INT8 avec les valeurs d’échantillonnage par défaut du modèle et 128 tokens générés par requête, raisonnement compris. La vitesse est le nombre total de tokens divisé par le temps total de décodage, hors chargement et traitement de l’entrée ; le contexte indique la capacité du cache. Les lignes avec moins de mémoire réservent 8, 12 ou 16 GiB sur le même GPU de 24 GB et utilisent le contexte de cette classe de VRAM ; ce ne sont pas des mesures de GPU physiques de 16/12/8 GB.
 

@@ -116,10 +116,10 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 | 可用显存 | 上下文容量 | INT8（默认） | 原生 FP8（实验性） | 备注 |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 113.20 tok/s | 108.14 tok/s | INT8 / FP8: GPU 计算专家 |
-| 约 16 GB | 256K | 100.08 tok/s | 94.53 tok/s | INT8 / FP8: GPU 和 CPU 计算专家 |
-| 约 12 GB | 128K | 81.66 tok/s | 85.34 tok/s | INT8 / FP8: GPU 和 CPU 计算专家 |
-| 约 8 GB | 64K | 51.54 tok/s | 50.52 tok/s | INT8 / FP8: GPU 和 CPU 计算专家 |
+| 24 GB | 256K | 113.20 tok/s | 112.31 tok/s | INT8 / FP8: GPU 计算专家 |
+| 约 16 GB | 256K | 100.08 tok/s | 96.67 tok/s | INT8 / FP8: GPU 和 CPU 计算专家 |
+| 约 12 GB | 128K | 81.66 tok/s | 82.08 tok/s | INT8 / FP8: GPU 和 CPU 计算专家 |
+| 约 8 GB | 64K | 51.54 tok/s | 53.41 tok/s | INT8 / FP8: GPU 和 CPU 计算专家 |
 
 每个 FP8/INT8 配置均使用相同的三段文本各运行两次，采用模型默认采样设置，每次生成包含思考的 128 个 token。速度为总生成 token 数除以总解码时间，不含加载与输入处理；上下文值表示缓存容量。内存受限行是在同一块 24 GB GPU 上另行预留 8、12 或 16 GiB，并设置相应显存档位的上下文容量，并非使用实际的 16/12/8 GB GPU。
 

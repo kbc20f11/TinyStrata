@@ -128,10 +128,10 @@ Native FP8 and INT8 were measured on **2026-10-21**.
 
 | Available VRAM | Context capacity | INT8 (default) | Native FP8 (experimental) | Notes |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 113.20 tok/s | 108.14 tok/s | INT8 / FP8: Experts computed on the GPU |
-| Approximately 16 GB | 256K | 100.08 tok/s | 94.53 tok/s | INT8 / FP8: GPU and CPU Expert computation |
-| Approximately 12 GB | 128K | 81.66 tok/s | 85.34 tok/s | INT8 / FP8: GPU and CPU Expert computation |
-| Approximately 8 GB | 64K | 51.54 tok/s | 50.52 tok/s | INT8 / FP8: GPU and CPU Expert computation |
+| 24 GB | 256K | 113.20 tok/s | 112.31 tok/s | INT8 / FP8: Experts computed on the GPU |
+| Approximately 16 GB | 256K | 100.08 tok/s | 96.67 tok/s | INT8 / FP8: GPU and CPU Expert computation |
+| Approximately 12 GB | 128K | 81.66 tok/s | 82.08 tok/s | INT8 / FP8: GPU and CPU Expert computation |
+| Approximately 8 GB | 64K | 51.54 tok/s | 53.41 tok/s | INT8 / FP8: GPU and CPU Expert computation |
 
 Each of the same three input texts was run twice per FP8/INT8 configuration, generating 128 tokens including thinking; sampling settings were left at their model defaults. Speed is total generated tokens divided by total decode time, excluding loading and prompt processing; context values are cache capacities. The reduced-memory rows reserve 8, 12 or 16 GiB on the same 24 GB GPU and use the context capacity for that VRAM class; they are not physical 16/12/8 GB GPU benchmarks.
 
