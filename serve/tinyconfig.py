@@ -158,6 +158,8 @@ def migrate_settings(cfg: dict) -> tuple[dict, bool]:
 
 def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
     check_vision_options(cfg)
+    if cfg.get("backend") not in (None, "cuda", "hip"):
+        raise ValueError("backend must be cuda or hip")
     if not isinstance(cfg.get("enable_thinking", True), bool):
         raise ValueError("enable_thinking must be true or false")
     max_tokens = cfg.get("max_tokens", DEFAULT_MAX_TOKENS)

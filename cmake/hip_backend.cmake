@@ -96,7 +96,11 @@ endif()
 if(CMAKE_HIP_ARCHITECTURES MATCHES "gfx11")
   target_compile_definitions(strata_hip_runtime INTERFACE STRATA_WMMA_GFX11=1)
 endif()
-target_link_libraries(strata_hip_runtime INTERFACE hip::host)
+# Runtime support belongs to the HIP link surface. TinyStrata does not link
+# Strata's core/device.cu, which supplied the Windows VRAM budget helper.
+add_library(strata_hip_support STATIC src/prefill/hip_runtime.cpp)
+target_link_libraries(strata_hip_support PUBLIC hip::host)
+target_link_libraries(strata_hip_runtime INTERFACE hip::host strata_hip_support)
 # The shim renames the CUDA runtime to HIP, force-included into every host and device source. On Windows the host
 # compiler is ROCm's clang++ too (tools/hip/build_windows.bat: CMake refuses to mix cl.exe with Clang HIP), which takes
 # -include like it does on Linux; an MSVC-style front end (cl / clang-cl) takes /FI instead. Forward slashes, so /FI

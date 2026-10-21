@@ -1,5 +1,5 @@
 # The image encoder uses the same pinned llama.cpp checkout as the CPU experts.
-# It shares GGML targets but is the only executable linking the CUDA backend
+# It shares GGML targets but is the only executable linking the GPU backend
 # dispatcher. Keep llama.cpp's tools, server and UI disabled.
 function(tinystrata_add_vision_encoder)
   if(NOT TARGET ggml OR NOT STRATA_LLAMA_SOURCE_DIR)
@@ -23,6 +23,8 @@ function(tinystrata_add_vision_encoder)
   target_compile_features(tinystrata-vision PRIVATE cxx_std_17)
   if(STRATA_ENABLE_CUDA)
     target_compile_definitions(tinystrata-vision PRIVATE TINYSTRATA_VISION_CUDA=1)
+  elseif(STRATA_ENABLE_HIP)
+    target_compile_definitions(tinystrata-vision PRIVATE TINYSTRATA_VISION_HIP=1)
   endif()
   set_target_properties(tinystrata-vision PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
   install(TARGETS tinystrata-vision RUNTIME DESTINATION bin)

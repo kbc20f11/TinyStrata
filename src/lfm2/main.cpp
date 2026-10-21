@@ -363,6 +363,14 @@ int main(int argc, char** argv) {
                 if (++i == argc) throw std::invalid_argument("missing value for " + arg);
                 return argv[i];
             };
+            if (arg == "--capabilities") {
+#if defined(STRATA_USE_HIP)
+                std::puts("{\"backend\":\"hip\",\"model_family\":\"lfm2\",\"kv_types\":[\"int8\"],\"images\":false,\"mtp\":false}");
+#else
+                std::puts("{\"backend\":\"cuda\",\"model_family\":\"lfm2\",\"kv_types\":[\"int8\",\"fp8-mma\",\"fp16\"],\"images\":false,\"mtp\":false}");
+#endif
+                return 0;
+            }
             if (arg == "--help" || arg == "-h") {
                 std::puts("TinyStrata LFM2.5-24B-A2B (text only, no MTP)\n"
                           "  --model GGUF --serve\n"

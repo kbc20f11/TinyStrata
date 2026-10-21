@@ -1,5 +1,5 @@
 #pragma once
-// CUDA virtual-memory KV growth, following Strata's core/vmm.hpp and vmm.cpp
+// CUDA/HIP virtual-memory KV growth, following Strata's core/vmm.hpp and vmm.cpp
 // (Niko1221 and the Strata contributors, MIT; see LICENSE and NOTICE).
 // Virtual addresses and logical head strides never move. Only physical pages
 // behind each head's used prefix are committed; expert arenas may return pages.
@@ -22,6 +22,7 @@ struct Api {
     decltype(&cuMemMap) map = nullptr;
     decltype(&cuMemUnmap) unmap = nullptr;
     decltype(&cuMemSetAccess) access = nullptr;
+#if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
     template<class F> static bool resolve(const char* name, F& f) {
         cudaDriverEntryPointQueryResult q{};
         void* p = nullptr;
@@ -37,8 +38,33 @@ struct Api {
         f = reinterpret_cast<F>(p);
         return true;
     }
+#endif
     Api() {
-#if !defined(__HIPCC__)
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
+        // HIP exposes VMM through its runtime API. The CUDA-shaped wrappers in
+        // hip_compat/cuda.h preserve Range's stable addresses and page accounting.
+        // Older drivers can report VMM unavailable; Engine then allocates the
+        // whole logical context before sizing its Expert cache.
+        if (hipGetDevice(&device) != hipSuccess) { (void) hipGetLastError(); return; }
+        int supports = 0;
+        if (cuDeviceGetAttribute(&supports, CU_DEVICE_ATTRIBUTE_VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED, device) != CUDA_SUCCESS || !supports) {
+            (void) hipGetLastError();
+            return;
+        }
+        reserve = &cuMemAddressReserve;
+        free_va = &cuMemAddressFree;
+        create = &cuMemCreate;
+        release = &cuMemRelease;
+        map = &cuMemMap;
+        unmap = &cuMemUnmap;
+        access = &cuMemSetAccess;
+        CUmemAllocationProp prop{};
+        prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+        prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+        prop.location.id = device;
+        ok = cuMemGetAllocationGranularity(&gran, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM) == CUDA_SUCCESS && gran != 0;
+        if (!ok) (void) hipGetLastError();
+#else
         decltype(&cuCtxGetDevice) current_device = nullptr;
         decltype(&cuDeviceGetAttribute) attr = nullptr;
         decltype(&cuMemGetAllocationGranularity) granularity = nullptr;

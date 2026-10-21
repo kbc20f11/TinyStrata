@@ -1,6 +1,9 @@
 // Experimental dense native FP8 attention. See docs/fp8-native-attention.md.
 #pragma once
 #include <cstdint>
+#if defined(STRATA_USE_HIP)
+#include <stdexcept>
+#endif
 namespace strata::qwen35::fp8_attention {
 struct Cache {
     const uint8_t *k_q, *v_q;
@@ -8,9 +11,11 @@ struct Cache {
 };
 #if defined(STRATA_USE_HIP)
 inline void run_split(const float *, Cache, const int32_t *, int, int, int, int, int, int, float *, float *, float *,
-                      void *) {}
+                      void *) { throw std::runtime_error("native FP8 attention is unavailable on HIP; use INT8 KV"); }
 inline bool available() { return false; }
-inline void run(const float *, Cache, const int32_t *, int, int, int, float *, void *) {}
+inline void run(const float *, Cache, const int32_t *, int, int, int, float *, void *) {
+    throw std::runtime_error("native FP8 attention is unavailable on HIP; use INT8 KV");
+}
 #else
 // Call before graph capture. Native FP8 MMA requires CUDA sm_89 or newer.
 bool available();

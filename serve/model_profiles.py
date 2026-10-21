@@ -52,7 +52,7 @@ class ModelProfiles:
         if current_arch not in _MODELS.values():
             raise ValueError(f"Unsupported model profile architecture: {current_arch}")
         self.current_id = next(name for name, arch in _MODELS.items() if arch == current_arch)
-        self._hardware = {key: deepcopy(cfg[key]) for key in ("gpu", "backend", "lib_dirs") if key in cfg}
+        self._hardware = {key: deepcopy(cfg[key]) for key in ("gpu", "hip_ordinal", "backend", "lib_dirs") if key in cfg}
         self._engine = model_setup.resolve_executable(cfg)
         self._profiles = {self.current_id: ModelProfile(self.current_id, current_arch, current_path, deepcopy(cfg))}
         for name, arch in _MODELS.items():
@@ -126,8 +126,28 @@ class ModelProfiles:
         return result
 
     def _settings(self, cfg: dict, profile: ModelProfile) -> dict:
+        from serve.backend import configure_backend
         self._check_arch(profile.path, cfg, profile.arch)
         source = deepcopy(cfg)
+        # All profiles in one API process share the same device/runtime. A saved
+        # CUDA profile must not switch an AMD installation back to CUDA.
+        backend_changed = (self._hardware.get("backend") is not None and
+                           source.get("backend", "cuda") != self._hardware["backend"])
+        if self._hardware.get("backend") == "hip" or backend_changed:
+            for key in ("gpu", "hip_ordinal", "backend", "lib_dirs"):
+                source.pop(key, None)
+            source.update(deepcopy(self._hardware))
+        if backend_changed:
+            source.pop("exe", None)
+            source.pop("vision_exe", None)
+            source.pop("vision", None)
+        source = configure_backend(source, self._hardware.get("backend"))
+        if self._engine is not None and (self._hardware.get("backend") == "hip" or backend_changed):
+            filename = {"lfm2moe": "tinystrata-lfm2", "gemma4": "tinystrata-gemma4"}.get(profile.arch, "tinystrata")
+            sibling = self._engine.with_name(filename + self._engine.suffix)
+            if sibling.is_file():
+                source["exe"] = str(sibling)
+                source["vision_exe"] = str(sibling.with_name("tinystrata-vision" + sibling.suffix))
         source.setdefault("arch", profile.arch)
         source.setdefault("model_name", profile.id)
         result, _ = tinyconfig.migrate_settings(source)

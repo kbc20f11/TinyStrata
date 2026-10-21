@@ -50,6 +50,7 @@
 #endif
 #define cudaFuncAttributeMaxDynamicSharedMemorySize hipFuncAttributeMaxDynamicSharedMemorySize
 #define cudaFuncAttributePreferredSharedMemoryCarveout hipFuncAttributePreferredSharedMemoryCarveout
+#define cudaFuncAttributes hipFuncAttributes
 #define cudaGetDevice hipGetDevice
 #define cudaGetDeviceCount hipGetDeviceCount
 #define cudaGetDeviceProperties hipGetDeviceProperties
@@ -59,6 +60,7 @@
 #define cudaGraphExecDestroy hipGraphExecDestroy
 #define cudaGraphExec_t hipGraphExec_t
 #define cudaGraphGetNodes hipGraphGetNodes
+#define cudaGraphInstantiateWithFlags hipGraphInstantiateWithFlags
 #define cudaGraphLaunch hipGraphLaunch
 #define cudaGraphUpload hipGraphUpload
 #define cudaGraph_t hipGraph_t
@@ -132,6 +134,10 @@ inline hipError_t malloc_host(T** pointer, size_t bytes) {
 template <typename Kernel>
 inline hipError_t cudaFuncSetAttribute(Kernel kernel, hipFuncAttribute attribute, int value) {
     return hipFuncSetAttribute(reinterpret_cast<const void*>(kernel), attribute, value);
+}
+template <typename Kernel>
+inline hipError_t cudaFuncGetAttributes(hipFuncAttributes* attributes, Kernel kernel) {
+    return hipFuncGetAttributes(attributes, reinterpret_cast<const void*>(kernel));
 }
 inline hipError_t cudaGraphInstantiate(hipGraphExec_t* exec, hipGraph_t graph, unsigned long long flags) {
     return hipGraphInstantiateWithFlags(exec, graph, flags);

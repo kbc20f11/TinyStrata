@@ -39,6 +39,17 @@ if(STRATA_NATIVE_EXPERTS)
   else()
     set(GGML_CUDA OFF CACHE BOOL "" FORCE)
   endif()
+  if(TINYSTRATA_VISION AND STRATA_ENABLE_HIP)
+    # The same GPU-resident image encoder uses GGML's HIP backend on Radeon.
+    # GGML's HIP target requires the ROCm shared runtime even when GGML itself
+    # is built as static libraries (BUILD_SHARED_LIBS remains OFF).
+    set(GGML_STATIC OFF CACHE BOOL "" FORCE)
+    set(GGML_HIP ON CACHE BOOL "" FORCE)
+    set(AMDGPU_TARGETS "${CMAKE_HIP_ARCHITECTURES}" CACHE STRING "" FORCE)
+    set(GPU_TARGETS "${CMAKE_HIP_ARCHITECTURES}" CACHE STRING "" FORCE)
+  else()
+    set(GGML_HIP OFF CACHE BOOL "" FORCE)
+  endif()
   set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
   set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
   set(GGML_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -77,6 +88,25 @@ if(STRATA_NATIVE_EXPERTS)
     endif()
     set(STRATA_LLAMA_SOURCE_DIR "${strata_llamacpp_SOURCE_DIR}")
     add_subdirectory(${strata_llamacpp_SOURCE_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
+  endif()
+  if(STRATA_ENABLE_HIP AND WIN32 AND TARGET ggml-hip)
+    # Pinned GGML compiles its Windows HIP files as CXX with -x hip. Unlike
+    # CMake's HIP language, that path does not inherit CMAKE_HIP_FLAGS.
+    # Pass the same SDK and device libraries explicitly (also for TheRock's
+    # private, non-system SDK layout used by Strata's Windows build).
+    if(CMAKE_HIP_COMPILER_ROCM_ROOT)
+      target_compile_options(ggml-hip PRIVATE "--rocm-path=${CMAKE_HIP_COMPILER_ROCM_ROOT}")
+      foreach(_bitcode lib/llvm/amdgcn/bitcode amdgcn/bitcode)
+        if(EXISTS "${CMAKE_HIP_COMPILER_ROCM_ROOT}/${_bitcode}")
+          target_compile_options(ggml-hip PRIVATE
+            "--rocm-device-lib-path=${CMAKE_HIP_COMPILER_ROCM_ROOT}/${_bitcode}")
+          break()
+        endif()
+      endforeach()
+    endif()
+    foreach(_arch IN LISTS CMAKE_HIP_ARCHITECTURES)
+      target_compile_options(ggml-hip PRIVATE "--offload-arch=${_arch}")
+    endforeach()
   endif()
   target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/native_expert.cpp src/kernels/cpu/iq_avx512.cpp
                                            src/kernels/cpu/iq_avx2.cpp src/kernels/cpu/kq_avx2.cpp

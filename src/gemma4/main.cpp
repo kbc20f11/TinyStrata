@@ -503,6 +503,14 @@ int main(int argc, char** argv) {
                 if (++i == argc) throw std::invalid_argument("missing value for " + arg);
                 return argv[i];
             };
+            if (arg == "--capabilities") {
+#if defined(STRATA_USE_HIP)
+                std::puts("{\"backend\":\"hip\",\"model_family\":\"gemma4\",\"kv_types\":[\"int8\"],\"images\":true,\"mtp\":true}");
+#else
+                std::puts("{\"backend\":\"cuda\",\"model_family\":\"gemma4\",\"kv_types\":[\"int8\",\"fp8-mma\",\"fp16\"],\"images\":true,\"mtp\":true}");
+#endif
+                return 0;
+            }
             if (arg == "--help" || arg == "-h") {
                 std::puts("TinyStrata Gemma 4 26B-A4B (image input and assistant MTP)\n"
                           "  --model GGUF --serve\n"

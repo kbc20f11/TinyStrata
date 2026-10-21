@@ -3461,7 +3461,11 @@ int strata::qwen35::run(int argc, char** argv) {
                         "  --vision                 Accept SVE1 image embeddings through GENI in --serve\n"
                         "  --bench-pp N --bench-tg N Benchmark prompt and generation\n"
                         "  --max-context auto|N     KV capacity (default: auto, total GPU VRAM selects 64K/128K/256K)\n"
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
+                        "  --kv-type auto|int8     HIP uses INT8 KV\n"
+#else
                         "  --kv-type auto|fp32|int8|fp8|fp8-mma  Default auto: native FP8, otherwise INT8; fp8 = fp8-mma\n"
+#endif
                         "  --kv-grow --kv-whole      Grow physical KV with sequence length (default: grow)\n"
                         "  --chunk auto|N           Prompt chunk size (default: auto)\n"
                         "  --mtp N                  MTP drafts, 0..7 (default: 0)\n"
@@ -3559,6 +3563,12 @@ int strata::qwen35::run(int argc, char** argv) {
 #else
     if (std::getenv("STRATA_MMQ_KQ") == nullptr) _putenv_s("STRATA_MMQ_KQ", "1");
     if (std::getenv("CUDA_MODULE_LOADING") == nullptr) _putenv_s("CUDA_MODULE_LOADING", "EAGER");
+#endif
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
+    if (kv_format != P::kAutomaticKv && kv_format != P::kInt8Kv) {
+        std::fprintf(stderr, "tinystrata: the HIP backend requires INT8 KV; use --kv-type auto or int8\n");
+        return 2;
+    }
 #endif
     if (mtp_d < 0 || mtp_d > 7) { std::fprintf(stderr, "tinystrata: --mtp takes 0 .. 7 drafts\n"); return 2; }
     if (chunk < 0 || chunk > 4096) { std::fprintf(stderr, "tinystrata: bad --chunk\n"); return 2; }

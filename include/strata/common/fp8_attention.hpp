@@ -3,12 +3,30 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#if defined(STRATA_USE_HIP)
+#include <stdexcept>
+#endif
 
 namespace strata::fp8_attention {
 struct Cache {
     const std::uint8_t *k, *v;
     const std::uint16_t *ks, *vs;
 };
+
+#if defined(STRATA_USE_HIP)
+// Native E4M3 MMA attention is a CUDA implementation. HIP engines use their
+// INT8 cache and must never silently execute an empty FP8 entry point.
+inline bool available(int = 0) { return false; }
+inline bool available_gemma() { return false; }
+[[noreturn]] inline void unavailable() { throw std::runtime_error("native FP8 attention is unavailable on HIP; use INT8 KV"); }
+inline void store(const float*, std::uint8_t*, std::uint16_t*, int, std::int64_t, int,
+                  const std::int64_t*, int, void*) { unavailable(); }
+inline std::size_t scratch_bytes(int, int, int) { return 0; }
+inline void run(const float*, Cache, std::int64_t, int, int, int, int, int, float, float*,
+                const std::int64_t*, int, int, bool, void*, std::size_t, void*) { unavailable(); }
+inline void run_gemma(const float*, Cache, std::int64_t, int, int, int, int, int, float, float*,
+                      const std::int64_t*, int, int, bool, void*, std::size_t, void*) { unavailable(); }
+#else
 
 // Call before graph capture. Checks both the GPU and the selected compiled image
 // and configures dynamic shared memory. Supports head dimensions 64, 256 and 512.
@@ -45,4 +63,5 @@ void run_gemma(const float *q, Cache cache, std::int64_t pos, int rows, int q_he
                int head_dim, int context, float scale, float *output,
                const std::int64_t *device_pos, int ring, int window, bool whole,
                void *scratch, std::size_t scratch_size, void *stream);
+#endif
 } // namespace strata::fp8_attention

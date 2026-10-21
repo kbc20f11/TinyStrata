@@ -6825,6 +6825,8 @@ def main() -> int:
         from serve.tinyconfig import migrate_settings, validate
         try:
             cfg, migrated = migrate_settings(cfg)
+            from serve.backend import configure_backend
+            cfg = configure_backend(cfg)
             validate(cfg, allow_uninstalled=bootstrap)
             if migrated and a.config:
                 config.save(a.config, cfg)

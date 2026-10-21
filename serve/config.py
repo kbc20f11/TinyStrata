@@ -41,6 +41,8 @@ def check(key: str, value, cfg: dict):
     if isinstance(spec[1], tuple):
         if value not in spec[1]:
             raise ValueError(f"{key}: expected one of {', '.join(spec[1])}, not {value!r}")
+        if key == "kv_type" and cfg.get("backend") == "hip" and value not in ("auto", "int8"):
+            raise ValueError("The AMD HIP route uses INT8 KV; choose int8 or auto")
         return value
     if key in ("max_context", "chunk") and value == "auto":
         return value

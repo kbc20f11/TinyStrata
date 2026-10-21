@@ -1,5 +1,6 @@
 // Image encoder adapted from Niko1221/Strata tools/vision/strata_vision.cpp.
 // Source: 296b59d2f73c8f04a805df29c2fa97655adace78 (MIT).
+// AMD backend selection follows Strata cbfd5b926b794b356195d3cb600191b0c3567540.
 // Copyright (c) 2026 Niko1221 and the Strata contributors. See LICENSE and NOTICE.
 //
 // Turns an image into the embeddings the text model reads in place of its <|image_pad|> tokens, with llama.cpp's
@@ -7,7 +8,7 @@
 // rows at the image's pad tokens. Qwen uses a 2-D M-RoPE grid; Gemma uses a 1-D span and image attention.
 //
 //   tinystrata-vision --mmproj <mmproj.gguf> --model <text model .gguf, first split> [--gpu] [--threads N]
-//                 [--device CUDA0] [--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto]
+//                 [--device GPU_NAME] [--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto]
 // Flash attention defaults to auto, and to off on the CPU when ggml is built with AVX-512 (see main).
 //
 // Resident: prints "READY <n_embd>", then per stdin line
@@ -40,6 +41,12 @@
 #include <vector>
 
 namespace {
+
+#if defined(TINYSTRATA_VISION_HIP)
+constexpr const char* gpu_backend = "ROCm";
+#else
+constexpr const char* gpu_backend = "CUDA";
+#endif
 
 void quiet_log(ggml_log_level level, const char* text, void*) {
     if (level >= GGML_LOG_LEVEL_WARN || std::strstr(text, "CLIP using ")) std::fputs(text, stderr);
@@ -89,15 +96,17 @@ int main(int argc, char** argv) {
     }
     if (capabilities) {
 #if defined(TINYSTRATA_VISION_CUDA)
-        std::puts("{\"cuda\":true}");
+        std::puts("{\"cuda\":true,\"hip\":false,\"backend\":\"cuda\"}");
+#elif defined(TINYSTRATA_VISION_HIP)
+        std::puts("{\"cuda\":false,\"hip\":true,\"backend\":\"hip\"}");
 #else
-        std::puts("{\"cuda\":false}");
+        std::puts("{\"cuda\":false,\"hip\":false,\"backend\":\"cpu\"}");
 #endif
         return 0;
     }
     if (mmproj.empty() || model.empty()) {
         std::fprintf(stderr, "usage: tinystrata-vision --mmproj <mmproj.gguf> --model <model.gguf> [--gpu] [--threads N] "
-                             "[--device CUDA0] [--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto]\n");
+                             "[--device GPU_NAME] [--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto]\n");
         return 2;
     }
     if (!device_name.empty() && !gpu) {
@@ -109,8 +118,10 @@ int main(int argc, char** argv) {
     if (!gpu) {
 #ifdef _WIN32
         _putenv_s("CUDA_VISIBLE_DEVICES", "-1");
+        _putenv_s("HIP_VISIBLE_DEVICES", "-1");
 #else
         setenv("CUDA_VISIBLE_DEVICES", "-1", 1);
+        setenv("HIP_VISIBLE_DEVICES", "-1", 1);
 #endif
     }
     llama_log_set(quiet_log, nullptr);
@@ -121,13 +132,13 @@ int main(int argc, char** argv) {
         for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
             ggml_backend_dev_t device = ggml_backend_dev_get(i);
             if (ggml_backend_dev_type(device) != GGML_BACKEND_DEVICE_TYPE_GPU ||
-                std::strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(device)), "CUDA") != 0) continue;
+                std::strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(device)), gpu_backend) != 0) continue;
             if (!device_name.empty() && device_name != ggml_backend_dev_name(device)) continue;
             gpu_device = device;
             break;
         }
         if (!gpu_device) {
-            std::printf("ERR GPU vision unavailable: no CUDA device%s%s\n",
+            std::printf("ERR GPU vision unavailable: no %s device%s%s\n", gpu_backend,
                         device_name.empty() ? "" : " named ", device_name.c_str());
             std::fflush(stdout);
             llama_backend_free();

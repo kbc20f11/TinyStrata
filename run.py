@@ -60,6 +60,7 @@ def vision_tokens(value: str) -> int:
 
 def prepare(a) -> tuple[dict, Path]:
     from serve import config
+    from serve.backend import configure_backend, executable_backend, hardware_backend, hip_ordinal
     from serve.tinyconfig import MEMORY_POLICY_VERSION, automatic_experts, check_files, migrate_settings, validate
     from serve.model_setup import (configure_download, configure_vision, model_architecture, model_path, prepare_installed_model,
                                    resolve_executable, save_settings, shared_library_dirs)
@@ -93,6 +94,11 @@ def prepare(a) -> tuple[dict, Path]:
     if requested_arch is not None and cfg.get("arch", "qwen35moe") != requested_arch:
         raise ValueError("This config belongs to another model family; choose a separate --config path")
     cfg, migrated = migrate_settings(cfg)
+    requested_backend = getattr(a, "backend", None)
+    if requested_backend in (None, "auto") and not cfg.get("backend"):
+        explicit_backend = executable_backend(a.exe, [str(p) for p in a.lib_dir or []]) if a.exe else None
+        requested_backend = explicit_backend or hardware_backend()
+    cfg = configure_backend(cfg, requested_backend, explicit_kv=a.kv_type)
     cfg.setdefault("port", {"lfm2moe": 18081, "gemma4": 18082}.get(cfg.get("arch"), 18080))
     if a.model:
         set_arg(cfg, "--model", a.model.expanduser().resolve())
@@ -132,7 +138,15 @@ def prepare(a) -> tuple[dict, Path]:
         cfg["api_key"] = a.api_key
     if a.gpu is not None:
         cfg["gpu"] = a.gpu
+        cfg.pop("hip_ordinal", None)
     cfg = shared_library_dirs(cfg)
+    native_backend = executable_backend(cfg["exe"], cfg.get("lib_dirs") or []) if cfg.get("exe") else None
+    if native_backend and native_backend != cfg["backend"]:
+        raise ValueError(f"The selected executable uses {native_backend}, but the configuration selects {cfg['backend']}; rebuild/install the matching backend")
+    if cfg["backend"] == "hip" and cfg.get("gpu") is None and cfg.get("hip_ordinal") is None:
+        ordinal = hip_ordinal(cfg.get("lib_dirs") or [])
+        if ordinal is not None:
+            cfg["hip_ordinal"] = ordinal
     cfg = configure_download(cfg, path)
     model = model_path(cfg)
     if cfg.get("vision_mode") == "no":
@@ -161,6 +175,8 @@ def main() -> int:
                     help="Qwen3.6 (default), LFM2.5 or Gemma4; settings are separate per family")
     ap.add_argument("--draft-model", type=Path, help="existing Gemma4 QAT assistant GGUF for MTP")
     ap.add_argument("--exe", type=Path, help="built tinystrata executable")
+    ap.add_argument("--backend", choices=("auto", "cuda", "hip"), default="auto",
+                    help="GPU backend (default: saved setting or native executable); hip uses INT8 KV")
     ap.add_argument("--vision-exe", type=Path, help="built tinystrata-vision image encoder")
     ap.add_argument("--vision", choices=("gpu", "cpu", "no", "yes", "none"),
                     help="image encoder: gpu (default), cpu or no; yes = gpu, none = no; saved for later starts")
@@ -184,7 +200,7 @@ def main() -> int:
     ap.add_argument("--chunk", type=chunk_size, metavar="auto|TOKENS",
                     help="use the upstream engine's automatic chunk selection (default: auto), or fix 1-4096 tokens")
     ap.add_argument("--gpu", type=int, help="GPU index")
-    ap.add_argument("--lib-dir", type=Path, action="append", help="CUDA runtime DLL directory (repeatable)")
+    ap.add_argument("--lib-dir", type=Path, action="append", help="GPU runtime DLL directory (repeatable)")
     ap.add_argument("--port", type=int, help="API port (default: saved setting or 18080)")
     ap.add_argument("--host", help="API bind address (default: 127.0.0.1)")
     ap.add_argument("--api-key", help="API key required by clients (default: unset)")

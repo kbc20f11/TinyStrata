@@ -22,7 +22,7 @@ def model_architecture(path: str | Path) -> str:
 
 
 def shared_library_dirs(cfg: dict) -> dict:
-    """Reuse an installed portable CUDA runtime for a separate LFM config."""
+    """Reuse a matching installed GPU runtime for another model config."""
     if cfg.get("arch") not in ("lfm2moe", "gemma4") or "lib_dirs" in cfg:
         return cfg
     work = ROOT.with_name(ROOT.name + "-work")
@@ -33,9 +33,11 @@ def shared_library_dirs(cfg: dict) -> dict:
             saved = config.load(qwen)
         except (OSError, ValueError):
             saved = {}
-        directories.extend(saved.get("lib_dirs") or [])
-    for toolkit in sorted(work.glob("cuda-*"), reverse=True):
-        directories.extend((str(toolkit / "bin"), str(toolkit / "bin/x64")))
+        if saved.get("backend", "cuda") == cfg.get("backend", "cuda"):
+            directories.extend(saved.get("lib_dirs") or [])
+    if cfg.get("backend") != "hip":
+        for toolkit in sorted(work.glob("cuda-*"), reverse=True):
+            directories.extend((str(toolkit / "bin"), str(toolkit / "bin/x64")))
     directories.append(str(work / "runtime"))
     found = list(dict.fromkeys(str(Path(item).resolve()) for item in directories if Path(item).is_dir()))
     return {**cfg, "lib_dirs": found} if found else cfg
@@ -52,17 +54,24 @@ def model_path(cfg: dict) -> Path | None:
 
 def resolve_executable(cfg: dict) -> Path | None:
     """Resolve an existing engine, also finding a build made after API startup."""
+    from serve.backend import executable_backend
+    def usable(path: Path) -> bool:
+        if not path.is_file():
+            return False
+        native = executable_backend(path, cfg.get("lib_dirs") or []) if cfg.get("backend") else None
+        return native is None or native == cfg["backend"]
     if cfg.get("exe"):
         path = Path(cfg["exe"]).expanduser()
         path = path if path.is_absolute() else Path(cfg.get("cwd") or ".") / path
-        return path.resolve() if path.is_file() else None
+        return path.resolve() if usable(path) else None
     suffix = ".exe" if os.name == "nt" else ""
     work = ROOT.with_name(ROOT.name + "-work")
     name = {"lfm2moe": "tinystrata-lfm2", "gemma4": "tinystrata-gemma4"}.get(cfg.get("arch"), "tinystrata")
-    for folder in (work / "build", work / "build/Release", work / "build-cuda-132",
+    backend_build = work / ("build-hip" if cfg.get("backend") == "hip" else "build")
+    for folder in (backend_build, backend_build / "Release", work / "build-cuda-132" if cfg.get("backend") != "hip" else backend_build,
                    ROOT / "bin", ROOT / "build", ROOT / "build/Release"):
         candidate = folder / (name + suffix)
-        if candidate.is_file():
+        if usable(candidate):
             return candidate.resolve()
     return None
 
@@ -73,12 +82,20 @@ def resolve_vision_executable(cfg: dict) -> Path | None:
     if selected:
         path = Path(selected).expanduser()
         path = path if path.is_absolute() else Path(cfg.get("cwd") or ".") / path
-        return path.resolve() if path.is_file() else None
+        if path.is_file():
+            from serve.backend import executable_backend
+            native = executable_backend(path, cfg.get("lib_dirs") or []) if cfg.get("backend") else None
+            if native is None or native == cfg["backend"]:
+                return path.resolve()
+        return None
     engine = resolve_executable(cfg)
     if engine is not None:
         path = engine.with_name("tinystrata-vision" + (".exe" if os.name == "nt" else ""))
         if path.is_file():
-            return path.resolve()
+            from serve.backend import executable_backend
+            native = executable_backend(path, cfg.get("lib_dirs") or []) if cfg.get("backend") else None
+            if native is None or native == cfg["backend"]:
+                return path.resolve()
     return None
 
 

@@ -4,6 +4,14 @@ Base commit: 296b59d2f73c8f04a805df29c2fa97655adace78
 Copyright (c) 2026 Niko1221 and the Strata contributors.
 The upstream MIT license is preserved in LICENSE.
 
+The Windows AMD HIP build/runtime route and GPU image-backend selection adapt
+Niko1221/Strata at cbfd5b926b794b356195d3cb600191b0c3567540 (MIT), including
+the WDDM memory-budget query and ROCm toolchain configuration. Existing AMD
+kernel and HIP MMQ paths are retained; Windows hipBLAS error handling also
+follows aflin/momoe at 47e5b2b2ab52982e105315bba2ac48ec75de01bf (MIT).
+The CUDA-shaped HIP virtual-memory wrappers in include/strata/hip_compat/cuda.h
+adapt VecSzn/PolyStrata at 51dc242725d9e64e791146f1d13133d5faedb0ce (MIT).
+
 GGML-derived source and the pinned llama.cpp dependency are MIT licensed.
 See third_party/ggml/LICENSE and third_party/ggml/VERSION.txt.
 Existing file-level copyright and license notices remain in place.

@@ -1306,6 +1306,18 @@ void blas_ck(cublasStatus_t s, const char* what) {
         throw std::runtime_error(std::string(what) + ": cuBLAS status " + std::to_string((int) s));
 }
 
+// Strata/MoMoE's Windows HIP workaround (#247/#325): a successful FP16
+// product can leave hipErrorInvalidValue behind on gfx1201. Clear only that
+// known stale status after a GEMM; a different runtime error still fails.
+void blas_product_ck(cublasStatus_t s, const char* what) {
+    blas_ck(s, what);
+#if defined(__HIPCC__) && defined(_WIN32)
+    const hipError_t sticky = hipGetLastError();
+    if (sticky != hipSuccess && sticky != hipErrorInvalidValue)
+        throw std::runtime_error(std::string(what) + ": " + hipGetErrorString(sticky));
+#endif
+}
+
 }  // namespace
 
 void* blas_create(void* stream) {
@@ -1326,9 +1338,14 @@ void* blas_create(void* stream) {
     cudaMemsetAsync(p, 0, n * n * (2 * sizeof(half) + sizeof(float)), cs(stream));
     const float one = 1.0f, zero = 0.0f;
     const half* a = (const half*) p;
-    cublasGemmStridedBatchedEx(h, CUBLAS_OP_T, CUBLAS_OP_N, n, n, n, &one, a, CUDA_R_16F, n, n * n, a + n * n,
+    const cublasStatus_t warmup = cublasGemmStridedBatchedEx(h, CUBLAS_OP_T, CUBLAS_OP_N, n, n, n, &one, a, CUDA_R_16F, n, n * n, a + n * n,
                                CUDA_R_16F, n, n * n, &zero, (float*) (a + 2 * n * n), CUDA_R_32F, n, n * n, 1,
                                CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+#if defined(__HIPCC__) && defined(_WIN32)
+    blas_product_ck(warmup, "BLAS warmup");
+#else
+    (void) warmup;
+#endif
     cudaStreamSynchronize(cs(stream));
     cudaFree(p);
     return h;
@@ -1361,11 +1378,11 @@ void gemm_f32(void* blas, const float* w, const float* x, float* y, int n_in, in
         return;
     }
     if (groups == 1) {
-        blas_ck(cublasSgemm(h, CUBLAS_OP_T, CUBLAS_OP_N, n_out, rows, n_in, &one, w, n_in, x, n_in, &zero, y, n_out),
+        blas_product_ck(cublasSgemm(h, CUBLAS_OP_T, CUBLAS_OP_N, n_out, rows, n_in, &one, w, n_in, x, n_in, &zero, y, n_out),
                 "a batch's projection");
         return;
     }
-    blas_ck(cublasSgemmStridedBatched(h, CUBLAS_OP_T, CUBLAS_OP_N, rows_per_x, rows, n_in, &one, w, n_in,
+    blas_product_ck(cublasSgemmStridedBatched(h, CUBLAS_OP_T, CUBLAS_OP_N, rows_per_x, rows, n_in, &one, w, n_in,
                                       (long long) rows_per_x * n_in, x, groups * n_in, n_in, &zero, y, n_out,
                                       rows_per_x, groups),
             "a batch's projections");
@@ -1657,7 +1674,7 @@ void attend_batch(void* blas, const float* q, const uint16_t* kcache, const uint
             const half* vrow = vq ? (const half*) vwork : (const half*) vcache + size_t(row) * width;
             // A product a group: its heads' queries of every token of the chunk against the group's keys.  cuBLAS
             // reads the cache's rows as the transpose, and the groups' keys lie `dim` apart in a row.
-            blas_ck(cublasGemmStridedBatchedEx(h, CUBLAS_OP_T, CUBLAS_OP_N, m, (int) cols, dim, &scale,
+            blas_product_ck(cublasGemmStridedBatchedEx(h, CUBLAS_OP_T, CUBLAS_OP_N, m, (int) cols, dim, &scale,
                                                krow, CUDA_R_16F, width, dim, qg,
                                                CUDA_R_16F, dim, cols * dim, &zero, score, CUDA_R_32F, m, cols * m,
                                                kv_heads, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP),
@@ -1667,7 +1684,7 @@ void attend_batch(void* blas, const float* q, const uint16_t* kcache, const uint
                                                                          shrink, k0 == 0);
             if (k0 > 0)
                 attn_scale_kernel<<<dim3(grid(dim, 256), c * n_head), 256, 0, cs(stream)>>>(og, shrink, dim, false);
-            blas_ck(cublasGemmStridedBatchedEx(h, CUBLAS_OP_N, CUBLAS_OP_N, dim, (int) cols, m, &one,
+            blas_product_ck(cublasGemmStridedBatchedEx(h, CUBLAS_OP_N, CUBLAS_OP_N, dim, (int) cols, m, &one,
                                                vrow, CUDA_R_16F, width, dim,
                                                weight, CUDA_R_16F, m, cols * m, k0 > 0 ? &one : &zero, og, CUDA_R_32F,
                                                dim, cols * dim, kv_heads, CUBLAS_COMPUTE_32F,

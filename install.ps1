@@ -5,14 +5,18 @@ Install and start TinyStrata on Windows.
 .DESCRIPTION
 Run with: irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex
 Uses local sources when available, otherwise downloads them from GitHub.
-Other downloads use official Python, NVIDIA and Microsoft endpoints.
-The NVIDIA driver must already be installed. No persistent PATH or execution
+Other downloads use official Python, NVIDIA, AMD and Microsoft endpoints.
+The selected GPU driver must already be installed. AMD builds use an existing
+ROCm/HIP SDK or prepare a private pinned AMD SDK in the work directory. No persistent PATH or execution
 policy changes are made. Runtime data stays in the sibling TinyStrata-work folder.
 #>
 [CmdletBinding()]
 param(
     [string]$SourceDir,
     [string]$WorkDir,
+    [ValidateSet('auto', 'cuda', 'hip')][string]$Backend = 'auto',
+    [string]$HipDirectory,
+    [ValidatePattern('^gfx[0-9a-f]+(;gfx[0-9a-f]+)*$')][string]$HipArchitectures,
     [ValidateSet('qwen36', 'qwen3.6', 'lfm2', 'lfm2.5', 'gemma4', 'gemma-4')][string]$ModelFamily = 'qwen36',
     [ValidateRange(0, 65535)][int]$Port = 0,
     [switch]$NoStart,
@@ -246,6 +250,139 @@ function Ensure-TinyStrataCudaToolkit {
     return $destinationRoot
 }
 
+# HIP toolchain/device discovery follows Strata's tools/hip/build_windows.bat
+# (MIT), upstream cbfd5b926b794b356195d3cb600191b0c3567540. No driver or SDK
+# is replaced by these helpers. A private pinned SDK can be prepared below.
+function Get-TinyStrataBackend {
+    param([ValidateSet('auto', 'cuda', 'hip')][string]$Requested = 'auto', $Configuration)
+    if ($Requested -ne 'auto') { return $Requested }
+    if ($Configuration -and $Configuration.backend -in @('cuda', 'hip')) { return [string]$Configuration.backend }
+    $smi = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
+    if ($smi) {
+        $devices = @(& $smi.Source -L 2>$null)
+        if ($LASTEXITCODE -eq 0 -and ($devices -join "`n") -match 'GPU \d+:') { return 'cuda' }
+    }
+    $amd = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.PNPDeviceID -match '(?i)VEN_1002' })
+    if ($amd.Count -gt 0) { return 'hip' }
+    throw 'No usable NVIDIA GPU or AMD Radeon adapter was detected. Install its GPU driver, or select -Backend cuda/hip explicitly.'
+}
+
+function Get-TinyStrataHipCompiler {
+    param([string]$Directory)
+    foreach ($relative in @('lib\llvm\bin\clang++.exe', 'bin\clang++.exe')) {
+        $candidate = Join-Path $Directory $relative
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    }
+    return $null
+}
+
+function Find-TinyStrataHipToolkit {
+    param([string]$Directory)
+    if ($Directory) {
+        if ((Test-Path -LiteralPath $Directory -PathType Container) -and
+            (Get-TinyStrataHipCompiler -Directory $Directory) -and
+            (Test-Path -LiteralPath (Join-Path $Directory 'include\hip\hip_runtime.h') -PathType Leaf)) {
+            return (Resolve-Path -LiteralPath $Directory).Path
+        }
+        throw "The selected AMD SDK is incomplete or does not exist: $Directory"
+    }
+    $roots = @()
+    foreach ($name in @('HIP_PATH', 'ROCM_PATH')) { if ([Environment]::GetEnvironmentVariable($name)) { $roots += [Environment]::GetEnvironmentVariable($name) } }
+    $sdk = Get-Command rocm-sdk.exe -ErrorAction SilentlyContinue
+    if ($sdk) {
+        $reported = @(& $sdk.Source path --root 2>$null)
+        if ($LASTEXITCODE -eq 0) { $roots += @($reported | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) }) }
+    }
+    $installed = Join-Path $env:ProgramFiles 'AMD\ROCm'
+    if (Test-Path -LiteralPath $installed -PathType Container) {
+        $roots += $installed
+        $roots += @(Get-ChildItem -LiteralPath $installed -Directory | Sort-Object Name -Descending | ForEach-Object FullName)
+    }
+    foreach ($root in @($roots | Select-Object -Unique)) {
+        if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
+        if ((Get-TinyStrataHipCompiler -Directory $root) -and (Test-Path -LiteralPath (Join-Path $root 'include\hip\hip_runtime.h') -PathType Leaf)) {
+            return (Resolve-Path -LiteralPath $root).Path
+        }
+    }
+    throw 'AMD builds require an existing ROCm/HIP SDK with Clang, HIP headers and hipBLAS. Install the AMD SDK, then rerun with -Backend hip -HipDirectory <SDK root>. This installer does not replace GPU drivers.'
+}
+
+function Get-TinyStrataHipArchitectures {
+    param([string]$Directory, [string]$Requested)
+    if ($Requested) { return $Requested }
+    if ($env:STRATA_HIP_ARCHS -match '^gfx[0-9a-f]+(;gfx[0-9a-f]+)*$') { return $env:STRATA_HIP_ARCHS }
+    foreach ($relative in @('lib\llvm\bin\amdgpu-arch.exe', 'bin\amdgpu-arch.exe')) {
+        $query = Join-Path $Directory $relative
+        if (-not (Test-Path -LiteralPath $query -PathType Leaf)) { continue }
+        # Ignore an unsupported integrated Radeon when a supported discrete
+        # card is also present. Keep this list aligned with hip_backend.cmake.
+        $supported = @('gfx1010', 'gfx1011', 'gfx1012', 'gfx1030', 'gfx1031', 'gfx1034', 'gfx1100', 'gfx1101', 'gfx1102', 'gfx1103', 'gfx1150', 'gfx1151', 'gfx1152', 'gfx1200', 'gfx1201')
+        $archs = @(& $query 2>$null | ForEach-Object { $_.Trim() } | Where-Object { $_ -in $supported } | Select-Object -Unique)
+        if ($LASTEXITCODE -eq 0 -and $archs.Count -gt 0) { return $archs -join ';' }
+    }
+    throw 'Could not determine the AMD GPU architecture. Pass -HipArchitectures gfx1201 (or the gfx target reported by your AMD SDK).'
+}
+
+function Test-TinyStrataRocmPackages {
+    param([string]$Python, [string[]]$Names)
+    $probe = "import importlib.metadata as m,sys; print(all(m.version(n)=='10.2.0a20260930' for n in sys.argv[1:]))"
+    $report = @(& $Python -I -c $probe @Names 2>$null)
+    return $LASTEXITCODE -eq 0 -and ($report -join '').Trim() -eq 'True'
+}
+
+function Get-TinyStrataPrivateHipRoot {
+    param([string]$SdkExecutable)
+    $reported = @(& $SdkExecutable path --root 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $reported.Count -ne 1) { throw 'The private AMD SDK could not report its root directory.' }
+    return Find-TinyStrataHipToolkit -Directory ([string]$reported[0])
+}
+
+function Ensure-TinyStrataHipToolkit {
+    param([string]$DestinationDirectory, [string]$Python, [string]$Directory, [string]$Architectures)
+    # An explicitly supplied path is a deliberate selection; never replace it
+    # with a downloaded SDK when it is misspelled or incomplete.
+    if ($Directory) { return Find-TinyStrataHipToolkit -Directory $Directory }
+    $venvPython = Join-Path $DestinationDirectory 'Scripts\python.exe'
+    $sdk = Join-Path $DestinationDirectory 'Scripts\rocm-sdk.exe'
+    if (-not (Test-Path -LiteralPath $sdk -PathType Leaf)) {
+        try { return Find-TinyStrataHipToolkit } catch { }
+    }
+    if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
+        & $Python -I -m venv $DestinationDirectory | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw 'Could not create the private AMD SDK environment.' }
+    }
+    $basePackages = @('rocm', 'rocm-sdk-devel', 'rocm-sdk-libraries')
+    $baseReady = (Test-Path -LiteralPath $sdk -PathType Leaf) -and (Test-TinyStrataRocmPackages -Python $venvPython -Names $basePackages)
+    # AMD ships the small "rocm" metapackage as an sdist at this pin; the
+    # compiler/runtime/device payloads must still be prebuilt wheels.
+    $pipOptions = @('-I', '-m', 'pip', '--isolated', '--disable-pip-version-check', '--no-input', 'install', '--only-binary=:all:', '--no-binary=rocm', '--index-url', 'https://nightly.repo.amd.com/rocm/whl-next/')
+    if (-not $baseReady) {
+        Write-Host 'Preparing the private AMD ROCm compiler and libraries (several GB; no driver or system PATH changes)...'
+        & $venvPython @pipOptions 'rocm[libraries,devel]==10.2.0a20260930' | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw 'The AMD ROCm SDK download/install failed. Rerun to reuse completed downloads.' }
+        & $sdk init | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw 'The AMD ROCm SDK initialization failed.' }
+    }
+    $root = Get-TinyStrataPrivateHipRoot -SdkExecutable $sdk
+    $targets = Get-TinyStrataHipArchitectures -Directory $root -Requested $Architectures
+    $devicePackages = @($targets -split ';' | ForEach-Object { 'rocm-sdk-device-' + $_ })
+    if (-not (Test-TinyStrataRocmPackages -Python $venvPython -Names $devicePackages)) {
+        $extras = 'libraries,devel,' + (($targets -split ';' | ForEach-Object { 'device-' + $_ }) -join ',')
+        Write-Host "Preparing AMD device libraries for $targets..."
+        & $venvPython @pipOptions "rocm[$extras]==10.2.0a20260930" | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw 'The AMD GPU device-library download/install failed.' }
+        & $sdk init | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw 'The AMD ROCm device-library initialization failed.' }
+        $root = Get-TinyStrataPrivateHipRoot -SdkExecutable $sdk
+    }
+    return $root
+}
+
+function Get-TinyStrataHipRuntimeDirectories {
+    param([string]$Directory)
+    return @(@('bin', 'lib', 'lib\llvm\bin') | ForEach-Object { Join-Path $Directory $_ } | Where-Object { Test-Path -LiteralPath $_ -PathType Container })
+}
+
 function Get-TinyStrataBuildArchitectures {
     [CmdletBinding()]
     param()
@@ -311,8 +448,8 @@ function Find-TinyStrataBuildTools {
     throw 'Source builds need Visual Studio 2022/2026 C++ tools, a Windows SDK, CMake and Ninja. Install the portable TinyStrata release to avoid development tools.'
 }
 
-function Test-TinyStrataVisionCuda {
-    param([string]$ExecutablePath, [string[]]$SearchDirectories = @())
+function Test-TinyStrataVisionBackend {
+    param([string]$ExecutablePath, [string[]]$SearchDirectories = @(), [string]$Backend = 'cuda')
     if (-not (Test-Path -LiteralPath $ExecutablePath -PathType Leaf)) { return $false }
     $previousPath = $env:PATH
     try {
@@ -320,7 +457,7 @@ function Test-TinyStrataVisionCuda {
         $report = & $ExecutablePath --capabilities 2>$null
         if ($LASTEXITCODE -ne 0) { return $false }
         $capabilities = ($report -join [Environment]::NewLine) | ConvertFrom-Json
-        return $capabilities.cuda -eq $true
+        return $capabilities.backend -eq $Backend -or ($Backend -eq 'cuda' -and $capabilities.cuda -eq $true) -or ($Backend -eq 'hip' -and $capabilities.hip -eq $true)
     } catch {
         return $false
     } finally {
@@ -328,25 +465,43 @@ function Test-TinyStrataVisionCuda {
     }
 }
 
+function Test-TinyStrataEngineBackend {
+    param([string]$ExecutablePath, [string[]]$SearchDirectories = @(), [string]$Backend = 'cuda')
+    if (Test-TinyStrataVisionBackend -ExecutablePath $ExecutablePath -SearchDirectories $SearchDirectories -Backend $Backend) { return $true }
+    # Keep older CUDA builds reusable even though they predate --capabilities.
+    if (-not (Test-Path -LiteralPath $ExecutablePath -PathType Leaf)) { return $false }
+    $imports = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($ExecutablePath))
+    return ($Backend -eq 'hip' -and $imports.Contains('amdhip64')) -or ($Backend -eq 'cuda' -and $imports.Contains('cudart64_'))
+}
+
 function Invoke-TinyStrataPortableBuild {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$SourceDirectory,
         [Parameter(Mandatory = $true)][string]$BuildDirectory,
-        [Parameter(Mandatory = $true)][string]$CudaDirectory,
+        [string]$CudaDirectory,
+        [ValidateSet('cuda', 'hip')][string]$Backend = 'cuda',
+        [string]$HipDirectory,
+        [ValidatePattern('^gfx[0-9a-f]+(;gfx[0-9a-f]+)*$')][string]$HipArchitectures,
         [ValidatePattern('^(86|89|120)(;(86|89|120))*$')][string]$Architectures = (Get-TinyStrataBuildArchitectures),
         [ValidateRange(1, 32)][int]$Parallel = 4,
         [switch]$Clean
     )
     $tools = Find-TinyStrataBuildTools
     $sourceRoot = (Resolve-Path -LiteralPath $SourceDirectory).Path
-    $cudaRoot = (Resolve-Path -LiteralPath $CudaDirectory).Path
     $buildRoot = [System.IO.Path]::GetFullPath($BuildDirectory)
-    $nvcc = Join-Path $cudaRoot 'bin\nvcc.exe'
-    if (-not (Test-Path -LiteralPath $nvcc -PathType Leaf)) { throw "CUDA compiler not found: $nvcc" }
-    $versionText = (& $nvcc --version) -join [Environment]::NewLine
-    if ($LASTEXITCODE -ne 0 -or $versionText -notmatch 'release\s+(\d+\.\d+)') { throw 'Cannot determine the CUDA toolkit version.' }
-    if ([version]$Matches[1] -lt [version]'13.2') { throw 'This portable build helper requires CUDA 13.2 or newer.' }
+    if ($Backend -eq 'hip') {
+        $hipRoot = Find-TinyStrataHipToolkit -Directory $HipDirectory
+        $hipArchs = Get-TinyStrataHipArchitectures -Directory $hipRoot -Requested $HipArchitectures
+        $hipCompiler = Get-TinyStrataHipCompiler -Directory $hipRoot
+    } else {
+        $cudaRoot = (Resolve-Path -LiteralPath $CudaDirectory).Path
+        $nvcc = Join-Path $cudaRoot 'bin\nvcc.exe'
+        if (-not (Test-Path -LiteralPath $nvcc -PathType Leaf)) { throw "CUDA compiler not found: $nvcc" }
+        $versionText = (& $nvcc --version) -join [Environment]::NewLine
+        if ($LASTEXITCODE -ne 0 -or $versionText -notmatch 'release\s+(\d+\.\d+)') { throw 'Cannot determine the CUDA toolkit version.' }
+        if ([version]$Matches[1] -lt [version]'13.2') { throw 'This portable build helper requires CUDA 13.2 or newer.' }
+    }
     if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot 'CMakeLists.txt') -PathType Leaf)) { throw 'Source directory is not a TinyStrata checkout.' }
 
     # Read Microsoft's developer-shell environment; do not mutate the user's
@@ -374,11 +529,25 @@ function Invoke-TinyStrataPortableBuild {
                 [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
             }
         }
-        $env:CUDA_PATH = $cudaRoot
-        $env:PATH = (Join-Path $cudaRoot 'bin') + ';' + (Join-Path $cudaRoot 'bin\x64') + ';' + $env:PATH
         $env:VSLANG = '1033'
-        $configure = @('-S', $sourceRoot, '-B', $buildRoot, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', '-DTINYSTRATA_BACKEND=CUDA', '-DTINYSTRATA_LFM2=ON', '-DTINYSTRATA_GEMMA4=ON', '-DSTRATA_PORTABLE=ON', "-DCMAKE_CUDA_ARCHITECTURES=$Architectures", "-DCMAKE_MAKE_PROGRAM=$($tools.Ninja)", "-DCMAKE_CUDA_COMPILER=$nvcc", "-DCUDAToolkit_ROOT=$cudaRoot")
-        Write-Host "Building TinyStrata for CUDA architecture(s) $Architectures. This can take several minutes."
+        $configure = @('-S', $sourceRoot, '-B', $buildRoot, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', "-DTINYSTRATA_BACKEND=$($Backend.ToUpperInvariant())", '-DTINYSTRATA_LFM2=ON', '-DTINYSTRATA_GEMMA4=ON', '-DSTRATA_PORTABLE=ON', "-DCMAKE_MAKE_PROGRAM=$($tools.Ninja)")
+        if ($Backend -eq 'hip') {
+            $env:HIP_PLATFORM = 'amd'
+            $env:HIP_PATH = $hipRoot
+            $env:ROCM_PATH = $hipRoot
+            $env:PATH = ((Get-TinyStrataHipRuntimeDirectories -Directory $hipRoot) + @($env:PATH)) -join ';'
+            $clangC = Join-Path (Split-Path -Parent $hipCompiler) 'clang.exe'
+            $bitcode = Join-Path $hipRoot 'lib\llvm\amdgcn\bitcode'
+            if (-not (Test-Path -LiteralPath $bitcode -PathType Container)) { $bitcode = Join-Path $hipRoot 'amdgcn\bitcode' }
+            $hipFlags = '--rocm-path="{0}" --rocm-device-lib-path="{1}"' -f $hipRoot.Replace('\','/'), $bitcode.Replace('\','/')
+            $configure += @("-DCMAKE_HIP_ARCHITECTURES=$hipArchs", "-DCMAKE_C_COMPILER=$clangC", "-DCMAKE_CXX_COMPILER=$hipCompiler", "-DCMAKE_HIP_COMPILER=$hipCompiler", "-DCMAKE_HIP_COMPILER_ROCM_ROOT=$hipRoot", "-DCMAKE_PREFIX_PATH=$hipRoot", "-DCMAKE_HIP_FLAGS=$hipFlags")
+            Write-Host "Building TinyStrata for AMD HIP architecture(s) $hipArchs. This can take several minutes."
+        } else {
+            $env:CUDA_PATH = $cudaRoot
+            $env:PATH = (Join-Path $cudaRoot 'bin') + ';' + (Join-Path $cudaRoot 'bin\x64') + ';' + $env:PATH
+            $configure += @("-DCMAKE_CUDA_ARCHITECTURES=$Architectures", "-DCMAKE_CUDA_COMPILER=$nvcc", "-DCUDAToolkit_ROOT=$cudaRoot")
+            Write-Host "Building TinyStrata for CUDA architecture(s) $Architectures. This can take several minutes."
+        }
         & $tools.CMake @configure | Out-Host
         if ($LASTEXITCODE -ne 0) { throw 'TinyStrata CMake configuration failed.' }
         $buildArguments = @('--build', $buildRoot, '--config', 'Release', '--parallel', [string]$Parallel)
@@ -390,13 +559,17 @@ function Invoke-TinyStrataPortableBuild {
         $visionExe = Join-Path $buildRoot 'tinystrata-vision.exe'
         $lfmExe = Join-Path $buildRoot 'tinystrata-lfm2.exe'
         $gemmaExe = Join-Path $buildRoot 'tinystrata-gemma4.exe'
-        if (-not (Test-Path -LiteralPath $exe -PathType Leaf) -or -not (Test-Path -LiteralPath $kq -PathType Leaf) -or
+        if (-not (Test-Path -LiteralPath $exe -PathType Leaf) -or ($Backend -eq 'cuda' -and -not (Test-Path -LiteralPath $kq -PathType Leaf)) -or
             -not (Test-Path -LiteralPath $visionExe -PathType Leaf) -or -not (Test-Path -LiteralPath $lfmExe -PathType Leaf) -or
             -not (Test-Path -LiteralPath $gemmaExe -PathType Leaf)) {
             throw 'Expected Qwen, LFM, Gemma or vision build outputs are missing.'
         }
-        if (-not (Test-TinyStrataVisionCuda -ExecutablePath $visionExe)) { throw 'The image encoder was not built with CUDA support.' }
-        return [pscustomobject]@{ Exe = $exe; LfmExe = $lfmExe; GemmaExe = $gemmaExe; VisionExe = $visionExe; QuantizedKernels = $kq; CudaDirectory = $cudaRoot; Architectures = $Architectures }
+        if (-not (Test-TinyStrataVisionBackend -ExecutablePath $visionExe -Backend $Backend)) { throw "The image encoder was not built with $Backend support." }
+        foreach ($engine in @($exe, $lfmExe, $gemmaExe)) {
+            if (-not (Test-TinyStrataEngineBackend -ExecutablePath $engine -Backend $Backend)) { throw "The engine was not built with $Backend support: $engine" }
+        }
+        if ($Backend -eq 'hip') { $kq = $null } # HIP MMQ is linked statically, not strata_kq.dll.
+        return [pscustomobject]@{ Exe = $exe; LfmExe = $lfmExe; GemmaExe = $gemmaExe; VisionExe = $visionExe; QuantizedKernels = $kq; CudaDirectory = $cudaRoot; HipDirectory = $hipRoot; Backend = $Backend; Architectures = $(if ($Backend -eq 'hip') { $hipArchs } else { $Architectures }) }
     }
     finally {
         foreach ($entry in @(Get-ChildItem Env:)) {
@@ -555,22 +728,24 @@ function Initialize-TinyStrataRuntime {
         [Parameter(Mandatory=$true)][string]$RuntimeRoot,
         [Parameter(Mandatory=$true)][string]$CacheRoot,
         [string[]]$SearchDirectories = @(),
-        [string]$EngineDirectory
+        [string]$EngineDirectory,
+        [ValidateSet('cuda', 'hip')][string]$Backend = 'cuda'
     )
     [IO.Directory]::CreateDirectory($RuntimeRoot) | Out-Null
     [IO.Directory]::CreateDirectory($CacheRoot) | Out-Null
     $cudaDirectories = New-Object System.Collections.Generic.List[string]
     $search = @($SearchDirectories | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) } | Select-Object -Unique)
     $haveCuda = $true
-    foreach ($dll in @('cudart64_13.dll', 'cublas64_13.dll', 'cublasLt64_13.dll')) {
+    foreach ($dll in $(if ($Backend -eq 'hip') { @('amdhip64*.dll', 'hipblas.dll', 'rocblas.dll') } else { @('cudart64_13.dll', 'cublas64_13.dll', 'cublasLt64_13.dll') })) {
         $found = $null
         foreach ($directory in $search) {
-            $candidate = Join-Path $directory $dll
-            if (Test-Path -LiteralPath $candidate -PathType Leaf) { $found = $directory; break }
+            $candidate = @(Get-ChildItem -LiteralPath $directory -Filter $dll -File -ErrorAction SilentlyContinue)
+            if ($candidate.Count -gt 0) { $found = $directory; break }
         }
         if (-not $found) { $haveCuda = $false; break }
         $cudaDirectories.Add($found)
     }
+    if ($Backend -eq 'hip' -and -not $haveCuda) { throw 'The selected AMD SDK is missing HIP/hipBLAS/rocBLAS runtime DLLs in its bin/lib folders.' }
     # Keep already installed, sufficiently recent CRT libraries. Older system
     # copies must not override newer MSVC exports required by the engine.
     $systemDirectory = [Environment]::SystemDirectory
@@ -636,6 +811,7 @@ function Initialize-TinyStrataRuntime {
     }
     $directories = @()
     if ($haveCuda) { $directories += @($cudaDirectories | Select-Object -Unique) }
+    if ($Backend -eq 'hip') { $directories += $search }
     if (-not $haveCuda -or -not $haveVc) { $directories += $RuntimeRoot }
     return @($directories | Select-Object -Unique)
 }
@@ -711,7 +887,7 @@ function Get-TinyStrataModelFamily {
 function Invoke-TinyStrataInstaller {
     param([string]$SourceDirectory, [string]$WorkingDirectory, [int]$ApiPort,
           [bool]$DoNotStart, [bool]$DoNotDownload, [bool]$InspectOnly, [bool]$BuildAgain, [bool]$RefreshSource,
-          [string]$Family = 'qwen36')
+          [string]$Family = 'qwen36', [string]$Backend = 'auto', [string]$HipDirectory, [string]$HipArchitectures)
     if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitProcess) { throw 'Run this installer in 64-bit Windows PowerShell or PowerShell.' }
     $sourceRoot = [IO.Path]::GetFullPath($SourceDirectory).TrimEnd('\')
     $sourceReady = Test-TinyStrataSource -Directory $sourceRoot
@@ -724,6 +900,7 @@ function Invoke-TinyStrataInstaller {
     $configPath = Join-Path (Join-Path $runtimeRoot '.tinystrata') $selectedFamily.ConfigFile
     $statePath = Join-Path $runtimeRoot $selectedFamily.StateFile
     $cfg = Get-TinyStrataConfig -Path $configPath
+    $selectedBackend = Get-TinyStrataBackend -Requested $Backend -Configuration $cfg
     if ($ApiPort -eq 0) { $ApiPort = if ($cfg -and $cfg.port) { [int]$cfg.port } else { $selectedFamily.Port } }
     if ($ApiPort -lt 1 -or $ApiPort -gt 65535) { throw 'Port must be between 1 and 65535.' }
     $baseUrl = "http://127.0.0.1:$ApiPort"
@@ -733,7 +910,9 @@ function Invoke-TinyStrataInstaller {
         Write-Host "Config:  $configPath"
         Write-Host "API:     $baseUrl/v1"
         if (-not $sourceReady -or $RefreshSource) { Write-Host 'First download TinyStrata sources from GitHub (no git installation required).' }
-        Write-Host 'Plan: reuse installed components; prepare Python/dependencies; reuse or build the engine; prepare CUDA DLLs; save configuration.'
+        Write-Host "Backend: $selectedBackend"
+        Write-Host 'Plan: reuse installed components; prepare Python/dependencies; reuse or build the selected GPU engine; prepare its runtime; save configuration.'
+        if ($selectedBackend -eq 'hip') { Write-Host 'AMD: reuse an existing SDK or prepare a private ROCm/HIP SDK; KV is INT8.' }
         if (-not $DoNotStart) { Write-Host 'Then start the API and install the fixed model through its API if needed.' }
         return
     }
@@ -755,21 +934,29 @@ function Invoke-TinyStrataInstaller {
         }
     }
     if (-not $server) {
-        $smi = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
-        if (-not $smi) { throw 'A working NVIDIA GPU driver is required. Install the NVIDIA driver, then run this script again.' }
-        & $smi.Source -L | ForEach-Object { Write-Host $_ }
-        if ($LASTEXITCODE -ne 0) { throw 'The NVIDIA driver is not working. GPU drivers are not replaced by this installer.' }
+        if ($selectedBackend -eq 'cuda') {
+            $smi = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
+            if (-not $smi) { throw 'A working NVIDIA GPU driver is required for -Backend cuda.' }
+            & $smi.Source -L | ForEach-Object { Write-Host $_ }
+            if ($LASTEXITCODE -ne 0) { throw 'The NVIDIA driver is not working. GPU drivers are not replaced by this installer.' }
+        }
         $cacheRoot = Join-Path $workRoot 'downloads'
         if (-not $sourceReady -or $RefreshSource) { Initialize-TinyStrataSource -SourceRoot $sourceRoot -CacheRoot $cacheRoot -Refresh:$RefreshSource }
         $python = Initialize-TinyStrataPython -WorkRoot $workRoot -SourceRoot $sourceRoot -CacheRoot $cacheRoot
+        if ($selectedBackend -eq 'hip') {
+            $hipRoot = Ensure-TinyStrataHipToolkit -DestinationDirectory (Join-Path $workRoot 'rocm-venv') -Python $python -Directory $HipDirectory -Architectures $HipArchitectures
+            $hipArchs = Get-TinyStrataHipArchitectures -Directory $hipRoot -Requested $HipArchitectures
+            Write-Host "AMD HIP SDK: $hipRoot ($hipArchs); INT8 KV."
+        }
         $search = @()
-        if ($cfg -and $cfg.lib_dirs) { $search += @($cfg.lib_dirs) }
+        if ($cfg -and $cfg.lib_dirs -and $cfg.backend -eq $selectedBackend) { $search += @($cfg.lib_dirs) }
         $cudaRoots = @()
         if (Test-Path -LiteralPath $workRoot -PathType Container) {
             $cudaRoots += @(Get-ChildItem -LiteralPath $workRoot -Directory -Filter 'cuda-*' | Sort-Object Name -Descending | ForEach-Object { $_.FullName })
         }
         if ($env:CUDA_PATH) { $cudaRoots += $env:CUDA_PATH }
         foreach ($cudaRoot in $cudaRoots) { $search += Join-Path $cudaRoot 'bin'; $search += Join-Path $cudaRoot 'bin\x64' }
+        if ($selectedBackend -eq 'hip') { $search = @(Get-TinyStrataHipRuntimeDirectories -Directory $hipRoot) }
         $search += $runtimeRoot
         $exe = $null
         if (-not $BuildAgain -and -not $RefreshSource) {
@@ -779,31 +966,36 @@ function Invoke-TinyStrataInstaller {
                 if (-not [IO.Path]::IsPathRooted($savedExe)) { $savedExe = Join-Path $sourceRoot $savedExe }
                 $candidates += Join-Path (Split-Path -Parent $savedExe) 'tinystrata.exe'
             }
-            foreach ($folder in @('build', 'build\Release', 'build-cuda-132', 'build-cuda')) { $candidates += Join-Path $workRoot ($folder + '\tinystrata.exe') }
+            foreach ($folder in $(if ($selectedBackend -eq 'hip') { @('build-hip', 'build-hip\Release') } else { @('build', 'build\Release', 'build-cuda-132', 'build-cuda') })) { $candidates += Join-Path $workRoot ($folder + '\tinystrata.exe') }
             foreach ($folder in @('bin', 'build', 'build\Release')) { $candidates += Join-Path $sourceRoot ($folder + '\tinystrata.exe') }
             foreach ($candidate in $candidates) {
                 if ((Test-Path -LiteralPath $candidate -PathType Leaf) -and
-                    (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $candidate) 'strata_kq.dll') -PathType Leaf) -and
+                    ($selectedBackend -eq 'hip' -or (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $candidate) 'strata_kq.dll') -PathType Leaf)) -and
                     (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $candidate) 'tinystrata-lfm2.exe') -PathType Leaf) -and
                     (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $candidate) 'tinystrata-gemma4.exe') -PathType Leaf) -and
-                    (Test-TinyStrataVisionCuda -ExecutablePath (Join-Path (Split-Path -Parent $candidate) 'tinystrata-vision.exe') -SearchDirectories $search)) { $exe = $candidate; break }
+                    (Test-TinyStrataEngineBackend -ExecutablePath $candidate -SearchDirectories $search -Backend $selectedBackend) -and
+                    (Test-TinyStrataVisionBackend -ExecutablePath (Join-Path (Split-Path -Parent $candidate) 'tinystrata-vision.exe') -SearchDirectories $search -Backend $selectedBackend)) { $exe = $candidate; break }
             }
         }
         if (-not $exe) {
             Write-Host 'No local TinyStrata engine found; preparing the first source build.'
             $null = Ensure-TinyStrataBuildTools -CacheDirectory $cacheRoot
-            $cuda = Ensure-TinyStrataCudaToolkit -DestinationDirectory (Join-Path $workRoot 'cuda-13.2') -CacheDirectory $cacheRoot -SearchDirectories $cudaRoots
-            $build = Invoke-TinyStrataPortableBuild -SourceDirectory $sourceRoot -BuildDirectory (Join-Path $workRoot 'build') -CudaDirectory $cuda -Clean:($BuildAgain -or $RefreshSource)
+            if ($selectedBackend -eq 'hip') {
+                $build = Invoke-TinyStrataPortableBuild -SourceDirectory $sourceRoot -BuildDirectory (Join-Path $workRoot 'build-hip') -Backend hip -HipDirectory $hipRoot -HipArchitectures $hipArchs -Clean:($BuildAgain -or $RefreshSource)
+            } else {
+                $cuda = Ensure-TinyStrataCudaToolkit -DestinationDirectory (Join-Path $workRoot 'cuda-13.2') -CacheDirectory $cacheRoot -SearchDirectories $cudaRoots
+                $build = Invoke-TinyStrataPortableBuild -SourceDirectory $sourceRoot -BuildDirectory (Join-Path $workRoot 'build') -CudaDirectory $cuda -Clean:($BuildAgain -or $RefreshSource)
+                $search += Join-Path $cuda 'bin'; $search += Join-Path $cuda 'bin\x64'
+            }
             $exe = $build.Exe
-            $search += Join-Path $cuda 'bin'; $search += Join-Path $cuda 'bin\x64'
         }
         $search += Split-Path -Parent $exe
         $search += $runtimeRoot
-        $dllDirs = @(Initialize-TinyStrataRuntime -RuntimeRoot $runtimeRoot -CacheRoot $cacheRoot -SearchDirectories $search -EngineDirectory (Split-Path -Parent $exe))
-        if ($cfg -and $cfg.lib_dirs) { $dllDirs = @(@($cfg.lib_dirs) + $dllDirs | Select-Object -Unique) }
+        $dllDirs = @(Initialize-TinyStrataRuntime -RuntimeRoot $runtimeRoot -CacheRoot $cacheRoot -SearchDirectories $search -EngineDirectory (Split-Path -Parent $exe) -Backend $selectedBackend)
+        if ($cfg -and $cfg.lib_dirs -and $cfg.backend -eq $selectedBackend) { $dllDirs = @(@($cfg.lib_dirs) + $dllDirs | Select-Object -Unique) }
         $selectedExe = Join-Path (Split-Path -Parent $exe) $selectedFamily.NativeFile
         $arguments = @('-B', (Join-Path $sourceRoot 'run.py'), '--model-family', $selectedFamily.Name,
-                       '--config', $configPath, '--exe', $selectedExe, '--configure-only')
+                       '--config', $configPath, '--exe', $selectedExe, '--backend', $selectedBackend, '--configure-only')
         $arguments += @('--vision-exe', (Join-Path (Split-Path -Parent $exe) 'tinystrata-vision.exe'))
         foreach ($directory in $dllDirs) { $arguments += @('--lib-dir', $directory) }
         $arguments += @('--port', [string]$ApiPort)
@@ -876,7 +1068,7 @@ try {
         elseif (Test-TinyStrataSource -Directory (Get-Location).Path) { $SourceDir = (Get-Location).Path }
         else { $SourceDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'TinyStrata' }
     }
-    Invoke-TinyStrataInstaller -SourceDirectory $SourceDir -WorkingDirectory $WorkDir -ApiPort $Port -DoNotStart $NoStart.IsPresent -DoNotDownload $SkipModelDownload.IsPresent -InspectOnly $CheckOnly.IsPresent -BuildAgain $Rebuild.IsPresent -RefreshSource $Update.IsPresent -Family $ModelFamily
+    Invoke-TinyStrataInstaller -SourceDirectory $SourceDir -WorkingDirectory $WorkDir -ApiPort $Port -DoNotStart $NoStart.IsPresent -DoNotDownload $SkipModelDownload.IsPresent -InspectOnly $CheckOnly.IsPresent -BuildAgain $Rebuild.IsPresent -RefreshSource $Update.IsPresent -Family $ModelFamily -Backend $Backend -HipDirectory $HipDirectory -HipArchitectures $HipArchitectures
 } finally {
     $ErrorActionPreference = $tinyStrataOldErrorAction
     [Net.ServicePointManager]::SecurityProtocol = $tinyStrataOldSecurityProtocol
