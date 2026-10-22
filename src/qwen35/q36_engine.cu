@@ -34,6 +34,7 @@
 #if defined(STRATA_Q36_CPU_POOL)
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/cpu/pool.hpp"
+#include "strata/qwen35/cpu_workers.hpp"
 #endif
 
 #include <cublas_v2.h>
@@ -3114,7 +3115,16 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
             CK(cudaEventRecord(E.ev_used[b], E.st));
         }
     }
-    E.pool = std::make_unique<C::ExpertPool>(threads);
+    int pool_workers = threads;
+    if (threads <= 0) {
+        const auto topo = C::detect_cpu_topology(true);
+        pool_workers = strata::qwen35::resolve_cpu_workers(threads, topo.is_hybrid, topo.p_cores, topo.e_cores,
+                                                         (int) topo.worker_cores.size());
+        if (pool_workers != threads)
+            std::fprintf(stderr, "tinystrata: Qwen CPU workers auto: %d workers + host (%d P-cores, %d E-cores; "
+                                 "upstream hybrid plan)\n", pool_workers, topo.p_cores, topo.e_cores);
+    }
+    E.pool = std::make_unique<C::ExpertPool>(pool_workers);
     CK(cudaDeviceSynchronize());
     if (E.hybrid_graph_requested && graph_requested && E.init_hybrid_graph()) {
         E.hybrid_graph = true;
