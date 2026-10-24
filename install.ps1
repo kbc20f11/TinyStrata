@@ -546,7 +546,7 @@ function Invoke-TinyStrataPortableBuild {
             $hipFlags = '--rocm-path=\"{0}\" --rocm-device-lib-path=\"{1}\"' -f $hipRootCMake, $bitcode.Replace('\','/')
             $hipCache = Join-Path $buildRoot 'tinystrata-hip-flags.cmake'
             New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
-            Set-Content -LiteralPath $hipCache -Value ('set(CMAKE_HIP_FLAGS "{0}" CACHE STRING "")' -f $hipFlags) -Encoding ASCII
+            [IO.File]::WriteAllText($hipCache, ('set(CMAKE_HIP_FLAGS "{0}" CACHE STRING "" FORCE)' -f $hipFlags), (New-Object Text.UTF8Encoding($false)))
             $configure += @('-C', $hipCache, "-DCMAKE_HIP_ARCHITECTURES=$hipArchs", "-DCMAKE_C_COMPILER=$clangC", "-DCMAKE_CXX_COMPILER=$hipCompiler", "-DCMAKE_HIP_COMPILER=$hipCompiler", "-DCMAKE_HIP_COMPILER_ROCM_ROOT=$hipRootCMake", "-DCMAKE_PREFIX_PATH=$hipRootCMake")
             Write-Host "Building TinyStrata for AMD HIP architecture(s) $hipArchs. This can take several minutes."
         } else {
