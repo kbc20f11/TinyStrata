@@ -10,6 +10,8 @@ import subprocess
 
 from serve import config
 
+KV_ALLOCATION_FLAGS = frozenset({"--kv-grow", "--kv-whole", "--no-kv-grow"})
+
 
 def hardware_backend() -> str | None:
     """Prefer a usable NVIDIA driver; otherwise recognize AMD's PCI vendor ID."""
@@ -130,4 +132,9 @@ def configure_backend(cfg: dict, requested: str | None = None, *, explicit_kv: s
         if explicit_kv not in (None, "auto", "int8"):
             raise ValueError("The AMD HIP route uses INT8 KV; choose --kv-type int8 or auto")
         result, _ = config.apply(result, {"kv_type": "int8"})
+        # The growable KV and Expert cache map VRAM page by page through HIP's virtual memory calls. On an RX 9070 XT
+        # (gfx1201, Windows, HIP SDK 7.2) that path faults on the first kernels and can freeze the desktop (#1); the same
+        # runs finish with --kv-whole. Keep the whole allocation unless a mode is already saved or asked for.
+        if not KV_ALLOCATION_FLAGS.intersection(result["args"]):
+            result["args"].append("--kv-whole")
     return result
