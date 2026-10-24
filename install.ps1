@@ -539,8 +539,15 @@ function Invoke-TinyStrataPortableBuild {
             $clangC = Join-Path (Split-Path -Parent $hipCompiler) 'clang.exe'
             $bitcode = Join-Path $hipRoot 'lib\llvm\amdgcn\bitcode'
             if (-not (Test-Path -LiteralPath $bitcode -PathType Container)) { $bitcode = Join-Path $hipRoot 'amdgcn\bitcode' }
-            $hipFlags = '--rocm-path="{0}" --rocm-device-lib-path="{1}"' -f $hipRoot.Replace('\','/'), $bitcode.Replace('\','/')
-            $configure += @("-DCMAKE_HIP_ARCHITECTURES=$hipArchs", "-DCMAKE_C_COMPILER=$clangC", "-DCMAKE_CXX_COMPILER=$hipCompiler", "-DCMAKE_HIP_COMPILER=$hipCompiler", "-DCMAKE_HIP_COMPILER_ROCM_ROOT=$hipRoot", "-DCMAKE_PREFIX_PATH=$hipRoot", "-DCMAKE_HIP_FLAGS=$hipFlags")
+            # An SDK under "C:\Program Files" has a space and backslashes. PowerShell 5.1 strips the quotes from a native
+            # argument, which split -DCMAKE_HIP_FLAGS in two, and a backslash path written into CMakeHIPCompiler.cmake is an
+            # invalid escape. Pass the flags through an initial-cache file and give CMake forward-slash paths.
+            $hipRootCMake = $hipRoot.Replace('\','/')
+            $hipFlags = '--rocm-path=\"{0}\" --rocm-device-lib-path=\"{1}\"' -f $hipRootCMake, $bitcode.Replace('\','/')
+            $hipCache = Join-Path $buildRoot 'tinystrata-hip-flags.cmake'
+            New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
+            Set-Content -LiteralPath $hipCache -Value ('set(CMAKE_HIP_FLAGS "{0}" CACHE STRING "")' -f $hipFlags) -Encoding ASCII
+            $configure += @('-C', $hipCache, "-DCMAKE_HIP_ARCHITECTURES=$hipArchs", "-DCMAKE_C_COMPILER=$clangC", "-DCMAKE_CXX_COMPILER=$hipCompiler", "-DCMAKE_HIP_COMPILER=$hipCompiler", "-DCMAKE_HIP_COMPILER_ROCM_ROOT=$hipRootCMake", "-DCMAKE_PREFIX_PATH=$hipRootCMake")
             Write-Host "Building TinyStrata for AMD HIP architecture(s) $hipArchs. This can take several minutes."
         } else {
             $env:CUDA_PATH = $cudaRoot
