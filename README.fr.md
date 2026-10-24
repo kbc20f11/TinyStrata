@@ -140,6 +140,23 @@ Le FP8 natif et INT8 ont été mesurés le **2026-10-21**.
 
 Les mêmes trois textes ont été exécutés deux fois par configuration FP8/INT8 avec les valeurs d’échantillonnage par défaut du modèle et 128 tokens générés par requête, raisonnement compris. La vitesse est le nombre total de tokens divisé par le temps total de décodage, hors chargement et traitement de l’entrée ; le contexte indique la capacité du cache. Les lignes avec moins de mémoire réservent 8, 12 ou 16 GiB sur le même GPU de 24 GB et utilisent le contexte de cette classe de VRAM ; ce ne sont pas des mesures de GPU physiques de 16/12/8 GB.
 
+## Vitesse mesurée — AMD Radeon RX 9070 XT (HIP, expérimental)
+
+Mesuré le **2026-10-24** sur un PC Windows 11 avec une Radeon RX 9070 XT (gfx1201, 16 GB, qui pilote aussi l’affichage), 94 GB de RAM et HIP SDK 7.2, avec les mêmes fichiers Qwen3.6 UD-IQ3_XXS, Gemma 4 QAT Q4_0 (avec son assistant MTP) et LFM2.5 Q4_K_M que ci-dessus. Tout est resté aux valeurs par défaut via `run-api.bat` : le backend HIP ajoute `--kv-whole`, et la capacité de contexte, MTP et l’encodeur d’images sur GPU ont été choisis automatiquement (LFM2.5 n’a ni MTP ni Vision). Le raisonnement était activé et l’échantillonnage est resté aux valeurs du modèle, sauf que chaque requête utilisait `seed` 1234.
+
+| Modèle | Capacité de contexte | Décodage, 3 premières requêtes après le démarrage (deux démarrages) | Décodage, régime établi (médiane de 21 requêtes) | Entrée d’environ 2.7K tokens, première / suivantes |
+| --- | ---: | ---: | ---: | ---: |
+| Qwen3.6 UD-IQ3_XXS | 256K | 68.3 / 71.4 tok/s | 70.9 tok/s (62.2 à 78) | 514 et 485 / environ 1200 tok/s |
+| Gemma 4 QAT Q4_0 | 256K | 36.7 / 37.7 tok/s | 61.7 tok/s (50.6 à 71.9) | 1518 et 1849 / environ 1660 tok/s |
+| LFM2.5 Q4_K_M | 128K | 80.9 / 86.2 tok/s | 101.1 tok/s (94.8 à 110.6) | 2135 et 2214 / environ 2410 tok/s |
+
+Les mêmes trois textes que ci-dessus ont été utilisés, avec 128 tokens générés, raisonnement compris. La vitesse est le nombre de tokens générés divisé par le temps de décodage de `/v1/status`, hors chargement et traitement de l’entrée. « 3 premières requêtes » désigne les trois textes dans un ordre fixe, juste après que l’API a indiqué que le modèle était chargé, en moyenne, sur deux démarrages distincts. « Régime établi » désigne les tours 4 à 10 de dix tours des trois textes sur un démarrage (21 requêtes), avec la plage entre parenthèses. Les lignes d’entrée utilisent un texte de 2669 à 2676 tokens, envoyé à chaque fois avec une première ligne différente pour que rien ne soit en cache : « première » est la première requête longue de chaque démarrage, « suivantes » les trois suivantes. Le pic de VRAM de l’ensemble de l’adaptateur était de 15.55 à 15.64 GiB sur environ 15.92 GiB, dont environ 2.4 GiB utilisés par d’autres programmes.
+
+- Sur cette carte, le moteur Qwen plante avec le KV extensible par défaut (voir l’issue #1) ; avec `--kv-whole`, les trois modèles ont tourné sans erreur ni vidage du watchdog GPU de Windows. Gemma 4 et LFM2.5 n’ont été exécutés que dans cette configuration.
+- Qwen3.6 décode aussi vite sur les premières requêtes qu’en régime établi, dans la dispersion d’une exécution à l’autre, mais son premier long prompt est environ 2.4 fois plus lent, aux deux démarrages. Gemma 4 et LFM2.5 décodent plus lentement sur les premières requêtes (environ 37 contre 62 tok/s, et 81 à 86 contre 101 tok/s), aux deux démarrages. Les journaux du moteur montrent beaucoup d’échanges dans le cache d’experts pendant la première requête (745 échanges pour Gemma 4, contre 164 à 372 ensuite) et une taille de VRAM qui diminue au fil des premières requêtes, de 8.5 à 4.7 GiB pour Gemma 4 et de 11.6 à 10.1 GiB pour LFM2.5. Je n’ai pas trouvé pourquoi elle diminue ni si cela explique le démarrage lent.
+- Avec la graine fixée, les sorties des trois premières requêtes étaient identiques aux deux démarrages. Répéter le même texte plus tard dans une session donne des sorties différentes ; les lignes en régime établi mêlent donc différences de sortie et vitesse.
+- Chaque requête a pris de 1 à 4 s et une requête isolée varie d’environ 10 % : ne pas interpréter des écarts de quelques tok/s. C’est une machine et une session. Cette carte a 16 GB et les tableaux ci-dessus utilisent une carte de 24 GB ; les lignes ne sont donc pas comparables.
+
 ## Quel projet choisir ?
 
 | Votre objectif et votre matériel | Projet |

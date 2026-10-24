@@ -140,6 +140,23 @@ FP8 nativo e INT8 se midieron el **2026-10-21**.
 
 Los mismos tres textos se ejecutaron dos veces por configuración FP8/INT8 con los valores de muestreo predeterminados del modelo, generando 128 tokens con razonamiento en cada solicitud. La velocidad es el total de tokens dividido por el tiempo total de decodificación, sin carga ni procesamiento de entrada; el contexto indica capacidad de caché. Las filas con menos memoria reservan 8, 12 o 16 GiB en la misma GPU de 24 GB y usan el contexto de esa clase de VRAM; no son pruebas de GPU físicas de 16/12/8 GB.
 
+## Velocidad medida — AMD Radeon RX 9070 XT (HIP, experimental)
+
+Medido el **2026-10-24** en un PC con Windows 11 y una Radeon RX 9070 XT (gfx1201, 16 GB, que también controla la pantalla), 94 GB de RAM y HIP SDK 7.2, con los mismos archivos de Qwen3.6 UD-IQ3_XXS, Gemma 4 QAT Q4_0 (con su asistente MTP) y LFM2.5 Q4_K_M de arriba. Todo se dejó con los valores predeterminados mediante `run-api.bat`: el backend HIP añade `--kv-whole`, y la capacidad de contexto, MTP y el codificador de imágenes en GPU se eligieron automáticamente (LFM2.5 no tiene MTP ni Vision). El razonamiento estaba activado y el muestreo se dejó en los valores del modelo, salvo que cada solicitud usó `seed` 1234.
+
+| Modelo | Capacidad de contexto | Decodificación, primeras 3 solicitudes tras el inicio (dos inicios) | Decodificación, estable (mediana de 21 solicitudes) | Entrada de unos 2.7K tokens, primera / posteriores |
+| --- | ---: | ---: | ---: | ---: |
+| Qwen3.6 UD-IQ3_XXS | 256K | 68.3 / 71.4 tok/s | 70.9 tok/s (62.2 a 78) | 514 y 485 / unos 1200 tok/s |
+| Gemma 4 QAT Q4_0 | 256K | 36.7 / 37.7 tok/s | 61.7 tok/s (50.6 a 71.9) | 1518 y 1849 / unos 1660 tok/s |
+| LFM2.5 Q4_K_M | 128K | 80.9 / 86.2 tok/s | 101.1 tok/s (94.8 a 110.6) | 2135 y 2214 / unos 2410 tok/s |
+
+Se usaron los mismos tres textos de arriba, generando 128 tokens con razonamiento. La velocidad es el número de tokens generados dividido por el tiempo de decodificación de `/v1/status`, sin carga ni procesamiento de entrada. «Primeras 3 solicitudes» son los tres textos en orden fijo justo después de que la API indicara que el modelo estaba cargado, promediados, en dos inicios separados. «Estable» son las rondas 4 a 10 de diez rondas de los tres textos en un inicio (21 solicitudes), con el rango entre paréntesis. Las filas de entrada usan un texto de 2669 a 2676 tokens, enviado cada vez con una primera línea distinta para que nada estuviera en caché: «primera» es la primera solicitud larga de cada inicio y «posteriores» las tres siguientes. El pico de VRAM de todo el adaptador fue de 15.55 a 15.64 GiB de unos 15.92 GiB, incluidos unos 2.4 GiB usados por otros programas.
+
+- En esta tarjeta, el motor de Qwen falla con el KV creciente predeterminado (véase el issue #1); con `--kv-whole` los tres modelos se ejecutaron sin errores ni volcados del watchdog de GPU de Windows. Gemma 4 y LFM2.5 solo se ejecutaron en esta configuración.
+- Qwen3.6 decodifica igual en las primeras solicitudes que en régimen estable, dentro de la dispersión entre ejecuciones, pero su primera entrada larga es unas 2.4 veces más lenta, en ambos inicios. Gemma 4 y LFM2.5 decodifican más despacio en las primeras solicitudes (unos 37 frente a 62 tok/s, y de 81 a 86 frente a 101 tok/s), en ambos inicios. Los registros del motor muestran un intercambio intenso de la caché de expertos durante la primera solicitud (745 intercambios en Gemma 4, frente a 164–372 después) y un tamaño de VRAM que se reduce durante las primeras solicitudes, de 8.5 a 4.7 GiB en Gemma 4 y de 11.6 a 10.1 GiB en LFM2.5. No he averiguado por qué se reduce ni si explica el arranque lento.
+- Con la semilla fija, las salidas de las primeras tres solicitudes fueron idénticas en ambos inicios. Repetir el mismo texto más tarde en una sesión da salidas distintas, así que las filas estables mezclan diferencias de salida con velocidad.
+- Cada solicitud tardó de 1 a 4 s y cada una varía un 10 % aproximadamente: no se deben interpretar diferencias de unos pocos tok/s. Son una máquina y una sesión. Esta tarjeta tiene 16 GB y las tablas anteriores usan una tarjeta de 24 GB, por lo que las filas no son comparables.
+
 ## ¿Qué proyecto debería usar?
 
 | Tu objetivo y tu hardware | Proyecto |
