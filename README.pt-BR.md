@@ -157,6 +157,22 @@ Foram usados os mesmos três textos de cima, gerando 128 tokens, incluindo o rac
 - Com a semente fixa, as saídas das três primeiras solicitações foram idênticas nas duas inicializações. Repetir o mesmo texto depois, na mesma sessão, dá saídas diferentes, então as linhas estáveis misturam diferenças de saída com velocidade.
 - Cada solicitação levou de 1 a 4 s e solicitações isoladas variam cerca de 10%: não interprete diferenças de poucos tok/s. É uma máquina e uma sessão. Esta placa tem 16 GB e as tabelas acima usam uma placa de 24 GB, portanto as linhas não são comparáveis.
 
+## Velocidade medida — NVIDIA GeForce RTX 5060 (8 GB)
+
+Medido em **2026-10-25** em um PC com Windows 11 e uma GeForce RTX 5060 (8 GB, driver 616.92), um Core i7-10700K (8 núcleos), 32 GB de DDR4-3200 e a GPU em um link PCIe 3.0 x8, com os mesmos arquivos Qwen3.6 UD-IQ3_XXS, Gemma 4 QAT Q4_0 (com o assistente MTP) e LFM2.5 Q4_K_M de cima. Tudo ficou nos padrões por meio de `run-api.bat` (backend CUDA; capacidade de contexto, tipo de KV, bloco de entrada, posicionamento dos especialistas e MTP escolhidos automaticamente; o LFM2.5 não tem MTP nem Vision). O raciocínio estava ativado e a amostragem ficou nos padrões do modelo, exceto que todas as solicitações usaram `seed` 1234.
+
+| Modelo | Capacidade de contexto | Decodificação, primeiras 3 solicitações após a inicialização (duas inicializações) | Decodificação, estável (mediana de 21 solicitações) | Entrada de cerca de 2.5K tokens, primeira / seguintes |
+| --- | ---: | ---: | ---: | ---: |
+| Qwen3.6 UD-IQ3_XXS | 64K | 27.2 / 33.7 tok/s | 29.2 tok/s (24.1 a 35.0) | 61 e 62 / cerca de 104 (89 a 118) tok/s |
+| Gemma 4 QAT Q4_0 | 64K | 24.0 / 25.6 tok/s | 25.7 tok/s (22.2 a 28.7) | 333 e 369 / cerca de 364 (361 a 371) tok/s |
+| LFM2.5 Q4_K_M | 64K | 43.1 / 43.3 tok/s | 53.8 tok/s (42.4 a 56.8) | 595 e 685 / cerca de 716 (690 a 762) tok/s |
+
+Cada solicitação gerou 128 tokens, incluindo o raciocínio. A velocidade é o número de tokens gerados dividido por `predicted_ms` de `/v1/status`, sem carregamento nem processamento da entrada. «Primeiras 3 solicitações» são três textos de entrada em ordem fixa logo depois de a API informar que o modelo estava carregado, em duas inicializações separadas (cada valor é o total de tokens dividido pelo tempo total das três). «Estável» são as rodadas 4 a 10 de dez rodadas dos três textos na primeira inicialização (21 solicitações), com a faixa entre parênteses. As linhas de entrada usam uma entrada de 2440 (Qwen3.6), 2446 (Gemma 4) ou 2545 (LFM2.5) tokens, enviada a cada vez com uma primeira linha diferente para que nada ficasse em cache: «primeira» é a primeira solicitação longa de cada inicialização e «seguintes» as três seguintes das duas inicializações. Os três textos curtos e a entrada longa foram escritos para esta medição e não são os das seções acima, portanto as linhas não são diretamente comparáveis com elas. A memória de GPU em uso após as execuções foi de 6.5 a 6.9 GiB de cerca de 7.9 GiB, incluindo a área de trabalho.
+
+- O Qwen3.6 manteve 12 (primeira inicialização) e 22 (segunda inicialização) dos 256 especialistas por camada na VRAM e os outros 11.4 GiB na RAM do sistema fixada, com um bloco de entrada de 512. As duas inicializações tinham 4.6 e 5.3 GiB de VRAM livre, e as velocidades posteriores de entrada foram de cerca de 90 e 117 tok/s, o que combina com mais especialistas residentes serem mais rápidos; não testei isso separadamente.
+- As velocidades de entrada são baixas em comparação com a placa de 16 GB de cima. As razões prováveis são que a maioria dos especialistas não está na VRAM, que os especialistas fora da VRAM são calculados em 8 threads de CPU (Qwen3.6) ou transferidos para a GPU por um link PCIe 3.0 x8 de cerca de 8 GB/s (Gemma 4 e LFM2.5, cujos logs mostram especialistas em etapa intermediária), e que a VRAM livre é pequena demais para escolher um bloco maior. Outros valores de `--chunk` não foram testados, então isto não está confirmado.
+- Solicitações isoladas variam 10% ou mais e as duas inicializações diferem em até 6 tok/s: não interprete diferenças pequenas. É uma máquina e uma sessão.
+
 ## Qual projeto devo usar?
 
 | Seu objetivo e seu hardware | Projeto |

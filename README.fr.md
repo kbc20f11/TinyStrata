@@ -157,6 +157,22 @@ Les mêmes trois textes que ci-dessus ont été utilisés, avec 128 tokens gén�
 - Avec la graine fixée, les sorties des trois premières requêtes étaient identiques aux deux démarrages. Répéter le même texte plus tard dans une session donne des sorties différentes ; les lignes en régime établi mêlent donc différences de sortie et vitesse.
 - Chaque requête a pris de 1 à 4 s et une requête isolée varie d’environ 10 % : ne pas interpréter des écarts de quelques tok/s. C’est une machine et une session. Cette carte a 16 GB et les tableaux ci-dessus utilisent une carte de 24 GB ; les lignes ne sont donc pas comparables.
 
+## Vitesse mesurée — NVIDIA GeForce RTX 5060 (8 GB)
+
+Mesuré le **2026-10-25** sur un PC Windows 11 avec une GeForce RTX 5060 (8 GB, pilote 616.92), un Core i7-10700K (8 cœurs), 32 GB de DDR4-3200 et le GPU sur une liaison PCIe 3.0 x8, avec les mêmes fichiers Qwen3.6 UD-IQ3_XXS, Gemma 4 QAT Q4_0 (avec son assistant MTP) et LFM2.5 Q4_K_M que ci-dessus. Tout est resté aux valeurs par défaut via `run-api.bat` (backend CUDA ; capacité de contexte, type de KV, bloc d’entrée, placement des experts et MTP choisis automatiquement ; LFM2.5 n’a ni MTP ni Vision). Le raisonnement était activé et l’échantillonnage est resté aux valeurs par défaut des modèles, sauf que chaque requête utilisait `seed` 1234.
+
+| Modèle | Capacité de contexte | Décodage, 3 premières requêtes après le démarrage (deux démarrages) | Décodage, régime établi (médiane de 21 requêtes) | Entrée d’environ 2.5K tokens, première / suivantes |
+| --- | ---: | ---: | ---: | ---: |
+| Qwen3.6 UD-IQ3_XXS | 64K | 27.2 / 33.7 tok/s | 29.2 tok/s (24.1 à 35.0) | 61 et 62 / environ 104 (89 à 118) tok/s |
+| Gemma 4 QAT Q4_0 | 64K | 24.0 / 25.6 tok/s | 25.7 tok/s (22.2 à 28.7) | 333 et 369 / environ 364 (361 à 371) tok/s |
+| LFM2.5 Q4_K_M | 64K | 43.1 / 43.3 tok/s | 53.8 tok/s (42.4 à 56.8) | 595 et 685 / environ 716 (690 à 762) tok/s |
+
+Chaque requête a généré 128 tokens, raisonnement compris. La vitesse est le nombre de tokens générés divisé par `predicted_ms` de `/v1/status`, hors chargement et traitement de l’entrée. « 3 premières requêtes » désigne trois textes d’entrée dans un ordre fixe, juste après que l’API a indiqué que le modèle était chargé, sur deux démarrages distincts (chaque valeur est le total des tokens divisé par le temps total des trois requêtes). « Régime établi » désigne les tours 4 à 10 de dix tours des trois textes au premier démarrage (21 requêtes), avec la plage entre parenthèses. Les lignes d’entrée utilisent une entrée de 2440 (Qwen3.6), 2446 (Gemma 4) ou 2545 (LFM2.5) tokens, envoyée à chaque fois avec une première ligne différente pour que rien ne soit mis en cache : « première » est la première requête longue de chaque démarrage, « suivantes » les trois suivantes des deux démarrages. Les trois textes courts et l’entrée longue ont été écrits pour cette mesure et ne sont pas ceux des sections ci-dessus ; les lignes ne sont donc pas directement comparables avec elles. La mémoire GPU utilisée après les exécutions était de 6.5 à 6.9 GiB sur environ 7.9 GiB, bureau compris.
+
+- Qwen3.6 a gardé 12 (premier démarrage) et 22 (second démarrage) des 256 experts par couche en VRAM et les 11.4 GiB restants dans la RAM système épinglée, avec un bloc d’entrée de 512. Les deux démarrages disposaient de 4.6 et 5.3 GiB de VRAM libre, et leurs vitesses d’entrée ultérieures étaient d’environ 90 et 117 tok/s, ce qui concorde avec le fait que davantage d’experts résidents soit plus rapide ; je ne l’ai pas testé séparément.
+- Les vitesses d’entrée sont faibles par rapport à la carte de 16 GB ci-dessus. Les raisons probables : la plupart des experts ne sont pas en VRAM, ceux qui sont hors VRAM sont calculés sur 8 threads CPU (Qwen3.6) ou transférés vers le GPU par une liaison PCIe 3.0 x8 d’environ 8 GB/s (Gemma 4 et LFM2.5, dont les journaux montrent des experts mis en transit), et la VRAM libre est trop petite pour choisir un bloc plus grand. D’autres valeurs de `--chunk` n’ont pas été essayées ; ce n’est donc pas confirmé.
+- Les requêtes isolées varient de 10 % ou plus et les deux démarrages diffèrent jusqu’à 6 tok/s : ne pas interpréter de petits écarts. C’est une machine et une session.
+
 ## Quel projet choisir ?
 
 | Votre objectif et votre matériel | Projet |

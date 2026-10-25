@@ -157,6 +157,22 @@ Dieselben drei Eingabetexte wie oben wurden verwendet und jeweils 128 Token eins
 - Bei festem Seed waren die Ausgaben der ersten drei Anfragen bei beiden Starts identisch. Derselbe Text später in einer Sitzung ergibt andere Ausgaben, die stabilen Zeilen mischen also Ausgabeunterschiede mit Geschwindigkeit.
 - Jede Anfrage dauerte 1 bis 4 s, einzelne Anfragen schwanken um etwa 10 %: Unterschiede von wenigen tok/s nicht überinterpretieren. Es ist ein Rechner und eine Sitzung. Diese Karte hat 16 GB, die Tabellen oben verwenden eine 24-GB-Karte; die Zeilen sind daher nicht vergleichbar.
 
+## Gemessene Geschwindigkeit — NVIDIA GeForce RTX 5060 (8 GB)
+
+Gemessen am **2026-10-25** auf einem Windows-11-PC mit GeForce RTX 5060 (8 GB, Treiber 616.92), Core i7-10700K (8 Kerne), 32 GB DDR4-3200 und der GPU an einer PCIe-3.0-x8-Verbindung, mit denselben Dateien Qwen3.6 UD-IQ3_XXS, Gemma 4 QAT Q4_0 (mit MTP-Assistent) und LFM2.5 Q4_K_M wie oben. Alles blieb über `run-api.bat` bei den Standardwerten (CUDA-Backend; Kontextkapazität, KV-Typ, Eingabe-Chunk, Expertenplatzierung und MTP automatisch gewählt; LFM2.5 hat weder MTP noch Vision). Thinking war aktiv und die Sampling-Einstellungen blieben bei den Modellstandards, nur jede Anfrage verwendete `seed` 1234.
+
+| Modell | Kontextkapazität | Decodierung, erste 3 Anfragen nach dem Start (zwei Starts) | Decodierung, stabil (Median von 21 Anfragen) | Prompt mit etwa 2.5K Token, erste / spätere |
+| --- | ---: | ---: | ---: | ---: |
+| Qwen3.6 UD-IQ3_XXS | 64K | 27.2 / 33.7 tok/s | 29.2 tok/s (24.1 bis 35.0) | 61 und 62 / etwa 104 (89 bis 118) tok/s |
+| Gemma 4 QAT Q4_0 | 64K | 24.0 / 25.6 tok/s | 25.7 tok/s (22.2 bis 28.7) | 333 und 369 / etwa 364 (361 bis 371) tok/s |
+| LFM2.5 Q4_K_M | 64K | 43.1 / 43.3 tok/s | 53.8 tok/s (42.4 bis 56.8) | 595 und 685 / etwa 716 (690 bis 762) tok/s |
+
+Jede Anfrage generierte 128 Token einschließlich Thinking. Die Geschwindigkeit ergibt sich aus den generierten Token geteilt durch `predicted_ms` aus `/v1/status`, ohne Laden und Eingabeverarbeitung. „Erste 3 Anfragen“ sind drei Eingabetexte in fester Reihenfolge direkt nachdem die API das Modell als geladen meldete, bei zwei getrennten Starts (jeder Wert ist die Gesamtzahl der Token geteilt durch die Gesamtzeit der drei Anfragen). „Stabil“ sind die Runden 4 bis 10 von zehn Runden der drei Texte beim ersten Start (21 Anfragen), mit dem Bereich in Klammern. Die Prompt-Spalte verwendet je eine Eingabe von 2440 (Qwen3.6), 2446 (Gemma 4) bzw. 2545 (LFM2.5) Token, jedes Mal mit anderer erster Zeile gesendet, damit nichts gecacht wurde: „erste“ ist die erste lange Anfrage jedes Starts, „spätere“ die folgenden drei beider Starts. Die drei kurzen Eingabetexte und die lange Eingabe wurden für diese Messung geschrieben und sind nicht die der Abschnitte oben; die Zeilen sind daher nicht direkt mit ihnen vergleichbar. Der belegte GPU-Speicher nach den Läufen betrug 6.5 bis 6.9 GiB von etwa 7.9 GiB, einschließlich Desktop.
+
+- Qwen3.6 hielt 12 (erster Start) bzw. 22 (zweiter Start) von 256 Experten pro Schicht im VRAM und die übrigen 11.4 GiB im angehefteten Arbeitsspeicher, bei einem Eingabe-Chunk von 512. Die beiden Starts hatten 4.6 und 5.3 GiB freien VRAM, und ihre späteren Prompt-Geschwindigkeiten lagen bei etwa 90 und 117 tok/s, was dazu passt, dass mehr residente Experten schneller sind; ich habe das nicht gesondert getestet.
+- Die Prompt-Geschwindigkeiten sind im Vergleich zur 16-GB-Karte oben niedrig. Wahrscheinliche Gründe: Die meisten Experten liegen nicht im VRAM, die Experten außerhalb des VRAM werden auf 8 CPU-Threads berechnet (Qwen3.6) oder über eine PCIe-3.0-x8-Verbindung von grob 8 GB/s zur GPU gestreamt (Gemma 4 und LFM2.5, deren Logs gestagte Experten zeigen), und der freie VRAM ist zu klein, um einen größeren Chunk zu wählen. Andere `--chunk`-Werte wurden nicht ausprobiert; das ist also nicht bestätigt.
+- Einzelne Anfragen schwanken um 10 % oder mehr, und die beiden Starts unterscheiden sich um bis zu 6 tok/s: kleine Unterschiede nicht überinterpretieren. Es ist ein Rechner und eine Sitzung.
+
 ## Welches Projekt sollte ich verwenden?
 
 | Ihr Ziel und Ihre Hardware | Projekt |
