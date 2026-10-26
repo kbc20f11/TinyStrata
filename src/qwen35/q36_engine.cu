@@ -1209,6 +1209,7 @@ struct Engine {
     size_t kAttScoreFloats = (size_t) 64 << 20;   // 256 MB (16 M floats when the experts' fit is close)
     // the prompt's MMQ experts
     bool use_mmq = false;
+    bool native_stream = false;       // CUDA opt-in: stream full Expert layers, retaining native grouped arithmetic
     std::unique_ptr<MMQ::Context> mctx;
     int32_t *rcnt = nullptr, *rcur = nullptr, *rbounds = nullptr, *rmax = nullptr, *ident = nullptr, *rinv = nullptr;
     void *mq_x = nullptr, *mq_hq = nullptr;
@@ -1345,7 +1346,12 @@ struct Engine {
             v16 = dalloc_t<__half>((size_t) g.n_head_kv * ctx * g.head_dim);
             q16 = dalloc_t<__half>(T * g.n_head * g.head_dim);
         }
-        use_mmq = MMQ::built() && std::getenv("STRATA_Q36_NO_MMQ") == nullptr;
+#if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
+        if (const char* setting = std::getenv("STRATA_Q36_NATIVE_STREAM"))
+            native_stream = std::strcmp(setting, "1") == 0;
+#endif
+        // This experiment changes Expert residency, not the quantizer/product kernels.
+        use_mmq = !native_stream && MMQ::built() && std::getenv("STRATA_Q36_NO_MMQ") == nullptr;
         auto mmq_ok = [&](const Layer& L) {
             // The integrated MMQ prompt path is not validated for IQ3_XXS down
             // projections: repeated Unsloth UD-IQ3_XXS prompts differed on CUDA.
@@ -2029,8 +2035,9 @@ struct Engine {
         // (its prompt pass too: no staging buffers then)
         const bool hy_rows = lhy(li) && (T <= hybrid_t || !main_hybrid);
         const bool mmq_rows = !hy_rows && T > kGemmT && use_mmq;
-        if (!(!mmq_rows && route_group(L, hy_rows ? hy[li].slot_of_d : nullptr, T,
-                                      ext ? (int) g.n_expert + 1 : (int) g.n_expert)))
+        const bool native_stream_rows = native_stream && !hy_rows && lhy(li);
+        if (mmq_rows || native_stream_rows || !route_group(L, hy_rows ? hy[li].slot_of_d : nullptr, T,
+                                                          ext ? (int) g.n_expert + 1 : (int) g.n_expert))
             K::native_router_topk(logits_r, ids, ewts, (int) g.n_expert, Kp, T, st);
         const int64_t n_ent = (int64_t) T * Kp;
         const int32_t* prow = nullptr;
@@ -2068,10 +2075,24 @@ struct Engine {
             if (lhy(li)) stream_done();
             prow = rinv;
         } else {
-            group_entries(L, nullptr, T);
+            if (native_stream_rows) {
+                // The cache holds only n_slots Experts, in slot order. Group against
+                // the complete streamed layer in Expert order, never that cache.
+                Layer streamed = L;
+                streamed.blobs = const_cast<uint8_t*>(stream_take((int) li));
+                group_entries(streamed, nullptr, T);
+                CK(cudaMemcpyAsync(h_ids, ids, (size_t) n_ent * 4, cudaMemcpyDeviceToHost, st));
+                CK(cudaEventRecord(ev_route, st));
+            } else group_entries(L, nullptr, T);
             if (!xq_post) quant(h, N, T, xq);   // the experts' and the shared expert's input
             K::native_expert_grouped(L.L, grp_ptr, grp_start, n_groups, ent_dst, ent_tok,
                                      std::min<int64_t>(n_ent, g.n_expert), n_ent, xq, escr, eparts, st);
+            if (native_stream_rows) {
+                stream_done();   // the next layer may overwrite this buffer only after the native products finish
+                CK(cudaEventSynchronize(ev_route));
+                for (int64_t e = 0; e < n_ent; ++e) hy[li].score[(size_t) h_ids[e]] += 1.0;
+                hy_gpu += n_ent;
+            }
         }
         // the shared expert, scaled by sigmoid(w . h)
         if (T > kGemmT) k_to_f16<<<grid1((int64_t) N * T), kThreads, 0, st>>>(h, x16, (int64_t) N * T);
@@ -2101,7 +2122,7 @@ struct Engine {
         xq_ready = false;
         const auto& g = m->g;
         const int N = (int) g.n_embd;
-        if (main_hybrid && T > hybrid_t && use_mmq) {
+        if (main_hybrid && T > hybrid_t && (use_mmq || native_stream)) {
             std::vector<int> seq;
             for (size_t l = 0; l < m->layers.size(); ++l)
                 if (lhy(l)) seq.push_back((int) l);
@@ -2132,7 +2153,8 @@ struct Engine {
         xq_ready = false;
         const auto& g = m->g;
         const int N = (int) g.n_embd;
-        if (main_hybrid && lhy(m->layers.size()) && T > hybrid_t && use_mmq) stream_begin({(int) m->layers.size()});
+        if (main_hybrid && lhy(m->layers.size()) && T > hybrid_t && (use_mmq || native_stream))
+            stream_begin({(int) m->layers.size()});
         K::iq_embed_rows(m->embd_type, m->embd, m->embd_row, tok_m, T, N, y, st);
         image_rows(y, T, p0);
         k_rms_ld<<<T, kThreads, 0, st>>>(y, N, m->mtp_enorm, mtp_cat, 2 * N, N, m->eps);              // [e | ...]
@@ -2998,9 +3020,30 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     E.main_hybrid = !mtp_only;
     if (E.main_hybrid) E.use_graph = false;   // the host takes part in every layer
     E.mtp_graph = false;                      // the MTP block's layer is hybrid either way
-    E.hybrid_t = std::max(1, std::min(hybrid_t, E.use_mmq ? E.tmax : E.tmax));
-    if (!E.use_mmq) E.hybrid_t = E.tmax;   // no streamed prompt path: every batch on slots + the pool
-    const size_t staging = E.use_mmq && E.main_hybrid ? 2 * (max_layer + kMmqTail) : 0;
+    E.hybrid_t = std::max(1, std::min(hybrid_t, E.tmax));
+    if (E.native_stream) {
+        E.hybrid_t = std::max(E.hybrid_t, Engine::kGemmT); // decode/MTP verify stay on their existing CPU/GPU paths
+        if (E.main_hybrid) {
+            const size_t pair_bytes = 2 * (max_layer + kMmqTail);
+            const size_t cpu_buffers = (size_t) E.tmax * (size_t) m.top_k * ((size_t) g.n_embd + 1) * 4;
+            const size_t guard = std::max(reserve, (size_t) 256 << 20);
+            const size_t fixed_slots = slots > 0 ? (size_t) std::min<int64_t>(ne, slots) : 0;
+            const size_t slot_need = fixed_slots * per_slot + (fixed_slots > 0 ? all.size() * kMmqTail : 0);
+            if (pair_bytes + cpu_buffers + slot_need + guard > fr || pair_bytes + slot_need > budget2) {
+                // The experiment must not turn a working low-memory configuration
+                // into an OOM just to retain its two complete layer buffers.
+                E.native_stream = false;
+                std::fprintf(stderr, "tinystrata: native Expert streaming disabled: %zu MiB staging pair does not fit "
+                                     "beside CPU buffers, the requested slots and VRAM reserve\n", pair_bytes >> 20);
+            } else {
+                std::fprintf(stderr, "tinystrata: experimental native Expert streaming: %zu MiB staging pair; "
+                                     "batches > %d rows use native grouped GPU kernels (STRATA_Q36_NATIVE_STREAM=1)\n",
+                             pair_bytes >> 20, E.hybrid_t);
+            }
+        }
+    }
+    if (!E.use_mmq && !E.native_stream) E.hybrid_t = E.tmax; // every batch on slots + the pool
+    const size_t staging = (E.use_mmq || E.native_stream) && E.main_hybrid ? 2 * (max_layer + kMmqTail) : 0;
     size_t slot_bytes = budget2 > staging ? budget2 - staging : 0;
     if (slot_bytes + staging + ((size_t) 256 << 20) > fr) slot_bytes = fr > staging + ((size_t) 512 << 20) ? fr - staging - ((size_t) 512 << 20) : 0;
     // --expert-slots: that many per layer (tests: the same split with and without the MTP block)
