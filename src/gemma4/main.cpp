@@ -219,8 +219,8 @@ std::string take_pictures(const std::string& path, int32_t pad, int n_embd, std:
 
 // The final token is evaluated with logits; preceding tokens can use the
 // layer-major read path, staging each missing Expert once for several chunks.
-bool prompt(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop, Clock::time_point start,
-            bool report, bool pictures = false) {
+bool read_prompt_prefix(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop, Clock::time_point start,
+                        bool report, bool pictures) {
     int done = 0;
     while (done < n - 1) {
         if (stop.load()) return false;
@@ -239,14 +239,43 @@ bool prompt(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop,
         else if (!e.read(ids + done, count, nullptr, 0, &progress)) return false;
         done += count;
     }
-    if (stop.load()) return false;
-    e.eval(ids + n - 1, 1, true);
-    if (report) {
-        const double ms = elapsed(start);
-        std::printf("PP %d %d %.1f %.1f\n", n, n, ms, n * 1000.0 / std::max(ms, 0.001));
-        std::fflush(stdout);
+    return !stop.load();
+}
+
+bool prompt(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop, Clock::time_point start,
+            bool report, bool pictures = false, bool trace_stage = false) {
+    const size_t before_stage = trace_stage ? e.staging_bytes() : 0;
+    const double before_cache = trace_stage ? e.cached_gib() * 1024 : 0;
+    bool ended = false;
+    const auto end_read = [&] {
+        const size_t during_stage = trace_stage ? e.staging_bytes() : 0;
+        const double during_cache = trace_stage ? e.cached_gib() * 1024 : 0;
+        const auto t0 = Clock::now();
+        ended = true;
+        // eval() alone does not return the stage loan. Do so before the final
+        // logits token, including MTP 0, cancellation and failed prefix reads.
+        e.end_read();
+        if (trace_stage)
+            std::fprintf(stderr, "gemma4-stage-read: prompt=%d stage_bytes_before=%zu stage_bytes_during=%zu "
+                                 "stage_bytes_after=%zu cache_mib_before=%.3f cache_mib_during=%.3f "
+                                 "cache_mib_after=%.3f end_read_ms=%.3f\n", n, before_stage, during_stage,
+                         e.staging_bytes(), before_cache, during_cache, e.cached_gib() * 1024, elapsed(t0));
+    };
+    try {
+        const bool complete = read_prompt_prefix(e, ids, n, stop, start, report, pictures);
+        end_read();
+        if (!complete || stop.load()) return false;
+        e.eval(ids + n - 1, 1, true);
+        if (report) {
+            const double ms = elapsed(start);
+            std::printf("PP %d %d %.1f %.1f\n", n, n, ms, n * 1000.0 / std::max(ms, 0.001));
+            std::fflush(stdout);
+        }
+        return true;
+    } catch (...) {
+        if (!ended) end_read();
+        throw;
     }
-    return true;
 }
 
 void sampling_key(Sampling& s, const std::string& word) {
@@ -402,7 +431,7 @@ int serve(Engine& e, const Options& o) {
             const auto before = e.stats();
             const auto p0 = Clock::now();
             const int fresh = (int) (ids.size() - reuse);
-            if (!prompt(e, ids.data() + reuse, fresh, box->stop, p0, true, geni)) {
+            if (!prompt(e, ids.data() + reuse, fresh, box->stop, p0, true, geni, o.stage_read_mib > 0)) {
                 e.reset(); live.clear();
                 memory_info(e);
                 std::printf("DONE 0 %zu %.1f 0 cancel 0 0 %zu 0 0 0 0 0.0 0 0\n", ids.size(), elapsed(p0), reuse);
@@ -497,6 +526,10 @@ int main(int argc, char** argv) {
         opt.vram_reserve_mib = 768;
         opt.prompt_batch = 1120;
         opt.stage_mib = 256;
+#if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
+        if (const char* setting = std::getenv("TINYSTRATA_GEMMA_STAGE_READ"))
+            if (std::strcmp(setting, "1") == 0) opt.stage_read_mib = 4096;
+#endif
         for (int i = 1; i < argc; ++i) {
             const std::string arg = argv[i];
             auto next = [&]() -> std::string {
@@ -587,6 +620,10 @@ int main(int argc, char** argv) {
         if (opt.max_context < 16 || opt.max_context > 262144) throw std::invalid_argument("context must be 16..262144");
         if (chunk != "auto") opt.prompt_batch = bounded_integer(chunk, "chunk", 1, 4096);
         if (opt.prompt_batch < 1 || opt.prompt_batch > 4096) throw std::invalid_argument("chunk must be 1..4096");
+        if (opt.stage_read_mib > 0)
+            std::fprintf(stderr, "tinystrata-gemma4: experimental full-layer stage for long reads "
+                                 "(TINYSTRATA_GEMMA_STAGE_READ=1, cap %d MiB); borrowed VRAM returns before decode\n",
+                         opt.stage_read_mib);
         auto e = Engine::open(opt);
         if (require_vision && !e->sees()) throw std::runtime_error("this engine cannot receive image embeddings");
         if (e->kv_format() == strata::gemma4::KvFmt::kFp8)
@@ -599,7 +636,7 @@ int main(int argc, char** argv) {
             throw std::invalid_argument("prompt + n exceeds context");
         std::atomic<bool> stop{false};
         const auto p0 = Clock::now();
-        prompt(*e, ids.data(), (int) ids.size(), stop, p0, false);
+        prompt(*e, ids.data(), (int) ids.size(), stop, p0, false, false, opt.stage_read_mib > 0);
         const double pp = elapsed(p0);
         std::ofstream out;
         if (!dump.empty()) {
