@@ -1209,7 +1209,8 @@ struct Engine {
     size_t kAttScoreFloats = (size_t) 64 << 20;   // 256 MB (16 M floats when the experts' fit is close)
     // the prompt's MMQ experts
     bool use_mmq = false;
-    bool native_stream = false;       // CUDA opt-in: stream full Expert layers, retaining native grouped arithmetic
+    bool native_stream = false;       // stream full Expert layers, retaining native grouped arithmetic
+    bool native_stream_auto = false;  // CUDA default: temporary staging only when hybrid VMM is available
     bool stage_loan_requested = false, stage_loan = false, stage_loan_active = false, stage_loan_failed = false;
     std::unique_ptr<MMQ::Context> mctx;
     int32_t *rcnt = nullptr, *rcur = nullptr, *rbounds = nullptr, *rmax = nullptr, *ident = nullptr, *rinv = nullptr;
@@ -1357,12 +1358,16 @@ struct Engine {
             q16 = dalloc_t<__half>(T * g.n_head * g.head_dim);
         }
 #if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
-        if (const char* setting = std::getenv("STRATA_Q36_NATIVE_STREAM"))
+        if (const char* setting = std::getenv("STRATA_Q36_NATIVE_STREAM")) {
             native_stream = std::strcmp(setting, "1") == 0;
+        } else {
+            native_stream_auto = true;
+        }
+        stage_loan_requested = native_stream_auto;
         if (const char* setting = std::getenv("TINYSTRATA_Q36_STAGE_LOAN"))
             stage_loan_requested = std::strcmp(setting, "1") == 0;
 #endif
-        // This experiment changes Expert residency, not the quantizer/product kernels.
+        // Native streaming changes Expert residency, not the quantizer/product kernels.
         use_mmq = !native_stream && MMQ::built() && std::getenv("STRATA_Q36_NO_MMQ") == nullptr;
         auto mmq_ok = [&](const Layer& L) {
             // The integrated MMQ prompt path is not validated for IQ3_XXS down
@@ -3242,6 +3247,12 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     E.mtp_graph = false;                      // the MTP block's layer is hybrid either way
     E.hybrid_t = std::max(1, std::min(hybrid_t, E.tmax));
     E.stage_buffer_bytes = max_layer + kMmqTail;
+    // Select the default only after placement is known. Whole-KV/non-VMM and
+    // MTP-only hybrid retain their existing routes without a permanent pair.
+    // Models with an existing MMQ route retain that route as well.
+    const bool auto_native_stream = E.native_stream_auto && E.stage_loan_requested &&
+                                    !E.use_mmq && E.main_hybrid && E.grow_hybrid;
+    if (auto_native_stream) E.native_stream = true;
     E.stage_loan = E.stage_loan_requested && E.native_stream && E.main_hybrid && E.grow_hybrid;
     E.stage_loan_budget = budget2;
     if (E.native_stream) {
@@ -3256,19 +3267,19 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
             // Other modes retain the original permanent-pair allocation policy.
             const size_t fixed_need = E.stage_loan ? 0 : slot_need;
             if (pair_bytes + cpu_buffers + fixed_need + guard > fr || pair_bytes + fixed_need > budget2) {
-                // The experiment must not turn a working low-memory configuration
+                // Streaming must not turn a working low-memory configuration
                 // into an OOM just to retain its two complete layer buffers.
                 E.native_stream = false;
                 E.stage_loan = false;
                 std::fprintf(stderr, "tinystrata: native Expert streaming disabled: %zu MiB staging pair does not fit "
                                      "beside CPU buffers, the requested slots and VRAM reserve\n", pair_bytes >> 20);
             } else {
-                std::fprintf(stderr, "tinystrata: experimental native Expert streaming: %zu MiB staging pair; "
-                                     "batches > %d rows use native grouped GPU kernels (STRATA_Q36_NATIVE_STREAM=1)\n",
+                std::fprintf(stderr, "tinystrata: native Expert streaming: %zu MiB staging pair; "
+                                     "batches > %d rows use native grouped GPU kernels (STRATA_Q36_NATIVE_STREAM=0 disables)\n",
                              pair_bytes >> 20, E.hybrid_t);
                 if (E.stage_loan)
                     std::fprintf(stderr, "tinystrata: native staging loan enabled: buffers are temporary, "
-                                         "the idle cache keeps its full budget (TINYSTRATA_Q36_STAGE_LOAN=1)\n");
+                                         "the idle cache keeps its full budget (TINYSTRATA_Q36_STAGE_LOAN=0 disables)\n");
                 else if (E.stage_loan_requested)
                     std::fprintf(stderr, "tinystrata: native staging loan needs growable Expert VMM; "
                                          "keeping the permanent staging pair\n");

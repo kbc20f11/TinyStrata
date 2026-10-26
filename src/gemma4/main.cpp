@@ -527,8 +527,9 @@ int main(int argc, char** argv) {
         opt.prompt_batch = 1120;
         opt.stage_mib = 256;
 #if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
+        opt.stage_read_mib = 4096;
         if (const char* setting = std::getenv("TINYSTRATA_GEMMA_STAGE_READ"))
-            if (std::strcmp(setting, "1") == 0) opt.stage_read_mib = 4096;
+            if (std::strcmp(setting, "0") == 0) opt.stage_read_mib = 0;
 #endif
         for (int i = 1; i < argc; ++i) {
             const std::string arg = argv[i];
@@ -621,8 +622,8 @@ int main(int argc, char** argv) {
         if (chunk != "auto") opt.prompt_batch = bounded_integer(chunk, "chunk", 1, 4096);
         if (opt.prompt_batch < 1 || opt.prompt_batch > 4096) throw std::invalid_argument("chunk must be 1..4096");
         if (opt.stage_read_mib > 0)
-            std::fprintf(stderr, "tinystrata-gemma4: experimental full-layer stage for long reads "
-                                 "(TINYSTRATA_GEMMA_STAGE_READ=1, cap %d MiB); borrowed VRAM returns before decode\n",
+            std::fprintf(stderr, "tinystrata-gemma4: full-layer stage enabled for eligible long reads "
+                                 "(cap %d MiB, TINYSTRATA_GEMMA_STAGE_READ=0 disables); borrowed VRAM returns before decode\n",
                          opt.stage_read_mib);
         auto e = Engine::open(opt);
         if (require_vision && !e->sees()) throw std::runtime_error("this engine cannot receive image embeddings");
