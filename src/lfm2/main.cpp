@@ -141,8 +141,8 @@ void check_ids(const std::vector<int32_t>& ids, const Engine& e) {
 
 // The final token is evaluated with logits; preceding tokens can use the
 // layer-major read path, staging each missing Expert once for several chunks.
-bool prompt(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop, Clock::time_point start,
-            bool report) {
+bool read_prompt_prefix(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop, Clock::time_point start,
+                        bool report) {
     int done = 0;
     while (done < n - 1) {
         if (stop.load()) return false;
@@ -159,14 +159,49 @@ bool prompt(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop,
         if (!e.read(ids + done, count, nullptr, 0, &progress)) return false;
         done += count;
     }
-    if (stop.load()) return false;
-    e.eval(ids + n - 1, 1, true);
-    if (report) {
-        const double ms = elapsed(start);
-        std::printf("PP %d %d %.1f %.1f\n", n, n, ms, n * 1000.0 / std::max(ms, 0.001));
-        std::fflush(stdout);
+    return !stop.load();
+}
+
+// Same phase ownership as the Gemma front end: the existing Engine stage loan
+// ends before final logits, including cancellation/exception and MTP-free runs.
+bool prompt(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop, Clock::time_point start,
+            bool report, bool trace_stage = false) {
+    const size_t before_stage = trace_stage ? e.staging_bytes() : 0;
+    const double before_cache = trace_stage ? e.cached_gib() * 1024 : 0;
+    bool ended = false;
+    const auto end_read = [&] {
+        const size_t during_stage = trace_stage ? e.staging_bytes() : 0;
+        const double during_cache = trace_stage ? e.cached_gib() * 1024 : 0;
+        const auto t0 = Clock::now();
+        ended = true;
+        e.end_read();
+        if (trace_stage) {
+            static bool announced = false;
+            if (during_stage > before_stage && !announced) {
+                announced = true;
+                std::fprintf(stderr, "tinystrata-lfm2: full-layer stage active (CUDA long read)\n");
+            }
+            std::fprintf(stderr, "lfm2-stage-read: prompt=%d stage_bytes_before=%zu stage_bytes_during=%zu "
+                                 "stage_bytes_after=%zu cache_mib_before=%.3f cache_mib_during=%.3f "
+                                 "cache_mib_after=%.3f end_read_ms=%.3f\n", n, before_stage, during_stage,
+                         e.staging_bytes(), before_cache, during_cache, e.cached_gib() * 1024, elapsed(t0));
+        }
+    };
+    try {
+        const bool complete = read_prompt_prefix(e, ids, n, stop, start, report);
+        end_read();
+        if (!complete || stop.load()) return false;
+        e.eval(ids + n - 1, 1, true);
+        if (report) {
+            const double ms = elapsed(start);
+            std::printf("PP %d %d %.1f %.1f\n", n, n, ms, n * 1000.0 / std::max(ms, 0.001));
+            std::fflush(stdout);
+        }
+        return true;
+    } catch (...) {
+        if (!ended) end_read();
+        throw;
     }
-    return true;
 }
 
 void sampling_key(Sampling& s, const std::string& word) {
@@ -290,7 +325,7 @@ int serve(Engine& e, const Options& o) {
             const auto before = e.stats();
             const auto p0 = Clock::now();
             const int fresh = (int) (ids.size() - reuse);
-            if (!prompt(e, ids.data() + reuse, fresh, box->stop, p0, true)) {
+            if (!prompt(e, ids.data() + reuse, fresh, box->stop, p0, true, o.stage_read_mib > 0)) {
                 e.reset(); live.clear();
                 memory_info(e);
                 std::printf("DONE 0 %zu %.1f 0 cancel 0 0 %zu 0 0 0 0 0.0 0 0\n", ids.size(), elapsed(p0), reuse);
@@ -357,6 +392,11 @@ int main(int argc, char** argv) {
         opt.vram_reserve_mib = 768;
         opt.prompt_batch = 256;
         opt.stage_mib = 256;
+#if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
+        opt.stage_read_mib = 4096;
+        if (const char* setting = std::getenv("TINYSTRATA_LFM_STAGE_READ"))
+            if (std::strcmp(setting, "0") == 0) opt.stage_read_mib = 0;
+#endif
 #if defined(STRATA_USE_HIP) || defined(__HIPCC__)
         // The HIP growable path is disabled even for direct native launches (#1).
         opt.kv_grow = false;
@@ -456,6 +496,10 @@ int main(int argc, char** argv) {
             opt.kv_format = strata::lfm2::KvFmt::kFp8;
         else
             opt.kv_format = kv == "fp16" ? strata::lfm2::KvFmt::kFp16 : strata::lfm2::KvFmt::kQ8_0;
+        if (opt.stage_read_mib > 0)
+            std::fprintf(stderr, "tinystrata-lfm2: full-layer stage enabled for eligible long reads "
+                                 "(cap %d MiB); borrowed VRAM returns before decode\n",
+                         opt.stage_read_mib);
         auto e = Engine::open(opt);
         if (server) return serve(*e, opt);
         const auto ids = parse_ids(ids_text), forced = parse_ids(force_text);
@@ -465,7 +509,7 @@ int main(int argc, char** argv) {
             throw std::invalid_argument("prompt + n exceeds context");
         std::atomic<bool> stop{false};
         const auto p0 = Clock::now();
-        prompt(*e, ids.data(), (int) ids.size(), stop, p0, false);
+        prompt(*e, ids.data(), (int) ids.size(), stop, p0, false, opt.stage_read_mib > 0);
         const double pp = elapsed(p0);
         std::ofstream out;
         if (!dump.empty()) {

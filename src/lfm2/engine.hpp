@@ -278,6 +278,7 @@ public:
     int cached_experts() const { return cached_ + (next_ ? next_->cached_experts() : 0); }
     int total_experts() const { return n_moe_ * n_expert_ + (next_ ? next_->total_experts() : 0); }
     double cached_gib() const { return double(exp_at_) / double(1ull << 30) + (next_ ? next_->cached_gib() : 0); }
+    size_t staging_bytes() const { return stage_bytes_; } ///< usable staging bytes for phase-loan diagnostics
     /// Logical full-attention KV capacity and its currently allocated physical VRAM.
     bool kv_growing() const { return !kv_.empty(); }
     int64_t kv_committed_rows() const { return kv_growing() ? kv_rows_ : opt_.max_context; }
