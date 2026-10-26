@@ -4,7 +4,7 @@
 
 **O TinyStrata é um mecanismo de inferência de alta velocidade em desenvolvimento para modelos MoE da classe 30B, exclusivo para Windows e acessível apenas por API.** Ele é voltado principalmente a PCs equipados com placas de vídeo comuns de **8–24 GB** de VRAM e com **32 GB de RAM do sistema ou menos**.
 
-**Há suporte a GPUs NVIDIA (CUDA). A rota experimental AMD HIP/ROCm usa KV INT8; a validação em hardware AMD está pendente.**
+**Há suporte a GPUs NVIDIA (CUDA). A rota experimental AMD HIP/ROCm usa KV INT8 e seu funcionamento foi verificado por um usuário da comunidade em uma Radeon RX 9070 XT.**
 
 ## Por que desenvolvemos o TinyStrata?
 
