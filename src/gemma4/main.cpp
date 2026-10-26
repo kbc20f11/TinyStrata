@@ -526,6 +526,10 @@ int main(int argc, char** argv) {
         opt.vram_reserve_mib = 768;
         opt.prompt_batch = 1120;
         opt.stage_mib = 256;
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
+        // The HIP growable path is disabled even for direct native launches (#1).
+        opt.kv_grow = false;
+#endif
 #if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
         opt.stage_read_mib = 4096;
         if (const char* setting = std::getenv("TINYSTRATA_GEMMA_STAGE_READ"))
@@ -557,8 +561,13 @@ int main(int argc, char** argv) {
                           "  --vram-reserve-mib N   Leave VRAM headroom (default 768 MiB)\n"
                           "  --cpu-threads N --no-graph --no-gpu-experts\n"
                           "  --kv-type auto|fp8|int8|fp16  Auto: INT8; native FP8 is experimental and opt-in\n"
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
+                          "  --kv-grow             Not supported on the AMD HIP backend (issue #1)\n"
+                          "  --kv-whole            Allocate the full context's KV at startup (required on HIP)\n"
+#else
                           "  --kv-grow             Grow physical KV with actual usage (default, if supported)\n"
                           "  --kv-whole            Allocate the full context's KV at startup\n"
+#endif
                           "  --stage-mib N          Prompt Expert streaming buffer (default 256 MiB)");
                 return 0;
             } else if (arg == "--model" || arg == "--native") opt.model = next();
@@ -598,6 +607,10 @@ int main(int argc, char** argv) {
                 mtp = bounded_integer(next(), "MTP draft count", 0, 7);
             } else throw std::invalid_argument("unknown option: " + arg);
         }
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
+        if (opt.kv_grow)
+            throw std::invalid_argument("--kv-grow is not supported on the AMD HIP backend; use --kv-whole (issue #1)");
+#endif
         if (mtp > 0 && opt.draft_model.empty())
             throw std::invalid_argument("MTP requires --draft-model pointing to the matching Gemma assistant GGUF; use --mtp 0 otherwise");
         opt.draft = mtp > 0;
