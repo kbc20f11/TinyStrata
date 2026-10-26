@@ -189,7 +189,8 @@ def main() -> int:
                     help="default auto: Gemma uses INT8; Qwen/LFM use native FP8 when supported, otherwise INT8")
     kv_allocation = ap.add_mutually_exclusive_group()
     kv_allocation.add_argument("--kv-grow", dest="kv_grow", action="store_true", default=None,
-                               help="grow physical KV storage with the conversation (default); saved for later starts")
+                               help="grow physical KV storage with the conversation (default; not supported on the AMD "
+                                    "HIP backend, which always uses --kv-whole); saved for later starts")
     kv_allocation.add_argument("--kv-whole", "--no-kv-grow", dest="kv_grow", action="store_false",
                                help="allocate the whole context's KV at load; saved for later starts")
     ap.add_argument("--mtp", type=int)
