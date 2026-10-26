@@ -1210,6 +1210,7 @@ struct Engine {
     // the prompt's MMQ experts
     bool use_mmq = false;
     bool native_stream = false;       // CUDA opt-in: stream full Expert layers, retaining native grouped arithmetic
+    bool stage_loan_requested = false, stage_loan = false, stage_loan_active = false, stage_loan_failed = false;
     std::unique_ptr<MMQ::Context> mctx;
     int32_t *rcnt = nullptr, *rcur = nullptr, *rbounds = nullptr, *rmax = nullptr, *ident = nullptr, *rinv = nullptr;
     void *mq_x = nullptr, *mq_hq = nullptr;
@@ -1264,6 +1265,15 @@ struct Engine {
     uint8_t* stage[2] = {};
     cudaStream_t cst = nullptr;
     cudaEvent_t ev_copy[2] = {}, ev_used[2] = {};
+    std::unique_ptr<strata::qwen35::kv_grow::Range> loan_stage_ranges[2];
+    size_t stage_buffer_bytes = 0, stage_loan_budget = 0;
+    struct StageLoanLayer {
+        int slots;
+        std::vector<int> slot_of, exp_in_slot;
+    };
+    std::vector<StageLoanLayer> stage_loan_snapshot;
+    size_t stage_loan_mapped_before = 0;
+    uint64_t stage_loan_fingerprint_before = 0;
     std::vector<int> stream_seq;   // the state indices a streamed forward visits, in order
     int stream_pos = 0;
     long long hy_cpu = 0, hy_gpu = 0, hy_swaps = 0;   // entries computed on the CPU / GPU, slot replacements
@@ -1349,6 +1359,8 @@ struct Engine {
 #if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
         if (const char* setting = std::getenv("STRATA_Q36_NATIVE_STREAM"))
             native_stream = std::strcmp(setting, "1") == 0;
+        if (const char* setting = std::getenv("TINYSTRATA_Q36_STAGE_LOAN"))
+            stage_loan_requested = std::strcmp(setting, "1") == 0;
 #endif
         // This experiment changes Expert residency, not the quantizer/product kernels.
         use_mmq = !native_stream && MMQ::built() && std::getenv("STRATA_Q36_NO_MMQ") == nullptr;
@@ -2033,9 +2045,9 @@ struct Engine {
         else f32mm(L.router, h, logits_r, N, (int) g.n_expert, T);
         // the hybrid rows path: a batch of up to hybrid_t rows; when only the MTP block is hybrid, its every batch
         // (its prompt pass too: no staging buffers then)
-        const bool hy_rows = lhy(li) && (T <= hybrid_t || !main_hybrid);
+        const bool hy_rows = lhy(li) && (T <= hybrid_t || !main_hybrid || (stage_loan && !stage_loan_active));
         const bool mmq_rows = !hy_rows && T > kGemmT && use_mmq;
-        const bool native_stream_rows = native_stream && !hy_rows && lhy(li);
+        const bool native_stream_rows = native_stream_ready() && !hy_rows && lhy(li);
         if (mmq_rows || native_stream_rows || !route_group(L, hy_rows ? hy[li].slot_of_d : nullptr, T,
                                                           ext ? (int) g.n_expert + 1 : (int) g.n_expert))
             K::native_router_topk(logits_r, ids, ewts, (int) g.n_expert, Kp, T, st);
@@ -2122,7 +2134,7 @@ struct Engine {
         xq_ready = false;
         const auto& g = m->g;
         const int N = (int) g.n_embd;
-        if (main_hybrid && T > hybrid_t && (use_mmq || native_stream)) {
+        if (main_hybrid && T > hybrid_t && (use_mmq || native_stream_ready())) {
             std::vector<int> seq;
             for (size_t l = 0; l < m->layers.size(); ++l)
                 if (lhy(l)) seq.push_back((int) l);
@@ -2153,7 +2165,7 @@ struct Engine {
         xq_ready = false;
         const auto& g = m->g;
         const int N = (int) g.n_embd;
-        if (main_hybrid && lhy(m->layers.size()) && T > hybrid_t && (use_mmq || native_stream))
+        if (main_hybrid && lhy(m->layers.size()) && T > hybrid_t && (use_mmq || native_stream_ready()))
             stream_begin({(int) m->layers.size()});
         K::iq_embed_rows(m->embd_type, m->embd, m->embd_row, tok_m, T, N, y, st);
         image_rows(y, T, p0);
@@ -2436,8 +2448,8 @@ struct Engine {
             std::fprintf(stderr, "tinystrata: KV grown to %lld/%d rows, %zu MiB physically committed\n",
                          (long long) rows, ctx, kv_mapped_bytes() >> 20);
     }
-    void shrink_grow_cache(size_t bytes) {
-        if (!grow_hybrid) return;
+    size_t shrink_grow_cache(size_t bytes, const char* purpose = "KV growth") {
+        if (!grow_hybrid) return 0;
         CK(cudaDeviceSynchronize());
         size_t freed = 0;
         bool changed = true;
@@ -2481,7 +2493,199 @@ struct Engine {
                 freed += before - r->mapped();
             }
         }
-        std::fprintf(stderr, "tinystrata: Expert cache returned %zu MiB for KV growth\n", freed >> 20);
+        std::fprintf(stderr, "tinystrata: Expert cache returned %zu MiB for %s\n", freed >> 20, purpose);
+        return freed;
+    }
+    bool native_stream_ready() const { return native_stream && (!stage_loan || stage_loan_active); }
+    size_t loan_stage_pair_bytes() const {
+        const size_t gran = strata::qwen35::kv_grow::api().gran;
+        return 2 * ((stage_buffer_bytes + gran - 1) / gran) * gran;
+    }
+    size_t loan_stage_mapped_bytes() const {
+        size_t bytes = 0;
+        for (const auto& range : loan_stage_ranges) if (range) bytes += range->mapped();
+        return bytes;
+    }
+    size_t expert_mapped_bytes() const {
+        size_t bytes = 0;
+        for (const auto& r : expert_ranges) if (r) bytes += r->mapped();
+        return bytes;
+    }
+    int expert_slot_count() const {
+        int slots = 0;
+        for (size_t li = 0; li < hy.size(); ++li) slots += layer_at((int) li).n_slots;
+        return slots;
+    }
+    uint64_t expert_slot_fingerprint() const {
+        uint64_t hash = 14695981039346656037ull;
+        const auto add = [&](int value) {
+            const uint32_t bits = (uint32_t) value;
+            for (int j = 0; j < 4; ++j) { hash ^= (bits >> (8 * j)) & 255u; hash *= 1099511628211ull; }
+        };
+        for (size_t li = 0; li < hy.size(); ++li) {
+            add(layer_at((int) li).n_slots);
+            for (int value : hy[li].slot_of) add(value);
+            for (int value : hy[li].exp_in_slot) add(value);
+        }
+        return hash;
+    }
+    // Stage buffers are never Graph operands. The Expert arenas and slot tables
+    // retain their virtual addresses, just as when ensure_kv returns cache pages.
+    bool finish_stage_loan() {
+        if (stage_loan_snapshot.empty()) return true;
+        CK(cudaDeviceSynchronize()); // includes the last main AND MTP stage readers and copy stream
+        for (int b = 0; b < 2; ++b) {
+            if (loan_stage_ranges[b] && !loan_stage_ranges[b]->trim(loan_stage_ranges[b]->prefix(0))) {
+                std::fprintf(stderr, "tinystrata: returning stage-loan pages failed\n");
+                std::exit(1);
+            }
+            stage[b] = nullptr;
+        }
+        stage_loan_active = false;
+
+        size_t need = 0;
+        for (size_t li = 0; li < stage_loan_snapshot.size(); ++li) {
+            const Layer& L = layer_at((int) li);
+            const int slots = stage_loan_snapshot[li].slots;
+            const size_t keep = slots ? (size_t) slots * L.stride + kMmqTail : 0;
+            need += expert_ranges[li]->need(expert_ranges[li]->prefix(keep));
+        }
+        size_t free = 0, total = 0;
+        CK(resident_mem_info(&free, &total));
+        bool mapped = need <= (free > vram_reserve ? free - vram_reserve : 0);
+        if (mapped) {
+            // Map every prefix before overwriting any surviving slot. Range::map
+            // can fail after a partial map; the reduced cache stays valid then.
+            for (size_t li = 0; li < stage_loan_snapshot.size(); ++li) {
+                const Layer& L = layer_at((int) li);
+                const int slots = stage_loan_snapshot[li].slots;
+                const size_t keep = slots ? (size_t) slots * L.stride + kMmqTail : 0;
+                if (!expert_ranges[li]->map(expert_ranges[li]->prefix(keep), st)) { mapped = false; break; }
+            }
+        }
+        if (!mapped) {
+            // External VRAM pressure can consume the pages while they are lent.
+            // Roll back only newly mapped pages; keep the valid compacted cache
+            // and its tables, and use the ordinary CPU/GPU path from now on.
+            (void) cudaGetLastError();
+            CK(cudaDeviceSynchronize());
+            for (size_t li = 0; li < expert_ranges.size(); ++li) {
+                const Layer& L = layer_at((int) li);
+                const size_t keep = L.n_slots ? (size_t) L.n_slots * L.stride + kMmqTail : 0;
+                if (!expert_ranges[li]->trim(expert_ranges[li]->prefix(keep))) {
+                    std::fprintf(stderr, "tinystrata: rolling back a stage-loan cache map failed\n");
+                    std::exit(1);
+                }
+            }
+            stage_loan_failed = true;
+            stage_loan_snapshot.clear();
+            std::fprintf(stderr, "tinystrata: stage loan could not restore its full cache under VRAM pressure; "
+                                 "keeping %d valid slots and disabling further loans (CPU/GPU fallback, "
+                                 "need=%zu MiB free=%zu MiB reserve=%zu MiB)\n",
+                         expert_slot_count(), need >> 20, free >> 20, vram_reserve >> 20);
+            return false;
+        }
+
+        size_t reloaded = 0;
+        for (size_t li = 0; li < stage_loan_snapshot.size(); ++li) {
+            Layer& L = const_cast<Layer&>(layer_at((int) li));
+            Hy& H = hy[li];
+            const StageLoanLayer& saved = stage_loan_snapshot[li];
+            for (int slot = 0; slot < saved.slots; ++slot) {
+                const int expert = saved.exp_in_slot[(size_t) slot];
+                if (slot < L.n_slots && H.exp_in_slot[(size_t) slot] == expert) continue;
+                CK(cudaMemcpyAsync(L.blobs + (size_t) slot * L.stride, L.hblobs + (size_t) expert * L.stride,
+                                   L.L.bytes, cudaMemcpyHostToDevice, st));
+                reloaded += L.L.bytes;
+            }
+            if (saved.slots) CK(cudaMemsetAsync(L.blobs + (size_t) saved.slots * L.stride, 0, kMmqTail, st));
+            CK(cudaMemcpyAsync(H.slot_of_d, saved.slot_of.data(), saved.slot_of.size() * sizeof(int32_t),
+                               cudaMemcpyHostToDevice, st));
+            L.n_slots = saved.slots;
+            H.slot_of = saved.slot_of;
+            H.exp_in_slot = saved.exp_in_slot;
+            // Routing counts accumulated during the prompt remain current.
+        }
+        CK(cudaStreamSynchronize(st));
+        const bool tables_checked = std::getenv("STRATA_Q36_FIXED_SLOTS") != nullptr;
+        if (tables_checked) {
+            // The fixed-slot validation route checks the actual device tables,
+            // not just the host snapshot that was assigned above.
+            std::vector<std::vector<int>> actual(hy.size());
+            for (size_t li = 0; li < hy.size(); ++li) {
+                actual[li].resize(hy[li].slot_of.size());
+                CK(cudaMemcpyAsync(actual[li].data(), hy[li].slot_of_d, actual[li].size() * sizeof(int32_t),
+                                   cudaMemcpyDeviceToHost, st));
+            }
+            CK(cudaStreamSynchronize(st));
+            for (size_t li = 0; li < hy.size(); ++li) if (actual[li] != stage_loan_snapshot[li].slot_of) {
+                std::fprintf(stderr, "tinystrata: stage loan restored an incorrect device slot table\n");
+                std::exit(1);
+            }
+        }
+        const uint64_t after = expert_slot_fingerprint();
+        const size_t mapped_after = expert_mapped_bytes();
+        if (after != stage_loan_fingerprint_before || mapped_after != stage_loan_mapped_before) {
+            std::fprintf(stderr, "tinystrata: stage loan did not restore its original cache layout\n");
+            std::exit(1);
+        }
+        std::fprintf(stderr, "tinystrata: stage loan restored %d slots, %zu MiB cache, mapping=%016llx "
+                             "exact=1 device_tables_checked=%d reloaded=%zu MiB cache_bytes=%zu\n",
+                     expert_slot_count(), mapped_after >> 20, (unsigned long long) after,
+                     tables_checked ? 1 : 0, reloaded >> 20, mapped_after);
+        stage_loan_snapshot.clear();
+        return true;
+    }
+    bool begin_stage_loan() {
+        if (!stage_loan || stage_loan_failed || stage_loan_active) return stage_loan_active;
+        CK(cudaDeviceSynchronize());
+        stage_loan_snapshot.clear();
+        for (size_t li = 0; li < hy.size(); ++li)
+            stage_loan_snapshot.push_back({layer_at((int) li).n_slots, hy[li].slot_of, hy[li].exp_in_slot});
+        stage_loan_mapped_before = expert_mapped_bytes();
+        stage_loan_fingerprint_before = expert_slot_fingerprint();
+        const int slots_before = expert_slot_count();
+        const size_t pair = loan_stage_pair_bytes();
+        size_t free = 0, total = 0;
+        CK(resident_mem_info(&free, &total));
+        const size_t for_free = pair + vram_reserve > free ? pair + vram_reserve - free : 0;
+        const size_t for_budget = stage_loan_mapped_before + pair > stage_loan_budget
+                                     ? stage_loan_mapped_before + pair - stage_loan_budget : 0;
+        const size_t give = std::max(for_free, for_budget);
+        if (give) shrink_grow_cache(give, "temporary native staging");
+        CK(resident_mem_info(&free, &total));
+        bool ok = pair + vram_reserve <= free && expert_mapped_bytes() + pair <= stage_loan_budget;
+        if (ok) {
+            for (int b = 0; b < 2; ++b) {
+                if (!loan_stage_ranges[b]) loan_stage_ranges[b] = std::make_unique<strata::qwen35::kv_grow::Range>();
+                auto& range = *loan_stage_ranges[b];
+                if ((!range.base() && !range.reserve(stage_buffer_bytes)) ||
+                    !range.map(range.prefix(stage_buffer_bytes), st)) { ok = false; break; }
+                stage[b] = (uint8_t*) range.base();
+                CK(cudaEventRecord(ev_used[b], st));
+            }
+        }
+        if (ok) {
+            CK(cudaStreamSynchronize(st));
+            CK(resident_mem_info(&free, &total));
+            ok = free >= vram_reserve && loan_stage_mapped_bytes() == pair &&
+                 expert_mapped_bytes() + loan_stage_mapped_bytes() <= stage_loan_budget;
+        }
+        if (!ok) {
+            (void) cudaGetLastError();
+            finish_stage_loan();
+            std::fprintf(stderr, "tinystrata: optional stage loan unavailable; this prompt uses the CPU/GPU path\n");
+            return false;
+        }
+        stage_loan_active = true;
+        std::fprintf(stderr, "tinystrata: stage loan borrowed %zu MiB for %zu MiB staging, slots %d -> %d, "
+                             "mapping=%016llx budget=%zu MiB cache_bytes=%zu stage_bytes=%zu budget_bytes=%zu "
+                             "cache_before_bytes=%zu\n",
+                     (stage_loan_mapped_before - expert_mapped_bytes()) >> 20, pair >> 20,
+                     slots_before, expert_slot_count(), (unsigned long long) stage_loan_fingerprint_before,
+                     stage_loan_budget >> 20, expert_mapped_bytes(), loan_stage_mapped_bytes(), stage_loan_budget,
+                     stage_loan_mapped_before);
+        return true;
     }
     // A fresh request has discarded the previous sequence, so KV pages beyond
     // its prompt can return to the hottest missing experts. No history goes to RAM.
@@ -2736,8 +2940,23 @@ struct Engine {
             on_chunk(1);
             return;
         }
+        struct ScopedStageLoan {
+            Engine& engine;
+            bool tried = false;
+            ~ScopedStageLoan() { engine.finish_stage_loan(); }
+            void prepare(int rows) {
+                if (rows <= engine.hybrid_t) {
+                    if (engine.stage_loan_active)
+                        std::fprintf(stderr, "tinystrata: returning stage loan before %d-row tail at position %lld\n",
+                                     rows, (long long) engine.pos);
+                    engine.finish_stage_loan();
+                }
+                else if (!tried) { tried = true; engine.begin_stage_loan(); }
+            }
+        } loan{*this};
         for (int64_t i = 0; i < n; i += tmax) {
             const int T = (int) std::min<int64_t>(tmax, n - i);
+            loan.prepare(T); // return the cache before a small tail takes the CPU/GPU path
             CK(cudaStreamSynchronize(st));
             hpin[1] = (int32_t) pos;
             CK(cudaMemcpyAsync(tok, toks + i, (size_t) T * 4, cudaMemcpyHostToDevice, st));
@@ -2757,6 +2976,7 @@ struct Engine {
             CK(cudaStreamSynchronize(st));
             on_chunk(i + T);
         }
+        finish_stage_loan(); // includes allocation, transfer and restoration time in prompt_ms
         if (m->hybrid) rebalance(hybrid_swaps_after_prompt);
     }
     int hybrid_swaps_after_prompt = 2048;
@@ -3021,29 +3241,43 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     if (E.main_hybrid) E.use_graph = false;   // the host takes part in every layer
     E.mtp_graph = false;                      // the MTP block's layer is hybrid either way
     E.hybrid_t = std::max(1, std::min(hybrid_t, E.tmax));
+    E.stage_buffer_bytes = max_layer + kMmqTail;
+    E.stage_loan = E.stage_loan_requested && E.native_stream && E.main_hybrid && E.grow_hybrid;
+    E.stage_loan_budget = budget2;
     if (E.native_stream) {
         E.hybrid_t = std::max(E.hybrid_t, Engine::kGemmT); // decode/MTP verify stay on their existing CPU/GPU paths
         if (E.main_hybrid) {
-            const size_t pair_bytes = 2 * (max_layer + kMmqTail);
+            const size_t pair_bytes = E.stage_loan ? E.loan_stage_pair_bytes() : 2 * (max_layer + kMmqTail);
             const size_t cpu_buffers = (size_t) E.tmax * (size_t) m.top_k * ((size_t) g.n_embd + 1) * 4;
             const size_t guard = std::max(reserve, (size_t) 256 << 20);
             const size_t fixed_slots = slots > 0 ? (size_t) std::min<int64_t>(ne, slots) : 0;
             const size_t slot_need = fixed_slots * per_slot + (fixed_slots > 0 ? all.size() * kMmqTail : 0);
-            if (pair_bytes + cpu_buffers + slot_need + guard > fr || pair_bytes + slot_need > budget2) {
+            // A loan needs the pair only while the cache is temporarily smaller.
+            // Other modes retain the original permanent-pair allocation policy.
+            const size_t fixed_need = E.stage_loan ? 0 : slot_need;
+            if (pair_bytes + cpu_buffers + fixed_need + guard > fr || pair_bytes + fixed_need > budget2) {
                 // The experiment must not turn a working low-memory configuration
                 // into an OOM just to retain its two complete layer buffers.
                 E.native_stream = false;
+                E.stage_loan = false;
                 std::fprintf(stderr, "tinystrata: native Expert streaming disabled: %zu MiB staging pair does not fit "
                                      "beside CPU buffers, the requested slots and VRAM reserve\n", pair_bytes >> 20);
             } else {
                 std::fprintf(stderr, "tinystrata: experimental native Expert streaming: %zu MiB staging pair; "
                                      "batches > %d rows use native grouped GPU kernels (STRATA_Q36_NATIVE_STREAM=1)\n",
                              pair_bytes >> 20, E.hybrid_t);
+                if (E.stage_loan)
+                    std::fprintf(stderr, "tinystrata: native staging loan enabled: buffers are temporary, "
+                                         "the idle cache keeps its full budget (TINYSTRATA_Q36_STAGE_LOAN=1)\n");
+                else if (E.stage_loan_requested)
+                    std::fprintf(stderr, "tinystrata: native staging loan needs growable Expert VMM; "
+                                         "keeping the permanent staging pair\n");
             }
         }
     }
     if (!E.use_mmq && !E.native_stream) E.hybrid_t = E.tmax; // every batch on slots + the pool
-    const size_t staging = (E.use_mmq || E.native_stream) && E.main_hybrid ? 2 * (max_layer + kMmqTail) : 0;
+    const size_t staging = (E.use_mmq || (E.native_stream && !E.stage_loan)) && E.main_hybrid
+                               ? 2 * (max_layer + kMmqTail) : 0;
     size_t slot_bytes = budget2 > staging ? budget2 - staging : 0;
     if (slot_bytes + staging + ((size_t) 256 << 20) > fr) slot_bytes = fr > staging + ((size_t) 512 << 20) ? fr - staging - ((size_t) 512 << 20) : 0;
     // --expert-slots: that many per layer (tests: the same split with and without the MTP block)
@@ -3051,6 +3285,18 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     if (mtp_only) {   // the main layers all, the MTP block what is left
         const size_t left = budget2 > total_main ? budget2 - total_main : 0;
         S = (int) std::min<size_t>((size_t) ne, left / m.mtp.stride);
+    }
+    if (E.stage_loan) {
+        // Respect the explicit Expert+staging budget in physical VMM pages,
+        // including per-layer overread tails, before taking the idle snapshot.
+        const size_t gran = strata::qwen35::kv_grow::api().gran;
+        const auto mapped_for = [&](int count) {
+            size_t bytes = 0;
+            if (count > 0)
+                for (Layer* L : all) bytes += ((L->stride * (size_t) count + kMmqTail + gran - 1) / gran) * gran;
+            return bytes;
+        };
+        while (S > 0 && mapped_for(S) > budget2) --S;
     }
     {   // what the hybrid mode allocates next (the staging pair, the CPU part's outputs, the slots) against the VRAM the
         // sessions and the context left: said with the numbers instead of a cudaMalloc failure (8 slots on a 12 GB card)
@@ -3148,11 +3394,13 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     E.acts = (uint8_t*) std::malloc(T * C::kNativeActBytes + 64);
     if (!E.acts) { err = "no host memory for expert activations"; return false; }
     CK(cudaEventCreateWithFlags(&E.ev_route, cudaEventDisableTiming));
-    if (staging) {
+    if (staging || E.stage_loan) {
         CK(cudaStreamCreateWithFlags(&E.cst, cudaStreamNonBlocking));
         for (int b = 0; b < 2; ++b) {
-            CK(cudaMalloc(&E.stage[b], max_layer + kMmqTail));
-            CK(cudaMemset(E.stage[b], 0, max_layer + kMmqTail));
+            if (!E.stage_loan) {
+                CK(cudaMalloc(&E.stage[b], max_layer + kMmqTail));
+                CK(cudaMemset(E.stage[b], 0, max_layer + kMmqTail));
+            }
             CK(cudaEventCreateWithFlags(&E.ev_copy[b], cudaEventDisableTiming));
             CK(cudaEventCreateWithFlags(&E.ev_used[b], cudaEventDisableTiming));
             CK(cudaEventRecord(E.ev_used[b], E.st));
