@@ -28,6 +28,7 @@
 #include "strata/qwen35/int8_attention.hpp"
 #include "strata/qwen35/fp8_attention.hpp"
 #include "strata/qwen35/environment_policy.hpp"
+#include "strata/qwen35/cache_policy.hpp"
 #include "strata/qwen35/speculative_sampling.hpp"
 #include "strata/qwen35/vision.hpp"
 #include "strata/qwen35/kv_grow.hpp"
@@ -1236,6 +1237,8 @@ struct Engine {
 #endif
     };
     std::vector<Hy> hy;
+    bool fair_rebalance = false, fair_rebalance_reported = false;
+    size_t rebalance_next_layer = 0;
     int hybrid_t = 32;
     bool main_hybrid = false;   // some main layer is hybrid (else only the MTP block is: the decode graph stays)
     bool mtp_graph = true;      // the MTP draft step may be a graph (not when its layer is hybrid)
@@ -1309,6 +1312,11 @@ struct Engine {
         }
         tmax = std::max(tmax_, kVerify);
         const auto& g = m->g;
+#if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
+        fair_rebalance = true;
+        if (const char* value = std::getenv("TINYSTRATA_Q36_FAIR_REBALANCE"))
+            fair_rebalance = std::strcmp(value, "0") != 0;
+#endif
         const size_t T = (size_t) tmax, N = (size_t) g.n_embd, Kp = (size_t) m->top_k, FF = (size_t) g.n_ff;
         const size_t C = (size_t) g.ssm_conv_channels;
         CK(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking));
@@ -2362,9 +2370,15 @@ struct Engine {
     void rebalance(int max_swaps) {
         static const bool off = std::getenv("STRATA_Q36_FIXED_SLOTS") != nullptr;   // the slots as placed (tests)
         if (!m->hybrid || off || warming) return;
+        if (fair_rebalance && !fair_rebalance_reported) {
+            std::fprintf(stderr, "tinystrata: Qwen fair cache rebalance active (rotating layers, all-layer aging)\n");
+            fair_rebalance_reported = true;
+        }
         const int64_t ne = m->g.n_expert;
         int left = max_swaps;
-        for (size_t li = 0; li < hy.size() && left > 0; ++li) {
+        strata::qwen35::cache_policy::LayerScan scan(hy.size(), fair_rebalance, rebalance_next_layer);
+        size_t li = 0;
+        while (scan.next(left, li)) {
             Hy& H = hy[li];
             const Layer& L = layer_at((int) li);
             const int S = L.n_slots;
@@ -2403,8 +2417,12 @@ struct Engine {
             }
             if (changed)
                 CK(cudaMemcpyAsync(H.slot_of_d, H.slot_of.data(), (size_t) ne * 4, cudaMemcpyHostToDevice, st));
-            for (double& v : H.score) v *= 0.5;
+            if (!fair_rebalance) strata::qwen35::cache_policy::age(H.score);
         }
+        // A spent swap budget must not leave later layers' prompt scores at a
+        // different age. Keep all scores on the same timescale between calls.
+        if (fair_rebalance)
+            for (Hy& H : hy) strata::qwen35::cache_policy::age(H.score);
         CK(cudaStreamSynchronize(st));   // slot_of's host copy is pageable: the upload is done before it changes
     }
 
