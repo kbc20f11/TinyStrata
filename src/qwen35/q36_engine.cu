@@ -3901,11 +3901,15 @@ int strata::qwen35::run(int argc, char** argv) {
 #if defined(STRATA_USE_HIP) || defined(__HIPCC__)
     // Validate the final allocation mode before loading a model or touching the
     // GPU. An explicit --kv-whole may override STRATA_KV_GROW=1 from the host.
-    if (kv_grow) {
+    const char* vmm_repro = std::getenv("TINYSTRATA_HIP_VMM_REPRO");
+    const bool vmm_diagnostic = vmm_repro && std::strcmp(vmm_repro, "1") == 0;
+    if (kv_grow && !vmm_diagnostic) {
         std::fprintf(stderr, "tinystrata: HIP requires --kv-whole; growable KV/Expert VMM is disabled "
                              "because of reported GPU faults (https://github.com/kbc20f11/TinyStrata/issues/1)\n");
         return 2;
     }
+    if (kv_grow)
+        std::fprintf(stderr, "tinystrata: diagnostic HIP VMM test enabled; this is not the normal HIP launch path\n");
 #endif
     if (model.empty()) { std::fprintf(stderr, "tinystrata: --model is required\n"); return 2; }
 #if !defined(_WIN32)
@@ -4026,6 +4030,11 @@ int strata::qwen35::run(int argc, char** argv) {
     std::fprintf(stderr, "tinystrata: decode graphs %s (requested %s; main experts %s)\n",
                  E.use_graph ? "enabled" : "disabled", graph ? "on" : "off",
                  E.main_hybrid ? "CPU/GPU hybrid" : "GPU resident");
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
+    if (kv_grow)
+        std::fprintf(stderr, "tinystrata: HIP VMM diagnostic: effective_grow=%d chunk_bytes=%zu expert_mapped_bytes=%zu\n",
+                     E.kv_grow ? 1 : 0, strata::qwen35::kv_grow::api().gran, E.expert_mapped_bytes());
+#endif
     struct Report {
         Engine& E;
         ~Report() {
