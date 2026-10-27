@@ -4,7 +4,7 @@
 
 **TinyStrata is a fast, Windows-only, API-only inference engine for 30B-class MoE models.** It primarily targets PCs with mainstream graphics cards (**8–24 GB of VRAM**) and **32 GB of system RAM or less**.
 
-**NVIDIA GPUs (CUDA) are supported. The experimental AMD HIP/ROCm path uses INT8 KV and has been verified by a community user on a Radeon RX 9070 XT.**
+**NVIDIA GPUs (CUDA) are supported. The experimental AMD HIP/ROCm path uses INT8 KV and has been tested locally on a Radeon RX 9060 XT.**
 
 ## Why we are building TinyStrata
 
@@ -152,22 +152,17 @@ Native FP8 and INT8 were measured on **2026-10-27**.
 
 Each of the same three input texts was run twice per FP8/INT8 configuration, generating 128 tokens including thinking; sampling settings were left at their model defaults. Speed is total generated tokens divided by total decode time, excluding loading and prompt processing; context values are cache capacities. The reduced-memory rows reserve 8, 12 or 16 GiB on the same 24 GB GPU and use the context capacity for that VRAM class; they are not physical 16/12/8 GB GPU benchmarks.
 
-## Measured speed — AMD Radeon RX 9070 XT (HIP, experimental)
+## Measured speed — AMD Radeon RX 9060 XT (HIP)
 
-Measured on **2026-10-24** on a Windows 11 PC with a Radeon RX 9070 XT (gfx1201, 16 GB, also driving the display), 94 GB of system RAM and HIP SDK 7.2, with the same Qwen3.6 UD-IQ3_XXS, Gemma 4 QAT Q4_0 (with its MTP assistant) and LFM2.5 Q4_K_M files as above. Everything was left at the defaults through `run-api.bat`: the HIP backend adds `--kv-whole`, and context capacity, MTP and the GPU image encoder were chosen automatically (LFM2.5 has neither MTP nor Vision). Thinking was on and sampling was left at the model defaults, except that every request used `seed` 1234.
+Measured on **2026-10-27** using Windows 11, a Radeon RX 9060 XT (gfx1200, 16 GB; driver 32.0.32015.7029), a Ryzen 9 7945HX3D and 64 GB of system RAM, with the same three model files as above. INT8 KV and VMM growth with a 4 MiB allocation quantum were enabled. Context capacity, input chunks and Expert placement were automatic. Qwen and Gemma used MTP 3 and a GPU-resident image encoder; LFM used neither.
 
-| Model | Context capacity | Decode, first 3 requests after start (two starts) | Decode, steady (median of 21 requests) | Prompt of about 2.7K tokens, first / later |
-| --- | ---: | ---: | ---: | ---: |
-| Qwen3.6 UD-IQ3_XXS | 256K | 68.3 / 71.4 tok/s | 70.9 tok/s (62.2 to 78) | 514 and 485 / about 1,200 tok/s |
-| Gemma 4 QAT Q4_0 | 256K | 36.7 / 37.7 tok/s | 61.7 tok/s (50.6 to 71.9) | 1,518 and 1,849 / about 1,660 tok/s |
-| LFM2.5 Q4_K_M | 128K | 80.9 / 86.2 tok/s | 101.1 tok/s (94.8 to 110.6) | 2,135 and 2,214 / about 2,410 tok/s |
+| Model | Context capacity | INT8 VMM generation |
+| --- | ---: | ---: |
+| Qwen3.6 UD-IQ3_XXS | 256K | 84.02 tok/s |
+| Gemma 4 QAT Q4_0 | 256K | 73.91 tok/s |
+| LFM2.5 Q4_K_M | 128K | 94.82 tok/s |
 
-The same three input texts as above were used, generating 128 tokens including thinking. Speed is generated tokens divided by decode time from `/v1/status`, excluding loading and prompt processing. "First 3 requests" are the three texts in a fixed order right after the API reported the model loaded, averaged, on two separate starts. "Steady" is rounds 4 to 10 of ten rounds of the three texts on one start (21 requests), with the range in brackets. The prompt rows use one input of 2,669 to 2,676 tokens, sent with a different first line each time so that nothing was cached: "first" is the first long request on each start, "later" the next three. Peak VRAM for the whole adapter was 15.55 to 15.64 GiB of about 15.92 GiB, including about 2.4 GiB used by other programs.
-
-- On this card the Qwen engine faults with the default growable KV (see issue #1); with `--kv-whole` all three models ran without errors or Windows GPU watchdog dumps. Gemma 4 and LFM2.5 were run only in this configuration.
-- Qwen3.6 decodes the same on the first requests as in steady state, within the run-to-run spread, but its first long prompt is about 2.4 times slower, on both starts. Gemma 4 and LFM2.5 decode slower on the first requests (about 37 against 62 tok/s, and 81 to 86 against 101 tok/s), on both starts. The engine logs show the Expert cache swapping heavily during the first request (745 swaps for Gemma 4, against 164 to 372 later) and its VRAM size shrinking over the first requests, from 8.5 to 4.7 GiB for Gemma 4 and from 11.6 to 10.1 GiB for LFM2.5. I did not find out why it shrinks or whether it explains the slow start.
-- With the seed fixed, the outputs of the first three requests were identical on both starts. Repeating the same text later in a session gives different outputs, so the steady rows mix output differences with speed.
-- Each request took 1 to 4 s, and single requests vary by about 10%: do not read differences of a few tok/s. These are one machine and one session. This card has 16 GB and the tables above use a 24 GB card, so the rows are not comparable.
+Thinking was enabled with the model sampling defaults: temperature 0.7 for Qwen, 1.0 for Gemma and 0.1 for LFM. Each value pools two independent API starts. On each start, the same three input texts were run twice, generating 128 tokens per request, including thinking: 1,536 generated tokens per model in total. Speed is total generated tokens divided by total decode time, excluding loading and prompt processing.
 
 ## Measured speed — NVIDIA GeForce RTX 5060 (8 GB)
 
@@ -203,7 +198,7 @@ The downloaded model files total about **15.0 GB**: **14.1 GB** for the language
 
 This is a layout diagram for the default GPU image mode, not a fixed-size partition. At each model load, TinyStrata starts and warms up the GPU vision encoder before loading the language model; its weights and warmed work buffers stay resident. It then allocates the initial KV pages, other weights and work buffers, and sizes the Expert cache from the remaining free VRAM. On Windows, it uses the smaller of CUDA's free-memory reading and the NVIDIA driver's free dedicated VRAM when both are available.
 
-Cache contents change as different Experts are used. With default KV growth, short conversations leave more VRAM for Experts; as the sequence grows, the Expert cache gives memory back to KV. New shorter requests can return unused KV pages to the Expert cache. `run-api.bat --kv-whole` allocates the whole KV capacity up front; `run-api.bat --kv-grow` restores growth, except on the AMD HIP backend, which always uses `--kv-whole` and rejects `--kv-grow` (see issue #1). Other applications can still consume VRAM.
+Cache contents change as different Experts are used. With default KV growth, short conversations leave more VRAM for Experts; as the sequence grows, the Expert cache gives memory back to KV. New shorter requests can return unused KV pages to the Expert cache. `run-api.bat --kv-whole` allocates the whole KV capacity up front; `run-api.bat --kv-grow` restores growth. Other applications can still consume VRAM.
 
 Expert placement normally targets 768 MiB of headroom. In Qwen’s `--kv-whole` mode, near-fit placement follows Strata and can release packed Q8 weight copies, shrink an Attention score buffer where present and reduce the target to 256 MiB so all main-model Experts fit in VRAM, while MTP Experts can run on the CPU. `--vram-reserve-mib N` fixes the reserve explicitly. This is a placement target, not a permanent guarantee of free memory.
 

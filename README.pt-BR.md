@@ -4,7 +4,7 @@
 
 **O TinyStrata é um mecanismo de inferência de alta velocidade em desenvolvimento para modelos MoE da classe 30B, exclusivo para Windows e acessível apenas por API.** Ele é voltado principalmente a PCs equipados com placas de vídeo comuns de **8–24 GB** de VRAM e com **32 GB de RAM do sistema ou menos**.
 
-**Há suporte a GPUs NVIDIA (CUDA). A rota experimental AMD HIP/ROCm usa KV INT8 e seu funcionamento foi verificado por um usuário da comunidade em uma Radeon RX 9070 XT.**
+**Há suporte a GPUs NVIDIA (CUDA). A rota experimental AMD HIP/ROCm usa KV INT8 e foi testada localmente em uma Radeon RX 9060 XT.**
 
 ## Por que desenvolvemos o TinyStrata?
 
@@ -140,22 +140,17 @@ FP8 nativo e INT8 foram medidos em **2026-10-27**.
 
 Os mesmos três textos foram executados duas vezes por configuração FP8/INT8 com os padrões de amostragem do modelo, gerando 128 tokens por solicitação, incluindo o raciocínio. A velocidade é o total de tokens dividido pelo tempo total de decodificação, sem carregamento nem processamento da entrada; o contexto indica capacidade de cache. As linhas com menos memória reservam 8, 12 ou 16 GiB na mesma GPU de 24 GB e usam o contexto dessa classe de VRAM; não são testes de GPUs físicas de 16/12/8 GB.
 
-## Velocidade medida — AMD Radeon RX 9070 XT (HIP, experimental)
+## Velocidade medida — AMD Radeon RX 9060 XT (HIP)
 
-Medido em **2026-10-24** em um PC com Windows 11 e uma Radeon RX 9070 XT (gfx1201, 16 GB, que também controla a tela), 94 GB de RAM e HIP SDK 7.2, com os mesmos arquivos Qwen3.6 UD-IQ3_XXS, Gemma 4 QAT Q4_0 (com o assistente MTP) e LFM2.5 Q4_K_M de cima. Tudo ficou nos padrões por meio de `run-api.bat`: o backend HIP adiciona `--kv-whole`, e a capacidade de contexto, o MTP e o codificador de imagens na GPU foram escolhidos automaticamente (o LFM2.5 não tem MTP nem Vision). O raciocínio estava ativado e a amostragem ficou nos padrões do modelo, exceto que cada solicitação usou `seed` 1234.
+Medido em **2026-10-27** no Windows 11 com uma Radeon RX 9060 XT (gfx1200, 16 GB, driver 32.0.32015.7029), um Ryzen 9 7945HX3D e 64 GB de RAM, usando os mesmos três arquivos de modelos acima. Foram ativados KV INT8 e crescimento VMM com granularidade de alocação de 4 MiB. A capacidade de contexto, os blocos de entrada e a distribuição dos especialistas foram automáticos. Qwen e Gemma usaram MTP 3 e um codificador de imagens residente na GPU; LFM não usou nenhum dos dois.
 
-| Modelo | Capacidade de contexto | Decodificação, primeiras 3 solicitações após a inicialização (duas inicializações) | Decodificação, estável (mediana de 21 solicitações) | Entrada de cerca de 2.7K tokens, primeira / seguintes |
-| --- | ---: | ---: | ---: | ---: |
-| Qwen3.6 UD-IQ3_XXS | 256K | 68.3 / 71.4 tok/s | 70.9 tok/s (62.2 a 78) | 514 e 485 / cerca de 1200 tok/s |
-| Gemma 4 QAT Q4_0 | 256K | 36.7 / 37.7 tok/s | 61.7 tok/s (50.6 a 71.9) | 1518 e 1849 / cerca de 1660 tok/s |
-| LFM2.5 Q4_K_M | 128K | 80.9 / 86.2 tok/s | 101.1 tok/s (94.8 a 110.6) | 2135 e 2214 / cerca de 2410 tok/s |
+| Modelo | Capacidade de contexto | Geração INT8 VMM |
+| --- | ---: | ---: |
+| Qwen3.6 UD-IQ3_XXS | 256K | 84.02 tok/s |
+| Gemma 4 QAT Q4_0 | 256K | 73.91 tok/s |
+| LFM2.5 Q4_K_M | 128K | 94.82 tok/s |
 
-Foram usados os mesmos três textos de cima, gerando 128 tokens, incluindo o raciocínio. A velocidade é o número de tokens gerados dividido pelo tempo de decodificação de `/v1/status`, sem carregamento nem processamento da entrada. «Primeiras 3 solicitações» são os três textos em ordem fixa logo depois de a API informar que o modelo estava carregado, em média, em duas inicializações separadas. «Estável» são as rodadas 4 a 10 de dez rodadas dos três textos em uma inicialização (21 solicitações), com a faixa entre parênteses. As linhas de entrada usam um texto de 2669 a 2676 tokens, enviado a cada vez com uma primeira linha diferente para que nada estivesse em cache: «primeira» é a primeira solicitação longa de cada inicialização e «seguintes» as três seguintes. O pico de VRAM do adaptador inteiro foi de 15.55 a 15.64 GiB de cerca de 15.92 GiB, incluindo cerca de 2.4 GiB usados por outros programas.
-
-- Nesta placa, o motor do Qwen falha com o KV crescente padrão (veja a issue #1); com `--kv-whole`, os três modelos rodaram sem erros e sem dumps do watchdog de GPU do Windows. Gemma 4 e LFM2.5 só foram executados nesta configuração.
-- O Qwen3.6 decodifica nas primeiras solicitações com a mesma velocidade do regime estável, dentro da variação entre execuções, mas sua primeira entrada longa é cerca de 2.4 vezes mais lenta, nas duas inicializações. Gemma 4 e LFM2.5 decodificam mais devagar nas primeiras solicitações (cerca de 37 contra 62 tok/s, e 81 a 86 contra 101 tok/s), nas duas inicializações. Os logs do motor mostram muita troca no cache de especialistas durante a primeira solicitação (745 trocas no Gemma 4, contra 164 a 372 depois) e um tamanho de VRAM que diminui ao longo das primeiras solicitações, de 8.5 para 4.7 GiB no Gemma 4 e de 11.6 para 10.1 GiB no LFM2.5. Não descobri por que ele diminui nem se isso explica a partida lenta.
-- Com a semente fixa, as saídas das três primeiras solicitações foram idênticas nas duas inicializações. Repetir o mesmo texto depois, na mesma sessão, dá saídas diferentes, então as linhas estáveis misturam diferenças de saída com velocidade.
-- Cada solicitação levou de 1 a 4 s e solicitações isoladas variam cerca de 10%: não interprete diferenças de poucos tok/s. É uma máquina e uma sessão. Esta placa tem 16 GB e as tabelas acima usam uma placa de 24 GB, portanto as linhas não são comparáveis.
+O raciocínio estava ativado com os padrões de amostragem de cada modelo: temperatura 0.7 para Qwen, 1.0 para Gemma e 0.1 para LFM. Cada valor reúne duas inicializações independentes da API. Em cada inicialização, os mesmos três textos foram executados duas vezes, gerando 128 tokens por solicitação, incluindo raciocínio: 1.536 tokens por modelo no total. A velocidade é o total de tokens gerados dividido pelo tempo total de decodificação, sem carregamento nem processamento da entrada.
 
 ## Velocidade medida — NVIDIA GeForce RTX 5060 (8 GB)
 
@@ -191,7 +186,7 @@ Os arquivos de modelo baixados somam cerca de **15.0 GB**: **14.1 GB** para o mo
 
 Este é um diagrama de distribuição no modo padrão de imagens na GPU, não uma partição de tamanho fixo. A cada carregamento do modelo, o TinyStrata inicia e aquece o codificador de visão da GPU antes de carregar o modelo de linguagem; seus pesos e buffers de trabalho aquecidos permanecem residentes. Em seguida, aloca as páginas KV iniciais, os demais pesos e os buffers de trabalho, e dimensiona o cache de especialistas conforme a VRAM livre restante. No Windows, usa o menor valor entre a memória livre informada pelo CUDA e a VRAM dedicada livre informada pelo driver NVIDIA, quando ambos estão disponíveis.
 
-O conteúdo do cache muda conforme os especialistas usados. Com o crescimento KV padrão, conversas curtas deixam mais VRAM para especialistas; conforme a sequência cresce, o cache de especialistas devolve memória ao KV. Novas solicitações mais curtas podem devolver páginas KV não utilizadas ao cache de especialistas. `run-api.bat --kv-whole` aloca toda a capacidade KV antecipadamente; `run-api.bat --kv-grow` restaura o crescimento, exceto no backend AMD HIP, que sempre usa `--kv-whole` e rejeita `--kv-grow` (veja a issue #1). Outros aplicativos ainda podem consumir VRAM.
+O conteúdo do cache muda conforme os especialistas usados. Com o crescimento KV padrão, conversas curtas deixam mais VRAM para especialistas; conforme a sequência cresce, o cache de especialistas devolve memória ao KV. Novas solicitações mais curtas podem devolver páginas KV não utilizadas ao cache de especialistas. `run-api.bat --kv-whole` aloca toda a capacidade KV antecipadamente; `run-api.bat --kv-grow` restaura o crescimento. Outros aplicativos ainda podem consumir VRAM.
 
 A alocação de especialistas normalmente visa uma margem de 768 MiB. No modo `--kv-whole` do Qwen, como no Strata, quando falta pouco para todos os especialistas do modelo principal caberem na VRAM, ela pode liberar as cópias empacotadas dos pesos Q8, reduzir um buffer de pontuações de Attention quando existente e diminuir a margem para 256 MiB; os especialistas MTP podem executar na CPU. `--vram-reserve-mib N` fixa a reserva explicitamente. Esse é um objetivo na alocação, não uma garantia permanente de memória livre.
 

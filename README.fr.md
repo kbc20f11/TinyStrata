@@ -4,7 +4,7 @@
 
 **TinyStrata est un moteur d’inférence rapide en cours de développement pour les modèles MoE de la classe 30B, exclusivement sous Windows et par API.** Il vise principalement les PC équipés de cartes graphiques grand public avec **8–24 GB de VRAM** et disposant de **32 GB de mémoire système au maximum**.
 
-**Les GPU NVIDIA (CUDA) sont pris en charge. Le chemin AMD HIP/ROCm expérimental utilise un cache KV INT8 et son fonctionnement a été vérifié par un membre de la communauté sur une Radeon RX 9070 XT.**
+**Les GPU NVIDIA (CUDA) sont pris en charge. Le chemin AMD HIP/ROCm expérimental utilise un cache KV INT8 et a été testé localement sur une Radeon RX 9060 XT.**
 
 ## Pourquoi nous développons TinyStrata
 
@@ -140,22 +140,17 @@ Le FP8 natif et INT8 ont été mesurés le **2026-10-27**.
 
 Les mêmes trois textes ont été exécutés deux fois par configuration FP8/INT8 avec les valeurs d’échantillonnage par défaut du modèle et 128 tokens générés par requête, raisonnement compris. La vitesse est le nombre total de tokens divisé par le temps total de décodage, hors chargement et traitement de l’entrée ; le contexte indique la capacité du cache. Les lignes avec moins de mémoire réservent 8, 12 ou 16 GiB sur le même GPU de 24 GB et utilisent le contexte de cette classe de VRAM ; ce ne sont pas des mesures de GPU physiques de 16/12/8 GB.
 
-## Vitesse mesurée — AMD Radeon RX 9070 XT (HIP, expérimental)
+## Vitesse mesurée — AMD Radeon RX 9060 XT (HIP)
 
-Mesuré le **2026-10-24** sur un PC Windows 11 avec une Radeon RX 9070 XT (gfx1201, 16 GB, qui pilote aussi l’affichage), 94 GB de RAM et HIP SDK 7.2, avec les mêmes fichiers Qwen3.6 UD-IQ3_XXS, Gemma 4 QAT Q4_0 (avec son assistant MTP) et LFM2.5 Q4_K_M que ci-dessus. Tout est resté aux valeurs par défaut via `run-api.bat` : le backend HIP ajoute `--kv-whole`, et la capacité de contexte, MTP et l’encodeur d’images sur GPU ont été choisis automatiquement (LFM2.5 n’a ni MTP ni Vision). Le raisonnement était activé et l’échantillonnage est resté aux valeurs du modèle, sauf que chaque requête utilisait `seed` 1234.
+Mesuré le **2026-10-27** sous Windows 11 avec une Radeon RX 9060 XT (gfx1200, 16 GB, pilote 32.0.32015.7029), un Ryzen 9 7945HX3D et 64 GB de RAM, avec les mêmes trois fichiers de modèles que ci-dessus. Le cache KV INT8 et sa croissance VMM, avec une granularité d’allocation de 4 MiB, étaient activés. La capacité de contexte, les blocs d’entrée et la répartition des experts étaient automatiques. Qwen et Gemma utilisaient MTP 3 et un encodeur d’images résident sur GPU ; LFM n’utilisait ni l’un ni l’autre.
 
-| Modèle | Capacité de contexte | Décodage, 3 premières requêtes après le démarrage (deux démarrages) | Décodage, régime établi (médiane de 21 requêtes) | Entrée d’environ 2.7K tokens, première / suivantes |
-| --- | ---: | ---: | ---: | ---: |
-| Qwen3.6 UD-IQ3_XXS | 256K | 68.3 / 71.4 tok/s | 70.9 tok/s (62.2 à 78) | 514 et 485 / environ 1200 tok/s |
-| Gemma 4 QAT Q4_0 | 256K | 36.7 / 37.7 tok/s | 61.7 tok/s (50.6 à 71.9) | 1518 et 1849 / environ 1660 tok/s |
-| LFM2.5 Q4_K_M | 128K | 80.9 / 86.2 tok/s | 101.1 tok/s (94.8 à 110.6) | 2135 et 2214 / environ 2410 tok/s |
+| Modèle | Capacité de contexte | Génération INT8 VMM |
+| --- | ---: | ---: |
+| Qwen3.6 UD-IQ3_XXS | 256K | 84.02 tok/s |
+| Gemma 4 QAT Q4_0 | 256K | 73.91 tok/s |
+| LFM2.5 Q4_K_M | 128K | 94.82 tok/s |
 
-Les mêmes trois textes que ci-dessus ont été utilisés, avec 128 tokens générés, raisonnement compris. La vitesse est le nombre de tokens générés divisé par le temps de décodage de `/v1/status`, hors chargement et traitement de l’entrée. « 3 premières requêtes » désigne les trois textes dans un ordre fixe, juste après que l’API a indiqué que le modèle était chargé, en moyenne, sur deux démarrages distincts. « Régime établi » désigne les tours 4 à 10 de dix tours des trois textes sur un démarrage (21 requêtes), avec la plage entre parenthèses. Les lignes d’entrée utilisent un texte de 2669 à 2676 tokens, envoyé à chaque fois avec une première ligne différente pour que rien ne soit en cache : « première » est la première requête longue de chaque démarrage, « suivantes » les trois suivantes. Le pic de VRAM de l’ensemble de l’adaptateur était de 15.55 à 15.64 GiB sur environ 15.92 GiB, dont environ 2.4 GiB utilisés par d’autres programmes.
-
-- Sur cette carte, le moteur Qwen plante avec le KV extensible par défaut (voir l’issue #1) ; avec `--kv-whole`, les trois modèles ont tourné sans erreur ni vidage du watchdog GPU de Windows. Gemma 4 et LFM2.5 n’ont été exécutés que dans cette configuration.
-- Qwen3.6 décode aussi vite sur les premières requêtes qu’en régime établi, dans la dispersion d’une exécution à l’autre, mais son premier long prompt est environ 2.4 fois plus lent, aux deux démarrages. Gemma 4 et LFM2.5 décodent plus lentement sur les premières requêtes (environ 37 contre 62 tok/s, et 81 à 86 contre 101 tok/s), aux deux démarrages. Les journaux du moteur montrent beaucoup d’échanges dans le cache d’experts pendant la première requête (745 échanges pour Gemma 4, contre 164 à 372 ensuite) et une taille de VRAM qui diminue au fil des premières requêtes, de 8.5 à 4.7 GiB pour Gemma 4 et de 11.6 à 10.1 GiB pour LFM2.5. Je n’ai pas trouvé pourquoi elle diminue ni si cela explique le démarrage lent.
-- Avec la graine fixée, les sorties des trois premières requêtes étaient identiques aux deux démarrages. Répéter le même texte plus tard dans une session donne des sorties différentes ; les lignes en régime établi mêlent donc différences de sortie et vitesse.
-- Chaque requête a pris de 1 à 4 s et une requête isolée varie d’environ 10 % : ne pas interpréter des écarts de quelques tok/s. C’est une machine et une session. Cette carte a 16 GB et les tableaux ci-dessus utilisent une carte de 24 GB ; les lignes ne sont donc pas comparables.
+Le raisonnement était activé avec les valeurs d’échantillonnage par défaut des modèles : température 0.7 pour Qwen, 1.0 pour Gemma et 0.1 pour LFM. Chaque valeur regroupe deux démarrages indépendants de l’API. À chaque démarrage, les mêmes trois textes ont été exécutés deux fois, avec 128 tokens générés par requête, raisonnement compris, soit 1 536 tokens par modèle au total. La vitesse est le nombre total de tokens divisé par le temps total de décodage, hors chargement et traitement de l’entrée.
 
 ## Vitesse mesurée — NVIDIA GeForce RTX 5060 (8 GB)
 
@@ -191,7 +186,7 @@ Les fichiers du modèle téléchargés représentent environ **15.0 GB** au tota
 
 Il s’agit d’un schéma de répartition avec le traitement d’image par défaut sur GPU, pas d’un partitionnement de taille fixe. À chaque chargement du modèle, TinyStrata démarre et préchauffe l’encodeur de vision sur le GPU avant de charger le modèle de langage ; ses poids et ses tampons de travail préchauffés restent résidents. Il alloue ensuite les premières pages KV, les autres poids et les tampons de travail, puis dimensionne le cache d’experts selon la VRAM libre restante. Sous Windows, il utilise la plus petite valeur entre la mémoire libre indiquée par CUDA et la VRAM dédiée libre indiquée par le pilote NVIDIA, lorsque les deux sont disponibles.
 
-Le contenu du cache change selon les experts utilisés. Avec la croissance KV par défaut, les conversations courtes laissent davantage de VRAM aux experts ; lorsque la séquence grandit, le cache d’experts rend de la mémoire à KV. Les nouvelles requêtes plus courtes peuvent rendre les pages KV inutilisées au cache d’experts. `run-api.bat --kv-whole` alloue toute la capacité KV dès le départ ; `run-api.bat --kv-grow` rétablit la croissance, sauf avec le backend AMD HIP, qui utilise toujours `--kv-whole` et refuse `--kv-grow` (voir l’issue #1). Les autres applications peuvent toujours consommer de la VRAM.
+Le contenu du cache change selon les experts utilisés. Avec la croissance KV par défaut, les conversations courtes laissent davantage de VRAM aux experts ; lorsque la séquence grandit, le cache d’experts rend de la mémoire à KV. Les nouvelles requêtes plus courtes peuvent rendre les pages KV inutilisées au cache d’experts. `run-api.bat --kv-whole` alloue toute la capacité KV dès le départ ; `run-api.bat --kv-grow` rétablit la croissance. Les autres applications peuvent toujours consommer de la VRAM.
 
 Le placement des experts vise normalement une marge de 768 MiB. Dans le mode `--kv-whole` de Qwen, comme dans Strata, lorsque tous les experts du modèle principal sont près de tenir en VRAM, il peut libérer les copies compactées des poids Q8, réduire un tampon de scores Attention s’il existe et ramener la marge à 256 MiB ; les experts MTP peuvent fonctionner sur le CPU. `--vram-reserve-mib N` fixe explicitement la réserve. Il s’agit d’un objectif au moment du placement, pas d’une garantie permanente de mémoire libre.
 
