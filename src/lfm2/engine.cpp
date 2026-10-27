@@ -11,6 +11,9 @@
 #include "strata/lfm2/vram.hpp"
 #include "strata/lfm2/kernels.hpp"
 #include "strata/lfm2/matvec.hpp"
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
+#include "strata/kernels/cpu/pool.hpp"
+#endif
 
 #include "ggml.h"
 
@@ -48,6 +51,18 @@ namespace {
 constexpr int kTile[] = {32, 128};
 constexpr int kClasses = (int) (sizeof(kTile) / sizeof(kTile[0])) + 1;
 
+bool hip_physical_workers_on() {
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
+    static const bool on = [] {
+        const char* value = std::getenv("STRATA_HIP_PHYSICAL_WORKERS");
+        return value == nullptr || (value[0] == '1' && value[1] == '\0');
+    }();
+    return on;
+#else
+    return false;
+#endif
+}
+
 int tile_class(int rows) {
     int c = 0;
     while (c < kClasses - 1 && rows > kTile[c]) ++c;
@@ -73,6 +88,19 @@ int usable_cpus() {
         }
     }
     if (quota > 0 && period > 0) n = std::min(n, std::max(1LL, quota / period));
+#endif
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
+    if (hip_physical_workers_on()) {
+#if defined(_WIN32)
+        DWORD_PTR process_mask = 0, system_mask = 0;
+        if (GetProcessAffinityMask(GetCurrentProcess(), &process_mask, &system_mask) && process_mask)
+            n = std::min(n, (long long) std::popcount((unsigned long long) process_mask));
+#endif
+        // The private pool's caller also works, so count every physical core.
+        // Explicit --cpu-threads bypasses this automatic choice in load().
+        const auto cores = strata::kernels::cpu::physical_cores(false);
+        if (!cores.empty()) n = std::min(n, (long long) cores.size());
+    }
 #endif
     return (int) std::max(n, 1LL);
 }
@@ -1851,6 +1879,9 @@ void Engine::load(const Options& o) {
         }
         workers_ = std::make_shared<Workers>(threads);
     }
+    if (hip_physical_workers_on())
+        std::fprintf(stderr, "tinystrata-lfm2: CPU expert workers=%d (%s)\n",
+                     workers_->threads(), opt_.threads > 0 ? "explicit --cpu-threads" : "automatic physical-core count");
     route_tmp_.assign((size_t) workers_->threads() * 2 * n_expert_, 0.f);
     start_swaps();
     reset();

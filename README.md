@@ -154,15 +154,15 @@ Each of the same three input texts was run twice per FP8/INT8 configuration, gen
 
 ## Measured speed — AMD Radeon RX 9060 XT (HIP)
 
-Measured on **2026-10-27** using Windows 11, a Radeon RX 9060 XT (gfx1200, 16 GB; driver 32.0.32015.7029), a Ryzen 9 7945HX3D and 64 GB of system RAM, with the same three model files as above. INT8 KV and VMM growth with a 4 MiB allocation quantum were enabled. Context capacity, input chunks and Expert placement were automatic. Qwen and Gemma used MTP 3 and a GPU-resident image encoder; LFM used neither.
+Measured on **2026-10-28** using Windows 11, a Radeon RX 9060 XT (gfx1200, 16 GB; driver 32.0.32015.7029), a Ryzen 9 7945HX3D and 64 GB of system RAM, with the same three model files as above. INT8 KV and VMM growth with a 4 MiB allocation quantum were enabled. Context capacity, input chunks and Expert placement were automatic. Qwen and Gemma used MTP 3 and a GPU-resident image encoder; LFM used neither.
 
 | Model | Context capacity | INT8 VMM generation |
 | --- | ---: | ---: |
-| Qwen3.6 UD-IQ3_XXS | 256K | 84.02 tok/s |
-| Gemma 4 QAT Q4_0 | 256K | 73.91 tok/s |
-| LFM2.5 Q4_K_M | 128K | 94.82 tok/s |
+| Qwen3.6 UD-IQ3_XXS | 256K | 85.79 tok/s |
+| Gemma 4 QAT Q4_0 | 256K | 80.77 tok/s |
+| LFM2.5 Q4_K_M | 128K | 94.87 tok/s |
 
-Thinking was enabled with the model sampling defaults: temperature 0.7 for Qwen, 1.0 for Gemma and 0.1 for LFM. Each value pools two independent API starts. On each start, the same three input texts were run twice, generating 128 tokens per request, including thinking: 1,536 generated tokens per model in total. Speed is total generated tokens divided by total decode time, excluding loading and prompt processing.
+Thinking was enabled with the model sampling defaults: temperature 0.7 for Qwen, 1.0 for Gemma and 0.1 for LFM. Each value pools four independent API starts. On each start, the same three input texts were run twice, generating 128 tokens per request, including thinking: 24 requests and 3,072 generated tokens per model in total. Speed is total generated tokens divided by total decode time, excluding loading and prompt processing.
 
 ## Measured speed — NVIDIA GeForce RTX 5060 (8 GB)
 

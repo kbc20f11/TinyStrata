@@ -168,7 +168,7 @@ if(TINYSTRATA_LFM2 AND (STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP))
   # Keep default CUDA arithmetic for the new path until model comparisons pass.
   target_compile_options(tinystrata_lfm2 PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
   target_link_libraries(tinystrata_lfm2 PRIVATE strata_artifact strata_kernels tinystrata_lfm2_mmq
-    ggml-cpu ggml-base ${_strata_gpu_runtime_target} ${_strata_gpu_blas_target} Threads::Threads)
+    strata_kernels_cpu ggml-cpu ggml-base ${_strata_gpu_runtime_target} ${_strata_gpu_blas_target} Threads::Threads)
   if(STRATA_ENABLE_CUDA)
     target_link_libraries(tinystrata_lfm2 PRIVATE CUDA::cuda_driver tinystrata_fp8_attention)
   endif()

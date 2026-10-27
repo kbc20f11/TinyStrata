@@ -142,15 +142,15 @@ Les mêmes trois textes ont été exécutés deux fois par configuration FP8/INT
 
 ## Vitesse mesurée — AMD Radeon RX 9060 XT (HIP)
 
-Mesuré le **2026-10-27** sous Windows 11 avec une Radeon RX 9060 XT (gfx1200, 16 GB, pilote 32.0.32015.7029), un Ryzen 9 7945HX3D et 64 GB de RAM, avec les mêmes trois fichiers de modèles que ci-dessus. Le cache KV INT8 et sa croissance VMM, avec une granularité d’allocation de 4 MiB, étaient activés. La capacité de contexte, les blocs d’entrée et la répartition des experts étaient automatiques. Qwen et Gemma utilisaient MTP 3 et un encodeur d’images résident sur GPU ; LFM n’utilisait ni l’un ni l’autre.
+Mesuré le **2026-10-28** sous Windows 11 avec une Radeon RX 9060 XT (gfx1200, 16 GB, pilote 32.0.32015.7029), un Ryzen 9 7945HX3D et 64 GB de RAM, avec les mêmes trois fichiers de modèles que ci-dessus. Le cache KV INT8 et sa croissance VMM, avec une granularité d’allocation de 4 MiB, étaient activés. La capacité de contexte, les blocs d’entrée et la répartition des experts étaient automatiques. Qwen et Gemma utilisaient MTP 3 et un encodeur d’images résident sur GPU ; LFM n’utilisait ni l’un ni l’autre.
 
 | Modèle | Capacité de contexte | Génération INT8 VMM |
 | --- | ---: | ---: |
-| Qwen3.6 UD-IQ3_XXS | 256K | 84.02 tok/s |
-| Gemma 4 QAT Q4_0 | 256K | 73.91 tok/s |
-| LFM2.5 Q4_K_M | 128K | 94.82 tok/s |
+| Qwen3.6 UD-IQ3_XXS | 256K | 85.79 tok/s |
+| Gemma 4 QAT Q4_0 | 256K | 80.77 tok/s |
+| LFM2.5 Q4_K_M | 128K | 94.87 tok/s |
 
-Le raisonnement était activé avec les valeurs d’échantillonnage par défaut des modèles : température 0.7 pour Qwen, 1.0 pour Gemma et 0.1 pour LFM. Chaque valeur regroupe deux démarrages indépendants de l’API. À chaque démarrage, les mêmes trois textes ont été exécutés deux fois, avec 128 tokens générés par requête, raisonnement compris, soit 1 536 tokens par modèle au total. La vitesse est le nombre total de tokens divisé par le temps total de décodage, hors chargement et traitement de l’entrée.
+Le raisonnement était activé avec les valeurs d’échantillonnage par défaut des modèles : température 0.7 pour Qwen, 1.0 pour Gemma et 0.1 pour LFM. Chaque valeur regroupe quatre démarrages indépendants de l’API. À chaque démarrage, les mêmes trois textes ont été exécutés deux fois, avec 128 tokens générés par requête, raisonnement compris, soit 24 requêtes et 3 072 tokens par modèle au total. La vitesse est le nombre total de tokens divisé par le temps total de décodage, hors chargement et traitement de l’entrée.
 
 ## Vitesse mesurée — NVIDIA GeForce RTX 5060 (8 GB)
 

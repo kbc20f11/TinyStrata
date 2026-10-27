@@ -142,15 +142,15 @@ Dieselben drei Eingabetexte wurden je zweimal pro FP8-/INT8-Konfiguration mit de
 
 ## Gemessene Geschwindigkeit — AMD Radeon RX 9060 XT (HIP)
 
-Gemessen am **2026-10-27** unter Windows 11 mit einer Radeon RX 9060 XT (gfx1200, 16 GB, Treiber 32.0.32015.7029), einem Ryzen 9 7945HX3D und 64 GB Arbeitsspeicher mit denselben drei Modelldateien wie oben. INT8-KV und VMM-Wachstum mit einer Zuweisungsgranularität von 4 MiB waren aktiviert. Kontextkapazität, Eingabeblöcke und Expertenplatzierung wurden automatisch gewählt. Qwen und Gemma nutzten MTP 3 und einen auf der GPU residenten Bildencoder; LFM nutzte beides nicht.
+Gemessen am **2026-10-28** unter Windows 11 mit einer Radeon RX 9060 XT (gfx1200, 16 GB, Treiber 32.0.32015.7029), einem Ryzen 9 7945HX3D und 64 GB Arbeitsspeicher mit denselben drei Modelldateien wie oben. INT8-KV und VMM-Wachstum mit einer Zuweisungsgranularität von 4 MiB waren aktiviert. Kontextkapazität, Eingabeblöcke und Expertenplatzierung wurden automatisch gewählt. Qwen und Gemma nutzten MTP 3 und einen auf der GPU residenten Bildencoder; LFM nutzte beides nicht.
 
 | Modell | Kontextkapazität | INT8-VMM-Generierung |
 | --- | ---: | ---: |
-| Qwen3.6 UD-IQ3_XXS | 256K | 84.02 tok/s |
-| Gemma 4 QAT Q4_0 | 256K | 73.91 tok/s |
-| LFM2.5 Q4_K_M | 128K | 94.82 tok/s |
+| Qwen3.6 UD-IQ3_XXS | 256K | 85.79 tok/s |
+| Gemma 4 QAT Q4_0 | 256K | 80.77 tok/s |
+| LFM2.5 Q4_K_M | 128K | 94.87 tok/s |
 
-Thinking war aktiviert, mit den Sampling-Standardwerten der Modelle: Temperatur 0.7 für Qwen, 1.0 für Gemma und 0.1 für LFM. Jeder Wert fasst zwei unabhängige API-Starts zusammen. Pro Start wurden dieselben drei Eingabetexte jeweils zweimal mit 128 generierten Tokens einschließlich Thinking ausgeführt, insgesamt 1.536 Tokens pro Modell. Die Geschwindigkeit ist die gesamte Tokenzahl geteilt durch die gesamte Dekodierzeit, ohne Laden und Eingabeverarbeitung.
+Thinking war aktiviert, mit den Sampling-Standardwerten der Modelle: Temperatur 0.7 für Qwen, 1.0 für Gemma und 0.1 für LFM. Jeder Wert fasst vier unabhängige API-Starts zusammen. Pro Start wurden dieselben drei Eingabetexte jeweils zweimal mit 128 generierten Tokens einschließlich Thinking ausgeführt, insgesamt 24 Anfragen und 3.072 Tokens pro Modell. Die Geschwindigkeit ist die gesamte Tokenzahl geteilt durch die gesamte Dekodierzeit, ohne Laden und Eingabeverarbeitung.
 
 ## Gemessene Geschwindigkeit — NVIDIA GeForce RTX 5060 (8 GB)
 

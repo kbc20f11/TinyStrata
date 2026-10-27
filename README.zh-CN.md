@@ -142,15 +142,15 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 ## 实测速度 — AMD Radeon RX 9060 XT（HIP）
 
-于 **2026-10-27** 在 Windows 11、Radeon RX 9060 XT（gfx1200，16 GB，驱动 32.0.32015.7029）、Ryzen 9 7945HX3D 和 64 GB 系统内存上，使用与上文相同的三个模型文件进行测量。启用 INT8 KV 和以 4 MiB 为分配粒度的 KV 自动扩展（VMM）；上下文容量、输入分块和专家放置均自动选择。Qwen 和 Gemma 使用 MTP 3 及常驻 GPU 的图像编码器，LFM 不使用这两项。
+于 **2026-10-28** 在 Windows 11、Radeon RX 9060 XT（gfx1200，16 GB，驱动 32.0.32015.7029）、Ryzen 9 7945HX3D 和 64 GB 系统内存上，使用与上文相同的三个模型文件进行测量。启用 INT8 KV 和以 4 MiB 为分配粒度的 KV 自动扩展（VMM）；上下文容量、输入分块和专家放置均自动选择。Qwen 和 Gemma 使用 MTP 3 及常驻 GPU 的图像编码器，LFM 不使用这两项。
 
 | 模型 | 上下文容量 | INT8 VMM 生成 |
 | --- | ---: | ---: |
-| Qwen3.6 UD-IQ3_XXS | 256K | 84.02 tok/s |
-| Gemma 4 QAT Q4_0 | 256K | 73.91 tok/s |
-| LFM2.5 Q4_K_M | 128K | 94.82 tok/s |
+| Qwen3.6 UD-IQ3_XXS | 256K | 85.79 tok/s |
+| Gemma 4 QAT Q4_0 | 256K | 80.77 tok/s |
+| LFM2.5 Q4_K_M | 128K | 94.87 tok/s |
 
-启用思考并使用模型默认采样参数：Qwen 温度 0.7、Gemma 1.0、LFM 0.1。每个数值汇总两次独立 API 启动的结果；每次启动后，对相同的三个输入各运行两次，每个请求生成 128 个含思考的 token，每个模型合计 1,536 个生成 token。速度为总生成 token 数除以总解码时间，不包含加载和输入处理时间。
+启用思考并使用模型默认采样参数：Qwen 温度 0.7、Gemma 1.0、LFM 0.1。每个数值汇总四次独立 API 启动的结果；每次启动后，对相同的三个输入各运行两次，每个请求生成 128 个含思考的 token，每个模型合计 24 个请求、3,072 个生成 token。速度为总生成 token 数除以总解码时间，不包含加载和输入处理时间。
 
 ## 实测速度 — NVIDIA GeForce RTX 5060（8 GB）
 

@@ -142,15 +142,15 @@ Los mismos tres textos se ejecutaron dos veces por configuración FP8/INT8 con l
 
 ## Velocidad medida — AMD Radeon RX 9060 XT (HIP)
 
-Medido el **2026-10-27** en Windows 11 con una Radeon RX 9060 XT (gfx1200, 16 GB, controlador 32.0.32015.7029), un Ryzen 9 7945HX3D y 64 GB de RAM, usando los mismos tres archivos de modelos de arriba. Se activaron KV INT8 y su crecimiento VMM con una granularidad de asignación de 4 MiB. La capacidad de contexto, los bloques de entrada y la distribución de expertos fueron automáticos. Qwen y Gemma usaron MTP 3 y un codificador de imágenes residente en GPU; LFM no usó ninguno de los dos.
+Medido el **2026-10-28** en Windows 11 con una Radeon RX 9060 XT (gfx1200, 16 GB, controlador 32.0.32015.7029), un Ryzen 9 7945HX3D y 64 GB de RAM, usando los mismos tres archivos de modelos de arriba. Se activaron KV INT8 y su crecimiento VMM con una granularidad de asignación de 4 MiB. La capacidad de contexto, los bloques de entrada y la distribución de expertos fueron automáticos. Qwen y Gemma usaron MTP 3 y un codificador de imágenes residente en GPU; LFM no usó ninguno de los dos.
 
 | Modelo | Capacidad de contexto | Generación INT8 VMM |
 | --- | ---: | ---: |
-| Qwen3.6 UD-IQ3_XXS | 256K | 84.02 tok/s |
-| Gemma 4 QAT Q4_0 | 256K | 73.91 tok/s |
-| LFM2.5 Q4_K_M | 128K | 94.82 tok/s |
+| Qwen3.6 UD-IQ3_XXS | 256K | 85.79 tok/s |
+| Gemma 4 QAT Q4_0 | 256K | 80.77 tok/s |
+| LFM2.5 Q4_K_M | 128K | 94.87 tok/s |
 
-El razonamiento estaba activado con los valores de muestreo predeterminados de cada modelo: temperatura 0.7 para Qwen, 1.0 para Gemma y 0.1 para LFM. Cada valor reúne dos arranques independientes de la API. En cada arranque se ejecutaron dos veces los mismos tres textos, generando 128 tokens por solicitud, incluido el razonamiento: 1.536 tokens por modelo en total. La velocidad es el total de tokens generados dividido por el tiempo total de decodificación, sin carga ni procesamiento de entrada.
+El razonamiento estaba activado con los valores de muestreo predeterminados de cada modelo: temperatura 0.7 para Qwen, 1.0 para Gemma y 0.1 para LFM. Cada valor reúne cuatro arranques independientes de la API. En cada arranque se ejecutaron dos veces los mismos tres textos, generando 128 tokens por solicitud, incluido el razonamiento: 24 solicitudes y 3.072 tokens por modelo en total. La velocidad es el total de tokens generados dividido por el tiempo total de decodificación, sin carga ni procesamiento de entrada.
 
 ## Velocidad medida — NVIDIA GeForce RTX 5060 (8 GB)
 

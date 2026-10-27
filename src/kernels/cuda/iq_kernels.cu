@@ -2045,7 +2045,7 @@ size_t native_expert_scratch_bytes(int64_t cap, int64_t n_ff) {
 
 // The AMD layouts below (STRATA_EXP_MODE) also build for CUDA: Volta takes mode 8 by default (exp_mode), every
 // other CUDA card keeps mode 0, the CUDA layout above.
-#if defined(STRATA_HIP_GFX906) || !defined(__HIPCC__)
+#if 1  // Compile for CUDA and every HIP target; exp_mode() chooses the runtime default.
 #define STRATA_EXP_LAYOUTS 1
 #else
 #define STRATA_EXP_LAYOUTS 0
@@ -2616,6 +2616,10 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
         }
         __syncthreads();
         if (warp < cn) {   // swiglu_entries_kernel + quantize_q8_1_kernel, one block of 32 h values per entry
+#if defined(__HIPCC__)
+#pragma clang fp contract(off)
+#endif
+            // As swiglu_q8_1_entries_kernel: round the product before the sum.
             const float gg = res[warp][lane], uu = res[warp][32 + lane];
             const float xi = (gg / (1.0f + __expf(-gg))) * uu;
             float amax = fabsf(xi), sum = xi;
@@ -2645,8 +2649,28 @@ int exp_mode() {
     // (V100-SXM2, a verify window's VRAM call: 227 -> 159 us); every other CUDA card keeps the CUDA layout
     static int per_dev[64];   // 0 unknown, else mode + 1
     int dev = 0;
-    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) return kExpModeDefault;
+    const cudaError_t device_status = cudaGetDevice(&dev);
+    if (device_status != cudaSuccess || dev < 0 || dev >= 64) {
+#if defined(__HIPCC__) || defined(STRATA_USE_HIP)
+        if (device_status != cudaSuccess) (void) cudaGetLastError();
+#endif
+        return kExpModeDefault;
+    }
     if (!per_dev[dev]) {
+#if defined(__HIPCC__) || defined(STRATA_USE_HIP)
+        // Host defaults use the current device, not device-pass __gfx* macros.
+        // A failed optional architecture probe keeps the portable default.
+        cudaDeviceProp properties{};
+        if (cudaGetDeviceProperties(&properties, dev) == cudaSuccess) {
+            const int mode = gfx_arch_is_gfx12(properties.gcnArchName) ? 8 : kExpModeDefault;
+            per_dev[dev] = 1 + mode;
+            if (mode == 8)
+                std::fprintf(stderr, "strata: automatic Expert layout mode 8 for %s\n", properties.gcnArchName);
+        } else {
+            (void) cudaGetLastError();
+            per_dev[dev] = 1 + kExpModeDefault;
+        }
+#else
         int major = 0, minor = 0;
         cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
         cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
@@ -2661,6 +2685,7 @@ int exp_mode() {
         const char* sm61 = std::getenv("STRATA_SM61_TABLE");
         const bool p40 = major == 6 && minor == 1 && (sm61 == nullptr || std::atoi(sm61) != 0);
         per_dev[dev] = 1 + ((major == 7 && minor == 0 && sm70 != nullptr && std::atoi(sm70) != 0) || p100 || p40 ? 8 : kExpModeDefault);
+#endif
     }
     return per_dev[dev] - 1;
 #endif

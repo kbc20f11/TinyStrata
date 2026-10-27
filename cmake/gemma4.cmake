@@ -36,7 +36,7 @@ endif()
 target_include_directories(tinystrata_gemma4 PRIVATE include third_party/ggml "${_gemma_gg}/include")
 target_compile_options(tinystrata_gemma4 PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda>)
 target_link_libraries(tinystrata_gemma4 PRIVATE strata_artifact strata_kernels tinystrata_gemma4_mmq
-  ggml-cpu ggml-base ${_strata_gpu_runtime_target} ${_strata_gpu_blas_target} Threads::Threads)
+  strata_kernels_cpu ggml-cpu ggml-base ${_strata_gpu_runtime_target} ${_strata_gpu_blas_target} Threads::Threads)
 if(STRATA_ENABLE_CUDA)
   target_link_libraries(tinystrata_gemma4 PRIVATE CUDA::cuda_driver tinystrata_fp8_attention)
 endif()
