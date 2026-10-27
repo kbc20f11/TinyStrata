@@ -99,7 +99,7 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 ## 实测速度 — Qwen3.6
 
-于 **2026-10-27** 在 Windows 上测量，使用 RTX PRO 4000 Blackwell SFF Edition（24 GB）、Ryzen 9 7945HX3D、64 GB 系统内存和固定的 Unsloth MTP UD-IQ3_XXS 模型。图像编码器常驻 GPU，通过 API 输入文本；启用思考、模型默认采样设置（温度 0.7）及 MTP 3。输入分块和专家分配自动选择，上下文容量按各显存档位设置。混合 CUDA Graph 保持默认关闭，全部专家常驻 GPU 时的常规 CUDA Graph 保持启用。
+于 **2026-10-27** 在 Windows 上测量，使用 RTX PRO 4000 Blackwell SFF Edition（24 GB）、Ryzen 9 7945HX3D、64 GB 系统内存和固定的 Unsloth MTP UD-IQ3_XXS 模型。图像编码器常驻 GPU，通过 API 进行测量；启用思考、模型默认采样设置（温度 0.7）及 MTP 3。输入分块和专家分配自动选择，上下文容量按各显存档位设置。混合 CUDA Graph 保持默认关闭，全部专家常驻 GPU 时的常规 CUDA Graph 保持启用。
 
 | 可用内存条件 | 上下文容量 | INT8 生成 | 原生 FP8 生成 | 备注 |
 | --- | ---: | ---: | ---: | --- |
@@ -112,7 +112,7 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 ## 实测速度 — Gemma 4
 
-在同一台 Windows PC（64 GB 系统内存）上使用 Gemma 4 26B-A4B-it QAT Q4_0 及匹配的 QAT MTP 助手测量。图像编码器常驻 GPU，通过 API 输入文本，启用 MTP 3、CUDA Graph 及模型自身的默认思考和采样设置；上下文容量按各显存档位设置，输入分块及专家分配自动选择。
+在同一台 Windows PC（64 GB 系统内存）上使用 Gemma 4 26B-A4B-it QAT Q4_0 及匹配的 QAT MTP 助手测量。图像编码器常驻 GPU，通过 API 进行测量，启用 MTP 3、CUDA Graph 及模型自身的默认思考和采样设置；上下文容量按各显存档位设置，输入分块及专家分配自动选择。
 
 原生 FP8 和 INT8 于 **2026-10-27** 测量。
 

@@ -111,7 +111,7 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 ## 実測速度 — Qwen3.6
 
-**2026-10-27** に Windows、RTX PRO 4000 Blackwell SFF Edition（24 GB）、Ryzen 9 7945HX3D、システム RAM 64 GB、固定の Unsloth MTP UD-IQ3_XXS モデルで計測しました。画像エンコーダを GPU に常駐させたテキスト API 入力で、思考・モデル既定のサンプリング（温度 0.7）・MTP 3 を有効にしています。入力チャンクとエキスパート配置は自動選択、コンテキスト容量は各 VRAM クラスに合わせた設定です。ハイブリッド CUDA Graph は既定の無効設定、通常の全 GPU 実行時の CUDA Graph は有効です。
+**2026-10-27** に Windows、RTX PRO 4000 Blackwell SFF Edition（24 GB）、Ryzen 9 7945HX3D、システム RAM 64 GB、固定の Unsloth MTP UD-IQ3_XXS モデルで計測しました。画像エンコーダを GPU に常駐させた状態で API を使用し、思考・モデル既定のサンプリング（温度 0.7）・MTP 3 を有効にしています。入力チャンクとエキスパート配置は自動選択、コンテキスト容量は各 VRAM クラスに合わせた設定です。ハイブリッド CUDA Graph は既定の無効設定、通常の全 GPU 実行時の CUDA Graph は有効です。
 
 | VRAM 条件 | コンテキスト容量 | INT8 生成 | ネイティブ FP8 生成 | 備考 |
 | --- | ---: | ---: | ---: | --- |
@@ -124,7 +124,7 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 ## 実測速度 — Gemma 4
 
-同じ Windows PC（システム RAM 64 GB）で、Gemma 4 26B-A4B-it QAT Q4_0 と対応する QAT MTP アシスタントを使って計測しました。画像エンコーダを GPU に常駐させたテキスト API 入力で、MTP 3・CUDA Graph・モデルごとの既定の思考とサンプリングを有効にし、コンテキスト容量は各 VRAM クラスに合わせ、入力チャンクとエキスパート配置は自動選択しています。
+同じ Windows PC（システム RAM 64 GB）で、Gemma 4 26B-A4B-it QAT Q4_0 と対応する QAT MTP アシスタントを使って計測しました。画像エンコーダを GPU に常駐させた状態で API を使用し、MTP 3・CUDA Graph・モデルごとの既定の思考とサンプリングを有効にし、コンテキスト容量は各 VRAM クラスに合わせ、入力チャンクとエキスパート配置は自動選択しています。
 
 ネイティブ FP8・INT8 は **2026-10-27** の測定値です。
 
