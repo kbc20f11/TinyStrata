@@ -1181,6 +1181,9 @@ struct Engine {
     bool kv_grow = true, grow_hybrid = false;
     int64_t kv_committed_rows = 0;
     size_t kv_logical_bytes = 0;
+    // Declared before every attached Range: reverse member destruction releases
+    // their mappings first, then the pool's remaining unmapped physical handles.
+    std::unique_ptr<strata::qwen35::kv_grow::PagePool> kv_page_pool;
     struct KvPlane {
         std::unique_ptr<strata::qwen35::kv_grow::Range> range;
         size_t row_bytes;
@@ -1310,6 +1313,13 @@ struct Engine {
             std::fprintf(stderr, "tinystrata: KV growth unavailable on this device/build; using whole KV allocation\n");
             kv_grow = false;
         }
+#if defined(_WIN32) && (defined(STRATA_USE_HIP) || defined(__HIPCC__))
+        if (kv_grow) {
+            kv_page_pool = std::make_unique<strata::qwen35::kv_grow::PagePool>();
+            std::fprintf(stderr, "tinystrata: Windows HIP VMM page pool enabled (%zu MiB backing quantum)\n",
+                         strata::qwen35::kv_grow::api().gran >> 20);
+        }
+#endif
         tmax = std::max(tmax_, kVerify);
         const auto& g = m->g;
 #if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
@@ -1454,7 +1464,7 @@ struct Engine {
                 }
                 KvPlane p;
                 p.row_bytes = bytes_per_row;
-                p.range = std::make_unique<strata::qwen35::kv_grow::Range>();
+                p.range = std::make_unique<strata::qwen35::kv_grow::Range>(kv_page_pool.get());
                 if (!p.range->reserve(bytes)) {
                     std::fprintf(stderr, "tinystrata: cannot reserve stable KV virtual addresses\n");
                     std::exit(1);
@@ -2453,20 +2463,36 @@ struct Engine {
         CK(cudaDeviceSynchronize()); // includes prompt's copy stream and slot replacements
         size_t free = 0, total = 0;
         CK(resident_mem_info(&free, &total));
-        if (grow_hybrid && more + vram_reserve > free)
+        if (kv_page_pool) {
+            // Windows HIP need not report released VMM backing as newly free.
+            // Lend owned live pages instead. Only genuinely fresh allocation
+            // competes with free VRAM/headroom; a transfer adds no physical use.
+            const size_t fresh = kv_page_pool->fresh_bytes(more);
+            const size_t room = free > vram_reserve ? free - vram_reserve : 0;
+            if (grow_hybrid && fresh > room) shrink_grow_cache(fresh - room);
+        } else if (grow_hybrid && more + vram_reserve > free) {
             shrink_grow_cache(more + vram_reserve - free);
+        }
         CK(resident_mem_info(&free, &total));
-        if (more > free) {
-            std::fprintf(stderr, "tinystrata: KV cannot grow to %lld rows: %zu MiB needed, %zu MiB dedicated VRAM free\n",
-                         (long long) rows, more >> 20, free >> 20);
+        const size_t fresh = kv_page_pool ? kv_page_pool->fresh_bytes(more) : more;
+        const size_t fresh_room = kv_page_pool && grow_hybrid
+                                      ? (free > vram_reserve ? free - vram_reserve : 0) : free;
+        if (fresh > fresh_room) {
+            std::fprintf(stderr, "tinystrata: KV cannot grow to %lld rows: %zu MiB fresh backing needed "
+                                 "(%zu MiB mapped demand), %zu MiB available for fresh allocation\n",
+                         (long long) rows, fresh >> 20, more >> 20, fresh_room >> 20);
             std::exit(1);
         }
+        const size_t reused = more - fresh;
         for (const auto& p : kv_planes) if (!p.range->map(kv_mask(p, rows), st)) {
             std::fprintf(stderr, "tinystrata: mapping physical KV pages failed\n");
             std::exit(1);
         }
         CK(cudaStreamSynchronize(st)); // reused physical pages are zero before any graph reads them
         kv_committed_rows = rows;
+        if (kv_page_pool)
+            std::fprintf(stderr, "tinystrata: KV backing transfer: reused=%zu MiB fresh=%zu MiB spare=%zu MiB\n",
+                         reused >> 20, fresh >> 20, kv_page_pool->bytes() >> 20);
         if (m->hybrid)
             std::fprintf(stderr, "tinystrata: KV grown to %lld/%d rows, %zu MiB physically committed\n",
                          (long long) rows, ctx, kv_mapped_bytes() >> 20);
@@ -2516,7 +2542,8 @@ struct Engine {
                 freed += before - r->mapped();
             }
         }
-        std::fprintf(stderr, "tinystrata: Expert cache returned %zu MiB for %s\n", freed >> 20, purpose);
+        std::fprintf(stderr, "tinystrata: Expert cache returned %zu MiB for %s%s\n", freed >> 20, purpose,
+                     kv_page_pool ? " (live backing retained for KV reuse)" : "");
         return freed;
     }
     bool native_stream_ready() const { return native_stream && (!stage_loan || stage_loan_active); }
@@ -2735,13 +2762,19 @@ struct Engine {
             while (L.n_slots < grow_max_slots[li]) {
                 const auto want = r->prefix((size_t) (L.n_slots + 1) * L.stride + kMmqTail);
                 const size_t need = r->need(want);
-                if (need > room) break;
+                const size_t fresh = kv_page_pool ? kv_page_pool->fresh_bytes(need) : need;
+                if (fresh > room) break;
                 int best = -1;
                 for (int e = 0; e < (int) H.slot_of.size(); ++e)
                     if (H.slot_of[(size_t) e] < 0 && (best < 0 || H.score[(size_t) e] > H.score[(size_t) best])) best = e;
                 if (best < 0) break;
-                if (!r->map(want, st)) break;
-                room -= need;
+                if (!r->map(want, st)) {
+                    // A partial map can already own some fresh pages. Charge
+                    // the whole plan conservatively before trying another layer.
+                    if (kv_page_pool) room -= fresh;
+                    break;
+                }
+                room -= fresh;
                 const int slot = L.n_slots++;
                 CK(cudaMemcpyAsync(L.blobs + (size_t) slot * L.stride, L.hblobs + (size_t) best * L.stride,
                                    L.L.bytes, cudaMemcpyHostToDevice, st));
@@ -2773,6 +2806,7 @@ struct Engine {
                     "expert_slots=%d expert_cache_bytes=%zu expert_cache_mib=%zu expert_arena_bytes=%zu\n",
                     kv_grow ? 1 : 0, kv_logical_bytes, kv_mapped_bytes(), (long long) kv_committed_rows,
                     slots, bytes, bytes >> 20, arena);
+        if (kv_page_pool) std::printf("INFO hip_vmm_spare_bytes=%zu\n", kv_page_pool->bytes());
     }
 
     void shrink_att(size_t floats) {
@@ -3387,7 +3421,7 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         for (int64_t e = 0; e < ne; ++e) expert_blob(L, e, L.hblobs + (size_t) e * L.stride);
         L.n_slots = S;
         if (E.grow_hybrid) {
-            auto r = std::make_unique<strata::qwen35::kv_grow::Range>();
+            auto r = std::make_unique<strata::qwen35::kv_grow::Range>(E.kv_page_pool.get());
             if (!r->reserve(L.stride * (size_t) ne + kMmqTail) ||
                 !r->map(r->prefix(S > 0 ? L.stride * (size_t) S + kMmqTail : 0), E.st)) {
                 err = "cannot commit the growable Expert cache";

@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 namespace strata::qwen35::kv_grow {
@@ -97,24 +99,78 @@ struct Api {
 };
 inline const Api& api() { static const Api a; return a; }
 
+// Strata's program/generate.cpp kvg_ensure/kvg_trim transfers live VMM chunks
+// between Expert and KV addresses through kvg.spare (Niko1221 and contributors,
+// MIT). Keeping the handle alive also avoids Windows HIP release/recreate
+// accounting: a page can serve KV without requiring newly reported free VRAM.
+// The Engine owns this pool, outlives every attached Range, and serializes all
+// mutations after draining the streams which could still use a returned page.
+class PagePool {
+    std::vector<CUmemGenericAllocationHandle> spare_;
+public:
+    PagePool() = default;
+    PagePool(const PagePool&) = delete;
+    PagePool& operator=(const PagePool&) = delete;
+    [[noreturn]] static void failed(const char* operation) {
+        std::fprintf(stderr, "tinystrata: HIP VMM page ownership failed during %s; stopping before another GPU access\n",
+                     operation);
+        std::abort();
+    }
+    ~PagePool() {
+        // Attached Ranges have already been destroyed. These handles have no
+        // mappings or pending readers, and each is released exactly once here.
+        for (auto h : spare_)
+            if (api().release(h) != CUDA_SUCCESS) failed("releasing a spare page");
+    }
+    size_t bytes() const { return spare_.size() * api().gran; }
+    size_t fresh_bytes(size_t mapped_need) const {
+        const size_t reusable = bytes();
+        return mapped_need > reusable ? mapped_need - reusable : 0;
+    }
+    // Reserve before unmapping anything, so a host allocation failure cannot
+    // strand a live physical handle between its Range and the pool.
+    bool prepare_return(size_t count) {
+        try { spare_.reserve(spare_.size() + count); }
+        catch (...) { return false; }
+        return true;
+    }
+    CUmemGenericAllocationHandle take() {
+        if (spare_.empty()) return 0;
+        const auto h = spare_.back();
+        spare_.pop_back();
+        return h;
+    }
+    void give(CUmemGenericAllocationHandle h) {
+        // A trim reserved its returns; a failed borrowed map restores the slot
+        // that take() just removed. No allocating push is allowed after unmap.
+        if (!h || spare_.size() == spare_.capacity()) failed("returning an unowned page");
+        spare_.push_back(h);
+    }
+};
+
 class Range {
     CUdeviceptr base_ = 0;
     std::vector<CUmemGenericAllocationHandle> pages_;
+    PagePool* pool_ = nullptr;
 public:
-    Range() = default;
+    explicit Range(PagePool* pool = nullptr) : pool_(pool) {}
     Range(const Range&) = delete;
     Range& operator=(const Range&) = delete;
     ~Range() {
         if (!base_) return;
         // A partially initialized range may still have queued zeroing/copies.
         // This also covers local ranges destroyed before Engine cleanup.
-        (void) cudaDeviceSynchronize();
+        const auto drained = cudaDeviceSynchronize();
+        if (pool_ && drained != cudaSuccess) PagePool::failed("draining a Range destructor");
         const auto& a = api();
         for (size_t i = 0; i < pages_.size(); ++i) if (pages_[i]) {
-            a.unmap(base_ + i * a.gran, a.gran);
-            a.release(pages_[i]);
+            const auto unmap = a.unmap(base_ + i * a.gran, a.gran);
+            if (pool_ && unmap != CUDA_SUCCESS) PagePool::failed("unmapping a Range destructor");
+            const auto release = a.release(pages_[i]);
+            if (pool_ && release != CUDA_SUCCESS) PagePool::failed("releasing a Range destructor");
         }
-        a.free_va(base_, pages_.size() * a.gran);
+        const auto free_va = a.free_va(base_, pages_.size() * a.gran);
+        if (pool_ && free_va != CUDA_SUCCESS) PagePool::failed("freeing a Range address");
     }
     bool reserve(size_t bytes) {
         const auto& a = api();
@@ -158,24 +214,49 @@ public:
         access.location = prop.location;
         access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
         for (size_t i = 0; i < pages_.size(); ++i) if (want[i] && !pages_[i]) {
-            CUmemGenericAllocationHandle h = 0;
-            if (a.create(&h, a.gran, &prop, 0) != CUDA_SUCCESS) return false;
+            CUmemGenericAllocationHandle h = pool_ ? pool_->take() : 0;
+            const bool borrowed = h != 0;
+            if (!h && a.create(&h, a.gran, &prop, 0) != CUDA_SUCCESS) return false;
+            const auto give_back = [&] {
+                if (borrowed) pool_->give(h);
+                else if (a.release(h) != CUDA_SUCCESS && pool_) PagePool::failed("rolling back a fresh page");
+            };
             const CUdeviceptr p = base_ + i * a.gran;
-            if (a.map(p, a.gran, 0, h, 0) != CUDA_SUCCESS) { a.release(h); return false; }
+            if (a.map(p, a.gran, 0, h, 0) != CUDA_SUCCESS) { give_back(); return false; }
             if (a.access(p, a.gran, &access, 1) != CUDA_SUCCESS) {
-                a.unmap(p, a.gran); a.release(h); return false;
+                const auto unmap = a.unmap(p, a.gran);
+                // Do not put a possibly still mapped handle back into the pool.
+                if (pool_ && unmap != CUDA_SUCCESS) PagePool::failed("rolling back page access");
+                give_back();
+                return false;
             }
             pages_[i] = h;
-            if (cudaMemsetAsync(reinterpret_cast<void*>(p), 0, a.gran, stream) != cudaSuccess) return false;
+            if (cudaMemsetAsync(reinterpret_cast<void*>(p), 0, a.gran, stream) != cudaSuccess) {
+                if (pool_) {
+                    // A borrowed page contains an old Expert/KV payload. Never
+                    // expose it as a newly zeroed KV prefix after a failed fill.
+                    if (cudaDeviceSynchronize() != cudaSuccess) PagePool::failed("draining a failed page fill");
+                    if (a.unmap(p, a.gran) != CUDA_SUCCESS) PagePool::failed("rolling back a page fill");
+                    pages_[i] = 0;
+                    give_back();
+                }
+                return false;
+            }
         }
         return true;
     }
     // The caller must have drained every stream that could access these pages.
     bool trim(const std::vector<uint8_t>& want) {
         const auto& a = api();
+        if (pool_) {
+            size_t count = 0;
+            for (size_t i = 0; i < pages_.size(); ++i) count += !want[i] && pages_[i];
+            if (!pool_->prepare_return(count)) return false;
+        }
         for (size_t i = 0; i < pages_.size(); ++i) if (!want[i] && pages_[i]) {
             if (a.unmap(base_ + i * a.gran, a.gran) != CUDA_SUCCESS) return false;
-            a.release(pages_[i]);
+            if (pool_) pool_->give(pages_[i]);
+            else a.release(pages_[i]);
             pages_[i] = 0;
         }
         return true;
