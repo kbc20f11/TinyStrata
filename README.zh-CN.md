@@ -99,14 +99,14 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 ## 实测速度 — Qwen3.6
 
-于 **2026-10-21** 在 Windows 上测量，使用 RTX PRO 4000 Blackwell SFF Edition（24 GB）、Ryzen 9 7945HX3D、64 GB 系统内存和固定的 Unsloth MTP UD-IQ3_XXS 模型。图像编码器常驻 GPU，通过 API 输入文本；启用思考、模型默认采样设置（温度 0.7）及 MTP 3。输入分块和专家分配自动选择，上下文容量按各显存档位设置。混合 CUDA Graph 保持默认关闭，全部专家常驻 GPU 时的常规 CUDA Graph 保持启用。
+于 **2026-10-27** 在 Windows 上测量，使用 RTX PRO 4000 Blackwell SFF Edition（24 GB）、Ryzen 9 7945HX3D、64 GB 系统内存和固定的 Unsloth MTP UD-IQ3_XXS 模型。图像编码器常驻 GPU，通过 API 输入文本；启用思考、模型默认采样设置（温度 0.7）及 MTP 3。输入分块和专家分配自动选择，上下文容量按各显存档位设置。混合 CUDA Graph 保持默认关闭，全部专家常驻 GPU 时的常规 CUDA Graph 保持启用。
 
 | 可用内存条件 | 上下文容量 | INT8 生成 | 原生 FP8 生成 | 备注 |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 117.80 tok/s | 131.34 tok/s | 所有权重常驻显存 |
-| 约 16 GB | 256K | 98.90 tok/s | 101.68 tok/s | GPU 与 CPU 共同计算专家 |
-| 约 12 GB | 128K | 87.99 tok/s | 86.66 tok/s | GPU 与 CPU 共同计算专家 |
-| 约 8 GB | 64K | 60.69 tok/s | 60.69 tok/s | FP8：无 GPU 专家缓存 |
+| 24 GB | 256K | 124.83 tok/s | 137.26 tok/s | 所有权重常驻显存 |
+| 约 16 GB | 256K | 101.04 tok/s | 103.07 tok/s | GPU 与 CPU 共同计算专家 |
+| 约 12 GB | 128K | 86.65 tok/s | 91.11 tok/s | GPU 与 CPU 共同计算专家 |
+| 约 8 GB | 64K | 66.24 tok/s | 68.99 tok/s | GPU 和 CPU 计算专家 |
 
 每个 FP8/INT8 配置均使用相同的三段文本各运行两次，采用模型默认采样设置，每次生成包含思考的 128 个 token。速度为总生成 token 数除以总解码时间，不含加载与输入处理；上下文值表示缓存容量。内存受限行是在同一块 24 GB GPU 上另行预留 8、12 或 16 GiB，并设置相应显存档位的上下文容量，并非使用实际的 16/12/8 GB GPU。
 
@@ -114,14 +114,14 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 在同一台 Windows PC（64 GB 系统内存）上使用 Gemma 4 26B-A4B-it QAT Q4_0 及匹配的 QAT MTP 助手测量。图像编码器常驻 GPU，通过 API 输入文本，启用 MTP 3、CUDA Graph 及模型自身的默认思考和采样设置；上下文容量按各显存档位设置，输入分块及专家分配自动选择。
 
-原生 FP8 和 INT8 于 **2026-10-21** 测量。
+原生 FP8 和 INT8 于 **2026-10-27** 测量。
 
 | 可用显存 | 上下文容量 | INT8（默认） | 原生 FP8（实验性） | 备注 |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 113.20 tok/s | 112.31 tok/s | INT8 / FP8: GPU 计算专家 |
-| 约 16 GB | 256K | 100.08 tok/s | 96.67 tok/s | INT8 / FP8: GPU 和 CPU 计算专家 |
-| 约 12 GB | 128K | 81.66 tok/s | 82.08 tok/s | INT8 / FP8: GPU 和 CPU 计算专家 |
-| 约 8 GB | 64K | 51.54 tok/s | 53.41 tok/s | INT8 / FP8: GPU 和 CPU 计算专家 |
+| 24 GB | 256K | 115.89 tok/s | 115.46 tok/s | INT8 / FP8: GPU 计算专家 |
+| 约 16 GB | 256K | 102.83 tok/s | 100.86 tok/s | INT8 / FP8: GPU 和 CPU 计算专家 |
+| 约 12 GB | 128K | 85.53 tok/s | 91.71 tok/s | INT8 / FP8: GPU 和 CPU 计算专家 |
+| 约 8 GB | 64K | 52.98 tok/s | 55.09 tok/s | INT8 / FP8: GPU 和 CPU 计算专家 |
 
 每个 FP8/INT8 配置均使用相同的三段文本各运行两次，采用模型默认采样设置，每次生成包含思考的 128 个 token。速度为总生成 token 数除以总解码时间，不含加载与输入处理；上下文值表示缓存容量。内存受限行是在同一块 24 GB GPU 上另行预留 8、12 或 16 GiB，并设置相应显存档位的上下文容量，并非使用实际的 16/12/8 GB GPU。
 
@@ -129,14 +129,14 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 在同一台 Windows PC（64 GB 系统内存）上使用官方 LFM2.5-24B-A2B Q4_K_M 测量，不使用 MTP 或 Vision。启用 CUDA Graph 及模型自身的默认思考和采样设置；上下文容量按各显存档位设置，输入分块及专家分配自动选择。
 
-原生 FP8 和 INT8 于 **2026-10-21** 测量。
+原生 FP8 和 INT8 于 **2026-10-27** 测量。
 
 | 可用显存 | 上下文容量 | INT8 | 原生 FP8（默认） | 备注 |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 128K | 140.58 tok/s | 141.80 tok/s | INT8 / FP8: GPU 计算专家 |
-| 约 16 GB | 128K | 135.63 tok/s | 138.21 tok/s | INT8 / FP8: GPU 和 CPU 计算专家 |
-| 约 12 GB | 128K | 110.11 tok/s | 114.72 tok/s | INT8 / FP8: GPU 和 CPU 计算专家 |
-| 约 8 GB | 64K | 71.10 tok/s | 73.92 tok/s | INT8 / FP8: GPU 和 CPU 计算专家 |
+| 24 GB | 128K | 143.85 tok/s | 148.61 tok/s | INT8 / FP8: GPU 计算专家 |
+| 约 16 GB | 128K | 138.14 tok/s | 139.22 tok/s | INT8 / FP8: GPU 和 CPU 计算专家 |
+| 约 12 GB | 128K | 115.61 tok/s | 117.90 tok/s | INT8 / FP8: GPU 和 CPU 计算专家 |
+| 约 8 GB | 64K | 79.74 tok/s | 81.39 tok/s | INT8 / FP8: GPU 和 CPU 计算专家 |
 
 每个 FP8/INT8 配置均使用相同的三段文本各运行两次，采用模型默认采样设置，每次生成包含思考的 128 个 token。速度为总生成 token 数除以总解码时间，不含加载与输入处理；上下文值表示缓存容量。内存受限行是在同一块 24 GB GPU 上另行预留 8、12 或 16 GiB，并设置相应显存档位的上下文容量，并非使用实际的 16/12/8 GB GPU。
 
