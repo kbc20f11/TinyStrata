@@ -3315,17 +3315,22 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         const size_t left = budget2 > total_main ? budget2 - total_main : 0;
         S = (int) std::min<size_t>((size_t) ne, left / m.mtp.stride);
     }
-    if (E.stage_loan) {
-        // Respect the explicit Expert+staging budget in physical VMM pages,
-        // including per-layer overread tails, before taking the idle snapshot.
+    const auto slot_allocation = [&](Layer* L, int count) {
+        if (count <= 0) return size_t(0);
+        const size_t bytes = L->stride * (size_t) count + kMmqTail;
+        if (!E.grow_hybrid) return bytes;
         const size_t gran = strata::qwen35::kv_grow::api().gran;
+        return ((bytes + gran - 1) / gran) * gran;
+    };
+    if (E.grow_hybrid) {
+        // Account for physical VMM rounding for every growable Expert cache,
+        // including HIP and caches without a temporary staging loan.
         const auto mapped_for = [&](int count) {
             size_t bytes = 0;
-            if (count > 0)
-                for (Layer* L : all) bytes += ((L->stride * (size_t) count + kMmqTail + gran - 1) / gran) * gran;
+            for (Layer* L : all) bytes += slot_allocation(L, count);
             return bytes;
         };
-        while (S > 0 && mapped_for(S) > budget2) --S;
+        while (S > 0 && mapped_for(S) > slot_bytes) --S;
     }
     {   // what the hybrid mode allocates next (the staging pair, the CPU part's outputs, the slots) against the VRAM the
         // sessions and the context left: said with the numbers instead of a cudaMalloc failure (8 slots on a 12 GB card)
@@ -3333,7 +3338,7 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         size_t need = staging + Tn * Kn * Nn * 4 + Tn * Kn * 4;
         for (Layer* L : all) {
             if (mtp_only && L != &m.mtp) need += L->stride * (size_t) ne + kMmqTail;
-            else need += (S > 0 ? (size_t) S * L->stride + kMmqTail : 0);
+            else need += slot_allocation(L, S);
         }
         if (need > fr) {
             err = "not enough VRAM left for the hybrid experts' buffers and slots (" + std::to_string((need >> 20)) +
