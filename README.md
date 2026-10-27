@@ -164,22 +164,6 @@ Measured on **2026-10-28** using Windows 11, a Radeon RX 9060 XT (gfx1200, 16 GB
 
 Thinking was enabled with the model sampling defaults: temperature 0.7 for Qwen, 1.0 for Gemma and 0.1 for LFM. Each value pools four independent API starts. On each start, the same three input texts were run twice, generating 128 tokens per request, including thinking: 24 requests and 3,072 generated tokens per model in total. Speed is total generated tokens divided by total decode time, excluding loading and prompt processing.
 
-## Measured speed — NVIDIA GeForce RTX 5060 (8 GB)
-
-Measured on **2026-10-25** on a Windows 11 PC with a GeForce RTX 5060 (8 GB, driver 616.92), a Core i7-10700K (8 cores), 32 GB of DDR4-3200 and the GPU on a PCIe 3.0 x8 link, with the same Qwen3.6 UD-IQ3_XXS, Gemma 4 QAT Q4_0 (with its MTP assistant) and LFM2.5 Q4_K_M files as above. Everything was left at the defaults through `run-api.bat` (CUDA backend, context capacity, KV type, input chunk, Expert placement and MTP chosen automatically; LFM2.5 has neither MTP nor Vision). Thinking was on and sampling was left at the model defaults, except that every request used `seed` 1234.
-
-| Model | Context capacity | Decode, first 3 requests after start (two starts) | Decode, steady (median of 21 requests) | Prompt of about 2.5K tokens, first / later |
-| --- | ---: | ---: | ---: | ---: |
-| Qwen3.6 UD-IQ3_XXS | 64K | 27.2 / 33.7 tok/s | 29.2 tok/s (24.1 to 35.0) | 61 and 62 / about 104 (89 to 118) tok/s |
-| Gemma 4 QAT Q4_0 | 64K | 24.0 / 25.6 tok/s | 25.7 tok/s (22.2 to 28.7) | 333 and 369 / about 364 (361 to 371) tok/s |
-| LFM2.5 Q4_K_M | 64K | 43.1 / 43.3 tok/s | 53.8 tok/s (42.4 to 56.8) | 595 and 685 / about 716 (690 to 762) tok/s |
-
-Each request generated 128 tokens including thinking. Speed is generated tokens divided by `predicted_ms` from `/v1/status`, excluding loading and prompt processing. "First 3 requests" are three input texts in a fixed order right after the API reported the model loaded, on two separate starts (each value is total tokens divided by total time of the three). "Steady" is rounds 4 to 10 of ten rounds of the three texts on the first start (21 requests), with the range in brackets. The prompt rows use one input of 2,440 (Qwen3.6), 2,446 (Gemma 4) or 2,545 (LFM2.5) tokens, sent with a different first line each time so that nothing was cached: "first" is the first long request on each start, "later" the next three on both starts. The three short input texts and the long input were written for this run and are not the ones used in the sections above, so the rows are not directly comparable with them. GPU memory in use after the runs was 6.5 to 6.9 GiB of about 7.9 GiB, including the desktop.
-
-- Qwen3.6 kept 12 (first start) and 22 (second start) of 256 Experts per layer in VRAM and the other 11.4 GiB in pinned system RAM, with an input chunk of 512. The two starts had 4.6 and 5.3 GiB of free VRAM, and their later prompt speeds were about 90 and 117 tok/s, which fits more resident Experts being faster; I did not test this separately.
-- The prompt speeds are low compared with the 16 GB card above. The likely reasons are that most Experts are not in VRAM, that the Experts outside VRAM are computed on 8 CPU threads (Qwen3.6) or streamed to the GPU over a PCIe 3.0 x8 link of roughly 8 GB/s (Gemma 4 and LFM2.5, whose logs show staged Experts), and that free VRAM is too small to choose a larger chunk. Other `--chunk` values were not tried, so this is not confirmed.
-- Single requests vary by 10% or more and the two starts differ by up to 6 tok/s: do not read small differences. These are one machine and one session.
-
 ## Which project should I use?
 
 | Your goal and hardware                                                                                                                       | Project                                                               |

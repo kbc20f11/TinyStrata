@@ -152,22 +152,6 @@ Medido el **2026-10-28** en Windows 11 con una Radeon RX 9060 XT (gfx1200, 16 GB
 
 El razonamiento estaba activado con los valores de muestreo predeterminados de cada modelo: temperatura 0.7 para Qwen, 1.0 para Gemma y 0.1 para LFM. Cada valor reúne cuatro arranques independientes de la API. En cada arranque se ejecutaron dos veces los mismos tres textos, generando 128 tokens por solicitud, incluido el razonamiento: 24 solicitudes y 3.072 tokens por modelo en total. La velocidad es el total de tokens generados dividido por el tiempo total de decodificación, sin carga ni procesamiento de entrada.
 
-## Velocidad medida — NVIDIA GeForce RTX 5060 (8 GB)
-
-Medido el **2026-10-25** en un PC con Windows 11 y una GeForce RTX 5060 (8 GB, controlador 616.92), un Core i7-10700K (8 núcleos), 32 GB de DDR4-3200 y la GPU en un enlace PCIe 3.0 x8, con los mismos archivos de Qwen3.6 UD-IQ3_XXS, Gemma 4 QAT Q4_0 (con su asistente MTP) y LFM2.5 Q4_K_M de arriba. Todo se dejó con los valores predeterminados mediante `run-api.bat` (backend CUDA; capacidad de contexto, tipo de KV, bloque de entrada, ubicación de los expertos y MTP elegidos automáticamente; LFM2.5 no tiene MTP ni Vision). El razonamiento estaba activado y el muestreo se dejó en los valores del modelo, salvo que todas las solicitudes usaron `seed` 1234.
-
-| Modelo | Capacidad de contexto | Decodificación, primeras 3 solicitudes tras el inicio (dos inicios) | Decodificación, estable (mediana de 21 solicitudes) | Entrada de unos 2.5K tokens, primera / posteriores |
-| --- | ---: | ---: | ---: | ---: |
-| Qwen3.6 UD-IQ3_XXS | 64K | 27.2 / 33.7 tok/s | 29.2 tok/s (24.1 a 35.0) | 61 y 62 / unos 104 (89 a 118) tok/s |
-| Gemma 4 QAT Q4_0 | 64K | 24.0 / 25.6 tok/s | 25.7 tok/s (22.2 a 28.7) | 333 y 369 / unos 364 (361 a 371) tok/s |
-| LFM2.5 Q4_K_M | 64K | 43.1 / 43.3 tok/s | 53.8 tok/s (42.4 a 56.8) | 595 y 685 / unos 716 (690 a 762) tok/s |
-
-Cada solicitud generó 128 tokens con razonamiento. La velocidad es el número de tokens generados dividido por `predicted_ms` de `/v1/status`, sin carga ni procesamiento de entrada. «Primeras 3 solicitudes» son tres textos de entrada en orden fijo justo después de que la API indicara que el modelo estaba cargado, en dos inicios separados (cada valor es el total de tokens dividido por el tiempo total de las tres). «Estable» son las rondas 4 a 10 de diez rondas de los tres textos en el primer inicio (21 solicitudes), con el rango entre paréntesis. Las filas de entrada usan una entrada de 2440 (Qwen3.6), 2446 (Gemma 4) o 2545 (LFM2.5) tokens, enviada cada vez con una primera línea distinta para que nada se almacenara en caché: «primera» es la primera solicitud larga de cada inicio y «posteriores» las tres siguientes de ambos inicios. Los tres textos cortos y la entrada larga se escribieron para esta medición y no son los de las secciones anteriores, por lo que las filas no son directamente comparables con ellas. La memoria de GPU en uso tras las ejecuciones fue de 6.5 a 6.9 GiB de unos 7.9 GiB, incluido el escritorio.
-
-- Qwen3.6 mantuvo 12 (primer inicio) y 22 (segundo inicio) de 256 expertos por capa en la VRAM y los otros 11.4 GiB en RAM del sistema fijada, con un bloque de entrada de 512. Los dos inicios tenían 4.6 y 5.3 GiB de VRAM libre, y sus velocidades posteriores de entrada fueron de unos 90 y 117 tok/s, lo que encaja con que más expertos residentes sean más rápidos; no lo probé por separado.
-- Las velocidades de entrada son bajas en comparación con la tarjeta de 16 GB de arriba. Las razones probables son que la mayoría de los expertos no están en la VRAM, que los expertos fuera de la VRAM se calculan en 8 hilos de CPU (Qwen3.6) o se transfieren a la GPU por un enlace PCIe 3.0 x8 de unos 8 GB/s (Gemma 4 y LFM2.5, cuyos registros muestran expertos en etapas intermedias), y que la VRAM libre es demasiado pequeña para elegir un bloque mayor. No se probaron otros valores de `--chunk`, así que esto no está confirmado.
-- Las solicitudes individuales varían un 10 % o más y los dos inicios difieren hasta en 6 tok/s: no se deben interpretar diferencias pequeñas. Son una máquina y una sesión.
-
 ## ¿Qué proyecto debería usar?
 
 | Tu objetivo y tu hardware | Proyecto |
