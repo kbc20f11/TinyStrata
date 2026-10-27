@@ -397,10 +397,6 @@ int main(int argc, char** argv) {
         if (const char* setting = std::getenv("TINYSTRATA_LFM_STAGE_READ"))
             if (std::strcmp(setting, "0") == 0) opt.stage_read_mib = 0;
 #endif
-#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
-        // The HIP growable path is disabled even for direct native launches (#1).
-        opt.kv_grow = false;
-#endif
         for (int i = 1; i < argc; ++i) {
             const std::string arg = argv[i];
             auto next = [&]() -> std::string {
@@ -426,13 +422,8 @@ int main(int argc, char** argv) {
                           "  --cpu-threads N --no-graph --no-gpu-experts\n"
                           "  --kv-type auto|fp8|int8|fp16\n"
                           "                        Auto: native FP8 Attention, otherwise INT8 KV\n"
-#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
-                          "  --kv-grow             Not supported on the AMD HIP backend (issue #1)\n"
-                          "  --kv-whole            Allocate the full context's KV at startup (required on HIP)\n"
-#else
                           "  --kv-grow             Grow physical KV with actual usage (default, if supported)\n"
                           "  --kv-whole            Allocate the full context's KV at startup\n"
-#endif
                           "  --stage-mib N          Prompt Expert streaming buffer (default 256 MiB)");
                 return 0;
             } else if (arg == "--model" || arg == "--native") opt.model = next();
@@ -467,10 +458,6 @@ int main(int argc, char** argv) {
                 bounded_integer(next(), "MTP (this checkpoint has no MTP head)", 0, 0);
             } else throw std::invalid_argument("unknown option: " + arg);
         }
-#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
-        if (opt.kv_grow)
-            throw std::invalid_argument("--kv-grow is not supported on the AMD HIP backend; use --kv-whole (issue #1)");
-#endif
         if (opt.model.empty()) throw std::invalid_argument("--model is required");
         if (!server && ids_text.empty()) throw std::invalid_argument("--serve or --tokens is required");
         if (server && (!ids_text.empty() || !force_text.empty() || !dump.empty()))

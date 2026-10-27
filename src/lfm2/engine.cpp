@@ -1214,6 +1214,17 @@ void Engine::fill_expert_cache() {
     if (opt_.expert_vram_gib >= 0)
         most = std::min(most, (size_t) std::min(opt_.expert_vram_gib * double(1ull << 30), double(SIZE_MAX / 2)));
     size_t arena = std::min({all, free_b - reserve, most, arena_.base ? arena_.reserved - 256 : most});
+    if (vmm_) {
+        // The explicit Expert budget and the free-VRAM reserve cap physical
+        // pages, including the arena tail, rather than just the Expert bytes.
+        size_t physical = free_b - reserve;
+        if (opt_.expert_vram_gib >= 0)
+            physical = std::min(physical, (size_t) std::min(opt_.expert_vram_gib * double(1ull << 30),
+                                                          double(SIZE_MAX / 2)));
+        if (arena_.base) physical = std::min(physical, arena_.reserved);
+        physical = physical / grain_ * grain_;
+        arena = std::min(arena, physical > 256 ? physical - 256 : size_t(0));
+    }
     if (arena == 0) return;
     if (vmm_) {   // in pieces, so that it can give some up to the attention caches (shrink_cache()) and grow
         if (!arena_.base) vmm_reserve(arena_, most + 256);   // addresses only: grow_cache() maps more of them
@@ -1431,8 +1442,12 @@ size_t Engine::other_rows() const {
 // fill_expert_cache() chooses), side by side by layer.  VRAM the card does not give is not an error: the cache
 // keeps what was mapped.  Returns the experts it took.
 int Engine::grow_cache(size_t bytes) {
-    const size_t cap = opt_.expert_vram_gib >= 0
+    size_t cap = opt_.expert_vram_gib >= 0
         ? (size_t) std::min(opt_.expert_vram_gib * double(1ull << 30), double(SIZE_MAX / 2)) : SIZE_MAX;
+    if (vmm_ && cap != SIZE_MAX) {
+        const size_t physical = cap / grain_ * grain_;
+        cap = physical > kTail ? physical - kTail : 0;
+    }
     if (exp_at_ >= cap) return 0;
     bytes = std::min(bytes, cap - exp_at_);
     if (!vmm_ || !exp_) return 0;
@@ -1458,7 +1473,12 @@ int Engine::grow_cache(size_t bytes) {
     }
     if (cands.empty()) return 0;
     try {
-        vmm_map(arena_, std::min(arena_.mapped + bytes, arena_.reserved), kArenaPiece, "the expert cache");
+        // Do not round a growth request past the physical bytes it was given.
+        // cap excludes the overread tail; the mapped prefix includes it.
+        size_t target = std::min(arena_.mapped + bytes, arena_.reserved);
+        if (cap != SIZE_MAX) target = std::min(target, cap + kTail);
+        target = target / grain_ * grain_;
+        vmm_map(arena_, target, kArenaPiece, "the expert cache");
     } catch (const std::runtime_error&) {
     }
     if (arena_.mapped < exp_at_ + kTail) return 0;
@@ -1717,6 +1737,15 @@ void Engine::load(const Options& o) {
         prop.location.id = device_;
         vmm_ = cuMemGetAllocationGranularity(&grain_, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM) == CUDA_SUCCESS &&
                grain_ > 0;
+#if defined(_WIN32) && (defined(STRATA_USE_HIP) || defined(__HIPCC__))
+        if (vmm_) {
+            // Match the Qwen Windows HIP backing: small reported allocation
+            // granules can pass API checks yet fail GPU reads on this stack.
+            // Keep the driver's alignment and the Expert arena's 64 MiB pieces.
+            constexpr size_t chunk = size_t(4) << 20;
+            grain_ = ((std::max(grain_, chunk) + grain_ - 1) / grain_) * grain_;
+        }
+#endif
     }
 
     // the token table stays in the file, a row a token, and embed() reads a row in whatever type it has

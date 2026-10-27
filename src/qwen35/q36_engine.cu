@@ -3779,11 +3779,7 @@ int strata::qwen35::run(int argc, char** argv) {
     int kv_format = P::kAutomaticKv; // -1 auto; 0 FP32, 1 FP8, 2 INT8, 3 native FP8 MMA
     int expert_slots = 0;
     bool serve_mode = false, graph = true, vision = false;
-#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
-    bool kv_grow = false;
-#else
     bool kv_grow = true;
-#endif
     if (const char* v = std::getenv("STRATA_KV_GROW")) kv_grow = std::atoi(v) != 0;
     const char* hybrid_graph_env = std::getenv("STRATA_Q36_HYBRID_GRAPH");
     bool hybrid_graph_requested = hybrid_graph_env != nullptr && hybrid_graph_env[0] == '1';
@@ -3805,11 +3801,7 @@ int strata::qwen35::run(int argc, char** argv) {
 #else
                         "  --kv-type auto|fp32|int8|fp8|fp8-mma  Default auto: native FP8, otherwise INT8; fp8 = fp8-mma\n"
 #endif
-#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
-                        "  --kv-whole               Allocate the whole KV (required on HIP; --kv-grow unsupported)\n"
-#else
                         "  --kv-grow --kv-whole      Grow physical KV with sequence length (default: grow)\n"
-#endif
                         "  --chunk auto|N           Prompt chunk size (default: auto)\n"
                         "  --mtp N                  MTP drafts, 0..7 (default: 0)\n"
                         "  --expert-vram auto|GiB   Routed expert budget (default: available VRAM)\n"
@@ -3898,15 +3890,6 @@ int strata::qwen35::run(int argc, char** argv) {
             return 2;
         }
     }
-#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
-    // Validate the final allocation mode before loading a model or touching the
-    // GPU. An explicit --kv-whole may override STRATA_KV_GROW=1 from the host.
-    if (kv_grow) {
-        std::fprintf(stderr, "tinystrata: HIP requires --kv-whole; growable KV/Expert VMM is disabled "
-                             "because of reported GPU faults (https://github.com/kbc20f11/TinyStrata/issues/1)\n");
-        return 2;
-    }
-#endif
     if (model.empty()) { std::fprintf(stderr, "tinystrata: --model is required\n"); return 2; }
 #if !defined(_WIN32)
     setenv("CUDA_MODULE_LOADING", "EAGER", 0);   // every kernel loaded with the context, not in the first prompt

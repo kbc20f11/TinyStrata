@@ -211,9 +211,6 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         raise ValueError("Choose a GGUF model with run.py --model PATH")
     if len(seen.intersection({"--kv-grow", "--kv-whole", "--no-kv-grow"})) > 1:
         raise ValueError("Choose only one KV allocation mode: --kv-grow or --kv-whole")
-    if cfg.get("backend") == "hip" and "--kv-grow" in seen:
-        raise ValueError("--kv-grow is not supported on the AMD HIP backend: the growable KV faults on RX 9070 XT "
-                         "(issue #1). Remove it; HIP always allocates the whole KV (--kv-whole)")
     for key in ("kv_type", "max_context", "expert_vram", "vram_reserve_mib", "mtp", "chunk"):
         value = config.value_of(cfg, key)
         if value is not None:
