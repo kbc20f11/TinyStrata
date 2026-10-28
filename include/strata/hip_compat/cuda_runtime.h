@@ -86,8 +86,9 @@
 #if defined(_WIN32)
 // Windows: hipMemGetInfo counts this process's own allocations only, so the desktop's and other programs' share of
 // the card is invisible to it, and VRAM sized by it overfills the card (WDDM then moves memory out to system RAM and
-// the GPU slows down).  Its free figure is lowered by what Windows' video memory budget for this process withholds
-// (src/core/device.cu; STRATA_WDDM_BUDGET=0: hipMemGetInfo as it is).
+// the GPU slows down). Lower its free figure by the process's Windows budget and
+// the selected adapter's device-wide dedicated-memory use, including the Vision
+// worker (STRATA_WDDM_BUDGET=0: raw hipMemGetInfo for diagnostics).
 namespace strata::hip_compat {
 hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes);
 }

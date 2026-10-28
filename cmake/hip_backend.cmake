@@ -99,6 +99,7 @@ endif()
 # Runtime support belongs to the HIP link surface. TinyStrata does not link
 # Strata's core/device.cu, which supplied the Windows VRAM budget helper.
 add_library(strata_hip_support STATIC src/prefill/hip_runtime.cpp)
+target_include_directories(strata_hip_support PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(strata_hip_support PUBLIC hip::host)
 target_link_libraries(strata_hip_runtime INTERFACE hip::host strata_hip_support)
 # The shim renames the CUDA runtime to HIP, force-included into every host and device source. On Windows the host

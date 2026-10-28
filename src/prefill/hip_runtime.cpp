@@ -24,6 +24,9 @@
 // Subtracting from HIP's own figure, rather than taking the budget minus DXGI's usage, keeps memory the HIP runtime
 // has freed and holds in its cache counted as free, as hipMemGetInfo counts it.  dxgi.dll is loaded at run time, so
 // nothing new is linked; when it or the card's adapter cannot be found, hipMemGetInfo's figure stands.
+// That per-process budget is not a device-wide free counter. A separate Vision
+// worker can still be invisible to it. The final clamp below uses DXCore's
+// adapter-wide dedicated committed/resident memory (PDH on older Windows).
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -35,35 +38,42 @@
 #include <atomic>
 #include <cstdlib>
 #include <mutex>
+#include "strata/hip_compat/dedicated_vram.hpp"
 
 namespace strata::hip_compat {
 namespace {
-IDXGIAdapter3* budget_adapter(int device) {
+struct DeviceAdapter {
+    LUID luid{};
+    IDXGIAdapter3* budget = nullptr;
+};
+
+DeviceAdapter device_adapter(int device) {
     constexpr int kMaxDevices = 16;
     static std::mutex mu;
-    static IDXGIAdapter3* adapters[kMaxDevices] = {};
+    static DeviceAdapter adapters[kMaxDevices] = {};
     static bool tried[kMaxDevices] = {};
-    if (device < 0 || device >= kMaxDevices) return nullptr;
+    if (device < 0 || device >= kMaxDevices) return {};
     std::lock_guard<std::mutex> lock(mu);
     if (tried[device]) return adapters[device];
     tried[device] = true;
     hipDeviceProp_t p{};
     if (hipGetDeviceProperties(&p, device) != hipSuccess) {
         (void) hipGetLastError();
-        return nullptr;
+        return {};
     }
     LUID luid{};
     std::memcpy(&luid, p.luid, sizeof luid);
+    adapters[device].luid = luid;
     using CreateFactory = HRESULT(WINAPI*)(REFIID, void**);
-    static HMODULE dxgi = LoadLibraryW(L"dxgi.dll");   // kept for the process' lifetime, like the adapters
+    static HMODULE dxgi = LoadLibraryExW(L"dxgi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     const auto create = dxgi ? (CreateFactory) (void*) GetProcAddress(dxgi, "CreateDXGIFactory1") : nullptr;
     IDXGIFactory4* factory = nullptr;
-    if (create == nullptr || FAILED(create(__uuidof(IDXGIFactory4), (void**) &factory))) return nullptr;
+    if (create == nullptr || FAILED(create(__uuidof(IDXGIFactory4), (void**) &factory))) return adapters[device];
     IDXGIAdapter3* adapter = nullptr;
     if (FAILED(factory->EnumAdapterByLuid(luid, __uuidof(IDXGIAdapter3), (void**) &adapter))) adapter = nullptr;
     factory->Release();
-    adapters[device] = adapter;
-    return adapter;
+    adapters[device].budget = adapter;
+    return adapters[device];
 }
 }  // namespace
 
@@ -99,19 +109,39 @@ hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes) {
         (void) hipGetLastError();
         return e;
     }
-    IDXGIAdapter3* adapter = budget_adapter(device);
+    const DeviceAdapter adapter = device_adapter(device);
     DXGI_QUERY_VIDEO_MEMORY_INFO local{};
-    if (adapter == nullptr || FAILED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &local)) ||
-        local.Budget == 0 || local.Budget >= *total_bytes)
-        return e;
-    const size_t withheld = *total_bytes - (size_t) local.Budget;   // the desktop's and other programs' share
-    static std::atomic<bool> said{false};
-    if (!said.exchange(true)) {
-        std::fprintf(stderr, "tinystrata: Windows budgets %llu of this card's %llu MiB for this process; free VRAM is "
-                             "counted within that (STRATA_WDDM_BUDGET=0: off)\n",
-                     (unsigned long long) (local.Budget >> 20), (unsigned long long) (*total_bytes >> 20));
+    if (adapter.budget && SUCCEEDED(adapter.budget->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &local)) &&
+        local.Budget > 0 && local.Budget < *total_bytes) {
+        const size_t withheld = *total_bytes - (size_t) local.Budget;
+        static std::atomic<bool> said_budget{false};
+        if (!said_budget.exchange(true)) {
+            std::fprintf(stderr, "tinystrata: Windows budgets %llu of this card's %llu MiB for this process; free VRAM is "
+                                 "counted within that (STRATA_WDDM_BUDGET=0: off)\n",
+                         (unsigned long long) (local.Budget >> 20), (unsigned long long) (*total_bytes >> 20));
+        }
+        *free_bytes = *free_bytes > withheld ? *free_bytes - withheld : 0;
     }
-    *free_bytes = *free_bytes > withheld ? *free_bytes - withheld : 0;
+    // A per-process budget alone can still include VRAM held by another process,
+    // notably the GPU Vision worker. Clamp placement to this same adapter's
+    // device-wide dedicated capacity; count evicted allocations as occupied too.
+    DedicatedVramInfo physical{};
+    if (query_dedicated_vram(&adapter.luid, sizeof adapter.luid, physical, *total_bytes)) {
+        const size_t estimate = *free_bytes;
+        *free_bytes = std::min(estimate, static_cast<size_t>(physical.free_bytes));
+        static std::atomic<bool> said_physical{false};
+        if (!said_physical.exchange(true)) {
+            std::fprintf(stderr, "tinystrata: device-wide VRAM (%s): %llu MiB free of %llu MiB; HIP/WDDM estimate "
+                                 "%llu MiB, using %llu MiB (includes Vision and other processes)\n",
+                         physical.source, (unsigned long long) (physical.free_bytes >> 20),
+                         (unsigned long long) (physical.total >> 20), (unsigned long long) (estimate >> 20),
+                         (unsigned long long) (*free_bytes >> 20));
+        }
+    } else {
+        static std::atomic<bool> said_fallback{false};
+        if (!said_fallback.exchange(true))
+            std::fprintf(stderr, "tinystrata: device-wide VRAM query unavailable; using the HIP/WDDM estimate\n");
+    }
     return e;
 }
 }  // namespace strata::hip_compat
