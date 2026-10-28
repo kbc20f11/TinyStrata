@@ -162,7 +162,7 @@ Protocol: [tinystrata-bench-v1](benchmark/README.md#english), engine code [44a7e
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | Qwen3.6 UD-IQ3_XXS | 256K | 82.30 | 774.28 | 711.52 | 1.60 / 3.14 | Expert cache 11.00 → 10.69 GiB |
 | Gemma 4 QAT Q4_0 | 256K | 78.08 | 2495.20 | 2320.50 | 1.04 / 2.06 | Expert cache 11.07 → 7.87 GiB |
-| LFM2.5 Q4_K_M | 128K | 94.92 | 2130.28 | 1734.56 | — | Expert cache 12.77 → 11.94 GiB |
+| LFM2.5 Q4_K_M | 128K | 95.99 | 2166.22 | 1747.87 | — | Expert cache 12.77 → 12.12 GiB |
 
 Image times show first output / response end, including image encoding; lower is faster. Expert cache values show the actual allocation at startup → immediately after the 16K input, in GiB.
 
