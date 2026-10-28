@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="web/tokens.css">
 <link rel="stylesheet" href="web/components.css">
 <link rel="stylesheet" href="web/app.css">
-<link rel="stylesheet" href="web/terminal-theme.css?v=20261028.6">
+<link rel="stylesheet" href="web/terminal-theme.css?v=20261028.7">
 <script>
   // Match the operating system before the first paint, including older installs.
   try {
@@ -82,6 +82,10 @@
               <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button>
             <button type="button" class="st-btn st-btn--icon" id="export-btn" title="Save this chat as Markdown" aria-label="Save this chat" data-i18n-title="composer.save" data-i18n-label="composer.saveLabel">
               <svg class="st-icon"><use href="web/sprite.svg#i-download"/></svg></button>
+            <button type="button" class="st-btn st-btn--secondary chat-settings-button" id="sampling-btn" title="Chat settings" aria-label="Chat settings" data-i18n-title="drawer.title" data-i18n-label="drawer.title">
+              <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-settings"/></svg>
+              <span class="chat-settings-label" data-i18n="drawer.title">Chat settings</span><span class="chat-settings-short" aria-hidden="true" data-i18n="drawer.short">Settings</span></button>
+            <span class="spacer"></span>
             <div class="composer-controls">
               <label class="composer-select composer-select--model" for="composer-model">
                 <span data-i18n="composer.model">Model</span>
@@ -100,11 +104,7 @@
                   <option value="high" data-i18n="drawer.high" selected>High</option>
                 </select>
               </label>
-              <button type="button" class="st-btn st-btn--secondary chat-settings-button" id="sampling-btn" title="Chat settings" aria-label="Chat settings" data-i18n-title="drawer.title" data-i18n-label="drawer.title">
-                <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-settings"/></svg>
-                <span class="chat-settings-label" data-i18n="drawer.title">Chat settings</span><span class="chat-settings-short" aria-hidden="true" data-i18n="drawer.short">Settings</span></button>
             </div>
-            <span class="spacer"></span>
             <span class="composer-hint" id="composer-hint"></span>
             <button type="button" class="st-btn st-btn--secondary" id="stop-btn" hidden>
               <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-stop"/></svg><span data-i18n="composer.stop">Stop</span></button>
