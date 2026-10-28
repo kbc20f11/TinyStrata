@@ -144,13 +144,15 @@ Os mesmos três textos foram executados duas vezes por configuração FP8/INT8 c
 
 Medido em **2026-10-28** no Windows 11 com uma Radeon RX 9060 XT (gfx1200, 16 GB, driver 32.0.32015.7029), um Ryzen 9 7945HX3D e 64 GB de RAM, usando os mesmos três arquivos de modelos acima. Foram ativados KV INT8 e crescimento VMM com granularidade de alocação de 4 MiB. A capacidade de contexto, os blocos de entrada e a distribuição dos especialistas foram automáticos. Qwen e Gemma usaram MTP 3 e um codificador de imagens residente na GPU; LFM não usou nenhum dos dois.
 
-| Modelo | Capacidade de contexto | Geração INT8 VMM |
-| --- | ---: | ---: |
-| Qwen3.6 UD-IQ3_XXS | 256K | 84.64 tok/s |
-| Gemma 4 QAT Q4_0 | 256K | 80.77 tok/s |
-| LFM2.5 Q4_K_M | 128K | 94.87 tok/s |
+Protocolo: [tinystrata-bench-v1](benchmark/README.md#english), código do motor [44a7ec1](https://github.com/kbc20f11/TinyStrata/commit/44a7ec1), semente 1234 e quatro inicializações independentes da API por modelo.
 
-O raciocínio estava ativado com os padrões de amostragem de cada modelo: temperatura 0.7 para Qwen, 1.0 para Gemma e 0.1 para LFM. Cada valor reúne quatro inicializações independentes da API. Em cada inicialização, os mesmos três textos foram executados duas vezes, gerando 128 tokens por solicitação, incluindo raciocínio: 24 solicitações e 3.072 tokens por modelo no total. A velocidade é o total de tokens gerados dividido pelo tempo total de decodificação, sem carregamento nem processamento da entrada.
+| Modelo | Capacidade de contexto | Geração (tok/s) | Entrada 4K (tok/s) | Entrada 16K (tok/s) | Imagem: primeira saída / fim (s) | Observações |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Qwen3.6 UD-IQ3_XXS | 256K | 82.30 | 774.28 | 711.52 | 1.60 / 3.14 | Cache de especialistas 11.00 → 10.69 GiB |
+| Gemma 4 QAT Q4_0 | 256K | 78.08 | 2495.20 | 2320.50 | 1.04 / 2.06 | Cache de especialistas 11.07 → 7.87 GiB |
+| LFM2.5 Q4_K_M | 128K | 94.92 | 2130.28 | 1734.56 | — | Cache de especialistas 12.77 → 11.94 GiB |
+
+Os tempos de imagem indicam a primeira saída / o fim da resposta, incluindo a codificação da imagem; quanto menores, melhor. O cache de especialistas mostra a alocação real na inicialização → imediatamente após a entrada de 16K, em GiB.
 
 ## Qual projeto devo usar?
 

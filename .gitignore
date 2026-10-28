@@ -17,13 +17,19 @@
 !/run-api.bat
 !/run.py
 !/assets/
+!/benchmark/
 !/cmake/
 !/include/
 !/serve/
 !/src/
 !/third_party/
 
-# Only build/runtime source types belong inside the permitted directories.
+# Only build/runtime sources and the fixed public benchmark inputs belong here.
+/benchmark/**
+!/benchmark/README.md
+!/benchmark/run.py
+!/benchmark/cases.json
+!/benchmark/image.png
 /assets/**
 !/assets/memory-sharing.png
 !/assets/automatic-settings.png

@@ -5,3 +5,5 @@
 *.cpp text eol=lf
 *.hpp text eol=lf
 *.cmake text eol=lf
+# Keep the fixed benchmark manifest's bytes identical to its reported SHA-256.
+benchmark/cases.json -text whitespace=cr-at-eol

@@ -1,0 +1,56 @@
+{
+  "protocol": "tinystrata-bench-v1",
+  "seed": 1234,
+  "runs": 4,
+  "generation_max_tokens": 128,
+  "prefill_max_tokens": 32,
+  "image_max_tokens": 128,
+  "warmup_max_tokens": 32,
+  "warmup_text": "Explain what a hash table does in two short sentences.",
+  "generation": [
+    {
+      "name": "code",
+      "text": "Implement an LRU cache in Python with get and put in O(1), and add three unit tests."
+    },
+    {
+      "name": "explanation",
+      "text": "Explain how a refrigerator works in about 250 words. Cover the compressor, condenser, expansion valve and evaporator, and explain where the heat goes."
+    },
+    {
+      "name": "long_input",
+      "text": "The following fictional workshop log repeats observations from independent stations.\nStation 0: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 1: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 2: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 3: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 4: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 5: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 6: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 7: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 8: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 9: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 10: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 11: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 12: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 13: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 14: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 15: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 16: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 17: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 18: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 19: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 20: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 21: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 22: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 23: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 24: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 25: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 26: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 27: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 28: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 29: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 30: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 31: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 32: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 33: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 34: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 35: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 36: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 37: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 38: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 39: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 40: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 41: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 42: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 43: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 44: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 45: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 46: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 47: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 48: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 49: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 50: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 51: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 52: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 53: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 54: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 55: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 56: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 57: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 58: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\nStation 59: The compressor raised the pressure, the condenser released heat, and the evaporator cooled the room.\n\nWrite a 200-word explanation of the refrigeration cycle described by these observations. Include the role of each component."
+    }
+  ],
+  "long_paragraph": "Record {i:05d}: A small research office keeps its documents locally. The team measures input processing separately from text generation. Each document records its date, author, subject, and a short summary. The archive retains complete history and checks newly added records.\n",
+  "long_question": "\nSummarize the archive procedure in three short bullet points.",
+  "image_prompt": "Describe this image in exactly three short bullet points. Mention the visible text, the colors and shapes, and their arrangement.",
+  "sampling": {
+    "qwen": {
+      "temperature": 0.7,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0.0,
+      "presence_penalty": 1.5,
+      "repetition_penalty": 1.0,
+      "frequency_penalty": 0.0
+    },
+    "gemma": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 64,
+      "min_p": 0.0,
+      "presence_penalty": 0.0,
+      "repetition_penalty": 1.0,
+      "frequency_penalty": 0.0
+    },
+    "lfm": {
+      "temperature": 0.1,
+      "top_p": 1.0,
+      "top_k": 50,
+      "min_p": 0.0,
+      "presence_penalty": 0.0,
+      "repetition_penalty": 1.05,
+      "frequency_penalty": 0.0
+    }
+  }
+}

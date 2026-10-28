@@ -156,13 +156,15 @@ Each of the same three input texts was run twice per FP8/INT8 configuration, gen
 
 Measured on **2026-10-28** using Windows 11, a Radeon RX 9060 XT (gfx1200, 16 GB; driver 32.0.32015.7029), a Ryzen 9 7945HX3D and 64 GB of system RAM, with the same three model files as above. INT8 KV and VMM growth with a 4 MiB allocation quantum were enabled. Context capacity, input chunks and Expert placement were automatic. Qwen and Gemma used MTP 3 and a GPU-resident image encoder; LFM used neither.
 
-| Model | Context capacity | INT8 VMM generation |
-| --- | ---: | ---: |
-| Qwen3.6 UD-IQ3_XXS | 256K | 84.64 tok/s |
-| Gemma 4 QAT Q4_0 | 256K | 80.77 tok/s |
-| LFM2.5 Q4_K_M | 128K | 94.87 tok/s |
+Protocol: [tinystrata-bench-v1](benchmark/README.md#english), engine code [44a7ec1](https://github.com/kbc20f11/TinyStrata/commit/44a7ec1), seed 1234, four independent API starts per model.
 
-Thinking was enabled with the model sampling defaults: temperature 0.7 for Qwen, 1.0 for Gemma and 0.1 for LFM. Each value pools four independent API starts. On each start, the same three input texts were run twice, generating 128 tokens per request, including thinking: 24 requests and 3,072 generated tokens per model in total. Speed is total generated tokens divided by total decode time, excluding loading and prompt processing.
+| Model | Context capacity | Generation (tok/s) | 4K input (tok/s) | 16K input (tok/s) | Image first / end (s) | Notes |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Qwen3.6 UD-IQ3_XXS | 256K | 82.30 | 774.28 | 711.52 | 1.60 / 3.14 | Expert cache 11.00 → 10.69 GiB |
+| Gemma 4 QAT Q4_0 | 256K | 78.08 | 2495.20 | 2320.50 | 1.04 / 2.06 | Expert cache 11.07 → 7.87 GiB |
+| LFM2.5 Q4_K_M | 128K | 94.92 | 2130.28 | 1734.56 | — | Expert cache 12.77 → 11.94 GiB |
+
+Image times show first output / response end, including image encoding; lower is faster. Expert cache values show the actual allocation at startup → immediately after the 16K input, in GiB.
 
 ## Which project should I use?
 

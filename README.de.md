@@ -144,13 +144,15 @@ Dieselben drei Eingabetexte wurden je zweimal pro FP8-/INT8-Konfiguration mit de
 
 Gemessen am **2026-10-28** unter Windows 11 mit einer Radeon RX 9060 XT (gfx1200, 16 GB, Treiber 32.0.32015.7029), einem Ryzen 9 7945HX3D und 64 GB Arbeitsspeicher mit denselben drei Modelldateien wie oben. INT8-KV und VMM-Wachstum mit einer Zuweisungsgranularität von 4 MiB waren aktiviert. Kontextkapazität, Eingabeblöcke und Expertenplatzierung wurden automatisch gewählt. Qwen und Gemma nutzten MTP 3 und einen auf der GPU residenten Bildencoder; LFM nutzte beides nicht.
 
-| Modell | Kontextkapazität | INT8-VMM-Generierung |
-| --- | ---: | ---: |
-| Qwen3.6 UD-IQ3_XXS | 256K | 84.64 tok/s |
-| Gemma 4 QAT Q4_0 | 256K | 80.77 tok/s |
-| LFM2.5 Q4_K_M | 128K | 94.87 tok/s |
+Messprotokoll: [tinystrata-bench-v1](benchmark/README.md#english), Engine-Code [44a7ec1](https://github.com/kbc20f11/TinyStrata/commit/44a7ec1), Seed 1234 und vier unabhängige API-Starts pro Modell.
 
-Thinking war aktiviert, mit den Sampling-Standardwerten der Modelle: Temperatur 0.7 für Qwen, 1.0 für Gemma und 0.1 für LFM. Jeder Wert fasst vier unabhängige API-Starts zusammen. Pro Start wurden dieselben drei Eingabetexte jeweils zweimal mit 128 generierten Tokens einschließlich Thinking ausgeführt, insgesamt 24 Anfragen und 3.072 Tokens pro Modell. Die Geschwindigkeit ist die gesamte Tokenzahl geteilt durch die gesamte Dekodierzeit, ohne Laden und Eingabeverarbeitung.
+| Modell | Kontextkapazität | Generierung (tok/s) | 4K-Eingabe (tok/s) | 16K-Eingabe (tok/s) | Bild: erste Ausgabe / Ende (s) | Anmerkungen |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Qwen3.6 UD-IQ3_XXS | 256K | 82.30 | 774.28 | 711.52 | 1.60 / 3.14 | Experten-Cache 11.00 → 10.69 GiB |
+| Gemma 4 QAT Q4_0 | 256K | 78.08 | 2495.20 | 2320.50 | 1.04 / 2.06 | Experten-Cache 11.07 → 7.87 GiB |
+| LFM2.5 Q4_K_M | 128K | 94.92 | 2130.28 | 1734.56 | — | Experten-Cache 12.77 → 11.94 GiB |
+
+Die Bildzeiten zeigen die erste Ausgabe / das Antwortende einschließlich Bildkodierung; kleinere Werte sind schneller. Der Experten-Cache zeigt die tatsächliche Belegung beim Start → unmittelbar nach der 16K-Eingabe in GiB.
 
 ## Welches Projekt sollte ich verwenden?
 

@@ -144,13 +144,15 @@ Les mêmes trois textes ont été exécutés deux fois par configuration FP8/INT
 
 Mesuré le **2026-10-28** sous Windows 11 avec une Radeon RX 9060 XT (gfx1200, 16 GB, pilote 32.0.32015.7029), un Ryzen 9 7945HX3D et 64 GB de RAM, avec les mêmes trois fichiers de modèles que ci-dessus. Le cache KV INT8 et sa croissance VMM, avec une granularité d’allocation de 4 MiB, étaient activés. La capacité de contexte, les blocs d’entrée et la répartition des experts étaient automatiques. Qwen et Gemma utilisaient MTP 3 et un encodeur d’images résident sur GPU ; LFM n’utilisait ni l’un ni l’autre.
 
-| Modèle | Capacité de contexte | Génération INT8 VMM |
-| --- | ---: | ---: |
-| Qwen3.6 UD-IQ3_XXS | 256K | 84.64 tok/s |
-| Gemma 4 QAT Q4_0 | 256K | 80.77 tok/s |
-| LFM2.5 Q4_K_M | 128K | 94.87 tok/s |
+Protocole : [tinystrata-bench-v1](benchmark/README.md#english), code moteur [44a7ec1](https://github.com/kbc20f11/TinyStrata/commit/44a7ec1), graine 1234 et quatre démarrages indépendants de l’API par modèle.
 
-Le raisonnement était activé avec les valeurs d’échantillonnage par défaut des modèles : température 0.7 pour Qwen, 1.0 pour Gemma et 0.1 pour LFM. Chaque valeur regroupe quatre démarrages indépendants de l’API. À chaque démarrage, les mêmes trois textes ont été exécutés deux fois, avec 128 tokens générés par requête, raisonnement compris, soit 24 requêtes et 3 072 tokens par modèle au total. La vitesse est le nombre total de tokens divisé par le temps total de décodage, hors chargement et traitement de l’entrée.
+| Modèle | Capacité de contexte | Génération (tok/s) | Entrée 4K (tok/s) | Entrée 16K (tok/s) | Image : première sortie / fin (s) | Remarques |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Qwen3.6 UD-IQ3_XXS | 256K | 82.30 | 774.28 | 711.52 | 1.60 / 3.14 | Cache d’experts 11.00 → 10.69 GiB |
+| Gemma 4 QAT Q4_0 | 256K | 78.08 | 2495.20 | 2320.50 | 1.04 / 2.06 | Cache d’experts 11.07 → 7.87 GiB |
+| LFM2.5 Q4_K_M | 128K | 94.92 | 2130.28 | 1734.56 | — | Cache d’experts 12.77 → 11.94 GiB |
+
+Les temps d’image indiquent la première sortie / la fin de la réponse, encodage de l’image compris ; une valeur plus faible est meilleure. Le cache d’experts indique l’allocation réelle au démarrage → immédiatement après l’entrée 16K, en GiB.
 
 ## Quel projet choisir ?
 
