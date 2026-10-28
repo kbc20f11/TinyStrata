@@ -450,5 +450,15 @@
   "theme.darkMode": "Oscuro",
   "theme.lightMode": "Claro",
   "mcp.modelCalls": "el modelo puede llamarlas mientras responde",
-  "projection.note": "El vector de control del motor; al desactivarlo se usa el modelo original. Al cambiarlo, el chat se vuelve a leer una vez."
+  "projection.note": "El vector de control del motor; al desactivarlo se usa el modelo original. Al cambiarlo, el chat se vuelve a leer una vez.",
+  "composer.model": "Modelo",
+  "composer.effort": "Esfuerzo",
+  "model.notInstalled": "Sin descargar",
+  "model.switching": "Cambiando de modelo…",
+  "model.switchFailed": "Error al cambiar de modelo",
+  "model.switched": "Modelo cambiado",
+  "model.switchBusy": "Espera a que termine la respuesta o la operación en curso.",
+  "model.noVision": "Este modelo no admite imágenes. Inicia un chat solo de texto o elige un modelo compatible con imágenes.",
+  "model.thinkingRequired": "Este modelo requiere razonamiento.",
+  "model.catalogUnavailable": "El cambio de modelo no está disponible."
 }

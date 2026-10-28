@@ -450,5 +450,15 @@
   "theme.darkMode": "Dunkel",
   "theme.lightMode": "Hell",
   "mcp.modelCalls": "das Modell kann sie während der Antwort aufrufen",
-  "projection.note": "Der Kontrollvektor der Engine; ausgeschaltet wird das Originalmodell verwendet. Beim Umschalten wird der Chat einmal neu gelesen."
+  "projection.note": "Der Kontrollvektor der Engine; ausgeschaltet wird das Originalmodell verwendet. Beim Umschalten wird der Chat einmal neu gelesen.",
+  "composer.model": "Modell",
+  "composer.effort": "Denkaufwand",
+  "model.notInstalled": "Nicht heruntergeladen",
+  "model.switching": "Modell wird gewechselt…",
+  "model.switchFailed": "Modellwechsel fehlgeschlagen",
+  "model.switched": "Modell gewechselt",
+  "model.switchBusy": "Warten Sie, bis die aktuelle Antwort oder der Vorgang abgeschlossen ist.",
+  "model.noVision": "Dieses Modell unterstützt keine Bilder. Beginnen Sie einen reinen Textchat oder wählen Sie ein Modell mit Bildunterstützung.",
+  "model.thinkingRequired": "Dieses Modell erfordert Denken.",
+  "model.catalogUnavailable": "Der Modellwechsel ist nicht verfügbar."
 }

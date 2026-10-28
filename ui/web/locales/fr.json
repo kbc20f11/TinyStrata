@@ -450,5 +450,15 @@
   "theme.darkMode": "Sombre",
   "theme.lightMode": "Clair",
   "mcp.modelCalls": "le modèle peut les appeler pendant sa réponse",
-  "projection.note": "Le vecteur de contrôle du moteur ; désactivé, le modèle standard est utilisé. Un changement relit la conversation une fois."
+  "projection.note": "Le vecteur de contrôle du moteur ; désactivé, le modèle standard est utilisé. Un changement relit la conversation une fois.",
+  "composer.model": "Modèle",
+  "composer.effort": "Effort",
+  "model.notInstalled": "Non téléchargé",
+  "model.switching": "Changement de modèle…",
+  "model.switchFailed": "Échec du changement de modèle",
+  "model.switched": "Modèle changé",
+  "model.switchBusy": "Attendez la fin de la réponse ou de l’opération en cours.",
+  "model.noVision": "Ce modèle ne prend pas en charge les images. Commencez une conversation textuelle ou choisissez un modèle compatible avec les images.",
+  "model.thinkingRequired": "Ce modèle nécessite la réflexion.",
+  "model.catalogUnavailable": "Le changement de modèle n’est pas disponible."
 }

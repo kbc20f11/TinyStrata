@@ -212,7 +212,7 @@ function renderParent() {
 // ------------------------------------------------------------------ edit, regenerate, go back (#2615, #3823)
 // Every change keeps the messages it replaced for one Undo: a new question, another chat or a reload ends it. The controls
 // are off while an answer is written (stop it first), while something is open, and while a message waits to be sent.
-const historyLocked = () => !!busy || !!panel || !!pending;
+const historyLocked = () => modelSwitching || !!busy || !!panel || !!pending;
 function clearUndo() { undoState = null; renderUndoBar(); }
 function renderUndoBar() {
   let el = $("history-undo");
@@ -275,6 +275,7 @@ function msgActions(m, i) {
 // true when a history change may start now (and says why not when it may not)
 function historyReady() {
   if (!settings.chatEdit) return false;
+  if (modelSwitching) { toast("warn", tr("model.switching", "Switching model…"), ""); return false; }
   if (busy) { stillWriting(); return false; }
   if (panel) { toast("warn", tr("hist.finishFirst", "Finish what is open first"), tr("hist.finishFirstText", "Save it or press Cancel.")); return false; }
   if (pending) { toast("warn", tr("hist.pendingFirst", "A message is waiting"), tr("hist.pendingFirstText", "Send it or take it back first.")); return false; }
@@ -303,6 +304,7 @@ function regenerateAt(i) {
   if (!historyReady()) return false;
   const plan = H.regenerate(messages, i);
   if (!plan) return false;
+  if (!canUseModelImages(plan.keep)) return false;
   if (H.lostAttachments(messages[plan.keep.length - 1])) {
     toast("warn", tr("hist.lostTitle", "Attachments need to be added again"), tr("hist.lostText", "This browser kept their names, not their contents. Start a new chat and attach them again."), 7000);
     return false;

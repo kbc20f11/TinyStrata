@@ -122,12 +122,21 @@ function renderEmptyChat() {
 }
 async function loadHealth() {
   try {
-    health = await (await fetch("health", {cache: "no-store"})).json();
+    const r = await fetch("health", {cache: "no-store"});
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const next = await r.json();
+    if (next.status !== "ok" || typeof next.model !== "string") throw new Error("Invalid model health");
+    const changed = health.model !== next.model;
+    health = next;
+    if (changed) { sharedOn = false; await loadShared(); }
     renderEmptyChat();
+    syncComposerControls();
     $("tab-btn-images").hidden = !health.image_generation;
     if (location.hash === "#images" && health.image_generation) showTab("images");
+    return true;
   } catch (e) {
     setTimeout(loadHealth, 2000);
+    return false;
   }
 }
 
@@ -207,9 +216,12 @@ async function poll() {
       throw new Error(`HTTP ${r.status}`);
     }
   } catch (e) {
-    if (++metricsFailures === 3) setPill("error", tr("pill.unreachable", "Server not reachable"));
+    if (modelSwitching) setPill("idle", tr("model.switching", "Switching model…"));
+    else if (++metricsFailures === 3) setPill("error", tr("pill.unreachable", "Server not reachable"));
   }
   if (tab === "monitor" && ++mcpTick % 10 === 0) loadMcp();       // server states change rarely: every 10 s
+  syncComposerControls();
+  if (++modelCatalogTick % 5 === 0 && !modelSwitching) refreshModelCatalog();
   setTimeout(poll, 1000);
 }
 
@@ -254,6 +266,7 @@ function setModelButton(text, title, disabled) {
   fitHeader();
 }
 function modelButton(live) {
+  if (modelSwitching) return setModelButton(tr("model.switching", "Switching model…"), "", true);
   if (modelOp === "load") return setModelButton(tr("model.loading", "Loading…"), tr("model.loadingTitle", "The model is loading"), true);
   if (modelOp === "unload") return setModelButton(tr("model.unloading", "Unloading…"), tr("model.unloadingTitle", "The model is unloading"), true);
   const state = (live && live.state) || "";
@@ -271,7 +284,7 @@ function modelButton(live) {
   return setModelButton(unload, tr("model.unloadTitle", "Unload the model and free the GPU"), false);
 }
 $("unload-btn").onclick = async () => {
-  if (modelOp) return;
+  if (modelOp || modelSwitching) return;
   const live = (lastMetrics && lastMetrics.live) || {};
   const loading = live.state === "unloaded";
   const busyCopy = (sample, stillLoading) => stillLoading
@@ -354,7 +367,9 @@ function render(m) {
   // the header pill. modelOp and a local load win over "N queued": with parallel requests, queued stays up through
   // ensure_loaded(), and metrics stay "unloaded" until the engine is READY. An image POST in that window is still a load.
   const localLoad = live.state === "unloaded" && (busy != null || imageBusy);
-  if (modelOp === "load") {
+  if (modelSwitching) {
+    setPill("idle", tr("model.switching", "Switching model…"));
+  } else if (modelOp === "load") {
     setPill("idle", tr("model.loading", "Loading…"));
   } else if (modelOp === "unload") {
     setPill("idle", tr("model.unloading", "Unloading…"));
@@ -801,6 +816,143 @@ let messages = store.get("chat", []);   // the open chat's messages (chats-ui.js
 let attachments = [];                 // {name, url}
 let busy = null;                      // {controller, msg, cut, cutAfterTool}
 let pending = null;                   // a message parked while an answer is written: {text, images, files, mode}
+let modelCatalog = [], modelCatalogTick = 0, modelCatalogLoading = false;
+let modelSwitchAvailable = false, modelSwitching = false, modelSwitchTimer = null;
+const modelNames = {"qwen3.6-35b-a3b": "Qwen3.6", "gemma-4-26b-a4b-it": "Gemma 4", "lfm2.5-24b-a2b": "LFM2.5"};
+function canUseModelImages(rows = messages, extra = []) {
+  if (health.images || (!extra.some((image) => image.url) && !rows.some((m) => (m.images || []).some((image) => image.url)))) return true;
+  toast("warn", tr("model.noVision", "This model does not support images. Start a text-only chat or choose a vision model."), "", 7000);
+  return false;
+}
+function effortForModel(s = settings) {
+  return health.model === "lfm2.5-24b-a2b" && s.thinking === "none" ? "high" : s.thinking;
+}
+function syncComposerControls() {
+  const select = $("composer-model");
+  const locked = modelSwitching || sharedSaving || !!modelOp || !!panel || !!pending || turnBlocksUnload(lastMetrics && lastMetrics.live);
+  select.disabled = !modelSwitchAvailable || locked;
+  select.title = !modelSwitchAvailable ? tr("model.catalogUnavailable", "Model switching is unavailable.")
+    : locked ? tr("model.switchBusy", "Wait for the current reply or operation to finish.") : "";
+  for (const option of select.options) {
+    const item = modelCatalog.find((row) => row.id === option.value);
+    option.disabled = !item || (!item.installed && !item.active);
+    option.textContent = (modelNames[option.value] || option.value) +
+      (item && !item.installed && !item.active ? ` · ${tr("model.notInstalled", "Not downloaded")}` : "");
+  }
+  // Keep the requested selection visible until the server finishes switching.
+  if (!modelSwitching && [...select.options].some((option) => option.value === health.model)) select.value = health.model;
+  $("composer-effort").value = effortForModel();
+  $("composer-effort").disabled = modelSwitching || sharedSaving || pageBusy();
+  $("s-apply").disabled = modelSwitching || sharedSaving;
+  const noThinking = $("composer-effort").querySelector('[value="none"]');
+  noThinking.disabled = health.model === "lfm2.5-24b-a2b";
+  noThinking.title = noThinking.disabled ? tr("model.thinkingRequired", "This model requires thinking.") : "";
+  for (const b of $("s-thinking").children) b.disabled = b.dataset.v === "none" && health.model === "lfm2.5-24b-a2b";
+}
+async function modelControl(path, options = {}) {
+  const r = await fetch(path, {cache: "no-store", signal: AbortSignal.timeout(15000),
+    ...options, headers: headers(options.body != null)});
+  let data;
+  try { data = await r.json(); } catch (e) { throw new Error(`HTTP ${r.status}`); }
+  if (!r.ok) {
+    const error = new Error(r.status === 401 ? tr("toast.keyNeeded", "This server needs an API key: add it under About > Settings.")
+      : (data.error && data.error.message) || `HTTP ${r.status}`);
+    error.status = r.status;
+    throw error;
+  }
+  return data;
+}
+async function refreshModelCatalog() {
+  if (modelCatalogLoading) return;
+  modelCatalogLoading = true;
+  try {
+    const data = await modelControl("v1/models");
+    modelCatalog = Array.isArray(data.data) ? data.data : [];
+    modelSwitchAvailable = modelCatalog.some((row) => typeof row.installed === "boolean");
+    const active = modelCatalog.find((row) => row.active);
+    if (active && active.id !== health.model && !modelSwitching) await loadHealth();
+    if (modelCatalog.some((row) => row.status && row.status.value === "loading") && !modelSwitching) {
+      modelSwitching = true;
+      setBusy(!!busy);
+      pollModelSwitch();
+    }
+  } catch (e) {
+    modelSwitchAvailable = false;
+  } finally {
+    modelCatalogLoading = false;
+    syncComposerControls();
+  }
+}
+async function pollModelSwitch() {
+  clearTimeout(modelSwitchTimer);
+  try {
+    const state = await modelControl("v1/model/switch");
+    if (state.switching) {
+      modelSwitchTimer = setTimeout(pollModelSwitch, 750);
+      return;
+    }
+    // /health is the authority after success or rollback; never guess the active model.
+    if (!await loadHealth()) throw new Error("Model health is unavailable");
+    modelSwitching = false;
+    lastMetrics = null;
+    setBusy(!!busy);
+    await refreshModelCatalog();
+    if (state.error) toast("error", tr("model.switchFailed", "Model switch failed"), state.error, 8000);
+    else if (state.state === "ready") toast("success", tr("model.switched", "Model switched"), modelNames[health.model] || health.model);
+  } catch (e) {
+    // A disconnected POST may already have started the switch. Keep sends blocked
+    // and recover through the read-only status endpoint without repeating the POST.
+    if (e.status === 401 || e.status === 404) {
+      modelSwitching = false;
+      modelSwitchAvailable = false;
+      setBusy(!!busy);
+      toast("error", tr("model.switchFailed", "Model switch failed"), e.message, 8000);
+      return;
+    }
+    setPill("error", tr("pill.unreachable", "Server not reachable"));
+    modelSwitchTimer = setTimeout(pollModelSwitch, 2000);
+  }
+}
+$("composer-model").onchange = async () => {
+  const target = $("composer-model").value;
+  if (!target || target === health.model) return;
+  if (modelSwitching || sharedSaving || modelOp || panel || pending || turnBlocksUnload(lastMetrics && lastMetrics.live)) {
+    syncComposerControls();
+    toast("warn", tr("model.busy", "Model is busy"), tr("model.switchBusy", "Wait for the current reply or operation to finish."));
+    return;
+  }
+  modelSwitching = true;
+  setBusy(!!busy);
+  paintLive();
+  try {
+    await modelControl("v1/model/switch", {method: "POST", body: JSON.stringify({model: target})});
+  } catch (e) {
+    if (e.status) {
+      modelSwitching = false;
+      await loadHealth();
+      setBusy(!!busy);
+      toast("error", tr("model.switchFailed", "Model switch failed"), e.message, 8000);
+      return;
+    }
+  }
+  pollModelSwitch();
+};
+$("composer-effort").onchange = async () => {
+  const effort = $("composer-effort").value;
+  if (!["none", "low", "medium", "high"].includes(effort)) return;
+  if (health.model === "lfm2.5-24b-a2b" && effort === "none") {
+    syncComposerControls();
+    return;
+  }
+  settings.thinking = effort;
+  store.set("sampling", settings);
+  loadDrawer();
+  syncComposerControls();
+  if (sharedOn) {
+    try { await saveShared(true, settings); }
+    catch (e) { toast("error", tr("drawer.savedHere", "Saved here, but not for other apps"), e.message, 6000); }
+  }
+};
 function timeStr(t) { return new Date(t).toLocaleTimeString(StrataI18n.lang, {hour: "2-digit", minute: "2-digit"}); }
 
 // Local terminal UI: request-bound SSE supplies prompt/final timings. During
@@ -1239,14 +1391,16 @@ function busyHint() {
 const parksWhileBusy = () => settings.whileBusy === "queue" || settings.whileBusy === "interject";
 function setBusy(on) {
   $("stop-btn").hidden = !on;
-  $("send-btn").disabled = (on && !parksWhileBusy()) || !!panel;
-  $("input").disabled = !!panel;
+  $("send-btn").disabled = modelSwitching || (on && !parksWhileBusy()) || !!panel;
+  $("input").disabled = modelSwitching || !!panel;
   $("composer-hint").textContent = panel ? tr("composer.finishOpen", "Save or cancel what is open above to continue")
+                                         : modelSwitching ? tr("model.switching", "Switching model…")
                                          : on ? busyHint() : tr("composer.newline", "Shift+Enter: new line");
   if (settings.chatEdit) syncActions();                 // the buttons follow the state: none under the answer being written
   $("s-list").disabled = $("s-edit").disabled = !!busy || !!panel;      // they change the messages on the screen
   renderUndoBar();
   renderPending();
+  syncComposerControls();
 }
 
 // A message sent while an answer is being written (#4004). "queue": it waits and goes when the answer is done. "interject": the
@@ -1322,11 +1476,13 @@ function settlePending(cut, finished) {
 
 // the message box (or a parked message, `payload`) becomes a user turn and a reply is asked for
 async function send(payload) {
+  if (modelSwitching) return;
   const own = !payload;
   const p = payload || {text: $("input").value.trim(), images: attachments.filter((a) => a.kind !== "file"),
                         files: attachments.filter((a) => a.kind === "file")};
   if (!p.text && !p.images.length && !p.files.length) return;
   if (panel) return;                                  // something is open above (an edit): finish it first
+  if (!canUseModelImages(messages, p.images)) return;
   if (busy) { park(p, own); return; }
   clearUndo();
   messages.push({role: "user", text: p.text, images: p.images, files: p.files, time: Date.now()});
@@ -1340,6 +1496,8 @@ async function send(payload) {
 }
 // an answer for the messages as they are: the last one is a user turn
 async function generateReply() {
+  if (modelSwitching) return;
+  if (!canUseModelImages()) return;
   const m = {role: "assistant", text: "", reasoning: "", model: health.model, time: Date.now(),
              stats: {startedAt: Date.now(), elapsedMs: 0, firstTokenMs: null}};
   messages.push(m);
@@ -1358,7 +1516,7 @@ async function generateReply() {
   paintLive();
 
   const body = {model: health.model, messages: apiMessages(), stream: true, return_progress: true,
-                reasoning_effort: settings.thinking};
+                reasoning_effort: effortForModel()};
   if (!(settings.temperature > 0)) {
     body.temperature = 0;
   } else if (!samplingUntouched(settings)) {
@@ -1589,7 +1747,7 @@ function openDrawer(open) {
 const checked = (id) => $(id).getAttribute("aria-checked") === "true";
 const segValue = (id) => { const b = [...$(id).children].find((x) => x.getAttribute("aria-checked") === "true"); return b ? b.dataset.v : null; };
 function loadDrawer(s = settings) {
-  for (const b of $("s-thinking").children) b.setAttribute("aria-checked", String(b.dataset.v === s.thinking));
+  for (const b of $("s-thinking").children) b.setAttribute("aria-checked", String(b.dataset.v === effortForModel(s)));
   $("s-temp").value = s.temperature; $("s-topp").value = s.top_p; $("s-topk").value = s.top_k;
   $("s-max").value = s.max; $("s-seed").value = s.seed;
   $("s-math").setAttribute("aria-checked", String(!!s.math));
@@ -1604,7 +1762,7 @@ function loadDrawer(s = settings) {
   outputs();
 }
 // "Use for other apps too": the server keeps these settings as every client's defaults (GET/POST /settings)
-let sharedOn = false;
+let sharedOn = false, sharedSaving = false;
 async function loadShared() {
   try {
     const r = await fetch("settings", {headers: headers(), cache: "no-store"});
@@ -1613,7 +1771,7 @@ async function loadShared() {
   $("s-share").setAttribute("aria-checked", String(sharedOn));
 }
 function sharedDefaults(s) {
-  const d = {reasoning_effort: s.thinking};
+  const d = {reasoning_effort: effortForModel(s)};
   if (!(+s.temperature > 0)) d.temperature = 0;
   else if (!samplingUntouched(s)) Object.assign(d, {temperature: +s.temperature, top_p: +s.top_p, top_k: +s.top_k});
   if (s.seed) d.seed = +s.seed;
@@ -1622,14 +1780,21 @@ function sharedDefaults(s) {
   return d;
 }
 async function saveShared(on, s) {
-  const r = await fetch("settings", {method: "POST", headers: headers(true),
+  sharedSaving = true;
+  syncComposerControls();
+  try {
+    const r = await fetch("settings", {method: "POST", headers: headers(true),
                                       body: JSON.stringify({defaults: on ? sharedDefaults(s) : null})});
-  if (!r.ok) {
-    let msg = `HTTP ${r.status}`;
-    try { msg = (await r.json()).error.message || msg; } catch (e) { /* not json */ }
-    throw new Error(msg);
+    if (!r.ok) {
+      let msg = `HTTP ${r.status}`;
+      try { msg = (await r.json()).error.message || msg; } catch (e) { /* not json */ }
+      throw new Error(msg);
+    }
+    sharedOn = !!(await r.json()).shared;
+  } finally {
+    sharedSaving = false;
+    syncComposerControls();
   }
-  sharedOn = !!(await r.json()).shared;
 }
 // the engine was started with the experimental-speed-projection control vector (INFO cvec=...)
 function projectionLoaded() {
@@ -1667,6 +1832,7 @@ $("s-apply").onclick = async () => {
               chatList: locked ? !!prev.chatList : checked("s-list"), chatEdit: locked ? !!prev.chatEdit : checked("s-edit"),
               whileBusy: segValue("s-busy") || "wait"};
   store.set("sampling", settings);
+  syncComposerControls();
   StrataMath.reset();                                  // math on or off: every answer is drawn again
   if (settings.chatList !== !!prev.chatList) await setChatList(settings.chatList, true);
   if (settings.chatEdit !== !!prev.chatEdit) { clearUndo(); syncActions(); }
@@ -1728,7 +1894,8 @@ async function start() {
   renderChat();
   const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
   if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
-  loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
+  syncComposerControls();
+  loadHealth().then(refreshModelCatalog).then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
   showTab(location.hash.slice(1) || "chat");
   poll();
   requestAnimationFrame(fitHeader);

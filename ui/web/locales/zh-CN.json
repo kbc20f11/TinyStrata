@@ -445,5 +445,15 @@
   "theme.darkMode": "深色",
   "theme.lightMode": "浅色",
   "mcp.modelCalls": "模型会在回答时自行决定是否调用",
-  "projection.note": "引擎使用的控制向量；关闭后使用原始模型。切换后会重新处理一次当前对话。"
+  "projection.note": "引擎使用的控制向量；关闭后使用原始模型。切换后会重新处理一次当前对话。",
+  "composer.model": "模型",
+  "composer.effort": "推理强度",
+  "model.notInstalled": "尚未下载",
+  "model.switching": "正在切换模型…",
+  "model.switchFailed": "模型切换失败",
+  "model.switched": "模型已切换",
+  "model.switchBusy": "请等待当前回答或操作完成。",
+  "model.noVision": "此模型不支持图像。请开始纯文本聊天，或选择支持图像的模型。",
+  "model.thinkingRequired": "此模型必须启用思考。",
+  "model.catalogUnavailable": "模型切换不可用。"
 }

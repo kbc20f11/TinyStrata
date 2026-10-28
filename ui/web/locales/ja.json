@@ -445,5 +445,15 @@
   "theme.darkMode": "ダークモード",
   "theme.lightMode": "ライトモード",
   "mcp.modelCalls": "モデルが回答中に必要に応じて呼び出します",
-  "projection.note": "エンジンの制御ベクトルです。無効にすると標準モデルを使用します。切り替え後は会話を一度読み直します。"
+  "projection.note": "エンジンの制御ベクトルです。無効にすると標準モデルを使用します。切り替え後は会話を一度読み直します。",
+  "composer.model": "モデル",
+  "composer.effort": "Effort",
+  "model.notInstalled": "未ダウンロード",
+  "model.switching": "モデルを切り替えています…",
+  "model.switchFailed": "モデルの切り替えに失敗しました",
+  "model.switched": "モデルを切り替えました",
+  "model.switchBusy": "回答や処理が終わるまでお待ちください。",
+  "model.noVision": "このモデルは画像入力に対応していません。テキストのみのチャットを開始するか、画像対応モデルを選んでください。",
+  "model.thinkingRequired": "このモデルでは思考が必須です。",
+  "model.catalogUnavailable": "モデルの切り替えは利用できません。"
 }

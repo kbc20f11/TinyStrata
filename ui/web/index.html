@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="web/tokens.css">
 <link rel="stylesheet" href="web/components.css">
 <link rel="stylesheet" href="web/app.css">
-<link rel="stylesheet" href="web/terminal-theme.css?v=20261028.4">
+<link rel="stylesheet" href="web/terminal-theme.css?v=20261028.6">
 <script>
   // Match the operating system before the first paint, including older installs.
   try {
@@ -82,9 +82,28 @@
               <svg class="st-icon"><use href="web/sprite.svg#i-new-chat"/></svg></button>
             <button type="button" class="st-btn st-btn--icon" id="export-btn" title="Save this chat as Markdown" aria-label="Save this chat" data-i18n-title="composer.save" data-i18n-label="composer.saveLabel">
               <svg class="st-icon"><use href="web/sprite.svg#i-download"/></svg></button>
-            <button type="button" class="st-btn st-btn--secondary chat-settings-button" id="sampling-btn" title="Chat settings" aria-label="Chat settings" data-i18n-title="drawer.title" data-i18n-label="drawer.title">
-              <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-settings"/></svg>
-              <span class="chat-settings-label" data-i18n="drawer.title">Chat settings</span><span class="chat-settings-short" aria-hidden="true" data-i18n="drawer.short">Settings</span></button>
+            <div class="composer-controls">
+              <label class="composer-select composer-select--model" for="composer-model">
+                <span data-i18n="composer.model">Model</span>
+                <select class="st-input" id="composer-model" aria-label="Model" data-i18n-label="composer.model">
+                  <option value="qwen3.6-35b-a3b">Qwen3.6</option>
+                  <option value="gemma-4-26b-a4b-it">Gemma 4</option>
+                  <option value="lfm2.5-24b-a2b">LFM2.5</option>
+                </select>
+              </label>
+              <label class="composer-select composer-select--effort" for="composer-effort">
+                <span data-i18n="composer.effort">Effort</span>
+                <select class="st-input" id="composer-effort" aria-label="Effort" data-i18n-label="composer.effort">
+                  <option value="none" data-i18n="drawer.off">Off</option>
+                  <option value="low" data-i18n="drawer.low">Low</option>
+                  <option value="medium" data-i18n="drawer.medium">Medium</option>
+                  <option value="high" data-i18n="drawer.high" selected>High</option>
+                </select>
+              </label>
+              <button type="button" class="st-btn st-btn--secondary chat-settings-button" id="sampling-btn" title="Chat settings" aria-label="Chat settings" data-i18n-title="drawer.title" data-i18n-label="drawer.title">
+                <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-settings"/></svg>
+                <span class="chat-settings-label" data-i18n="drawer.title">Chat settings</span><span class="chat-settings-short" aria-hidden="true" data-i18n="drawer.short">Settings</span></button>
+            </div>
             <span class="spacer"></span>
             <span class="composer-hint" id="composer-hint"></span>
             <button type="button" class="st-btn st-btn--secondary" id="stop-btn" hidden>
@@ -315,13 +334,13 @@
 </aside>
 <div class="scrim" id="scrim" hidden></div>
 <div class="st-toasts" id="toasts" aria-live="polite"></div>
-<script src="web/i18n.js?v=20261028.3"></script>
+<script src="web/i18n.js?v=20261028.6"></script>
 <script src="web/preview.js"></script>
 <script src="web/math.js"></script>
 <script src="web/math-adapter.js"></script>
 <script src="web/history.js"></script>
 <script src="web/chatstore.js"></script>
-<script src="web/chats-ui.js"></script>
-<script src="web/app.js?v=20261028.4"></script>
+<script src="web/chats-ui.js?v=20261028.6"></script>
+<script src="web/app.js?v=20261028.6"></script>
 </body>
 </html>

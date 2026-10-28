@@ -450,5 +450,15 @@
   "theme.darkMode": "Dark",
   "theme.lightMode": "Light",
   "mcp.modelCalls": "the model may call them while it answers",
-  "projection.note": "The engine's control vector; off uses the stock model. Switching reads the chat again once."
+  "projection.note": "The engine's control vector; off uses the stock model. Switching reads the chat again once.",
+  "composer.model": "Model",
+  "composer.effort": "Effort",
+  "model.notInstalled": "Not downloaded",
+  "model.switching": "Switching model…",
+  "model.switchFailed": "Model switch failed",
+  "model.switched": "Model switched",
+  "model.switchBusy": "Wait for the current reply or operation to finish.",
+  "model.noVision": "This model does not support images. Start a text-only chat or choose a vision model.",
+  "model.thinkingRequired": "This model requires thinking.",
+  "model.catalogUnavailable": "Model switching is unavailable."
 }
