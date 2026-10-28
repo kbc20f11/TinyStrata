@@ -4,7 +4,7 @@
 
 **TinyStrata 是一款正在开发中的高速推理引擎，面向 30B 级 MoE 模型，仅支持 Windows。** 主要面向配备主流显卡、显存为 **8–24 GB** 且系统内存**不超过 32 GB** 的 PC。 提供 API 和可选的聊天 UI。
 
-**支持 NVIDIA GPU（CUDA）。实验性 AMD HIP/ROCm 路径使用 INT8 KV，已在本地 Radeon RX 9060 XT 上完成实机验证。**
+**支持 NVIDIA Ampere 及更新架构的 GPU（CUDA）和 AMD RDNA 4 GPU（HIP/ROCm）。AMD 路径使用 INT8 KV。**
 
 ## 为什么开发 TinyStrata？
 

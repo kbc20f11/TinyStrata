@@ -4,7 +4,7 @@
 
 **TinyStrata is a fast, Windows-only inference engine for 30B-class MoE models.** It primarily targets PCs with mainstream graphics cards (**8–24 GB of VRAM**) and **32 GB of system RAM or less**. It offers an API and an optional chat UI.
 
-**NVIDIA GPUs (CUDA) are supported. The experimental AMD HIP/ROCm path uses INT8 KV and has been tested locally on a Radeon RX 9060 XT.**
+**NVIDIA Ampere and newer GPUs (CUDA) and AMD RDNA 4 GPUs (HIP/ROCm) are supported. The AMD path uses INT8 KV.**
 
 ## Why we are building TinyStrata
 

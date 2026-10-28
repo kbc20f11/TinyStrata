@@ -4,7 +4,7 @@
 
 **TinyStrata es un motor de inferencia de alta velocidad en desarrollo para modelos MoE de la clase 30B, exclusivo de Windows.** Está orientado principalmente a PC equipados con tarjetas gráficas de uso común de **8–24 GB** de VRAM y con **32 GB de RAM del sistema o menos**. Ofrece una API y una interfaz de chat opcional.
 
-**Se admiten GPU NVIDIA (CUDA). La ruta experimental AMD HIP/ROCm usa KV INT8 y se ha probado localmente en una Radeon RX 9060 XT.**
+**Se admiten GPU NVIDIA de la generación Ampere o posterior (CUDA) y GPU AMD RDNA 4 (HIP/ROCm). La ruta AMD usa KV INT8.**
 
 ## ¿Por qué desarrollamos TinyStrata?
 

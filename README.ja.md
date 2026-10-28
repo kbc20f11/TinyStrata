@@ -4,7 +4,7 @@
 
 **TinyStrata は、30B 級の MoE モデル向けに開発している Windows 専用の高速推論エンジンです。** VRAM が **8–24 GB** の一般的なグラフィックボードを搭載し、システム RAM が **32 GB 以下**の PC を主な対象としています。 API と、必要に応じて導入できるチャット UI を提供します。
 
-**NVIDIA GPU（CUDA）に対応しています。AMD 向けには INT8 KV を使う HIP/ROCm 経路を試験的に用意しており、Radeon RX 9060 XT 実機で動作を確認しています。**
+**NVIDIA Ampere 世代以降（CUDA）と AMD RDNA 4（HIP/ROCm）に対応しています。AMD では INT8 KV を使用します。**
 
 ## TinyStrata を開発する理由
 

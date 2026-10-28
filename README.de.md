@@ -4,7 +4,7 @@
 
 **TinyStrata ist eine schnelle Inferenz-Engine für MoE-Modelle der 30B-Klasse, die ausschließlich für Windows entwickelt wird.** Sie richtet sich vor allem an PCs, die mit gängigen Grafikkarten mit **8–24 GB VRAM** ausgestattet sind und über **höchstens 32 GB Arbeitsspeicher** verfügen. Sie bietet eine API und eine optionale Chat-Oberfläche.
 
-**NVIDIA-GPUs (CUDA) werden unterstützt. Der experimentelle AMD-HIP/ROCm-Pfad verwendet INT8-KV und wurde lokal auf einer Radeon RX 9060 XT getestet.**
+**NVIDIA-GPUs ab der Ampere-Generation (CUDA) und AMD-RDNA-4-GPUs (HIP/ROCm) werden unterstützt. Der AMD-Pfad verwendet INT8-KV.**
 
 ## Warum wir TinyStrata entwickeln
 
