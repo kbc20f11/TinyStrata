@@ -2,7 +2,7 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · **日本語** · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
 
-**TinyStrata は、30B 級の MoE モデル向けに開発している Windows 専用・API 専用の高速推論エンジンです。** VRAM が **8–24 GB** の一般的なグラフィックボードを搭載し、システム RAM が **32 GB 以下**の PC を主な対象としています。
+**TinyStrata は、30B 級の MoE モデル向けに開発している Windows 専用の高速推論エンジンです。** VRAM が **8–24 GB** の一般的なグラフィックボードを搭載し、システム RAM が **32 GB 以下**の PC を主な対象としています。 API と、必要に応じて導入できるチャット UI を提供します。
 
 **NVIDIA GPU（CUDA）に対応しています。AMD 向けには INT8 KV を使う HIP/ROCm 経路を試験的に用意しており、Radeon RX 9060 XT 実機で動作を確認しています。**
 
@@ -19,10 +19,6 @@ TinyStrata は Strata を基盤に、限られた VRAM でも 30B 級の MoE モ
 開発は Windows 上でのローカル推論と API 提供に集中しています。
 
 ハードウェアに応じて推論・メモリ設定を自動選択するため、複雑な設定や手動調整をせずに API を使い始められます。
-
-## UI を同梱しない理由
-
-LLM 向けの API に対応した UI やエージェントハーネスは、すでに数多くあります。TinyStrata も一般的な API 形式に対応しているため、好みのものを接続して使えます。接続設定が面倒に感じる場合は、AI エージェントに設定を任せることもできます。UI は既存のソフトウェアに任せることで、推論エンジンと API の開発に注力しています。
 
 ## 対象モデル
 
@@ -74,19 +70,33 @@ Gemma は `run-api.bat --model-family gemma4`（既定ポート 18082）、LFM �
 
 ## インストール方法
 
-64 ビット PowerShell で次のコマンドを実行すると、TinyStrata をインストールし、`http://127.0.0.1:18080/v1` で API を起動できます。
+64 ビット PowerShell で、どちらかのインストーラーを実行してください。
+
+**UI あり**（[インストーラー](install-ui.ps1)）：チャットは `http://127.0.0.1:3000`、API は `http://127.0.0.1:18080/v1` で利用できます。
+
+```powershell
+irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install-ui.ps1' | iex
+```
+
+**API のみ**（[インストーラー](install.ps1)）：UI を導入せず、同じ API を利用できます。
 
 ```powershell
 irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex
 ```
 
-Windows を再起動したあとに再び起動するには、次のコマンドを実行するか、同じ `run-api.bat` をダブルクリックしてください。
+緑を基調とした UI は、README と同じ 7 言語、画像入力、生成状況のリアルタイム表示に対応します。ライト／ダークモードは OS の設定に従います。
+
+再び起動するには、次のコマンドを実行するか、`run-ui.bat` をダブルクリックしてください。
+
+```powershell
+& "$env:LOCALAPPDATA\TinyStrata\run-ui.bat"
+```
+
+API のみの構成では `run-api.bat` を使います。
 
 ```powershell
 & "$env:LOCALAPPDATA\TinyStrata\run-api.bat" --port 18080
 ```
-
-または、AI エージェントに [TinyStrata の GitHub リポジトリ](https://github.com/kbc20f11/TinyStrata)のリンクを渡し、導入を任せることもできます。
 
 ### 起動したままモデルを切り替える
 
@@ -170,9 +180,9 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 | 目的とハードウェア | プロジェクト |
 | --- | --- |
-| 一般的なグラフィックボードを搭載した、**VRAM が 8–24 GB、システム RAM が 32 GB 以下**の **Windows** PC で、Qwen3.6 / Gemma 4 / LFM2.5 を API 経由で使いたい。 | TinyStrata（**Windows 専用**、開発中） |
+| 一般的なグラフィックボードを搭載した、**VRAM が 8–24 GB、システム RAM が 32 GB 以下**の **Windows** PC で、Qwen3.6 / Gemma 4 / LFM2.5 を使いたい。 | TinyStrata（**Windows 専用**、開発中） |
 | **RTX 3060 クラス以上の GPU** と **64 GB 以上のシステム RAM** の両方を備えている。 | [Strata（上流プロジェクト）](https://github.com/Niko1221/Strata) をお勧めします。 |
-| **チャット UI が同梱されたもの**を使いたい。 | [Strata（上流プロジェクト）](https://github.com/Niko1221/Strata) をお勧めします。 |
+| **生成状況をリアルタイム表示するチャット UI** を使いたい。 | TinyStrata の [UI ありインストーラー](install-ui.ps1)。 |
 
 ## メモリの分担 — Qwen3.6
 
@@ -216,7 +226,7 @@ MTP は greedy 生成と温度付きサンプリングの両方に対応して�
 
 ## API サーバー
 
-**TinyStrata は API 専用です。** OpenAI 互換の Chat Completions（`/v1/chat/completions`）と Responses（`/v1/responses`）API、および Anthropic 互換の Messages API（`/v1/messages`）を提供し、ストリーミング生成にも対応しています。API クライアントや外部のフロントエンドを接続してください。TinyStrata にチャット UI は同梱されていません。
+TinyStrata は OpenAI 互換の Chat Completions（`/v1/chat/completions`）と Responses（`/v1/responses`）API、および Anthropic 互換の Messages API（`/v1/messages`）を提供し、ストリーミング生成にも対応しています。オプションの TinyStrata UI、API クライアント、外部のフロントエンドから利用できます。
 
 新しい構成では、モデルごとのサンプリング設定を使います。リクエストで指定した値が優先され、保存済みの手動設定も維持されます。
 

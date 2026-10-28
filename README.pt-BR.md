@@ -2,7 +2,7 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · **Português**
 
-**O TinyStrata é um mecanismo de inferência de alta velocidade em desenvolvimento para modelos MoE da classe 30B, exclusivo para Windows e acessível apenas por API.** Ele é voltado principalmente a PCs equipados com placas de vídeo comuns de **8–24 GB** de VRAM e com **32 GB de RAM do sistema ou menos**.
+**O TinyStrata é um mecanismo de inferência de alta velocidade em desenvolvimento para modelos MoE da classe 30B, exclusivo para Windows.** Ele é voltado principalmente a PCs equipados com placas de vídeo comuns de **8–24 GB** de VRAM e com **32 GB de RAM do sistema ou menos**. Ele oferece uma API e uma interface de chat opcional.
 
 **Há suporte a GPUs NVIDIA (CUDA). A rota experimental AMD HIP/ROCm usa KV INT8 e foi testada localmente em uma Radeon RX 9060 XT.**
 
@@ -19,10 +19,6 @@ Baseado no Strata, o TinyStrata busca usar a memória da GPU de forma eficiente 
 O desenvolvimento se concentra na inferência local no Windows e no acesso a ela por meio de uma API.
 
 O TinyStrata escolhe automaticamente as configurações de inferência e memória para o seu hardware, para que você possa começar a usar a API sem configurações complicadas nem ajustes manuais.
-
-## Por que não há uma interface incluída?
-
-Já existem muitas interfaces e ambientes de agentes compatíveis com APIs para LLMs. Como o TinyStrata também oferece suporte a formatos comuns de API, você pode conectar e usar os que preferir. Se configurar a conexão parecer trabalhoso, você pode pedir a um agente de IA que faça isso. Ao deixar a interface a cargo do software existente, nos concentramos no desenvolvimento do mecanismo de inferência e da API.
 
 ## Foco de modelos
 
@@ -62,19 +58,33 @@ Se o executável de um modelo adicional não estiver disponível, veja as [instr
 
 ## Como instalar
 
-Execute no PowerShell de 64 bits para instalar o TinyStrata e iniciar a API em `http://127.0.0.1:18080/v1`:
+Execute um dos dois instaladores no PowerShell de 64 bits:
+
+**Com interface** ([instalador](install-ui.ps1)): chat em `http://127.0.0.1:3000`, API em `http://127.0.0.1:18080/v1`.
+
+```powershell
+irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install-ui.ps1' | iex
+```
+
+**Somente API** ([instalador](install.ps1)): a mesma API sem interface.
 
 ```powershell
 irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex
 ```
 
-Para iniciar novamente após reiniciar o Windows, execute este comando ou dê um clique duplo no mesmo arquivo `run-api.bat`:
+A interface opcional em tons de verde oferece os sete idiomas do README, entrada de imagens e estatísticas de geração em tempo real. O modo claro ou escuro segue as configurações do sistema.
+
+Para iniciar novamente, execute este comando ou dê um clique duplo em `run-ui.bat`:
+
+```powershell
+& "$env:LOCALAPPDATA\TinyStrata\run-ui.bat"
+```
+
+Para a instalação somente com API, use `run-api.bat`:
 
 ```powershell
 & "$env:LOCALAPPDATA\TinyStrata\run-api.bat" --port 18080
 ```
-
-Você também pode passar o link do [repositório do TinyStrata no GitHub](https://github.com/kbc20f11/TinyStrata) a um agente de IA e deixar a instalação por conta dele.
 
 ### Trocar de modelo sem reiniciar
 
@@ -158,9 +168,9 @@ Os tempos de imagem indicam a primeira saída / o fim da resposta, incluindo a c
 
 | Seu objetivo e seu hardware | Projeto |
 | --- | --- |
-| Você quer inferência do Qwen3.6 / Gemma 4 / LFM2.5 apenas por API no **Windows**, com **8–24 GB de VRAM e 32 GB de RAM do sistema ou menos**, como em um PC equipado com uma placa de vídeo comum. | TinyStrata (**somente Windows**, em desenvolvimento) |
+| Você quer inferência do Qwen3.6 / Gemma 4 / LFM2.5 no **Windows**, com **8–24 GB de VRAM e 32 GB de RAM do sistema ou menos**, como em um PC equipado com uma placa de vídeo comum. | TinyStrata (**somente Windows**, em desenvolvimento) |
 | Você tem tanto **uma GPU da classe RTX 3060 ou superior** quanto **64 GB de RAM do sistema ou mais**. | Recomendamos o [Strata (projeto original)](https://github.com/Niko1221/Strata). |
-| Você quer uma **interface de chat incluída**. | Recomendamos o [Strata (projeto original)](https://github.com/Niko1221/Strata). |
+| Você quer uma **interface de chat com estatísticas em tempo real**. | TinyStrata com o [instalador de interface opcional](install-ui.ps1). |
 
 ## Como a memória é compartilhada — Qwen3.6
 
@@ -204,7 +214,7 @@ Configurações explícitas substituem as escolhas automáticas, e as configura�
 
 ## Servidor de API
 
-**O TinyStrata funciona apenas por API.** Ele fornece APIs Chat Completions (`/v1/chat/completions`) e Responses (`/v1/responses`) compatíveis com OpenAI e uma API Messages (`/v1/messages`) compatível com Anthropic, incluindo geração em streaming. Conecte um cliente de API ou uma interface externa; o TinyStrata não inclui uma interface de chat.
+O TinyStrata fornece APIs Chat Completions (`/v1/chat/completions`) e Responses (`/v1/responses`) compatíveis com OpenAI e uma API Messages (`/v1/messages`) compatível com Anthropic, incluindo geração em streaming. Use a interface opcional do TinyStrata, um cliente de API ou uma interface externa.
 
 Configurações novas usam padrões de amostragem próprios de cada modelo. Os valores de cada solicitação têm prioridade; configurações personalizadas salvas são preservadas.
 

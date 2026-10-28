@@ -2,7 +2,7 @@
 
 [English](README.md) · **简体中文** · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
 
-**TinyStrata 是一款正在开发中的高速推理引擎，面向 30B 级 MoE 模型，仅支持 Windows，且仅提供 API。** 主要面向配备主流显卡、显存为 **8–24 GB** 且系统内存**不超过 32 GB** 的 PC。
+**TinyStrata 是一款正在开发中的高速推理引擎，面向 30B 级 MoE 模型，仅支持 Windows。** 主要面向配备主流显卡、显存为 **8–24 GB** 且系统内存**不超过 32 GB** 的 PC。 提供 API 和可选的聊天 UI。
 
 **支持 NVIDIA GPU（CUDA）。实验性 AMD HIP/ROCm 路径使用 INT8 KV，已在本地 Radeon RX 9060 XT 上完成实机验证。**
 
@@ -19,10 +19,6 @@ TinyStrata 基于 Strata，致力于高效利用 GPU 内存，让 30B 级 MoE �
 开发工作专注于 Windows 上的本地推理及其 API 服务。
 
 TinyStrata 会根据你的硬件自动选择推理和内存设置，因此无需复杂配置或手动调优即可开始使用 API。
-
-## 为什么不附带 UI？
-
-目前已有许多支持 LLM API 的 UI 和智能体运行框架。TinyStrata 也支持常见的 API 格式，因此可以连接你喜欢的软件来使用。如果连接配置让你觉得繁琐，也可以请 AI 智能体帮你完成。将 UI 交给现有软件，让我们能够专注于推理引擎和 API 的开发。
 
 ## 重点支持的模型
 
@@ -62,19 +58,33 @@ Gemma 默认使用 INT8。原生 FP8 为实验性功能，可通过 `run-api.bat
 
 ## 安装方法
 
-在 64 位 PowerShell 中运行以下命令，即可安装 TinyStrata 并在 `http://127.0.0.1:18080/v1` 启动 API：
+在 64 位 PowerShell 中运行以下任意一种安装方式：
+
+**带 UI**（[安装脚本](install-ui.ps1)）：聊天地址为 `http://127.0.0.1:3000`，API 地址为 `http://127.0.0.1:18080/v1`。
+
+```powershell
+irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install-ui.ps1' | iex
+```
+
+**仅 API**（[安装脚本](install.ps1)）：提供相同的 API，不安装 UI。
 
 ```powershell
 irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex
 ```
 
-重启 Windows 后，要再次启动，请运行以下命令，或双击同一个 `run-api.bat`：
+绿色主题的可选 UI 支持 README 的七种语言、图像输入和实时生成统计。浅色／深色模式跟随操作系统设置。
+
+再次启动时，运行以下命令或双击 `run-ui.bat`：
+
+```powershell
+& "$env:LOCALAPPDATA\TinyStrata\run-ui.bat"
+```
+
+仅安装 API 时使用 `run-api.bat`：
 
 ```powershell
 & "$env:LOCALAPPDATA\TinyStrata\run-api.bat" --port 18080
 ```
-
-或者，你也可以将 [TinyStrata 的 GitHub 仓库](https://github.com/kbc20f11/TinyStrata)链接交给 AI 智能体，让它帮你完成安装。
 
 ### 无需重启即可切换模型
 
@@ -158,9 +168,9 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 | 你的目标和硬件 | 项目 |
 | --- | --- |
-| 你希望在 **Windows** 上使用仅通过 API 提供的 Qwen3.6 / Gemma 4 / LFM2.5 推理，设备是配备主流显卡的 PC，配置为 **8–24 GB 显存、系统内存不超过 32 GB**。 | TinyStrata（**仅支持 Windows**，开发中） |
+| 你希望在 **Windows** 上使用 Qwen3.6 / Gemma 4 / LFM2.5 推理，设备是配备主流显卡的 PC，配置为 **8–24 GB 显存、系统内存不超过 32 GB**。 | TinyStrata（**仅支持 Windows**，开发中） |
 | 你同时拥有 **RTX 3060 级别或更高性能的 GPU** 和 **64 GB 或更多系统内存**。 | 推荐使用 [Strata（上游项目）](https://github.com/Niko1221/Strata)。 |
-| 你希望使用**附带聊天 UI** 的项目。 | 推荐使用 [Strata（上游项目）](https://github.com/Niko1221/Strata)。 |
+| 你希望使用**带实时生成统计的聊天 UI**。 | TinyStrata 的[可选 UI 安装脚本](install-ui.ps1)。 |
 
 ## 内存如何分工 — Qwen3.6
 
@@ -204,7 +214,7 @@ MTP 同时支持贪心生成和基于温度的采样，包括重复惩罚、频�
 
 ## API 服务器
 
-**TinyStrata 仅提供 API。** 它提供兼容 OpenAI 的 Chat Completions（`/v1/chat/completions`）和 Responses（`/v1/responses`）API，以及兼容 Anthropic 的 Messages API（`/v1/messages`），并支持流式生成。请连接 API 客户端或外部前端；TinyStrata 不附带聊天 UI。
+TinyStrata 提供兼容 OpenAI 的 Chat Completions（`/v1/chat/completions`）和 Responses（`/v1/responses`）API，以及兼容 Anthropic 的 Messages API（`/v1/messages`），并支持流式生成。可以使用可选的 TinyStrata UI、API 客户端或外部前端。
 
 新配置采用各模型自己的采样默认值。每次请求指定的值优先；已保存的自定义设置保持不变。
 

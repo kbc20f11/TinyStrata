@@ -19,6 +19,8 @@ param(
     [ValidatePattern('^gfx[0-9a-f]+(;gfx[0-9a-f]+)*$')][string]$HipArchitectures,
     [ValidateSet('qwen36', 'qwen3.6', 'lfm2', 'lfm2.5', 'gemma4', 'gemma-4')][string]$ModelFamily = 'qwen36',
     [ValidateRange(0, 65535)][int]$Port = 0,
+    [switch]$WithUI,
+    [ValidateRange(1, 65535)][int]$UiPort = 3000,
     [switch]$NoStart,
     [switch]$SkipModelDownload,
     [switch]$CheckOnly,
@@ -836,7 +838,9 @@ function Get-TinyStrataSavedProcess {
         $state = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
         if ($state.config -ne $ConfigPath -or $state.source -ne $SourcePath -or $state.port -ne $ApiPort) { return $null }
         $process = Get-Process -Id $state.pid -ErrorAction Stop
-        if ($process.StartTime.ToUniversalTime().ToString('o') -ne $state.started) { return $null }
+        # PowerShell 7.5+ decodes ISO JSON dates as DateTime; 5.1 keeps strings.
+        $started = if ($state.started -is [DateTime]) { $state.started.ToUniversalTime().ToString('o') } else { [string]$state.started }
+        if ($process.StartTime.ToUniversalTime().ToString('o') -ne $started) { return $null }
         $details = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $state.pid)
         if (-not $details.CommandLine -or $details.CommandLine.IndexOf($ConfigPath, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
             $details.CommandLine -notmatch 'serve\.server') { return $null }
@@ -891,10 +895,91 @@ function Get-TinyStrataModelFamily {
     }
 }
 
+function Initialize-TinyStrataUiSource {
+    param([string]$SourceRoot, [string]$WorkRoot)
+    $uiRoot = Join-Path $SourceRoot 'ui'
+    $runner = Join-Path $SourceRoot 'run-ui.bat'
+    $required = @('ui\launch.py', 'ui\server.py', 'ui\web\index.html', 'run-ui.bat')
+    $complete = $true
+    foreach ($path in $required) {
+        if (-not (Test-Path -LiteralPath (Join-Path $SourceRoot $path) -PathType Leaf)) { $complete = $false; break }
+    }
+    if ($complete) { return }
+    if ((Test-Path -LiteralPath (Join-Path $SourceRoot '.git')) -or
+        ((Get-Item -LiteralPath $SourceRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw 'The optional UI is missing from this Git checkout or linked source directory. Update the checkout first; the API was left unchanged.'
+    }
+    if (Test-Path -LiteralPath $uiRoot) {
+        $existingUiPaths = @(Get-Item -LiteralPath $uiRoot -Force) + @(Get-ChildItem -LiteralPath $uiRoot -Recurse -Force)
+        if (@($existingUiPaths | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }).Count -gt 0) {
+            throw 'The existing UI contains a linked path; it was left unchanged.'
+        }
+    }
+    if ((Test-Path -LiteralPath $runner) -and ((Get-Item -LiteralPath $runner -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw 'The UI launcher is a linked path; it was left unchanged.'
+    }
+    $cacheRoot = Join-Path $WorkRoot 'installer'
+    $commit = Invoke-RestMethod -Uri 'https://api.github.com/repos/kbc20f11/TinyStrata/commits/main' `
+        -Headers @{ 'User-Agent' = 'TinyStrata-UI-Installer'; Accept = 'application/vnd.github+json' } -TimeoutSec 30
+    $revision = [string]$commit.sha
+    if ($revision -notmatch '^[a-f0-9]{40}$') { throw 'GitHub returned an invalid TinyStrata revision.' }
+    $archive = Join-Path $cacheRoot ("TinyStrata-$revision.zip")
+    Write-Host "Preparing the optional UI ($($revision.Substring(0, 7)))..."
+    Get-TinyStrataOfficialFile -Uri ("https://codeload.github.com/kbc20f11/TinyStrata/zip/$revision") -Destination $archive
+    $staging = Join-Path $cacheRoot ('ui-source-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $staging -Force | Out-Null
+    $unpacked = Join-Path $staging ("TinyStrata-$revision")
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = [IO.Compression.ZipFile]::OpenRead($archive)
+    try {
+        foreach ($entry in $zip.Entries) {
+            if ($entry.FullName -match ':') { throw 'GitHub source archive contains an unexpected path.' }
+            $target = [IO.Path]::GetFullPath((Join-Path $staging $entry.FullName.Replace('/', '\')))
+            if (-not $entry.Name -and $target.TrimEnd('\') -eq $unpacked) { continue }
+            if (-not $target.StartsWith($unpacked + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'GitHub source archive contains an unexpected path.' }
+            $relative = $target.Substring($unpacked.Length + 1)
+            if (-not $entry.Name -or ($relative -ne 'run-ui.bat' -and -not $relative.StartsWith('ui\', [StringComparison]::OrdinalIgnoreCase))) { continue }
+            New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+            [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $target, $false)
+        }
+    } finally { $zip.Dispose() }
+    foreach ($path in $required) {
+        if (-not (Test-Path -LiteralPath (Join-Path $unpacked $path) -PathType Leaf)) { throw 'Downloaded TinyStrata UI sources are incomplete.' }
+    }
+    # Add only the optional UI. API source, binaries, settings and model files
+    # stay in place, so an already running API does not need to restart.
+    $backup = Join-Path $staging 'previous-ui'
+    New-Item -ItemType Directory -Path $backup | Out-Null
+    foreach ($existing in @($uiRoot, $runner)) {
+        if (Test-Path -LiteralPath $existing) { Copy-Item -LiteralPath $existing -Destination $backup -Recurse -Force }
+    }
+    Copy-Item -LiteralPath (Join-Path $unpacked 'ui') -Destination $SourceRoot -Recurse -Force
+    Copy-Item -LiteralPath (Join-Path $unpacked 'run-ui.bat') -Destination $runner -Force
+}
+
+function Initialize-TinyStrataOptionalUI {
+    param([string]$SourceRoot, [string]$WorkRoot, [int]$ApiPort,
+          [int]$UiPort = 3000, [string]$Family = 'qwen36', [switch]$ConfigureOnly)
+    $launcher = Join-Path $SourceRoot 'ui\launch.py'
+    $python = Join-Path $WorkRoot 'runtime\.venv\Scripts\python.exe'
+    Initialize-TinyStrataUiSource -SourceRoot $SourceRoot -WorkRoot $WorkRoot
+    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw "The UI needs the installed Python runtime: $python" }
+    $arguments = @('-B', $launcher, '--source-dir', $SourceRoot, '--work-dir', $WorkRoot,
+                   '--api-port', [string]$ApiPort, '--port', [string]$UiPort, '--model-family', $Family)
+    if ($ConfigureOnly) { $arguments += '--configure-only' }
+    else { $arguments += '--no-api-start' } # The installer already prepared the API, including intentional unloaded mode.
+    & $python @arguments | ForEach-Object { Write-Host $_ }
+    if ($LASTEXITCODE -ne 0) {
+        throw 'The optional UI could not be prepared or started. The API was not stopped; see the UI logs in the work directory.'
+    }
+    if ($ConfigureOnly) { Write-Host "UI prepared. Start it with $(Join-Path $SourceRoot 'run-ui.bat')." }
+}
+
 function Invoke-TinyStrataInstaller {
     param([string]$SourceDirectory, [string]$WorkingDirectory, [int]$ApiPort,
           [bool]$DoNotStart, [bool]$DoNotDownload, [bool]$InspectOnly, [bool]$BuildAgain, [bool]$RefreshSource,
-          [string]$Family = 'qwen36', [string]$Backend = 'auto', [string]$HipDirectory, [string]$HipArchitectures)
+          [string]$Family = 'qwen36', [string]$Backend = 'auto', [string]$HipDirectory, [string]$HipArchitectures,
+          [bool]$IncludeUI = $false, [int]$UiPort = 3000)
     if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitProcess) { throw 'Run this installer in 64-bit Windows PowerShell or PowerShell.' }
     $sourceRoot = [IO.Path]::GetFullPath($SourceDirectory).TrimEnd('\')
     $sourceReady = Test-TinyStrataSource -Directory $sourceRoot
@@ -910,17 +995,22 @@ function Invoke-TinyStrataInstaller {
     $selectedBackend = Get-TinyStrataBackend -Requested $Backend -Configuration $cfg
     if ($ApiPort -eq 0) { $ApiPort = if ($cfg -and $cfg.port) { [int]$cfg.port } else { $selectedFamily.Port } }
     if ($ApiPort -lt 1 -or $ApiPort -gt 65535) { throw 'Port must be between 1 and 65535.' }
+    if ($IncludeUI -and ($UiPort -lt 1 -or $UiPort -gt 65535 -or $UiPort -eq $ApiPort)) {
+        throw 'UiPort must be between 1 and 65535 and different from the API port.'
+    }
     $baseUrl = "http://127.0.0.1:$ApiPort"
     if ($InspectOnly) {
         Write-Host "Source:  $sourceRoot"
         Write-Host "Work:    $workRoot"
         Write-Host "Config:  $configPath"
         Write-Host "API:     $baseUrl/v1"
+        if ($IncludeUI) { Write-Host "UI:      http://127.0.0.1:$UiPort" }
         if (-not $sourceReady -or $RefreshSource) { Write-Host 'First download TinyStrata sources from GitHub (no git installation required).' }
         Write-Host "Backend: $selectedBackend"
         Write-Host 'Plan: reuse installed components; prepare Python/dependencies; reuse or build the selected GPU engine; prepare its runtime; save configuration.'
         if ($selectedBackend -eq 'hip') { Write-Host 'AMD: reuse an existing SDK or prepare a private ROCm/HIP SDK; KV is INT8.' }
         if (-not $DoNotStart) { Write-Host 'Then start the API and install the fixed model through its API if needed.' }
+        if ($IncludeUI) { Write-Host $(if ($DoNotStart) { 'Prepare the optional UI launcher without starting services.' } else { 'Then start the optional UI and open it in the browser.' }) }
         return
     }
     # Inspect occupied ports before changing configuration or installing anything.
@@ -933,7 +1023,11 @@ function Invoke-TinyStrataInstaller {
     }
     $server = Get-TinyStrataSavedProcess -StatePath $statePath -ConfigPath $configPath -SourcePath $sourceRoot -ApiPort $ApiPort
     if ($server -and ($BuildAgain -or $RefreshSource)) { throw 'Stop the API for this installation before requesting an update or rebuild.' }
-    if ($server -and $DoNotStart) { Write-Host "Installation already prepared; existing API left unchanged (PID $($server.Id))."; return }
+    if ($server -and $DoNotStart) {
+        if ($IncludeUI) { Initialize-TinyStrataOptionalUI -SourceRoot $sourceRoot -WorkRoot $workRoot -ApiPort $ApiPort -UiPort $UiPort -Family $selectedFamily.Name -ConfigureOnly }
+        Write-Host "Installation already prepared; existing API left unchanged (PID $($server.Id))."
+        return
+    }
     if (-not $DoNotStart) {
         $listeners = @(Get-NetTCPConnection -LocalPort $ApiPort -State Listen -ErrorAction SilentlyContinue)
         if ($listeners.Count -gt 0 -and (-not $server -or -not (Test-TinyStrataPortOwner -ApiPort $ApiPort -RootProcessId $server.Id))) {
@@ -1010,7 +1104,12 @@ function Invoke-TinyStrataInstaller {
         & $python @arguments
         if ($LASTEXITCODE -ne 0) { throw 'TinyStrata configuration failed.' }
         $cfg = Get-TinyStrataConfig -Path $configPath
-        if ($DoNotStart) { Write-Host "Installed. Config: $configPath"; Write-Host 'Run install.ps1 again to start the API.'; return }
+        if ($DoNotStart) {
+            if ($IncludeUI) { Initialize-TinyStrataOptionalUI -SourceRoot $sourceRoot -WorkRoot $workRoot -ApiPort $ApiPort -UiPort $UiPort -Family $selectedFamily.Name -ConfigureOnly }
+            Write-Host "Installed. Config: $configPath"
+            Write-Host 'Run install.ps1 again to start the API.'
+            return
+        }
         $stdout = Join-Path $runtimeRoot 'api.stdout.log'
         $stderr = Join-Path $runtimeRoot 'api.stderr.log'
         # Windows command-line quoting is confined to validated path arguments.
@@ -1064,6 +1163,7 @@ function Invoke-TinyStrataInstaller {
     Write-Host "Config: $configPath"
     Write-Host "Logs:   $runtimeRoot"
     if ($health.loaded) { Write-Host 'TinyStrata is ready for inference.' } else { Write-Host 'API ready; model installation was skipped.' }
+    if ($IncludeUI) { Initialize-TinyStrataOptionalUI -SourceRoot $sourceRoot -WorkRoot $workRoot -ApiPort $ApiPort -UiPort $UiPort -Family $selectedFamily.Name }
 }
 
 $tinyStrataOldErrorAction = $ErrorActionPreference
@@ -1075,7 +1175,7 @@ try {
         elseif (Test-TinyStrataSource -Directory (Get-Location).Path) { $SourceDir = (Get-Location).Path }
         else { $SourceDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'TinyStrata' }
     }
-    Invoke-TinyStrataInstaller -SourceDirectory $SourceDir -WorkingDirectory $WorkDir -ApiPort $Port -DoNotStart $NoStart.IsPresent -DoNotDownload $SkipModelDownload.IsPresent -InspectOnly $CheckOnly.IsPresent -BuildAgain $Rebuild.IsPresent -RefreshSource $Update.IsPresent -Family $ModelFamily -Backend $Backend -HipDirectory $HipDirectory -HipArchitectures $HipArchitectures
+    Invoke-TinyStrataInstaller -SourceDirectory $SourceDir -WorkingDirectory $WorkDir -ApiPort $Port -DoNotStart $NoStart.IsPresent -DoNotDownload $SkipModelDownload.IsPresent -InspectOnly $CheckOnly.IsPresent -BuildAgain $Rebuild.IsPresent -RefreshSource $Update.IsPresent -Family $ModelFamily -Backend $Backend -HipDirectory $HipDirectory -HipArchitectures $HipArchitectures -IncludeUI $WithUI.IsPresent -UiPort $UiPort
 } finally {
     $ErrorActionPreference = $tinyStrataOldErrorAction
     [Net.ServicePointManager]::SecurityProtocol = $tinyStrataOldSecurityProtocol

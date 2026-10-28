@@ -83,3 +83,11 @@ and file-level copyright notices are preserved.
 Gemma's tool-call/thought-channel parsing and one-dimensional image embedding
 format also adapt serve/frontend.py and tools/vision/strata_vision.cpp from
 the same PolyStrata commit.
+
+The optional browser UI in ui/web adapts serve/web from Niko1221/Strata at
+5e8a4cca7d690ac60ca37eb09e7d0e010099ad6d (MIT). TinyStrata adds its terminal
+theme, light mode, translations, API monitoring and live generation metrics.
+The upstream MIT copyright and license are preserved in LICENSE.
+Outfit fonts are distributed under the SIL Open Font License 1.1; see
+ui/web/fonts/OFL.txt. The offline KaTeX dependency is MIT licensed; see
+ui/web/vendor/katex/LICENSE and ui/web/vendor/katex/PROVENANCE.json.

@@ -14,7 +14,9 @@
 !/README.pt-BR.md
 !/requirements.txt
 !/install.ps1
+!/install-ui.ps1
 !/run-api.bat
+!/run-ui.bat
 !/run.py
 !/assets/
 !/benchmark/
@@ -23,6 +25,7 @@
 !/serve/
 !/src/
 !/third_party/
+!/ui/
 
 # Only build/runtime sources and the fixed public benchmark inputs belong here.
 /benchmark/**
@@ -62,6 +65,34 @@
 !/third_party/ggml/ggml-common.h
 !/third_party/licenses/
 !/third_party/licenses/*.txt
+/ui/**
+!/ui/server.py
+!/ui/launch.py
+!/ui/web/
+!/ui/web/*.html
+!/ui/web/*.css
+!/ui/web/*.js
+!/ui/web/*.svg
+!/ui/web/fonts/
+!/ui/web/fonts/OFL.txt
+!/ui/web/fonts/*.woff2
+!/ui/web/locales/
+!/ui/web/locales/en.json
+!/ui/web/locales/zh-CN.json
+!/ui/web/locales/ja.json
+!/ui/web/locales/de.json
+!/ui/web/locales/fr.json
+!/ui/web/locales/es.json
+!/ui/web/locales/pt-BR.json
+!/ui/web/vendor/
+!/ui/web/vendor/katex/
+!/ui/web/vendor/katex/LICENSE
+!/ui/web/vendor/katex/PROVENANCE.json
+!/ui/web/vendor/katex/dist/
+!/ui/web/vendor/katex/dist/*.css
+!/ui/web/vendor/katex/dist/*.js
+!/ui/web/vendor/katex/dist/fonts/
+!/ui/web/vendor/katex/dist/fonts/*.woff2
 
 # Local environments, generated artifacts and development-only files.
 /serve/test_*.py

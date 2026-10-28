@@ -2,7 +2,7 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · **Deutsch** · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
 
-**TinyStrata ist eine schnelle Inferenz-Engine für MoE-Modelle der 30B-Klasse, die ausschließlich für Windows und die Nutzung per API entwickelt wird.** Sie richtet sich vor allem an PCs, die mit gängigen Grafikkarten mit **8–24 GB VRAM** ausgestattet sind und über **höchstens 32 GB Arbeitsspeicher** verfügen.
+**TinyStrata ist eine schnelle Inferenz-Engine für MoE-Modelle der 30B-Klasse, die ausschließlich für Windows entwickelt wird.** Sie richtet sich vor allem an PCs, die mit gängigen Grafikkarten mit **8–24 GB VRAM** ausgestattet sind und über **höchstens 32 GB Arbeitsspeicher** verfügen. Sie bietet eine API und eine optionale Chat-Oberfläche.
 
 **NVIDIA-GPUs (CUDA) werden unterstützt. Der experimentelle AMD-HIP/ROCm-Pfad verwendet INT8-KV und wurde lokal auf einer Radeon RX 9060 XT getestet.**
 
@@ -19,10 +19,6 @@ TinyStrata baut auf Strata auf und nutzt GPU-Speicher effizient, damit MoE-Model
 Die Entwicklung konzentriert sich auf lokale Inferenz unter Windows und deren Bereitstellung über eine API.
 
 TinyStrata wählt Inferenz- und Speichereinstellungen automatisch passend zu Ihrer Hardware, sodass Sie die API ohne komplizierte Konfiguration oder manuelle Feinabstimmung nutzen können.
-
-## Warum keine integrierte Benutzeroberfläche?
-
-Es gibt bereits viele Benutzeroberflächen und Agenten-Laufzeitumgebungen, die APIs für LLMs unterstützen. Da TinyStrata gängige API-Formate unterstützt, können Sie die Lösung Ihrer Wahl verbinden und nutzen. Falls Ihnen die Einrichtung der Verbindung zu aufwendig erscheint, können Sie einen KI-Agenten damit beauftragen. Indem wir die Benutzeroberfläche bestehender Software überlassen, können wir uns auf die Entwicklung der Inferenz-Engine und der API konzentrieren.
 
 ## Modellschwerpunkt
 
@@ -62,19 +58,33 @@ Fehlt die Programmdatei eines zusätzlichen Modells, siehe die [Anleitung zum ma
 
 ## Installation
 
-Führen Sie diesen Befehl in 64-Bit-PowerShell aus, um TinyStrata zu installieren und die API unter `http://127.0.0.1:18080/v1` zu starten:
+Führen Sie einen der beiden Installer in 64-Bit-PowerShell aus:
+
+**Mit Oberfläche** ([Installer](install-ui.ps1)): Chat unter `http://127.0.0.1:3000`, API unter `http://127.0.0.1:18080/v1`.
+
+```powershell
+irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install-ui.ps1' | iex
+```
+
+**Nur API** ([Installer](install.ps1)): dieselbe API ohne Oberfläche.
 
 ```powershell
 irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex
 ```
 
-Um TinyStrata nach einem Windows-Neustart erneut zu starten, führen Sie diesen Befehl aus oder doppelklicken Sie auf dieselbe `run-api.bat`:
+Die optionale grüne Oberfläche unterstützt die sieben README-Sprachen, Bildeingaben und Live-Statistiken zur Generierung. Der helle oder dunkle Modus folgt den Betriebssystemeinstellungen.
+
+Zum erneuten Start diesen Befehl ausführen oder `run-ui.bat` doppelklicken:
+
+```powershell
+& "$env:LOCALAPPDATA\TinyStrata\run-ui.bat"
+```
+
+Für die reine API-Installation verwenden Sie `run-api.bat`:
 
 ```powershell
 & "$env:LOCALAPPDATA\TinyStrata\run-api.bat" --port 18080
 ```
-
-Alternativ können Sie einem KI-Agenten den Link zum [GitHub-Repository von TinyStrata](https://github.com/kbc20f11/TinyStrata) geben und ihn mit der Einrichtung beauftragen.
 
 ### Modell ohne Neustart wechseln
 
@@ -158,9 +168,9 @@ Die Bildzeiten zeigen die erste Ausgabe / das Antwortende einschließlich Bildko
 
 | Ihr Ziel und Ihre Hardware | Projekt |
 | --- | --- |
-| Sie möchten Qwen3.6 / Gemma 4 / LFM2.5-Inferenz ausschließlich per API unter **Windows**, mit **8–24 GB VRAM und höchstens 32 GB Arbeitsspeicher**, etwa auf einem PC mit einer gängigen Grafikkarte. | TinyStrata (**nur Windows**, in Entwicklung) |
+| Sie möchten Qwen3.6 / Gemma 4 / LFM2.5-Inferenz unter **Windows**, mit **8–24 GB VRAM und höchstens 32 GB Arbeitsspeicher**, etwa auf einem PC mit einer gängigen Grafikkarte. | TinyStrata (**nur Windows**, in Entwicklung) |
 | Sie verfügen sowohl über **eine GPU der RTX 3060-Klasse oder besser** als auch über **mindestens 64 GB Arbeitsspeicher**. | Wir empfehlen [Strata (Upstream)](https://github.com/Niko1221/Strata). |
-| Sie möchten eine **integrierte Chat-Oberfläche**. | Wir empfehlen [Strata (Upstream)](https://github.com/Niko1221/Strata). |
+| Sie möchten eine **Chat-Oberfläche mit Live-Statistiken**. | TinyStrata mit dem [optionalen UI-Installer](install-ui.ps1). |
 
 ## So wird der Speicher aufgeteilt — Qwen3.6
 
@@ -204,7 +214,7 @@ Explizite Einstellungen überschreiben die automatische Auswahl, und bereits man
 
 ## API-Server
 
-**TinyStrata bietet ausschließlich eine API.** Es stellt OpenAI-kompatible APIs für Chat Completions (`/v1/chat/completions`) und Responses (`/v1/responses`) sowie eine Anthropic-kompatible Messages-API (`/v1/messages`) bereit, einschließlich gestreamter Generierung. Verbinden Sie einen API-Client oder ein externes Frontend; TinyStrata enthält keine integrierte Chat-Oberfläche.
+TinyStrata stellt OpenAI-kompatible APIs für Chat Completions (`/v1/chat/completions`) und Responses (`/v1/responses`) sowie eine Anthropic-kompatible Messages-API (`/v1/messages`) bereit, einschließlich gestreamter Generierung. Nutzen Sie die optionale TinyStrata-Oberfläche, einen API-Client oder ein externes Frontend.
 
 Neue Konfigurationen verwenden modellspezifische Sampling-Standardwerte. Werte pro Anfrage haben Vorrang; gespeicherte benutzerdefinierte Einstellungen bleiben erhalten.
 
