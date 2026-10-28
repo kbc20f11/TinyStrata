@@ -2,8 +2,8 @@
 // One design for the proposals in PRs #1787 (list), #2615 (edit, regenerate, undo) and issue #3823 (rewind asks: here or a branch);
 // the pure part is serve/web/history.js, the browser store is serve/web/chatstore.js.
 //
-// Both are opt-in (Chat settings > Chats) and off by default: off, the page keeps the one chat it always had, with "New chat"
-// clearing it (and an Undo). Nothing here goes to the server.
+// The saved-chats list is on by default; editing is opt-in (Chat settings > Chats). With the list off, the page keeps one chat,
+// with "New chat" clearing it (and an Undo). Nothing here goes to the server.
 //
 // This file is loaded before app.js and uses its globals when its functions run: $, esc, icon, node, toast, store, settings,
 // messages, attachments, busy, pending, setBusy, renderChat, renderAttachments, autosize, generateReply, releasePending.
