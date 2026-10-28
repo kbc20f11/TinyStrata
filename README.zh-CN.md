@@ -146,7 +146,7 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 | 模型 | 上下文容量 | INT8 VMM 生成 |
 | --- | ---: | ---: |
-| Qwen3.6 UD-IQ3_XXS | 256K | 85.79 tok/s |
+| Qwen3.6 UD-IQ3_XXS | 256K | 84.64 tok/s |
 | Gemma 4 QAT Q4_0 | 256K | 80.77 tok/s |
 | LFM2.5 Q4_K_M | 128K | 94.87 tok/s |
 

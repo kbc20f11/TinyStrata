@@ -28,6 +28,11 @@ Source commit: 47e5b2b2ab52982e105315bba2ac48ec75de01bf.
 The dense kernel was introduced by Aaron Flin in commit
 e5fd6d3acbe99f26ed7f179b6b35b8ec5343fb38. Original Strata copyright and MIT
 license remain in LICENSE. Adaptations use TinyStrata's resident cache layout.
+The HIP dense INT8 WMMA prompt kernel in src/qwen35/int8_attention_hip.cu
+adapts the WMMA instruction/fragment and tiled dimension-group design from
+Niko1221/Strata src/kernels/cuda/qsa_prompt_attn.cu at
+5e8a4cca7d690ac60ca37eb09e7d0e010099ad6d (MIT), retaining TinyStrata's
+residual compensation, dense causal cache layout and all visible tokens.
 Native Q2_K/Q3_K expert dot helpers and Q2_K dequantization also adapt
 src/kernels/cuda/iq_kernels.cu from the same MoMoE commit, with TinyStrata's
 format dispatch and existing GGML block layouts. File-level attribution is retained.

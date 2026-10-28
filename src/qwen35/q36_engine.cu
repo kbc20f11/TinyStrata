@@ -1364,7 +1364,11 @@ struct Engine {
         if (fp8_prompt) std::fprintf(stderr, "tinystrata: experimental native FP8 prompt attention (Q/P residual, FP32 outer accumulation); decode uses native FP8 split-K\n");
         if (kv_format == 2)
             std::fprintf(stderr, "tinystrata: INT8 prompt attention: %s\n",
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
+                         int8_prompt ? "INT8 dense WMMA kernel" : "FP16 staging fallback");
+#else
                          int8_prompt ? "INT8 dense tiled kernel" : "FP16 staging fallback");
+#endif
         sk_part = dalloc((size_t) kSplitK * T * (g.n_expert + 1));
         if (tiled_prompt()) {
             kAttScoreFloats = 0; // tiled attention reads byte KV directly; no full-context FP16 copies or score matrix
@@ -1446,7 +1450,16 @@ struct Engine {
         ami = dalloc_t<int32_t>((size_t) kArgBlocks * kVerify);
         CK(cudaHostAlloc((void**) &hpin, 64 * sizeof(int32_t), cudaHostAllocDefault));
         n_chunk = (ctx + kChunkCells - 1) / kChunkCells;
-        att_rows = (int) (g.n_head * std::min<int64_t>((int64_t) T, tiled_prompt() ? kVerify : 64));   // 64 query tokens per attention batch
+        int partial_queries = tiled_prompt() ? kVerify : 64;
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
+        static_assert(kVerify == kGemmT, "split-K scratch must cover every non-GEMM query batch");
+        // Larger prompt batches use GEMM (or tiled attention), not these
+        // split-K partials. Decode and verify need at most kGemmT == kVerify
+        // queries. Keep the old allocation available for paired measurements.
+        const char* legacy_partials = std::getenv("TINYSTRATA_Q36_LEGACY_ATTN_SCRATCH");
+        partial_queries = legacy_partials && std::strcmp(legacy_partials, "1") == 0 ? 64 : kVerify;
+#endif
+        att_rows = (int) (g.n_head * std::min<int64_t>((int64_t) T, partial_queries));
         pacc = dalloc((size_t) att_rows * n_chunk * g.head_dim);
         pm = dalloc((size_t) att_rows * n_chunk);
         pl = dalloc((size_t) att_rows * n_chunk);

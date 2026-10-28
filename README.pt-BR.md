@@ -146,7 +146,7 @@ Medido em **2026-10-28** no Windows 11 com uma Radeon RX 9060 XT (gfx1200, 16 GB
 
 | Modelo | Capacidade de contexto | Geração INT8 VMM |
 | --- | ---: | ---: |
-| Qwen3.6 UD-IQ3_XXS | 256K | 85.79 tok/s |
+| Qwen3.6 UD-IQ3_XXS | 256K | 84.64 tok/s |
 | Gemma 4 QAT Q4_0 | 256K | 80.77 tok/s |
 | LFM2.5 Q4_K_M | 128K | 94.87 tok/s |
 
