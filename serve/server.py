@@ -77,6 +77,11 @@ def popen(what: str, args: list, **kw):
     """#735: subprocess.Popen, but Windows' refusal to start a program (WinError 4551, or 1260 when a policy blocks it:
     Smart App Control on a clean Windows 11 blocks an exe that is not signed) is said in words instead of a bare
     OSError."""
+    # These are pipe-driven background workers. A GUI/no-console launcher
+    # otherwise gives each console executable its own window on Windows;
+    # closing that window kills the resident engine or image encoder.
+    if os.name == "nt":
+        kw["creationflags"] = kw.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
     try:
         return subprocess.Popen(args, **kw)
     except OSError as e:
@@ -2217,7 +2222,8 @@ def network_path(path: str) -> bool:
     return p.startswith("\\\\") or p.startswith("\\??\\")
 
 
-def vision_start_error(line: str, log=None) -> str:
+def vision_start_error(line: str, log=None, *, exit_code: int | None = None,
+                       log_start: int = 0, reason: str | None = None) -> str:
     """The message when the image encoder answered something other than READY.  #1445: a card in the Exclusive_Process
     compute mode (or one another process holds) refuses the encoder's CUDA context with "busy or unavailable"; that
     cause is named instead of leaving the user the first line of a traceback.  `log` is the encoder's stderr file, whose
@@ -2229,17 +2235,32 @@ def vision_start_error(line: str, log=None) -> str:
         if name:
             with open(name, "rb") as f:
                 f.seek(0, 2)
-                f.seek(max(0, f.tell() - 16384))
+                f.seek(max(log_start, f.tell() - 16384))
                 tail = f.read().decode("utf-8", "replace")
     except (OSError, ValueError):
         pass
     if "busy or unavailable" in (text + tail).lower():
-        return ("the vision encoder did not start: the GPU refused a second CUDA context (\"CUDA-capable device(s) "
+        message = ("the vision encoder did not start: the GPU refused a second CUDA context (\"CUDA-capable device(s) "
                 "is/are busy or unavailable\"). This is usually the compute mode Exclusive_Process: only one process "
                 "may use the card, and the engine already holds it. Check with: nvidia-smi --query-gpu=compute_mode "
                 "--format=csv; set it back with: sudo nvidia-smi -c DEFAULT (or run the encoder on another card). "
                 "First line from the encoder: " + (text or "(none)"))
-    return "the vision encoder did not start: " + text
+    else:
+        message = reason or "the vision encoder did not start: " + (text or "stdout closed before READY")
+    if exit_code is not None:
+        detail = engine_exit_words(exit_code)
+        if os.name == "nt":
+            code = exit_code & 0xFFFFFFFF
+            detail = f"exit code {exit_code} (0x{code:08X})"
+            if code == 0xC000013A:
+                detail += ": interrupted; the console window may have been closed"
+            elif code in _WIN_CRASH:
+                detail += ": " + _WIN_CRASH[code]
+        message += f" [{detail}]"
+    last_lines = [x.rstrip() for x in tail.splitlines() if x.strip()][-8:]
+    if last_lines:
+        message += "\nthe vision encoder log's last lines from this start:\n" + "\n".join("  " + x for x in last_lines)
+    return message
 
 
 class Vision:
@@ -2296,6 +2317,14 @@ class Vision:
 
     def _start(self):
         args, log, env = self.spawn
+        log_start = 0
+        try:
+            name = getattr(log, "name", None)
+            if name:
+                log.flush()
+                log_start = os.path.getsize(name)
+        except (OSError, ValueError):
+            pass
         # cwd is the encoder's directory: the ENC lines name the files relative to it (#480: no space in the line)
         self.proc = popen("the image encoder", args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           stderr=log or subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1, env=env,
@@ -2304,17 +2333,34 @@ class Vision:
         try:
             line = self._readline(VISION_READY_S, "the vision encoder did not start")
         except RuntimeError as e:                       # silent for VISION_READY_S: it was ended, and it is not left half-started
-            self.proc, self.stopped = None, True
-            raise RuntimeError(str(e)) from None
-        if not line.startswith("READY"):
-            proc, self.proc = self.proc, None
-            self.stopped = True
+            proc = self.proc
             try:
-                proc.kill()
                 proc.wait(timeout=5)
             except (OSError, subprocess.TimeoutExpired):
                 pass
-            raise RuntimeError(vision_start_error(line, self.spawn[1]))
+            self.proc, self.stopped = None, True
+            # _readline killed the timed-out process; that cleanup status is
+            # not an encoder failure code. Keep the timeout and its log tail.
+            raise RuntimeError(vision_start_error("", log, log_start=log_start, reason=str(e))) from None
+        if not line.startswith("READY"):
+            proc, self.proc = self.proc, None
+            self.stopped = True
+            # EOF may reach the reader just before Windows publishes the exit
+            # status. Capture the encoder's status before cleanup can replace it
+            # with the code from our own kill().
+            code = proc.poll()
+            if code is None:
+                try:
+                    code = proc.wait(timeout=0.25)
+                except (OSError, subprocess.TimeoutExpired):
+                    code = proc.poll()
+            try:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            raise RuntimeError(vision_start_error(line, log, exit_code=code, log_start=log_start))
         self.stopped = False
 
     def _readline(self, timeout: float, what: str) -> str:
