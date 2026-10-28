@@ -33,6 +33,9 @@
 !/benchmark/run.py
 !/benchmark/cases.json
 !/benchmark/image.png
+!/benchmark/results/
+/benchmark/results/**
+!/benchmark/results/*.md
 /assets/**
 !/assets/memory-sharing.png
 !/assets/automatic-settings.png

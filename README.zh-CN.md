@@ -150,19 +150,14 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 每个 FP8/INT8 配置均使用相同的三段文本各运行两次，采用模型默认采样设置，每次生成包含思考的 128 个 token。速度为总生成 token 数除以总解码时间，不含加载与输入处理；上下文值表示缓存容量。内存受限行是在同一块 24 GB GPU 上另行预留 8、12 或 16 GiB，并设置相应显存档位的上下文容量，并非使用实际的 16/12/8 GB GPU。
 
-## 实测速度 — AMD Radeon RX 9060 XT（HIP）
+## 实测速度 — AMD Radeon（HIP）
 
-于 **2026-10-28** 在 Windows 11、Radeon RX 9060 XT（gfx1200，16 GB，驱动 32.0.32015.7029）、Ryzen 9 7945HX3D 和 64 GB 系统内存上，使用与上文相同的三个模型文件进行测量。启用 INT8 KV 和以 4 MiB 为分配粒度的 KV 自动扩展（VMM）；上下文容量、输入分块和专家放置均自动选择。Qwen 和 Gemma 使用 MTP 3 及常驻 GPU 的图像编码器，LFM 不使用这两项。
+Radeon 显卡上的速度，使用 [tinystrata-bench-v1](benchmark/README.md#english) 测得。每张卡都有单独的页面，包含硬件、驱动、引擎提交、设置和全部列：[`benchmark/results/`](benchmark/results/)。数值为 生成 / 4K 输入 / 16K 输入（tok/s）。
 
-基准测试规范：[tinystrata-bench-v1](benchmark/README.md#english)，引擎代码为 [44a7ec1](https://github.com/kbc20f11/TinyStrata/commit/44a7ec1)，seed 为 1234，每个模型独立启动 API 四次。
-
-| 模型 | 上下文容量 | 生成（tok/s） | 4K 输入（tok/s） | 16K 输入（tok/s） | 图像 首次输出／结束（秒） | 备注 |
-| --- | ---: | ---: | ---: | ---: | ---: | --- |
-| Qwen3.6 UD-IQ3_XXS | 256K | 82.30 | 774.28 | 711.52 | 1.60 / 3.14 | 专家缓存 11.00 → 10.69 GiB |
-| Gemma 4 QAT Q4_0 | 256K | 78.08 | 2495.20 | 2320.50 | 1.04 / 2.06 | 专家缓存 11.07 → 7.87 GiB |
-| LFM2.5 Q4_K_M | 128K | 95.99 | 2166.22 | 1747.87 | — | 专家缓存 12.77 → 12.12 GiB |
-
-图像时间表示首次输出／响应结束的秒数，包含图像编码，数值越小越快。专家缓存以 GiB 显示启动后 → 16K 输入结束后实际分配的容量。
+| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M |
+| --- | ---: | ---: | ---: |
+| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.30 / 774.28 / 711.52 | 78.08 / 2495.20 / 2320.50 | 95.99 / 2166.22 / 1747.87 |
+| [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 |
 
 ## 我应该使用哪个项目？
 
