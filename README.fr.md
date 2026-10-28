@@ -156,7 +156,7 @@ Vitesse sur cartes Radeon, mesurée avec [tinystrata-bench-v1](benchmark/README.
 
 | GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M |
 | --- | ---: | ---: | ---: |
-| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.30 / 774.28 / 711.52 | 78.08 / 2495.20 / 2320.50 | 95.99 / 2166.22 / 1747.87 |
+| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 |
 | [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 |
 
 ## Quel projet choisir ?
