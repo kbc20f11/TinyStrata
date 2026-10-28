@@ -143,6 +143,9 @@ button, input, textarea, select { -webkit-tap-highlight-color: transparent; }
   }
   .terminal-brand-field small { margin-top: -19px; font: 9px/1.5 var(--st-font-mono); color: #527560; letter-spacing: .1em; }
   body:has(.terminal-brand-field) > main { margin-left: 196px; }
+  /* The active chat list uses the left edge instead of the decorative rail. */
+  body:has(#view-chat:not([hidden]) #sidebar:not([hidden])) .terminal-brand-field { display: none; }
+  body:has(#view-chat:not([hidden]) #sidebar:not([hidden])) > main { margin-left: 0; }
 }
 
 /* Chat is a readable transcript with framed user commands. */
