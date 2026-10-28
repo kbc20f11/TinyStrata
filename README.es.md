@@ -150,19 +150,14 @@ FP8 nativo e INT8 se midieron el **2026-10-27**.
 
 Los mismos tres textos se ejecutaron dos veces por configuración FP8/INT8 con los valores de muestreo predeterminados del modelo, generando 128 tokens con razonamiento en cada solicitud. La velocidad es el total de tokens dividido por el tiempo total de decodificación, sin carga ni procesamiento de entrada; el contexto indica capacidad de caché. Las filas con menos memoria reservan 8, 12 o 16 GiB en la misma GPU de 24 GB y usan el contexto de esa clase de VRAM; no son pruebas de GPU físicas de 16/12/8 GB.
 
-## Velocidad medida — AMD Radeon RX 9060 XT (HIP)
+## Velocidad medida — AMD Radeon (HIP)
 
-Medido el **2026-10-28** en Windows 11 con una Radeon RX 9060 XT (gfx1200, 16 GB, controlador 32.0.32015.7029), un Ryzen 9 7945HX3D y 64 GB de RAM, usando los mismos tres archivos de modelos de arriba. Se activaron KV INT8 y su crecimiento VMM con una granularidad de asignación de 4 MiB. La capacidad de contexto, los bloques de entrada y la distribución de expertos fueron automáticos. Qwen y Gemma usaron MTP 3 y un codificador de imágenes residente en GPU; LFM no usó ninguno de los dos.
+Velocidad en tarjetas Radeon, medida con [tinystrata-bench-v1](benchmark/README.md#english). Cada tarjeta tiene su propia página con el hardware, el controlador, el commit del motor, los ajustes y todas las columnas: [`benchmark/results/`](benchmark/results/). Valores: generación / entrada 4K / entrada 16K, en tok/s.
 
-Protocolo: [tinystrata-bench-v1](benchmark/README.md#english), código del motor [44a7ec1](https://github.com/kbc20f11/TinyStrata/commit/44a7ec1), semilla 1234 y cuatro inicios independientes de la API por modelo.
-
-| Modelo | Capacidad de contexto | Generación (tok/s) | Entrada 4K (tok/s) | Entrada 16K (tok/s) | Imagen: primera salida / fin (s) | Notas |
-| --- | ---: | ---: | ---: | ---: | ---: | --- |
-| Qwen3.6 UD-IQ3_XXS | 256K | 82.30 | 774.28 | 711.52 | 1.60 / 3.14 | Caché de expertos 11.00 → 10.69 GiB |
-| Gemma 4 QAT Q4_0 | 256K | 78.08 | 2495.20 | 2320.50 | 1.04 / 2.06 | Caché de expertos 11.07 → 7.87 GiB |
-| LFM2.5 Q4_K_M | 128K | 95.99 | 2166.22 | 1747.87 | — | Caché de expertos 12.77 → 12.12 GiB |
-
-Los tiempos de imagen indican la primera salida / el fin de la respuesta e incluyen la codificación de la imagen; cuanto menores, mejor. La caché de expertos muestra la asignación real al iniciar → justo después de la entrada de 16K, en GiB.
+| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M |
+| --- | ---: | ---: | ---: |
+| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.30 / 774.28 / 711.52 | 78.08 / 2495.20 / 2320.50 | 95.99 / 2166.22 / 1747.87 |
+| [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 |
 
 ## ¿Qué proyecto debería usar?
 
