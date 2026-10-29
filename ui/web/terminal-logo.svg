@@ -1,4 +1,17 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" fill="none">
-  <path d="M48 13 82 31 48 49 14 31Z" stroke="#77fbb5" stroke-width="4" stroke-linejoin="miter"/>
-  <path d="m14 47 34 18 34-18M14 63l34 18 34-18" stroke="#32e991" stroke-width="4" stroke-linejoin="miter"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1254 1254" width="1254" height="1254" role="img" aria-labelledby="title desc">
+  <title id="title">Three layered diamonds with the letter T</title>
+  <desc id="desc">A mint-colored T inside an upright diamond, above two subtly offset green diamond layers. Square canvas and transparent background.</desc>
+
+  <!-- Backmost diamond layer: only its exposed lower half is visible. -->
+  <path d="M245 730 625 1110 1009 730 979 690 625 1040 275 690Z" fill="#02CB89"/>
+
+  <!-- Middle diamond layer, slightly raised above the backmost one. -->
+  <path d="M245 650 625 1030 1005 650 975 610 625 960 275 610Z" fill="#3CF7B7"/>
+
+  <!-- Front diamond with a truly transparent center. -->
+  <path fill="#A0F9D8" fill-rule="evenodd"
+        d="M625 185 1006 565 625 945 245 565Z M625 275 335 565 625 855 916 565Z"/>
+
+  <!-- Font-independent block letter T. -->
+  <path d="M485 453H768V529H666V749H586V529H485Z" fill="#A0F9D8"/>
 </svg>
