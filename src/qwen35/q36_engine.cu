@@ -1561,6 +1561,54 @@ struct Engine {
         mtp_sampled_pending = false;
     }
 
+    // A turn checkpoint keeps only the recurrent state in host RAM. Attention
+    // rows before it remain at their original VRAM addresses. As in Strata's
+    // conversation cache, it is valid only while that token prefix is intact.
+    struct TurnState {
+        std::vector<uint8_t> bytes;
+        int64_t pos = 0;
+    };
+    void save_turn(TurnState& saved) {
+        const auto& g = m->g;
+        const size_t cb = (size_t) g.ssm_conv_channels * (g.ssm_d_conv - 1) * sizeof(float);
+        const size_t sb = (size_t) g.ssm_v_heads * g.ssm_state_size * g.ssm_state_size * sizeof(float);
+        size_t bytes = (size_t) g.n_embd * sizeof(float);
+        for (size_t l = 0; l < conv.size(); ++l) bytes += (conv[l] ? cb : 0) + (S[l] ? sb : 0);
+        saved.bytes.resize(bytes);
+        size_t at = 0;
+        const auto copy = [&](const float* src, size_t n) {
+            CK(cudaMemcpyAsync(saved.bytes.data() + at, src, n, cudaMemcpyDeviceToHost, st));
+            at += n;
+        };
+        for (size_t l = 0; l < conv.size(); ++l) {
+            if (conv[l]) copy(conv[l], cb);
+            if (S[l]) copy(S[l], sb);
+        }
+        copy(hlast, (size_t) g.n_embd * sizeof(float));
+        CK(cudaStreamSynchronize(st));
+        saved.pos = pos;
+    }
+    void load_turn(const TurnState& saved) {
+        const auto& g = m->g;
+        const size_t cb = (size_t) g.ssm_conv_channels * (g.ssm_d_conv - 1) * sizeof(float);
+        const size_t sb = (size_t) g.ssm_v_heads * g.ssm_state_size * g.ssm_state_size * sizeof(float);
+        size_t at = 0;
+        const auto copy = [&](float* dst, size_t n) {
+            CK(cudaMemcpyAsync(dst, saved.bytes.data() + at, n, cudaMemcpyHostToDevice, st));
+            at += n;
+        };
+        for (size_t l = 0; l < conv.size(); ++l) {
+            if (conv[l]) copy(conv[l], cb);
+            if (S[l]) copy(S[l], sb);
+        }
+        copy(hlast, (size_t) g.n_embd * sizeof(float));
+        CK(cudaStreamSynchronize(st));
+        pos = saved.pos;
+        xq_ready = xq_post = grouped_by_route = false;
+        mtp_pending.clear();
+        mtp_sampled_pending = false;
+    }
+
     void set_images(V::Input input) {
         CK(cudaStreamSynchronize(st));
         image_input = std::move(input);
@@ -3629,6 +3677,8 @@ int serve(Engine& E) {
     });
     reader.detach();
     std::vector<int32_t> live;   // the tokens whose state the engine holds (cell i = live[i])
+    std::vector<int32_t> turn_ids;
+    Engine::TurnState turn_state; // one recent turn; bounded RAM, no duplicate full KV cache
     std::vector<float> lg;
     for (;;) {
         std::string line;
@@ -3649,6 +3699,8 @@ int serve(Engine& E) {
         char* p = nullptr;
         const long long max_new = std::strtoll(line.c_str() + (image_request ? 5 : 4), &p, 10);
         Sampling smp;
+        int64_t turn_at = 0;
+        bool checkpoint = true;
         for (;;) {
             while (*p == ' ') ++p;
             const char* st0 = p;
@@ -3667,6 +3719,8 @@ int serve(Engine& E) {
             else if (key == "penalty_freq") smp.freq = std::strtof(v, nullptr);
             else if (key == "penalty_present") smp.present = std::strtof(v, nullptr);
             else if (key == "seed") smp.seed = std::strtoull(v, nullptr, 10);
+            else if (key == "turn_at") turn_at = std::strtoll(v, nullptr, 10);
+            else if (key == "ckpt") checkpoint = std::atoi(v) != 0;
         }
         std::string embeddings_path;
         if (image_request) {
@@ -3707,27 +3761,54 @@ int serve(Engine& E) {
             std::fflush(stdout);
             return 1;
         }
-        // the held state continues when the request extends it (the recurrent state cannot step back)
+        // Prefer a direct continuation, otherwise restore a matching turn's
+        // recurrent state. A position-only rewind would corrupt GDN history.
         size_t reuse = 0;
         // A matching sequence of image-pad IDs does not identify a picture.
         // Read image prompts afresh, and discard their recurrent state before
         // a text-only request; ordinary text prefix reuse stays unchanged.
         if (!image_request && !E.image_positions && live.size() < ids.size() &&
             std::equal(live.begin(), live.end(), ids.begin())) reuse = live.size();
+        else if (!image_request && !E.image_positions && !turn_ids.empty() &&
+                 turn_ids.size() < ids.size() && turn_ids.size() <= live.size() &&
+                 std::equal(turn_ids.begin(), turn_ids.end(), live.begin()) &&
+                 std::equal(turn_ids.begin(), turn_ids.end(), ids.begin())) {
+            E.load_turn(turn_state);
+            live = turn_ids;
+            reuse = live.size();
+        }
         else {
             E.reset();
             live.clear();
+            turn_ids.clear();
+            turn_state.bytes.clear();
             E.trim_kv_for_request((int64_t) ids.size() + 64);
         }
         if (image_request) E.set_images(std::move(image_input));
         else E.clear_images();
         const auto t0 = Clock::now();
         const int64_t fresh = (int64_t) (ids.size() - reuse);
-        E.process(ids.data() + reuse, fresh, [&](int64_t done) {
-            std::printf("PP %lld %lld %.0f %.1f\n", (long long) done, (long long) fresh, ms_since(t0),
+        if (reuse) { std::printf("RESUME %zu\n", reuse); std::fflush(stdout); }
+        const auto progress = [&](int64_t done) {
+            std::printf("PP %lld %zu %.0f %.1f\n", (long long) reuse + done, ids.size(), ms_since(t0),
                         (double) done / std::max(1e-9, ms_since(t0) / 1000.0));
             std::fflush(stdout);
-        }, smp.needs_logits());
+        };
+        if (checkpoint && !image_request && turn_at > (int64_t) reuse && turn_at < (int64_t) ids.size()) {
+            const int64_t before = turn_at - (int64_t) reuse;
+            // Even a one-token boundary must populate its MTP KV row before
+            // saving, so a restored turn has no deferred draft repair to run.
+            E.process(ids.data() + reuse, before, progress, true);
+            turn_ids.clear();
+            try {
+                E.save_turn(turn_state);
+                turn_ids.assign(ids.begin(), ids.begin() + turn_at);
+            } catch (const std::bad_alloc&) {
+                std::fprintf(stderr, "tinystrata: skipping conversation checkpoint: insufficient host memory\n");
+            }
+            E.process(ids.data() + turn_at, (int64_t) ids.size() - turn_at,
+                      [&](int64_t done) { progress(before + done); }, smp.needs_logits());
+        } else E.process(ids.data() + reuse, fresh, progress, smp.needs_logits());
         live.insert(live.end(), ids.begin() + (long) reuse, ids.end());
         const double prompt_ms = ms_since(t0);
         std::mt19937_64 rng(smp.seed);

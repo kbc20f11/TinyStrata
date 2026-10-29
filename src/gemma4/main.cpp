@@ -20,6 +20,7 @@
 #include <iostream>
 #include <limits>
 #include <mutex>
+#include <new>
 #include <numeric>
 #include <random>
 #include <sstream>
@@ -217,10 +218,16 @@ std::string take_pictures(const std::string& path, int32_t pad, int n_embd, std:
 }
 
 
+struct PromptMark {
+    int64_t at = -1;
+    uint8_t* state = nullptr;
+    bool saved = false;
+};
+
 // The final token is evaluated with logits; preceding tokens can use the
 // layer-major read path, staging each missing Expert once for several chunks.
 bool read_prompt_prefix(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop, Clock::time_point start,
-                        bool report, bool pictures) {
+                        bool report, bool pictures, int reused = 0, PromptMark* mark = nullptr) {
     int done = 0;
     while (done < n - 1) {
         if (stop.load()) return false;
@@ -230,20 +237,30 @@ bool read_prompt_prefix(Engine& e, const int32_t* ids, int n, const std::atomic<
             if (report) {
                 const int at = done + (int) ((int64_t) count * layers / std::max(total, 1));
                 const double ms = elapsed(start);
-                std::printf("PP %d %d %.1f %.1f\n", at, n, ms, at * 1000.0 / std::max(ms, 0.001));
+                std::printf("PP %d %d %.1f %.1f\n", reused + at, reused + n, ms, at * 1000.0 / std::max(ms, 0.001));
                 std::fflush(stdout);
             }
             return !stop.load();
         };
+        const int64_t first = e.pos();
+        const bool inside = mark && !mark->saved && mark->at > first && mark->at < first + count;
         if (pictures) e.eval(ids + done, count, false);
-        else if (!e.read(ids + done, count, nullptr, 0, &progress)) return false;
+        else {
+            const Engine::Mark m{inside ? (int) (mark->at - first) : 0, inside ? mark->state : nullptr};
+            if (!e.read(ids + done, count, inside ? &m : nullptr, inside ? 1 : 0, &progress)) return false;
+            if (inside) mark->saved = true;
+        }
+        if (mark && !mark->saved && e.pos() == mark->at) {
+            e.save_state(mark->state);
+            mark->saved = true;
+        }
         done += count;
     }
     return !stop.load();
 }
 
 bool prompt(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop, Clock::time_point start,
-            bool report, bool pictures = false, bool trace_stage = false) {
+            bool report, bool pictures = false, bool trace_stage = false, int reused = 0, PromptMark* mark = nullptr) {
     const size_t before_stage = trace_stage ? e.staging_bytes() : 0;
     const double before_cache = trace_stage ? e.cached_gib() * 1024 : 0;
     bool ended = false;
@@ -262,13 +279,13 @@ bool prompt(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop,
                          e.staging_bytes(), before_cache, during_cache, e.cached_gib() * 1024, elapsed(t0));
     };
     try {
-        const bool complete = read_prompt_prefix(e, ids, n, stop, start, report, pictures);
+        const bool complete = read_prompt_prefix(e, ids, n, stop, start, report, pictures, reused, mark);
         end_read();
         if (!complete || stop.load()) return false;
         e.eval(ids + n - 1, 1, true);
         if (report) {
             const double ms = elapsed(start);
-            std::printf("PP %d %d %.1f %.1f\n", n, n, ms, n * 1000.0 / std::max(ms, 0.001));
+            std::printf("PP %d %d %.1f %.1f\n", reused + n, reused + n, ms, n * 1000.0 / std::max(ms, 0.001));
             std::fflush(stdout);
         }
         return true;
@@ -348,6 +365,11 @@ int serve(Engine& e, const Options& o) {
         box->changed.notify_one();
     });
     std::vector<int32_t> live;
+    // Like Strata's conversation checkpoints, keep only the running state here.
+    // Full-attention KV below this prefix remains in the resident cache. Gemma's
+    // state snapshot also owns its sliding-window rings and the MTP hidden row.
+    std::vector<int32_t> checkpoint_ids;
+    std::vector<uint8_t> checkpoint_state;
     for (;;) {
         std::string line;
         {
@@ -369,7 +391,7 @@ int serve(Engine& e, const Options& o) {
         if (line.empty()) continue;
         try {
             if (line == "RESET") {
-                e.reset(); live.clear();
+                e.reset(); live.clear(); checkpoint_ids.clear();
                 std::puts("OK RESET"); std::fflush(stdout);
                 continue;
             }
@@ -380,6 +402,8 @@ int serve(Engine& e, const Options& o) {
             const auto max_new = integer(word, "max_new");
             if (max_new < 1 || max_new > e.max_context()) throw std::invalid_argument("max_new outside context capacity");
             Sampling smp;
+            int64_t turn_at = -1;
+            bool checkpoint = true;
             int32_t image_pad = -1;
             std::string remaining;
             while (input >> word) {
@@ -389,7 +413,8 @@ int serve(Engine& e, const Options& o) {
                 }
                 const auto key = word.substr(0, eq);
                 if (key == "image_pad") image_pad = bounded_integer(word.substr(eq + 1), "image_pad", 0, e.n_vocab() - 1);
-                else if (key == "turn_at") bounded_integer(word.substr(eq + 1), "turn_at", 0, e.max_context());
+                else if (key == "turn_at") turn_at = bounded_integer(word.substr(eq + 1), "turn_at", 0, e.max_context());
+                else if (key == "ckpt") checkpoint = bounded_integer(word.substr(eq + 1), "ckpt", 0, 1) != 0;
                 else if (key == "img_keys") {
                     // The API also supplies cache keys. Native prefix identity is
                     // derived from the validated embedding values below instead.
@@ -412,6 +437,8 @@ int serve(Engine& e, const Options& o) {
             check_ids(ids, e);
             if (ids.size() > (size_t) e.max_context() || max_new > e.max_context() - (int64_t) ids.size())
                 throw std::invalid_argument("prompt + max_new exceeds context");
+            if (turn_at != -1 && (turn_at <= 0 || turn_at >= (int64_t) ids.size()))
+                throw std::invalid_argument("turn_at must be inside the prompt");
             Pictures pictures;
             if (geni) {
                 const auto error = take_pictures(file, image_pad, e.n_embd(), ids, pictures);
@@ -420,10 +447,22 @@ int serve(Engine& e, const Options& o) {
                     throw std::invalid_argument("image has more tokens than --chunk permits");
             }
             e.images(pictures.at.data(), (int) pictures.at.size());
+            if (geni) checkpoint_ids.clear();
             size_t reuse = 0;
-            if (live.size() < ids.size() && e.pos() == (int64_t) live.size() &&
+            const bool live_valid = e.pos() == (int64_t) live.size();
+            if (!live_valid || checkpoint_ids.size() > live.size() ||
+                !std::equal(checkpoint_ids.begin(), checkpoint_ids.end(), live.begin())) checkpoint_ids.clear();
+            if (live_valid && live.size() < ids.size() &&
                 std::equal(live.begin(), live.end(), ids.begin())) reuse = live.size();
-            else { e.reset(); live.clear(); }
+            else if (!checkpoint_ids.empty() && checkpoint_ids.size() < ids.size() &&
+                     std::equal(checkpoint_ids.begin(), checkpoint_ids.end(), ids.begin())) {
+                // Rewind recurrent/ring state as well as position. Positional KV
+                // before this boundary has not been overwritten by generation.
+                e.load_state(checkpoint_state.data(), (int64_t) checkpoint_ids.size());
+                live = checkpoint_ids;
+                reuse = live.size();
+            } else { e.reset(); live.clear(); checkpoint_ids.clear(); }
+            std::printf("RESUME %zu\n", reuse); std::fflush(stdout);
             // Between requests, unused KV pages can go back to the Expert cache.
             // trim_kv also keeps the preceding request's reach to avoid churn.
             e.trim_kv((int64_t) ids.size());
@@ -431,14 +470,27 @@ int serve(Engine& e, const Options& o) {
             const auto before = e.stats();
             const auto p0 = Clock::now();
             const int fresh = (int) (ids.size() - reuse);
-            if (!prompt(e, ids.data() + reuse, fresh, box->stop, p0, true, geni, o.stage_read_mib > 0)) {
-                e.reset(); live.clear();
+            PromptMark mark;
+            if (checkpoint && !geni && turn_at > (int64_t) reuse) {
+                // Never leave an old prefix attached to a buffer being replaced.
+                checkpoint_ids.clear();
+                try {
+                    checkpoint_state.resize(e.state_bytes());
+                    mark.at = turn_at; mark.state = checkpoint_state.data();
+                } catch (const std::bad_alloc&) {
+                    std::fprintf(stderr, "gemma4: skipping conversation checkpoint: insufficient host memory\n");
+                }
+            }
+            if (!prompt(e, ids.data() + reuse, fresh, box->stop, p0, true, geni, o.stage_read_mib > 0,
+                        (int) reuse, &mark)) {
+                e.reset(); live.clear(); checkpoint_ids.clear();
                 memory_info(e);
                 std::printf("DONE 0 %zu %.1f 0 cancel 0 0 %zu 0 0 0 0 0.0 0 0\n", ids.size(), elapsed(p0), reuse);
                 std::fflush(stdout);
                 continue;
             }
             live = ids;
+            if (mark.saved) checkpoint_ids.assign(ids.begin(), ids.begin() + (std::ptrdiff_t) turn_at);
             const double pp = elapsed(p0);
             std::vector<int32_t> history = ids;
             if (geni) std::replace_if(history.begin(), history.end(), [](int32_t id) { return id < 0; }, image_pad);
@@ -507,7 +559,7 @@ int serve(Engine& e, const Options& o) {
         } catch (const std::exception& ex) {
             // A failed/cancelled read may leave only some recurrent layers advanced.
             // Reset before accepting another request, rather than reuse that state.
-            e.reset(); e.images(nullptr, 0); live.clear();
+            e.reset(); e.images(nullptr, 0); live.clear(); checkpoint_ids.clear();
             std::printf("ERR %s\n", ex.what());
             std::fflush(stdout);
         }

@@ -1229,6 +1229,13 @@ class StrataEngine:
         # extends: no conversation checkpoint for it (#830).  It still reuses a cached prefix.  Absent = as before.
         if sampling.get("strata_checkpoint") is False:
             keys += " ckpt=0"
+        # Computed by Service.prepare from the template, never a client-supplied
+        # position. Save the history before the next assistant/thinking prefix:
+        # completed-turn rendering may omit that prefix on the following turn.
+        turn_at = sampling.get("_tinystrata_turn_at")
+        if sampling.get("strata_checkpoint") is not False and isinstance(turn_at, int) and \
+                not isinstance(turn_at, bool) and turn_at > 0:
+            keys += f" turn_at={turn_at}"
         # #2228: the pictures' keys (hex, in prompt order): the engine matches a picture by them, not by its embeddings
         ik = sampling.get("strata_img_keys")
         if isinstance(ik, list) and ik and all(isinstance(k, str) and k and all(c in "0123456789abcdef" for c in k)
@@ -3926,6 +3933,38 @@ class Service:
         prompt, plain = unmark_think_literals(prompt, self.literals)
         return self.tok.encode(prompt, parse_special=True, plain=plain)
 
+    def prompt_turn_at(self, messages, tools, kwargs, ids) -> int | None:
+        """A reusable history boundary before the generated assistant prefix.
+
+        Use the same literal escaping as encode_prompt and verify token identity
+        against the actual prompt. A BPE merge across the boundary can shorten
+        the common prefix; no text length is used as a token position.
+        """
+        # Keep the checkpoint before this user's whole answer/tool cycle. Some
+        # templates retain reasoning within that cycle but remove it once the
+        # next user speaks, so a later tool-response boundary is not stable.
+        user = next((i for i in range(len(messages) - 1, -1, -1)
+                     if messages[i].get("role") == "user"), len(messages) - 1)
+        history_messages = messages[:user + 1]
+        marked, marked_tools, changed = mark_think_literals(history_messages, tools, self.literals)
+        effort = kwargs.get("reasoning_effort")
+        off = kwargs.get("enable_thinking") is False
+        base = ({k: v for k, v in kwargs.items() if k not in ("reasoning_effort", "enable_thinking")}
+                if self.effort_end and (off or effort not in (None, "", "xhigh", "high")) else dict(kwargs))
+        base["add_generation_prompt"] = False
+        history = self.template.render(marked, tools=marked_tools, **base)
+        if changed:
+            history, plain = unmark_think_literals(history, self.literals)
+            head = self.tok.encode(history, parse_special=True, plain=plain)
+        else:
+            head = self.tok.encode(history, parse_special=True)
+        n = 0
+        for a, b in zip(head, ids):
+            if a != b:
+                break
+            n += 1
+        return n if 0 < n < len(ids) else None
+
     @contextlib.contextmanager
     def _turn(self, cancel=None):
         """The engine's single turn (self.fifo) for an image encode.  #1999: a client that leaves while this request
@@ -3989,7 +4028,10 @@ class Service:
         self.embeddings.path = None
         self.embeddings.keys = None
         self.embeddings.pad = None
+        self.embeddings.turn_at = None
         images = images_of(messages)
+        if not images and (req or {}).get("strata_checkpoint") is not False:
+            self.embeddings.turn_at = self.prompt_turn_at(messages, tools, kwargs, ids)
         if images:
             if self.vision is None:
                 raise ValueError("this server was started without the vision encoder (run setup again and choose "
@@ -4221,6 +4263,13 @@ class Service:
         if defaults:                   # the request's own fields win (explicit 0 stays greedy)
             req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
             sampling = {**defaults, **req_values}
+        # A caller cannot choose the engine's checkpoint position. prepare()
+        # calculated this request's literal-safe token boundary on this thread.
+        sampling = {k: v for k, v in (sampling or {}).items() if k != "_tinystrata_turn_at"}
+        turn_at = getattr(self.embeddings, "turn_at", None)
+        self.embeddings.turn_at = None
+        if isinstance(turn_at, int) and not isinstance(turn_at, bool) and 0 < turn_at < len(ids):
+            sampling["_tinystrata_turn_at"] = turn_at
         # #123: read after the merge, so a budget shared through POST /settings is seen like the other keys
         budget = self.reasoning_budget(sampling) if thinking else None
         think_end = "<channel|>" if self.call_format == "gemma" else THINK_END
