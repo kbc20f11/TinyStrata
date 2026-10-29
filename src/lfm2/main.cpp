@@ -422,7 +422,7 @@ int main(int argc, char** argv) {
                           "  --cpu-threads N --no-graph --no-gpu-experts\n"
 #if defined(STRATA_USE_HIP)
                           "  --kv-type auto|fp8|int8\n"
-                          "                        Auto: INT8; native FP8 is opt-in on RDNA4\n"
+                          "                        Auto: native FP8 on supported RDNA4, otherwise INT8\n"
 #else
                           "  --kv-type auto|fp8|int8|fp16\n"
                           "                        Auto: native FP8 Attention, otherwise INT8 KV\n"
