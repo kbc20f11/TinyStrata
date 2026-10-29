@@ -1041,8 +1041,10 @@ function renderTerminalStats(el, m, streaming) {
   if (terminalNumber(s.decodeRate)) values.push([terminalWord("output"), `${fmt(s.decodeRate, 1)} tok/s`, source, "speed"]);
   if (terminalNumber(s.generated)) values.push([terminalWord("tokens"), `${fmt(s.generated)}${!active && !s.finalCount ? "+" : ""}`,
     !active && !s.finalCount ? terminalWord("incomplete") : s.finalCount ? terminalWord("native") : terminalWord("live")]);
-  if (!active && terminalNumber(s.inputTokens)) values.push([terminalWord("input"), `${fmt(s.inputTokens)} tok${terminalNumber(s.promptRate) ? ` · ${fmt(s.promptRate, 1)} tok/s` : ""}`, terminalWord("native")]);
-  if (!active && s.cachedTokens > 0) values.push([terminalWord("cache"), `${fmt(s.cachedTokens)} tok`, terminalWord("native")]);
+  const readTokens = terminalNumber(s.readTokens) ? s.readTokens : terminalNumber(s.inputTokens)
+    ? Math.max(0, s.inputTokens - (s.cachedTokens || 0)) : null;
+  if (!active && terminalNumber(readTokens)) values.push([terminalWord("input"), `${fmt(readTokens)} tok${terminalNumber(s.promptRate) ? ` · ${fmt(s.promptRate, 1)} tok/s` : ""}`, terminalWord("native")]);
+  if (!active && terminalNumber(s.cachedTokens)) values.push([terminalWord("cache"), `${fmt(s.cachedTokens)} tok`, terminalWord("native")]);
   values.push([terminalWord(active ? "elapsed" : "total"), `${fmt((s.elapsedMs || 0) / 1000, 1)} s`, terminalWord("client")]);
   // Only rebuild the small telemetry row; the token stream owns the prose DOM.
   const key = JSON.stringify(values);
@@ -1219,7 +1221,92 @@ function onTool(m, x) {
                       state: x.skipped ? "skipped" : x.ok ? "done" : "error"});
   }
 }
+// A single decorative block follows the real DOM insertion point. Keeping it
+// out of text nodes preserves copying and lets Markdown keep its normal layout.
+let terminalCursorRoot = null, terminalCursorElement = null, terminalCursorFrame = 0;
+const terminalCursorResize = typeof ResizeObserver === "function" ? new ResizeObserver(queueTerminalCursor) : null;
+function clearTerminalCursor(scope = null) {
+  if (scope && terminalCursorRoot && !scope.contains(terminalCursorRoot)) return;
+  terminalCursorRoot = null;
+  terminalCursorResize?.disconnect();
+  if (terminalCursorFrame) cancelAnimationFrame(terminalCursorFrame);
+  terminalCursorFrame = 0;
+  terminalCursorElement?.remove();
+}
+function queueTerminalCursor() {
+  if (!terminalCursorRoot || terminalCursorFrame) return;
+  terminalCursorFrame = requestAnimationFrame(() => { terminalCursorFrame = 0; positionTerminalCursor(); });
+}
+function positionTerminalCursor() {
+  const root = terminalCursorRoot;
+  if (!root?.isConnected || !root.getClientRects().length) { terminalCursorElement?.remove(); return; }
+  const skip = 'button,svg,iframe,[hidden],[aria-hidden="true"],.st-code__head,.tool-call,.katex-mathml,.terminal-stream-cursor';
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, {
+    acceptNode(node) {
+      const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+      if (element?.closest(skip) || element?.parentElement?.closest(".katex")) return NodeFilter.FILTER_REJECT;
+      return node.nodeType === Node.ELEMENT_NODE ? element.matches(".katex") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP
+        : node.data.length && !element?.closest(".katex") ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    },
+  });
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  let node, rect;
+  while (nodes.length && !rect) {
+    node = nodes.pop();
+    const range = document.createRange();
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      // Treat the entire visible formula as one item, not its final fraction
+      // glyph or its accessibility-only MathML duplicate.
+      range.selectNodeContents(node.querySelector(".katex-html") || node);
+      const box = range.getBoundingClientRect();
+      if (box.height > 0) rect = {left: box.right, top: box.top + Math.max(0, (box.height - parseFloat(getComputedStyle(node).fontSize) * 1.1) / 2)};
+      continue;
+    }
+    range.setStart(node, node.length); range.collapse(true);
+    rect = [...range.getClientRects()].findLast((r) => r.height > 0);
+    if (!rect) {
+      // A collapsed range can lack a box at a line break. Measure the last
+      // complete grapheme, rather than splitting an emoji or combining mark.
+      const segments = typeof Intl.Segmenter === "function"
+        ? [...new Intl.Segmenter(undefined, {granularity: "grapheme"}).segment(node.data)] : null;
+      const offset = segments?.at(-1)?.index ?? node.length - (Array.from(node.data).at(-1)?.length || 0);
+      range.setStart(node, offset); range.setEnd(node, node.length);
+      const last = [...range.getClientRects()].findLast((r) => r.height > 0);
+      if (last) rect = {left: getComputedStyle(node.parentElement).direction === "rtl" ? last.left : last.right, top: last.top};
+    }
+  }
+  if (!rect) { terminalCursorElement?.remove(); return; }
+  // A cursor in a horizontally scrolled code block scrolls and clips with it.
+  const textElement = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+  const scroller = textElement.closest("pre,.chat-math--display"), host = scroller && root.contains(scroller) ? scroller : root;
+  if (!terminalCursorElement) {
+    terminalCursorElement = document.createElement("span");
+    terminalCursorElement.className = "terminal-stream-cursor";
+    terminalCursorElement.setAttribute("aria-hidden", "true");
+  }
+  const bounds = host.getBoundingClientRect();
+  terminalCursorElement.style.left = `${rect.left - bounds.left + host.scrollLeft - host.clientLeft}px`;
+  terminalCursorElement.style.top = `${rect.top - bounds.top + host.scrollTop - host.clientTop}px`;
+  terminalCursorElement.style.fontSize = getComputedStyle(textElement).fontSize;
+  host.appendChild(terminalCursorElement);
+  if (host !== root) terminalCursorResize?.observe(host);
+}
+function setTerminalCursor(root) {
+  if (terminalCursorRoot !== root) terminalCursorResize?.disconnect();
+  terminalCursorRoot = root;
+  terminalCursorResize?.observe(root);
+  positionTerminalCursor();
+  if (!root.isConnected) queueTerminalCursor();
+}
+window.addEventListener("resize", queueTerminalCursor);
+document.addEventListener("scroll", queueTerminalCursor, true);
+document.fonts?.ready.then(queueTerminalCursor);
+document.fonts?.addEventListener("loadingdone", queueTerminalCursor);
+
 function updateAssistant(el, m, streaming) {
+  clearTerminalCursor(el);
+  const activeStream = streaming && !m.error && !m.stopped;
   const det = el.querySelector("details.think");
   if (m.reasoning) {
     det.hidden = false;
@@ -1234,17 +1321,19 @@ function updateAssistant(el, m, streaming) {
     if (!thinkingNow && det.open && !det.dataset.touched) { det._auto = true; det.open = false; }
   }
   const bubble = el.querySelector(".st-bubble");
+  bubble.classList.remove("cursor");
   if (m.error) {
     bubble.innerHTML = `<div class="msg-error"></div>`;
     bubble.firstChild.textContent = m.error;
   } else if (!m.text && streaming && !(m.tools && m.tools.length)) {
-    bubble.innerHTML = m.reasoning ? `<span class="muted cursor">${esc(tr("terminal.writing", "Writing"))}</span>` : `<span class="cursor"></span>`;
+    bubble.replaceChildren();
   } else {
     bubble.innerHTML = answerHtml(m);
     hydrateToolImages(bubble);
     if (settings.math) StrataMath.hydrate(bubble);
-    if (streaming) bubble.classList.add("cursor"); else bubble.classList.remove("cursor");
   }
+  if (activeStream && m.text) setTerminalCursor(bubble);
+  else if (activeStream && m.reasoning && det.open) setTerminalCursor(el.querySelector(".thinking"));
   el.querySelector(".meta-text").textContent = m.stats ? "" : m.meta || (streaming ? "" : m.stopped ? tr("chat.stopped", "Stopped") : "");
   el.querySelector("[data-msg-copy]").hidden = streaming || !m.text;
   renderTerminalStats(el, m, streaming);
@@ -1330,10 +1419,16 @@ $("chat").addEventListener("click", (e) => {
 $("chat").addEventListener("toggle", (e) => {
   const d = e.target;
   if (d.tagName !== "DETAILS" || !d.classList.contains("think")) return;
-  if (d._auto) { d._auto = false; return; }          // our own open/close, not the user's
-  d.dataset.touched = "1";
+  const automatic = d._auto;
+  d._auto = false;
+  if (!automatic) d.dataset.touched = "1";
   const body = d.querySelector(".thinking");
   if (d.open && body.dataset.pending) { body.textContent = messages[+d.closest(".st-msg").dataset.i].reasoning; delete body.dataset.pending; }
+  const m = messages[+d.closest(".st-msg").dataset.i];
+  if (busy?.msg === m && !m.text && m.reasoning && !m.error && !m.stopped) {
+    clearTerminalCursor(d.closest(".st-msg"));
+    if (d.open) setTerminalCursor(body);
+  }
 }, true);
 
 function apiMessages() {
@@ -1393,6 +1488,8 @@ function setBusy(on) {
   $("stop-btn").hidden = !on;
   $("send-btn").disabled = modelSwitching || (on && !parksWhileBusy()) || !!panel;
   $("input").disabled = modelSwitching || !!panel;
+  $("input").placeholder = modelSwitching ? tr("model.switching", "Switching model…")
+                                         : tr("composer.placeholder", "Talk to TinyStrata");
   $("composer-hint").textContent = panel ? tr("composer.finishOpen", "Save or cancel what is open above to continue")
                                          : modelSwitching ? tr("model.switching", "Switching model…")
                                          : on ? busyHint() : tr("composer.newline", "Shift+Enter: new line");

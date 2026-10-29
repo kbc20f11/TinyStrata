@@ -193,7 +193,21 @@ button, input, textarea, select { -webkit-tap-highlight-color: transparent; }
 .st-bubble blockquote { border-color: #31734b; }
 .st-bubble th { color: #a4e9bd; background: #0a1a10; }
 .st-bubble td, .st-bubble th { padding: 8px 12px; }
-.cursor::after { width: 9px; border-radius: 0; box-shadow: 0 0 9px #46ed9f70; }
+.st-msg--assistant .st-bubble,
+.st-collapse__body.thinking,
+.st-code pre,
+.chat-math--display { position: relative; }
+.terminal-stream-cursor {
+  position: absolute;
+  display: block;
+  width: .6em;
+  height: 1.1em;
+  background: var(--st-accent);
+  box-shadow: 0 0 9px #46ed9f70;
+  pointer-events: none;
+  user-select: none;
+}
+.st-bubble:has(> .terminal-stream-cursor) > :nth-last-child(2) { margin-bottom: 0; }
 .chat-empty { margin-top: 11vh; max-width: 560px; }
 .chat-empty__title { font: 600 clamp(30px, 3.2vw, 48px)/1.2 var(--st-font-mono); letter-spacing: -.06em; color: #b1f2c6; }
 .chat-empty__sub { font-size: 14px; line-height: 1.8; color: var(--st-ink-muted); }
@@ -215,16 +229,15 @@ button, input, textarea, select { -webkit-tap-highlight-color: transparent; }
 .terminal-stat strong { font-size: 12px; font-weight: 600; color: #c0edcf; }
 .terminal-stat--speed { border-color: #387d50; }
 .terminal-stat--speed strong { color: var(--st-accent-text); }
-.terminal-phase { display: flex; align-items: center; gap: 13px; color: #89b99b; font: 12px/1.7 var(--st-font-mono); }
-.terminal-phase::before { content: ""; width: 70px; height: 2px; background: #26543a; box-shadow: inset 25px 0 var(--st-accent); }
+.terminal-phase { --phase-track: #26543a; --phase-pulse: #73ffc0; display: flex; align-items: center; gap: 13px; color: #89b99b; font: 12px/1.7 var(--st-font-mono); }
+.terminal-phase::before { content: ""; width: 70px; height: 2px; background: var(--phase-track); box-shadow: inset 25px 0 var(--st-accent); }
 .terminal-phase[data-state="reading"]::before,
 .terminal-phase[data-state="active"]::before {
-  background: linear-gradient(90deg, #26543a 0%, #26543a 28%, #73ffc0 48%, #26543a 68%, #26543a 100%);
-  background-size: 160px 2px;
+  background: linear-gradient(90deg, transparent, var(--phase-pulse), transparent) 0% 0 / 32px 100% no-repeat var(--phase-track);
   box-shadow: none;
-  animation: terminal-scan 1.8s linear infinite;
+  animation: terminal-scan 1.8s linear infinite alternate;
 }
-@keyframes terminal-scan { from { background-position: 110px 0; } to { background-position: -50px 0; } }
+@keyframes terminal-scan { from { background-position: 0% 0; } to { background-position: 100% 0; } }
 .terminal-phase[data-state="generating"] { color: var(--st-accent-text); }
 .terminal-phase[data-state="error"] { color: var(--st-danger-text); }
 .terminal-phase:empty { display: none; }
@@ -427,17 +440,12 @@ html[data-theme="light"] .st-bubble code.inline { background: #e8f1e1; border-co
 html[data-theme="light"] .st-bubble blockquote { border-color: #81a98b; }
 html[data-theme="light"] .st-bubble th { color: #255337; background: #e6efdf; }
 html[data-theme="light"] .chat-empty__title { color: #23603a; }
-html[data-theme="light"] .cursor::after { box-shadow: 0 0 6px #0e7b4928; }
+html[data-theme="light"] .terminal-stream-cursor { box-shadow: 0 0 6px #0e7b4928; }
 html[data-theme="light"] .terminal-stat { background: #f6faf1; border-color: #afc8b0; color: #4c6a55; }
 html[data-theme="light"] .terminal-stat strong { color: #214d31; }
 html[data-theme="light"] .terminal-stat--speed { border-color: #719c7c; }
 html[data-theme="light"] .terminal-stat--speed strong { color: var(--st-accent-text); }
-html[data-theme="light"] .terminal-phase { color: #466f53; }
-html[data-theme="light"] .terminal-phase::before { background: #b9cfb9; }
-html[data-theme="light"] .terminal-phase[data-state="reading"]::before,
-html[data-theme="light"] .terminal-phase[data-state="active"]::before {
-  background-image: linear-gradient(90deg, #b9cfb9 0%, #b9cfb9 28%, #127647 48%, #b9cfb9 68%, #b9cfb9 100%);
-}
+html[data-theme="light"] .terminal-phase { --phase-track: #b9cfb9; --phase-pulse: #127647; color: #466f53; }
 html[data-theme="light"] .terminal-phase[data-state="generating"] { color: var(--st-accent-text); }
 html[data-theme="light"] .terminal-phase[data-state="error"] { color: var(--st-danger-text); }
 html[data-theme="light"] .st-composer { background: #fbfdf8; border-color: #789d7b; }
