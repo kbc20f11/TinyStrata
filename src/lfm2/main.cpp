@@ -405,7 +405,7 @@ int main(int argc, char** argv) {
             };
             if (arg == "--capabilities") {
 #if defined(STRATA_USE_HIP)
-                std::puts("{\"backend\":\"hip\",\"model_family\":\"lfm2\",\"kv_types\":[\"int8\"],\"images\":false,\"mtp\":false}");
+                std::puts("{\"backend\":\"hip\",\"model_family\":\"lfm2\",\"kv_types\":[\"int8\",\"fp8-mma\"],\"images\":false,\"mtp\":false}");
 #else
                 std::puts("{\"backend\":\"cuda\",\"model_family\":\"lfm2\",\"kv_types\":[\"int8\",\"fp8-mma\",\"fp16\"],\"images\":false,\"mtp\":false}");
 #endif
@@ -420,8 +420,13 @@ int main(int argc, char** argv) {
                           "  --expert-vram auto|GiB Expert GPU cache budget; overflow runs on CPU\n"
                           "  --vram-reserve-mib N   Leave VRAM headroom (default 768 MiB)\n"
                           "  --cpu-threads N --no-graph --no-gpu-experts\n"
+#if defined(STRATA_USE_HIP)
+                          "  --kv-type auto|fp8|int8\n"
+                          "                        Auto: INT8; native FP8 is opt-in on RDNA4\n"
+#else
                           "  --kv-type auto|fp8|int8|fp16\n"
                           "                        Auto: native FP8 Attention, otherwise INT8 KV\n"
+#endif
                           "  --kv-grow             Grow physical KV with actual usage (default, if supported)\n"
                           "  --kv-whole            Allocate the full context's KV at startup\n"
                           "  --stage-mib N          Prompt Expert streaming buffer (default 256 MiB)");

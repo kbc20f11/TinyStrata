@@ -38,8 +38,9 @@ target_compile_options(tinystrata_gemma4 PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--ex
 target_link_libraries(tinystrata_gemma4 PRIVATE strata_artifact strata_kernels tinystrata_gemma4_mmq
   strata_kernels_cpu ggml-cpu ggml-base ${_strata_gpu_runtime_target} ${_strata_gpu_blas_target} Threads::Threads)
 if(STRATA_ENABLE_CUDA)
-  target_link_libraries(tinystrata_gemma4 PRIVATE CUDA::cuda_driver tinystrata_fp8_attention)
+  target_link_libraries(tinystrata_gemma4 PRIVATE CUDA::cuda_driver)
 endif()
+target_link_libraries(tinystrata_gemma4 PRIVATE tinystrata_fp8_attention)
 add_executable(tinystrata-gemma4 src/gemma4/main.cpp)
 target_include_directories(tinystrata-gemma4 PRIVATE include)
 target_link_libraries(tinystrata-gemma4 PRIVATE tinystrata_gemma4 ${_strata_gpu_runtime_target})

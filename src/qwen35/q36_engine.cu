@@ -1358,7 +1358,11 @@ struct Engine {
         fp8_prompt = kv_format == 3 && g.head_dim == 256 && g.n_head == 8 * g.n_head_kv &&
                      strata::qwen35::fp8_attention::available();
         if (kv_format == 3 && !fp8_prompt) {
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
+            std::fprintf(stderr, "tinystrata: fp8-mma requires a compiled RDNA4 FP8 WMMA kernel/device, HD256 and GQA8; use int8\n");
+#else
             std::fprintf(stderr, "tinystrata: fp8-mma requires a CUDA sm_89+ build/device, HD256 and GQA8; use int8 on Ampere\n");
+#endif
             std::exit(2);
         }
         if (fp8_prompt) std::fprintf(stderr, "tinystrata: experimental native FP8 prompt attention (Q/P residual, FP32 outer accumulation); decode uses native FP8 split-K\n");
@@ -3844,7 +3848,7 @@ int strata::qwen35::run(int argc, char** argv) {
                         "  --bench-pp N --bench-tg N Benchmark prompt and generation\n"
                         "  --max-context auto|N     KV capacity (default: auto, total GPU VRAM selects 64K/128K/256K)\n"
 #if defined(STRATA_USE_HIP) || defined(__HIPCC__)
-                        "  --kv-type auto|int8     HIP uses INT8 KV\n"
+                        "  --kv-type auto|int8|fp8|fp8-mma  HIP auto: INT8; native FP8 is opt-in on RDNA4\n"
 #else
                         "  --kv-type auto|fp32|int8|fp8|fp8-mma  Default auto: native FP8, otherwise INT8; fp8 = fp8-mma\n"
 #endif
@@ -3947,8 +3951,8 @@ int strata::qwen35::run(int argc, char** argv) {
     if (std::getenv("CUDA_MODULE_LOADING") == nullptr) _putenv_s("CUDA_MODULE_LOADING", "EAGER");
 #endif
 #if defined(STRATA_USE_HIP) || defined(__HIPCC__)
-    if (kv_format != P::kAutomaticKv && kv_format != P::kInt8Kv) {
-        std::fprintf(stderr, "tinystrata: the HIP backend requires INT8 KV; use --kv-type auto or int8\n");
+    if (kv_format != P::kAutomaticKv && kv_format != P::kInt8Kv && kv_format != P::kNativeFp8Kv) {
+        std::fprintf(stderr, "tinystrata: the HIP backend supports --kv-type auto, int8 or native fp8\n");
         return 2;
     }
 #endif
@@ -3989,6 +3993,11 @@ int strata::qwen35::run(int argc, char** argv) {
     E.gpu_cc = prop.major * 10 + prop.minor;
 #endif
     if (E.kv_auto) {
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
+        // Native FP8 is opt-in on HIP; the established INT8 path stays the default.
+        kv_format = P::kInt8Kv;
+        const char* reason = "HIP defaults to INT8; native FP8 is opt-in";
+#else
         const bool shape = m.g.head_dim == 256 && m.g.n_head == 8 * m.g.n_head_kv;
         const bool native_fp8 = shape && strata::qwen35::fp8_attention::available();
         if (!native_fp8) cudaGetLastError(); // optional capability probe must leave a clean fallback error state
@@ -3997,6 +4006,7 @@ int strata::qwen35::run(int argc, char** argv) {
                            : !shape ? "model shape does not support native FP8"
                            : E.gpu_cc > 0 && E.gpu_cc < 89 ? "device has no native FP8 MMA"
                            : "native FP8 kernel unavailable in this backend/build";
+#endif
         E.kv_format = kv_format;
         std::fprintf(stderr, "tinystrata: automatic KV/attention: %s (GPU CC %d; %s)\n", E.kv_name(), E.gpu_cc, reason);
     } else {

@@ -77,12 +77,10 @@ void Gemma4::load_geometry() {
     need(window_ > 0 && dim_full_ > 0 && dim_swa_ > 0, "bad attention.sliding_window or key lengths");
     need(shape_i("attention.value_length") == dim_full_ && shape_i("attention.value_length_swa") == dim_swa_,
          "the attention's keys and values differ in length");
-    // The HIP backend uses resident INT8 KV; its Attention kernels restore
-    // quantized tiles for SIMT/hipBLAS rather than invoking CUDA FP8 MMA.
+    // HIP keeps INT8 as its default; native FP8 WMMA is an explicit choice.
 #if defined(STRATA_USE_HIP)
-    if (opt_.kv_format != KvFmt::kAuto && opt_.kv_format != KvFmt::kQ8_0)
-        throw std::runtime_error("the AMD HIP backend supports --kv-type auto or int8 only");
-    opt_.kv_format = KvFmt::kQ8_0;
+    if (opt_.kv_format != KvFmt::kAuto && opt_.kv_format != KvFmt::kQ8_0 && opt_.kv_format != KvFmt::kFp8)
+        throw std::runtime_error("the AMD HIP backend supports --kv-type auto, int8 or native fp8");
 #endif
     // INT8 is the default for Gemma. Native FP8 remains an explicit experimental path.
     if (opt_.kv_format == KvFmt::kAuto) opt_.kv_format = KvFmt::kQ8_0;

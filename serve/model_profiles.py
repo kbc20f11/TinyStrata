@@ -133,6 +133,10 @@ class ModelProfiles:
         # CUDA profile must not switch an AMD installation back to CUDA.
         backend_changed = (self._hardware.get("backend") is not None and
                            source.get("backend", "cuda") != self._hardware["backend"])
+        # Normalize KV while the profile still names its original backend.
+        # Overwriting it first would mistake a CUDA FP8 setting for a deliberate
+        # HIP opt-in and bypass the migration's INT8 default.
+        source = configure_backend(source, self._hardware.get("backend"))
         if self._hardware.get("backend") == "hip" or backend_changed:
             for key in ("gpu", "hip_ordinal", "backend", "lib_dirs"):
                 source.pop(key, None)
@@ -141,7 +145,6 @@ class ModelProfiles:
             source.pop("exe", None)
             source.pop("vision_exe", None)
             source.pop("vision", None)
-        source = configure_backend(source, self._hardware.get("backend"))
         if self._engine is not None and (self._hardware.get("backend") == "hip" or backend_changed):
             filename = {"lfm2moe": "tinystrata-lfm2", "gemma4": "tinystrata-gemma4"}.get(profile.arch, "tinystrata")
             sibling = self._engine.with_name(filename + self._engine.suffix)

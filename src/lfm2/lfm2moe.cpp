@@ -63,11 +63,13 @@ void Lfm2Moe::load_geometry() {
     need(n_head_ > 0 && n_embd_ % n_head_ == 0 && n_head_ <= 256, "bad attention.head_count");
     head_dim_ = n_embd_ / n_head_;
 #if defined(STRATA_USE_HIP)
-    if (opt_.kv_format != KvFmt::kAuto && opt_.kv_format != KvFmt::kQ8_0)
-        throw std::runtime_error("the AMD HIP backend supports --kv-type auto or int8 only");
-    opt_.kv_format = KvFmt::kQ8_0;
+    if (opt_.kv_format != KvFmt::kAuto && opt_.kv_format != KvFmt::kQ8_0 && opt_.kv_format != KvFmt::kFp8)
+        throw std::runtime_error("the AMD HIP backend supports --kv-type auto, int8 or native fp8");
+    // RDNA4 FP8 is available explicitly, while HIP auto keeps INT8.
+    if (opt_.kv_format == KvFmt::kAuto) opt_.kv_format = KvFmt::kQ8_0;
 #endif
-    const bool native_fp8 = strata::fp8_attention::available(head_dim_);
+    const bool native_fp8 = (opt_.kv_format == KvFmt::kAuto || opt_.kv_format == KvFmt::kFp8) &&
+                            strata::fp8_attention::available(head_dim_);
     if (opt_.kv_format == KvFmt::kAuto) opt_.kv_format = native_fp8 ? KvFmt::kFp8 : KvFmt::kQ8_0;
     if (opt_.kv_format == KvFmt::kFp8 && !native_fp8)
         throw std::runtime_error("native FP8 Attention is unavailable on this GPU/build; use --kv-type int8");

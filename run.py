@@ -176,7 +176,7 @@ def main() -> int:
     ap.add_argument("--draft-model", type=Path, help="existing Gemma4 QAT assistant GGUF for MTP")
     ap.add_argument("--exe", type=Path, help="built tinystrata executable")
     ap.add_argument("--backend", choices=("auto", "cuda", "hip"), default="auto",
-                    help="GPU backend (default: saved setting or native executable); hip uses INT8 KV")
+                    help="GPU backend (default: saved setting or native executable); HIP defaults to INT8, with opt-in RDNA4 FP8")
     ap.add_argument("--vision-exe", type=Path, help="built tinystrata-vision image encoder")
     ap.add_argument("--vision", choices=("gpu", "cpu", "no", "yes", "none"),
                     help="image encoder: gpu (default), cpu or no; yes = gpu, none = no; saved for later starts")
@@ -186,7 +186,7 @@ def main() -> int:
     ap.add_argument("--max-context", type=context_limit, metavar="auto|TOKENS",
                     help="choose context capacity from total GPU VRAM (default: auto), or set a token limit")
     ap.add_argument("--kv-type", choices=("auto", "fp16", "fp32", "fp8", "fp8-mma", "int8"),
-                    help="default auto: Gemma uses INT8; Qwen/LFM use native FP8 when supported, otherwise INT8")
+                    help="auto: HIP/Gemma use INT8; CUDA Qwen/LFM use native FP8 when supported, otherwise INT8")
     kv_allocation = ap.add_mutually_exclusive_group()
     kv_allocation.add_argument("--kv-grow", dest="kv_grow", action="store_true", default=None,
                                help="grow physical KV storage with the conversation (default); saved for later starts")
