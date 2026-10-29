@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -20,6 +21,45 @@ struct Input {
     // Interleaved [cell][temporal, height, width], including future generated cells.
     std::vector<int32_t> positions;
 };
+
+inline bool whole_prefix(const Input& input, size_t end) {
+    for (const Image& image : input.images)
+        if (image.cell < end && end - image.cell < (size_t) image.rows) return false;
+    return true;
+}
+
+// A run of image-pad IDs does not identify a picture. Check the validated
+// embedding rows and their grid/position instead. The old input remains owned
+// by the engine until this comparison, so no second image cache or hash is
+// needed. Pictures appended after the reused prefix do not invalidate it.
+inline bool same_prefix(const Input& old, const Input& next, size_t end, int width) {
+    if (width <= 0 || !whole_prefix(old, end) || !whole_prefix(next, end)) return false;
+    size_t a = 0, b = 0;
+    while (a < old.images.size() && old.images[a].cell < end) {
+        if (b >= next.images.size()) return false;
+        const Image& x = old.images[a++];
+        const Image& y = next.images[b++];
+        if (x.cell != y.cell || x.rows != y.rows || x.nx != y.nx || x.ny != y.ny || x.rows <= 0) return false;
+        const size_t n = (size_t) x.rows * (size_t) width;
+        if (x.offset > old.embeddings.size() || n > old.embeddings.size() - x.offset ||
+            y.offset > next.embeddings.size() || n > next.embeddings.size() - y.offset ||
+            std::memcmp(old.embeddings.data() + x.offset, next.embeddings.data() + y.offset,
+                        n * sizeof(float)) != 0) return false;
+    }
+    if (b < next.images.size() && next.images[b].cell < end) return false;
+    if ((!old.positions.empty() && old.positions.size() / 3 < end) ||
+        (!next.positions.empty() && next.positions.size() / 3 < end)) return false;
+    if (!old.positions.empty() && !next.positions.empty())
+        return std::equal(old.positions.begin(), old.positions.begin() + end * 3, next.positions.begin());
+    // Text-only inputs have the identity position table, even when a previous
+    // request had an image later than this checkpoint.
+    const auto& positions = old.positions.empty() ? next.positions : old.positions;
+    if (!positions.empty())
+        for (size_t cell = 0; cell < end; ++cell)
+            for (size_t axis = 0; axis < 3; ++axis)
+                if (positions[cell * 3 + axis] != (int32_t) cell) return false;
+    return true;
+}
 
 inline std::vector<int32_t> identity_positions(int context) {
     std::vector<int32_t> positions((size_t) context * 3);

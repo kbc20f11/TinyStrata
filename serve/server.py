@@ -4031,8 +4031,10 @@ class Service:
         self.embeddings.pad = None
         self.embeddings.turn_at = None
         images = images_of(messages)
-        if not images and (req or {}).get("strata_checkpoint") is not False:
-            self.embeddings.turn_at = self.prompt_turn_at(messages, tools, kwargs, ids)
+        turn_at = (self.prompt_turn_at(messages, tools, kwargs, ids)
+                   if (req or {}).get("strata_checkpoint") is not False else None)
+        if not images:
+            self.embeddings.turn_at = turn_at
         if images:
             if self.vision is None:
                 raise ValueError("this server was started without the vision encoder (run setup again and choose "
@@ -4071,7 +4073,13 @@ class Service:
             # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
             literal = self.tok.encode(mark, parse_special=False)
             out, k = [], 0
+            expanded_turn_at = None
             for j, t in enumerate(ids):
+                if j == turn_at:
+                    # The checkpoint is a token boundary in the rendered
+                    # history. Map it before inserting this source token's
+                    # complete image span; never place it inside image rows.
+                    expanded_turn_at = len(out)
                 if t == pad and (k < len(encoded) if start is None else j > 0 and ids[j - 1] == start):
                     # more pairs than images: text parts that cut both markers apart (the literal marks keep whole ones text)
                     if k == len(encoded):
@@ -4085,6 +4093,8 @@ class Service:
             if k != len(encoded):
                 raise ValueError("the prompt and its images do not match")
             ids = out
+            if expanded_turn_at is not None and 0 < expanded_turn_at < len(ids):
+                self.embeddings.turn_at = expanded_turn_at
         ctx = self.engine.max_context
         if ctx <= 0:
             if getattr(self.engine, "starting", False):   # #344: (re)starting, not a prompt that is too long

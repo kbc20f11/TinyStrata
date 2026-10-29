@@ -3753,6 +3753,9 @@ int serve(Engine& E) {
                 std::printf("ERR %s\n", error.c_str()); std::fflush(stdout); continue;
             }
         }
+        if (turn_at > 0 && !V::whole_prefix(image_input, (size_t) turn_at)) {
+            std::printf("ERR turn_at cannot split an image\n"); std::fflush(stdout); continue;
+        }
         stop.store(false);
         if ((int64_t) live.size() != E.pos) {
             std::fprintf(stderr, "tinystrata: consumed history (%zu) differs from model position (%lld)\n",
@@ -3764,15 +3767,18 @@ int serve(Engine& E) {
         // Prefer a direct continuation, otherwise restore a matching turn's
         // recurrent state. A position-only rewind would corrupt GDN history.
         size_t reuse = 0;
-        // A matching sequence of image-pad IDs does not identify a picture.
-        // Read image prompts afresh, and discard their recurrent state before
-        // a text-only request; ordinary text prefix reuse stays unchanged.
-        if (!image_request && !E.image_positions && live.size() < ids.size() &&
-            std::equal(live.begin(), live.end(), ids.begin())) reuse = live.size();
-        else if (!image_request && !E.image_positions && !turn_ids.empty() &&
+        // Image identity and mRoPE positions are checked along with token IDs.
+        // Replacing a picture, including one with the same grid, cannot reuse
+        // its state. A text follow-up retaining the same picture can.
+        const auto image_prefix = [&](size_t end) {
+            return V::same_prefix(E.image_input, image_input, end, (int) E.m->g.n_embd);
+        };
+        if (live.size() < ids.size() && std::equal(live.begin(), live.end(), ids.begin()) &&
+            image_prefix(live.size())) reuse = live.size();
+        else if (!turn_ids.empty() &&
                  turn_ids.size() < ids.size() && turn_ids.size() <= live.size() &&
                  std::equal(turn_ids.begin(), turn_ids.end(), live.begin()) &&
-                 std::equal(turn_ids.begin(), turn_ids.end(), ids.begin())) {
+                 std::equal(turn_ids.begin(), turn_ids.end(), ids.begin()) && image_prefix(turn_ids.size())) {
             E.load_turn(turn_state);
             live = turn_ids;
             reuse = live.size();
@@ -3794,7 +3800,7 @@ int serve(Engine& E) {
                         (double) done / std::max(1e-9, ms_since(t0) / 1000.0));
             std::fflush(stdout);
         };
-        if (checkpoint && !image_request && turn_at > (int64_t) reuse && turn_at < (int64_t) ids.size()) {
+        if (checkpoint && turn_at > (int64_t) reuse && turn_at < (int64_t) ids.size()) {
             const int64_t before = turn_at - (int64_t) reuse;
             // Even a one-token boundary must populate its MTP KV row before
             // saving, so a restored turn has no deferred draft repair to run.

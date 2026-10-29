@@ -231,7 +231,12 @@ bool read_prompt_prefix(Engine& e, const int32_t* ids, int n, const std::atomic<
     int done = 0;
     while (done < n - 1) {
         if (stop.load()) return false;
-        const int count = (int) e.whole(e.pos(), std::min(n - 1 - done, pictures ? e.max_rows() : e.max_read()));
+        int limit = std::min(n - 1 - done, pictures ? e.max_rows() : e.max_read());
+        // A picture is indivisible, but the surrounding text can stop at a
+        // turn boundary. Serving validates that no mark lies inside a picture.
+        if (pictures && mark && !mark->saved && mark->at > e.pos())
+            limit = (int) std::min<int64_t>(limit, mark->at - e.pos());
+        const int count = (int) e.whole(e.pos(), limit);
         if (count <= 0 || count > n - 1 - done) throw std::logic_error("invalid image span in prompt");
         const std::function<bool(int, int)> progress = [&](int layers, int total) {
             if (report) {
@@ -445,9 +450,11 @@ int serve(Engine& e, const Options& o) {
                 if (!error.empty()) throw std::invalid_argument(error);
                 for (const auto& im : pictures.at) if (im.n > e.max_rows())
                     throw std::invalid_argument("image has more tokens than --chunk permits");
+                for (const auto& im : pictures.at)
+                    if (turn_at > im.at && turn_at < im.at + im.n)
+                        throw std::invalid_argument("turn_at cannot split a picture");
             }
             e.images(pictures.at.data(), (int) pictures.at.size());
-            if (geni) checkpoint_ids.clear();
             size_t reuse = 0;
             const bool live_valid = e.pos() == (int64_t) live.size();
             if (!live_valid || checkpoint_ids.size() > live.size() ||
@@ -471,7 +478,7 @@ int serve(Engine& e, const Options& o) {
             const auto p0 = Clock::now();
             const int fresh = (int) (ids.size() - reuse);
             PromptMark mark;
-            if (checkpoint && !geni && turn_at > (int64_t) reuse) {
+            if (checkpoint && turn_at > (int64_t) reuse) {
                 // Never leave an old prefix attached to a buffer being replaced.
                 checkpoint_ids.clear();
                 try {
@@ -481,7 +488,11 @@ int serve(Engine& e, const Options& o) {
                     std::fprintf(stderr, "gemma4: skipping conversation checkpoint: insufficient host memory\n");
                 }
             }
-            if (!prompt(e, ids.data() + reuse, fresh, box->stop, p0, true, geni, o.stage_read_mib > 0,
+            // A GENI continuation still carries its earlier pictures, but when
+            // they are all cached the new suffix is an ordinary text read.
+            const bool fresh_pictures = std::any_of(pictures.at.begin(), pictures.at.end(),
+                [&](const auto& im) { return im.at + im.n > (int64_t) reuse; });
+            if (!prompt(e, ids.data() + reuse, fresh, box->stop, p0, true, fresh_pictures, o.stage_read_mib > 0,
                         (int) reuse, &mark)) {
                 e.reset(); live.clear(); checkpoint_ids.clear();
                 memory_info(e);
