@@ -1727,15 +1727,20 @@ $("new-btn").onclick = () => {
   if (panel) { closePanel(); }
   clearUndo();
   releasePending();
-  if (!messages.length) return;
-  const backup = messages;
+  if (!messages.length && !$("input").value && !attachments.length) return;
+  const backup = messages, draft = saveComposerDraft(), prevId = chatId;
   clearToolMedia();
   messages = [];
+  chatId = H.newChat().id;
+  restoreComposerDraft();
+  const clearedId = chatId, clearedDraft = composerDraft;
   saveChat();
   renderChat();
   toast("info", tr("chat.newToast", "New chat"), tr("chat.clearedToast", "The last one was cleared."), 6000, {label: tr("undo", "Undo"), run: () => {
-    if (busy || messages.length) return;                         // a new question since: the cleared chat is not put back over it
-    messages = backup; saveChat(); renderChat();
+    if (listOn || chatId !== clearedId || composerDraft !== clearedDraft ||
+        busy || messages.length || $("input").value || attachments.length) return;
+    chatId = prevId;
+    messages = backup; restoreComposerDraft(draft); saveChat(); renderChat();
   }});
 };
 $("export-btn").onclick = () => {
@@ -1760,12 +1765,13 @@ function isTextFile(f) {
          TEXT_EXT.test(f.name) || /(^|[\\/])(makefile|dockerfile|readme|license)$/i.test(f.name);
 }
 function addFiles(files) {
+  const owner = saveComposerDraft();
   for (const f of files) {
     if (f.type.startsWith("image/")) {
       if (!health.images) { toast("warn", tr("file.picturesOff", "Pictures are off"), tr("file.picturesOffText", "This model was set up for text only.")); continue; }
       if (f.size > 20e6) { toast("warn", tr("file.pictureBig", "Picture too large"), tr("file.pictureBigText", "{name} is over 20 MB.", {name: f.name})); continue; }
       const r = new FileReader();
-      r.onload = () => { attachments.push({kind: "image", name: f.name || tr("file.pasted", "pasted image"), url: r.result}); renderAttachments(); };
+      r.onload = () => addDraftAttachment(owner, {kind: "image", name: f.name || tr("file.pasted", "pasted image"), url: r.result});
       r.readAsDataURL(f);
       continue;
     }
@@ -1776,8 +1782,7 @@ function addFiles(files) {
     r.onload = () => {
       const text = String(r.result);
       if (text.includes("\u0000")) { toast("warn", tr("file.notText", "Not a text file"), tr("file.binaryText", "{name} looks like a binary file.", {name: f.name})); return; }
-      attachments.push({kind: "file", name: f.name, text});
-      renderAttachments();
+      addDraftAttachment(owner, {kind: "file", name: f.name, text});
     };
     r.readAsText(f);
   }

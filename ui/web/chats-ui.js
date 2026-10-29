@@ -22,6 +22,33 @@ const node = (tag, cls, text) => {
 // ------------------------------------------------------------------ state
 let listOn = false;                  // the saved-chats list is on
 let chats = [], chat = null, chatId = "";
+// Unsent text and attachment contents belong to one chat. Keep them only for
+// this visit, outside the persisted chat records (which retain attachment names).
+const composerDrafts = new Map();
+let composerDraft = {text: "", attachments: []};
+function saveComposerDraft() {
+  composerDraft.text = $("input").value;
+  composerDraft.attachments = attachments.slice();
+  return composerDraft;
+}
+function restoreComposerDraft(draft = {text: "", attachments: []}) {
+  composerDraft = draft;
+  $("input").value = draft.text;
+  attachments = draft.attachments.slice();
+  renderAttachments();
+  autosize();
+}
+function chatDraft(c) {
+  if (!composerDrafts.has(c.id)) composerDrafts.set(c.id, {text: "", attachments: []});
+  return composerDrafts.get(c.id);
+}
+function addDraftAttachment(owner, attachment) {
+  if (owner === composerDraft) {
+    attachments.push(attachment);
+    saveComposerDraft();
+    renderAttachments();
+  } else owner.attachments.push(attachment);
+}
 let sidebarQuery = "", sidebarOpen = true;
 let undoState = null;                // one change, in memory until a new question, another chat or a reload
 let panel = null;                    // the open "Rewind to here" panel or answer editor: {kind, index, el}
@@ -52,20 +79,30 @@ function stillWriting() { toast("warn", tr("busy.stillWriting", "Still writing")
 // load the list is the list, so a fresh chat stays empty and the single chat of before ("strata.chat") is read once, when the
 // store is empty.
 async function openChats(fromScreen) {
+  const screenMessages = messages, screenDraft = fromScreen ? saveComposerDraft() : null;
   await chatStore.start();
   chats = await chatStore.all();
-  if (!chats.length) {
-    const old = fromScreen ? messages : store.get("chat", []);
+  if (!chats.length && !fromScreen) {
+    const old = store.get("chat", []);
     if (old.length) {
       const c = {...H.newChat(), messages: old, time: old[old.length - 1].time || Date.now()};
       chats = [c];
       chatStore.put(H.cleanChat(c));                    // the migrated chat is a record like the others
     }
   }
-  chat = chats.find((c) => c.id === store.get("chatId", "")) || chats[0] || H.newChat();
+  if (fromScreen) {
+    chat = chats.find((c) => c.id === chatId) || H.newChat();
+    chat.messages = screenMessages;
+    composerDrafts.set(chat.id, screenDraft);
+  } else chat = chats.find((c) => c.id === store.get("chatId", "")) || chats[0] || H.newChat();
   if (!chats.includes(chat)) chats.push(chat);
   chatId = chat.id;
   setMessages(chat.messages);
+  restoreComposerDraft(chatDraft(chat));
+  if (fromScreen) {
+    store.set("chatId", chatId);
+    chatStore.put(H.cleanChat(chat));
+  }
 }
 async function setChatList(on, fromScreen) {
   listOn = on;
@@ -117,8 +154,10 @@ function renderSidebar() {
 }
 
 function showChat(c) {
+  saveComposerDraft();
   clearUndo();
   chat = c; chatId = c.id; messages = c.messages;
+  restoreComposerDraft(chatDraft(c));
   store.set("chatId", chatId);
   chatStore.put(H.cleanChat(chat));       // renderChat renders the list, so the write here does not render it again
   renderChat();
@@ -133,7 +172,9 @@ function openChat(id) {
 }
 function startChat() {
   if (busy) { stillWriting(); return; }
-  if (!messages.length && !chat.parent) { $("input").focus(); return; }          // already a fresh chat
+  if (!messages.length && !chat.parent && !$("input").value && !attachments.length && !pending) {
+    $("input").focus(); return;                        // already a truly empty chat
+  }
   releasePending();
   closePanel();
   const prev = chatId, c = H.newChat();
@@ -147,6 +188,8 @@ function deleteChat(c) {
   if (busy && c.id === chatId) { stillWriting(); return; }
   const i = chats.indexOf(c), wasOpen = c.id === chatId;
   if (i < 0) return;                                // the list only ever passes a chat it holds
+  if (wasOpen) saveComposerDraft();
+  const draft = composerDrafts.get(c.id);
   chats.splice(i, 1);
   chatStore.remove(c.id);                           // the record; the Undo puts it back
   if (wasOpen) {
@@ -156,8 +199,10 @@ function deleteChat(c) {
     if (!chats.includes(next)) chats.push(next);
     showChat(next);
   } else renderSidebar();
+  composerDrafts.delete(c.id);
   toast("info", tr("chat.deleted", "Chat deleted"), H.chatTitle(c, untitled()), 6000, {label: tr("undo", "Undo"), run: () => {
     if (chats.includes(c)) return;                  // already put back
+    if (draft) composerDrafts.set(c.id, draft);
     chats.splice(Math.min(i, chats.length), 0, c);  // the display is sorted by time, so only the index matters
     if (wasOpen) showChat(c); else { chatStore.put(H.cleanChat(c)); renderSidebar(); }
   }});
