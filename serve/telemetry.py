@@ -3,7 +3,8 @@
 A background thread samples once a second and keeps the last 60 readings of each series:
 - GPU: NVIDIA's own NVML library (nvml.dll / libnvidia-ml.so.1, installed with every driver) through ctypes, so no
   pip package is needed: load, VRAM, temperature, power, PCIe link and throughput.  With the AMD backend (#301): the
-  amdgpu driver's Linux sysfs files - load, VRAM, temperature and power.
+  amdgpu driver's Linux sysfs files - load, VRAM, temperature and power. On Windows, HIP identifies the engine's
+  adapter and its LUID selects the OS-reported dedicated VRAM capacity and usage.
 - CPU, RAM, disk: `psutil` when it is installed (setup installs it); without it the CPU and RAM readings fall back to
   the OS (Windows GlobalMemoryStatusEx / GetSystemTimes, Linux /proc) and the disk rate is absent.
 Anything that cannot be read is None; nothing here can stop the server.
@@ -385,18 +386,33 @@ class _CpuRamFallback:
 
 # ------------------------------------------------------------------------------------------------ the sampler
 class Telemetry:
-    def __init__(self, extra=None, gpu_index=0, gpu_indices=None, amd=False):
+    def __init__(self, extra=None, gpu_index=0, gpu_indices=None, amd=False, gpu_env=None):
         """`extra()` -> dict of more series to record each second (the server's tok/s).  `gpu_index`: the card the
         engine runs on, numbered as nvidia-smi and NVML number them (by PCI bus); `gpu_indices`: all of them when
         the model is split across several (issue #112) - the gpu_* readings are then their total (memory, power,
         PCIe traffic), mean (load) or hottest (temperature), and "gpus" has each card's own.  `amd`: the AMD backend's
-        cards, numbered as HIP numbers them, read from sysfs (#301)."""
+        cards, numbered as HIP numbers them, read from sysfs (#301). On Windows,
+        `gpu_env` is the native engine's DLL paths and device visibility mask;
+        the visible HIP adapter's LUID identifies the Windows memory counter."""
         self.extra = extra
         self.lock = threading.Lock()
         self.now: dict = {}
         self.hist = collections.defaultdict(lambda: collections.deque(maxlen=HISTORY))
         idx = list(gpu_indices) if gpu_indices and len(gpu_indices) > 1 else [gpu_index]
-        self.gpus = [(i, gpu_reader(i, amd)) for i in idx]
+        self.gpus = []
+        if amd and os.name == "nt":
+            try:
+                from serve.windows_amd_telemetry import hip_cards, WindowsAmdCard
+                cards = hip_cards(gpu_env)
+                # child_env has already applied HIP_VISIBLE_DEVICES. Like the
+                # native engine, use its visible ordinal, not registry order.
+                by_index = {card["index"]: card for card in cards}
+                visible = range(len(idx)) if gpu_env is not None else idx
+                self.gpus = [(i, WindowsAmdCard(by_index[v])) for i, v in zip(idx, visible) if v in by_index]
+            except Exception:  # telemetry must never prevent the API from starting
+                pass
+        if not self.gpus:
+            self.gpus = [(i, gpu_reader(i, amd)) for i in idx]
         self.gpus = [(i, g) for i, g in self.gpus if g.ok()] or self.gpus[:1]
         self.gpu = self.gpus[0][1]
         try:
@@ -408,20 +424,19 @@ class Telemetry:
         gpu_name = " + ".join(g.name() or "?" for _, g in self.gpus) if self.gpu.ok() else None
         win_amd = None
         if gpu_name is None and amd and os.name == "nt":
-            # #1587: no readings for an AMD card on Windows yet, but its name (and VRAM size) are in the registry, so the
-            # dashboard and strata_bench do not call the run "CPU only".  The class order is taken as HIP's order.
-            cards = windows_amd_cards()
-            win_amd = [cards[i] for i in idx if 0 <= i < len(cards)] or cards[:1]
+            # Registry class order is NOT HIP order. With several adapters a
+            # failed runtime probe is unknown, rather than a guess at the iGPU.
+            cards = windows_display_adapters("amd")
+            win_amd = cards if len(cards) == len(idx) == 1 else None
             gpu_name = " + ".join(c["name"] for c in win_amd) if win_amd else None
+        totals = [getattr(g, "total", None) for _, g in self.gpus]
         self.static = {
             "gpu_name": gpu_name,
             "gpu_vram_total_mib": (sum(c["vram_bytes"] for c in win_amd) >> 20
-                                   if win_amd and all(c["vram_bytes"] for c in win_amd) else None),
+                                   if win_amd and all(c["vram_bytes"] for c in win_amd)
+                                   else sum(totals) >> 20 if all(totals) else None),
             "gpu_count": len(self.gpus),
-            # #1380: the AMD readings are the amdgpu driver's Linux sysfs files; a Windows AMD card has none yet, and the
-            # dashboard said "not readable (NVML)" or showed empty tiles with no word why
-            "gpu_note": ("no GPU load or VRAM readings for AMD cards on Windows yet (Linux reads them from the amdgpu "
-                         "driver); the engine's own VRAM figures are in its log" if amd and not self.gpu.ok() else None),
+            "gpu_note": ("could not read the selected AMD adapter's telemetry" if amd and not self.gpu.ok() else None),
             "cpu_name": _cpu_name(),
             "cores": (self.ps.cpu_count(logical=False) if self.ps else None) or None,
             "threads": os.cpu_count(),
@@ -489,15 +504,21 @@ class Telemetry:
         self._stop.set()
 
     def _loop(self):
-        while not self._stop.is_set():
-            s = self.sample()
-            with self.lock:
-                self.now = s
-                for k in ("gpu_util", "gpu_mem_used", "gpu_temp", "gpu_power", "gpu_pcie_rx_mb", "cpu", "ram_used",
-                          "disk_read_mb", "tok_s", "prefill_tok_s_mean"):
-                    v = s.get(k)
-                    self.hist[k].append(round(v, 2) if isinstance(v, float) else v)
-            self._stop.wait(1.0)
+        try:
+            while not self._stop.is_set():
+                s = self.sample()
+                with self.lock:
+                    self.now = s
+                    for k in ("gpu_util", "gpu_mem_used", "gpu_temp", "gpu_power", "gpu_pcie_rx_mb", "cpu", "ram_used",
+                              "disk_read_mb", "tok_s", "prefill_tok_s_mean"):
+                        v = s.get(k)
+                        self.hist[k].append(round(v, 2) if isinstance(v, float) else v)
+                self._stop.wait(1.0)
+        finally:
+            for _, g in self.gpus:
+                close = getattr(g, "close", None)
+                if close:
+                    close()
 
     def snapshot(self):
         with self.lock:
