@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import math
 import os
 import subprocess
 import sys
@@ -233,6 +234,19 @@ class WindowsAmdCard:
             if len(matches) == 1:
                 self._name, self._total = matches[0]["name"], matches[0]["mem_total"]
         self._usage = _DedicatedUsage(self.info.get("luid"), self.info.get("node_mask"))
+        self._counters = self._sensors = None
+        if os.name == "nt" and isinstance(self.info.get("luid"), str):
+            try:
+                from serve.windows_gpu_counters import WindowsGpuCounters
+                self._counters = WindowsGpuCounters(self.info["luid"], self.info.get("node_mask"))
+            except (ImportError, OSError, ValueError, AttributeError):
+                pass
+            if self.info.get("node_mask") in (None, 0, 1):
+                try:
+                    from serve.amd_sensors import AmdSensors
+                    self._sensors = AmdSensors(self.info["luid"])
+                except (ImportError, OSError, ValueError, AttributeError):
+                    pass
 
     def ok(self):
         return bool(self._name)
@@ -252,7 +266,55 @@ class WindowsAmdCard:
         used = self._usage.read()
         if used is not None:
             out["mem_used"] = used
+        readings = []
+        sources = {}
+        for reader, source in ((self._counters, "Windows"), (self._sensors, "ADLX")):
+            try:
+                reading = reader.read() if reader else {}
+            except Exception:  # optional telemetry cannot break inference or other counters
+                reading = {}
+            if not isinstance(reading, dict):
+                reading = {}
+            states = reading.get("metric_status")
+            readings.append(states if isinstance(states, dict) else {})
+            for key in ("util", "temp", "power", "power_limit", "pcie_gen", "pcie_gen_max", "pcie_width", "pcie_width_max",
+                        "pcie_rx_mb", "pcie_tx_mb"):
+                value = reading.get(key)
+                if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+                    continue
+                # OS PCIe values describe the actual negotiated link; vendor
+                # capability metadata must not replace them. Sensor values use
+                # ADLX first, retaining Windows readings when ADLX lacks one.
+                if key.startswith("pcie_") and key in out:
+                    continue
+                out[key] = value
+                sources[key] = source
+                if key == "power" and reading.get("power_scope") == "chip":
+                    out["power_scope"] = "chip"
+        groups = {"util": ("util",), "temp": ("temp",), "power": ("power",),
+                  "pcie": ("pcie_gen", "pcie_gen_max", "pcie_width", "pcie_rx_mb", "pcie_tx_mb"),
+                  "mem_used": ("mem_used",)}
+        status = {}
+        for group, keys in groups.items():
+            if any(out.get(k) is not None for k in keys):
+                status[group] = "available"
+            elif group == "mem_used":
+                status[group] = "unavailable"
+            else:
+                # A provider that does not implement this metric (e.g. Windows
+                # has no watts reading) must not hide ADLX's unsupported flag.
+                states = [r[group] for r in readings if group in r]
+                status[group] = ("warming_up" if "warming_up" in states else
+                                 "unsupported" if states and all(s == "unsupported" for s in states) else "unavailable")
+        out["metric_status"] = status
+        out["metric_sources"] = sources
         return out
 
     def close(self):
         self._usage.close()
+        for reader in (self._counters, self._sensors):
+            if reader:
+                try:
+                    reader.close()
+                except Exception:
+                    pass

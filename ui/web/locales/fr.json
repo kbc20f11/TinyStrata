@@ -387,7 +387,7 @@
   "monitor.cachedExperts": "{n} experts en cache",
   "monitor.powerLimit": "sur une limite de {n} W",
   "monitor.toGpu": "vers le GPU : {rate} MB/s",
-  "monitor.idlePcie": " · au repos Gen{n}",
+  "monitor.idlePcie": " · actuellement Gen{n}",
   "monitor.coresThreads": "{cores} cœurs · {threads} threads",
   "monitor.threads": "{n} threads",
   "monitor.diskWrite": "écriture : {rate} MB/s",
@@ -460,5 +460,15 @@
   "model.switchBusy": "Attendez la fin de la réponse ou de l’opération en cours.",
   "model.noVision": "Ce modèle ne prend pas en charge les images. Commencez une conversation textuelle ou choisissez un modèle compatible avec les images.",
   "model.thinkingRequired": "Ce modèle nécessite la réflexion.",
-  "model.catalogUnavailable": "Le changement de modèle n’est pas disponible."
+  "model.catalogUnavailable": "Le changement de modèle n’est pas disponible.",
+  "monitor.metricUnsupported": "Non pris en charge",
+  "monitor.metricUnsupportedHint": "Cet appareil ou ce pilote ne fournit pas cette mesure.",
+  "monitor.metricUnavailable": "Indisponible",
+  "monitor.metricUnavailableHint": "Cette mesure n’a pas pu être obtenue.",
+  "monitor.metricWarming": "Mesure en cours…",
+  "monitor.metricWarmingHint": "En attente de la première mesure valide.",
+  "monitor.fromGpu": "depuis le GPU {rate} Mo/s",
+  "monitor.chipPower": "Puce GPU uniquement",
+  "monitor.mixedPower": "Le périmètre mesuré varie selon le GPU",
+  "monitor.pcieMaxGen": "Gen{n} max."
 }

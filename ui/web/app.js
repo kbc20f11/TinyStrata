@@ -169,17 +169,43 @@ $("metrics").innerHTML = METRICS.map((m) => `
 
 function spark(id, values, max) {
   const svg = $(id);
-  const v = (values || []).map((x) => (x == null ? 0 : x));
-  if (v.length < 2) { svg.querySelector(".line").setAttribute("d", ""); svg.querySelector(".area").setAttribute("d", ""); return; }
-  const top = Math.max(max || 0, ...v, 1);
-  const pts = v.map((x, i) => [(i / (v.length - 1)) * 100, 30 - (x / top) * 26]);
-  const line = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(2)},${p[1].toFixed(2)}`).join("");
+  const v = (values || []).map((x) => typeof x === "number" && Number.isFinite(x) ? x : null);
+  const valid = v.filter((x) => x !== null);
+  if (v.length < 2 || valid.length < 2) { svg.querySelector(".line").setAttribute("d", ""); svg.querySelector(".area").setAttribute("d", ""); return; }
+  const top = Math.max(max || 0, ...valid, 1), segments = [];
+  let segment = [];
+  for (let i = 0; i < v.length; i++) {
+    if (v[i] === null) { if (segment.length) segments.push(segment); segment = []; continue; }
+    segment.push([(i / (v.length - 1)) * 100, 30 - (v[i] / top) * 26]);
+  }
+  if (segment.length) segments.push(segment);
+  const path = (points) => points.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(2)},${p[1].toFixed(2)}`).join("");
+  const line = segments.map(path).join("");
   svg.querySelector(".line").setAttribute("d", line);
-  svg.querySelector(".area").setAttribute("d", `${line}L100,32L0,32Z`);
+  svg.querySelector(".area").setAttribute("d", segments.filter((s) => s.length > 1)
+    .map((s) => `${path(s)}L${s[s.length - 1][0].toFixed(2)},32L${s[0][0].toFixed(2)},32Z`).join(""));
 }
 function setMetric(key, value, unit, sub) {
   $(`mv-${key}`).innerHTML = value == null ? "–" : `${esc(value)}${unit ? `<small>${esc(unit)}</small>` : ""}`;
   $(`ms-${key}`).textContent = sub || "";
+}
+
+function gpuMetricState(hw, group, value) {
+  if (value != null) return {state: "available", label: "", hint: ""};
+  const state = (hw.gpu_metric_status || {})[group];
+  if (state === "unsupported") return {state, label: tr("monitor.metricUnsupported", "Not supported"),
+    hint: tr("monitor.metricUnsupportedHint", "This device or driver does not provide this reading.")};
+  if (state === "warming_up") return {state, label: tr("monitor.metricWarming", "Measuring…"),
+    hint: tr("monitor.metricWarmingHint", "Waiting for the first valid sample.")};
+  return {state: "unavailable", label: tr("monitor.metricUnavailable", "Unavailable"),
+    hint: tr("monitor.metricUnavailableHint", "This reading could not be obtained.")};
+}
+function setGpuMetric(key, value, unit, sub, hw, group) {
+  setMetric(key, value, unit, sub);
+  const reading = gpuMetricState(hw, group, value), el = $(`mv-${key}`);
+  el.dataset.state = reading.state;
+  el.title = reading.hint;
+  if (value == null) el.innerHTML = `<small>${esc(reading.label)}</small>`;
 }
 
 let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
@@ -498,23 +524,32 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // a model split across several cards (issue #112): the cards show their total / mean / hottest, and each card's own
   const per = (f) => (hw.gpus || []).map((g) => `GPU ${g.index} ${f(g)}`).join(" · ");
   const multi = (hw.gpus || []).length > 1;
-  setMetric("gpu", hw.gpu_util == null ? null : fmt(hw.gpu_util), "%",
-            multi ? per((g) => (g.util == null ? "–" : `${fmt(g.util)}%`)) : st.gpu_name || (st.gpu_note ? tr("monitor.unavailable", "not available") : ""));
-  spark("sp-gpu", h.gpu_util, 100);
-  setMetric("vram", hw.gpu_mem_used == null ? null : gb(hw.gpu_mem_used), hw.gpu_mem_total ? `/ ${gb(hw.gpu_mem_total, 0)} GB` : "GB",
+  setGpuMetric("gpu", hw.gpu_util == null ? null : fmt(hw.gpu_util), "%",
+            multi ? per((g) => (g.util == null ? "–" : `${fmt(g.util)}%`)) : st.gpu_name || (st.gpu_note ? tr("monitor.unavailable", "not available") : ""), hw, "util");
+  spark("sp-gpu", hw.gpu_util == null ? [] : h.gpu_util, 100);
+  setGpuMetric("vram", hw.gpu_mem_used == null ? null : gb(hw.gpu_mem_used), hw.gpu_mem_total ? `/ ${gb(hw.gpu_mem_total, 0)} GB` : "GB",
             multi ? per((g) => (g.mem_used == null ? "–" : `${gb(g.mem_used)} GB`))
-                  : eng.expert_slots ? tr("monitor.cachedExperts", "{n} experts cached", {n: fmt(eng.expert_slots)}) : (st.gpu_note ? tr("monitor.amdUnavailable", "not available on Windows AMD yet") : ""));
-  spark("sp-vram", h.gpu_mem_used, hw.gpu_mem_total);
-  setMetric("temp", hw.gpu_temp == null ? null : fmt(hw.gpu_temp), "°C",
-            multi ? per((g) => (g.temp == null ? "–" : `${fmt(g.temp)}°`)) : "");
-  spark("sp-temp", h.gpu_temp, 90);
-  setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", hw.gpu_power_limit ? tr("monitor.powerLimit", "of {n} W limit", {n: fmt(hw.gpu_power_limit)}) : "");
-  spark("sp-power", h.gpu_power, hw.gpu_power_limit);
-  const gen = hw.gpu_pcie_gen_max || hw.gpu_pcie_gen;
-  setMetric("pcie", gen ? `Gen${gen}` : null, hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "",
-            hw.gpu_pcie_rx_mb == null ? "" : tr("monitor.toGpu", "to GPU {rate} MB/s", {rate: fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)}) +
-            (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? tr("monitor.idlePcie", " · idle Gen{n}", {n: hw.gpu_pcie_gen}) : ""));
-  spark("sp-pcie", h.gpu_pcie_rx_mb);
+                  : eng.expert_slots ? tr("monitor.cachedExperts", "{n} experts cached", {n: fmt(eng.expert_slots)}) : "", hw, "mem_used");
+  spark("sp-vram", hw.gpu_mem_used == null ? [] : h.gpu_mem_used, hw.gpu_mem_total);
+  setGpuMetric("temp", hw.gpu_temp == null ? null : fmt(hw.gpu_temp), "°C",
+            multi ? per((g) => (g.temp == null ? "–" : `${fmt(g.temp)}°`)) : "", hw, "temp");
+  spark("sp-temp", hw.gpu_temp == null ? [] : h.gpu_temp, 90);
+  const powerSub = hw.gpu_power_scope === "chip" ? tr("monitor.chipPower", "GPU chip only")
+    : hw.gpu_power_scope === "mixed" ? tr("monitor.mixedPower", "Measurement scope varies by GPU")
+    : hw.gpu_power_limit ? tr("monitor.powerLimit", "of {n} W limit", {n: fmt(hw.gpu_power_limit)}) : "";
+  setGpuMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", powerSub, hw, "power");
+  spark("sp-power", hw.gpu_power == null ? [] : h.gpu_power, hw.gpu_power_limit);
+  const gen = hw.gpu_pcie_gen || hw.gpu_pcie_gen_max;
+  const traffic = [hw.gpu_pcie_rx_mb == null ? "" : tr("monitor.toGpu", "to GPU {rate} MB/s", {rate: fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)}),
+                   hw.gpu_pcie_tx_mb == null ? "" : tr("monitor.fromGpu", "from GPU {rate} MB/s", {rate: fmt(hw.gpu_pcie_tx_mb, hw.gpu_pcie_tx_mb < 10 ? 1 : 0)})].filter(Boolean).join(" · ");
+  const pcieValue = gen ? (!hw.gpu_pcie_gen && hw.gpu_pcie_gen_max ? tr("monitor.pcieMaxGen", "max Gen{n}", {n: gen}) : `Gen${gen}`) : hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}`
+    : hw.gpu_pcie_rx_mb != null ? fmt(hw.gpu_pcie_rx_mb, 1) : hw.gpu_pcie_tx_mb != null ? fmt(hw.gpu_pcie_tx_mb, 1) : null;
+  const maxGenNote = hw.gpu_pcie_gen && hw.gpu_pcie_gen_max && hw.gpu_pcie_gen !== hw.gpu_pcie_gen_max
+    ? tr("monitor.pcieMaxGen", "max Gen{n}", {n: hw.gpu_pcie_gen_max}) : "";
+  const laneNote = !hw.gpu_pcie_gen && hw.gpu_pcie_gen_max && hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "";
+  setGpuMetric("pcie", pcieValue, hw.gpu_pcie_gen && hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : !gen && !hw.gpu_pcie_width && pcieValue != null ? "MB/s" : "",
+            [traffic, maxGenNote, laneNote].filter(Boolean).join(" · "), hw, "pcie");
+  spark("sp-pcie", hw.gpu_pcie_rx_mb != null ? h.gpu_pcie_rx_mb : hw.gpu_pcie_tx_mb != null ? h.gpu_pcie_tx_mb : []);
   setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", st.threads ? (st.cores ? tr("monitor.coresThreads", "{cores} cores · {threads} threads", {cores: fmt(st.cores), threads: fmt(st.threads)}) : tr("monitor.threads", "{n} threads", {n: fmt(st.threads)})) : "");
   spark("sp-cpu", h.cpu, 100);
   if (hw.disk_read_mb == null) {
@@ -543,7 +578,10 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   const ramPct = hw.ram_total ? (100 * hw.ram_used) / hw.ram_total : 0;
   $("ram-bar").style.width = `${ramPct}%`;
   if (ramPct > 92) $("ram-progress").dataset.tone = "danger"; else delete $("ram-progress").dataset.tone;
-  $("temp-text").textContent = hw.gpu_temp == null ? "–" : `${fmt(hw.gpu_temp)} °C`;
+  const tempState = gpuMetricState(hw, "temp", hw.gpu_temp);
+  $("temp-text").textContent = hw.gpu_temp == null ? tempState.label : `${fmt(hw.gpu_temp)} °C`;
+  $("temp-text").title = tempState.hint;
+  $("temp-bar").parentElement.hidden = hw.gpu_temp == null;
   $("temp-bar").style.width = hw.gpu_temp == null ? "0%" : `${Math.min(100, hw.gpu_temp)}%`;
 
   // recent requests

@@ -387,7 +387,7 @@
   "monitor.cachedExperts": "{n} experts cached",
   "monitor.powerLimit": "of {n} W limit",
   "monitor.toGpu": "to GPU {rate} MB/s",
-  "monitor.idlePcie": " · idle Gen{n}",
+  "monitor.idlePcie": " · current Gen{n}",
   "monitor.coresThreads": "{cores} cores · {threads} threads",
   "monitor.threads": "{n} threads",
   "monitor.diskWrite": "write {rate} MB/s",
@@ -460,5 +460,15 @@
   "model.switchBusy": "Wait for the current reply or operation to finish.",
   "model.noVision": "This model does not support images. Start a text-only chat or choose a vision model.",
   "model.thinkingRequired": "This model requires thinking.",
-  "model.catalogUnavailable": "Model switching is unavailable."
+  "model.catalogUnavailable": "Model switching is unavailable.",
+  "monitor.metricUnsupported": "Not supported",
+  "monitor.metricUnsupportedHint": "This device or driver does not provide this reading.",
+  "monitor.metricUnavailable": "Unavailable",
+  "monitor.metricUnavailableHint": "This reading could not be obtained.",
+  "monitor.metricWarming": "Measuring…",
+  "monitor.metricWarmingHint": "Waiting for the first valid sample.",
+  "monitor.fromGpu": "from GPU {rate} MB/s",
+  "monitor.chipPower": "GPU chip only",
+  "monitor.mixedPower": "Measurement scope varies by GPU",
+  "monitor.pcieMaxGen": "max Gen{n}"
 }

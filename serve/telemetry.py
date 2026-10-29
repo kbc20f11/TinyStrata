@@ -477,10 +477,25 @@ class Telemetry:
                 g["util"] = sum(u) / len(u) if u else None
                 t = vals("temp")
                 g["temp"] = max(t) if t else None
+                scopes = {r.get("power_scope", "board") for _, r in reads if r.get("power") is not None}
+                g["power_scope"] = next(iter(scopes)) if len(scopes) == 1 else "mixed" if scopes else None
+                g.pop("metric_sources", None)  # aggregate values need not share the first card's source
                 s["gpus"] = [{"index": i, "util": r.get("util"), "mem_used": r.get("mem_used"),
                               "mem_total": r.get("mem_total"), "temp": r.get("temp"), "power": r.get("power")}
                              for i, r in reads]
             s.update({f"gpu_{k}": v for k, v in g.items()})
+            groups = {"util": ("util",), "temp": ("temp",), "power": ("power",),
+                      "pcie": ("pcie_gen", "pcie_gen_max", "pcie_width", "pcie_rx_mb", "pcie_tx_mb"),
+                      "mem_used": ("mem_used",)}
+            statuses = {}
+            for group, keys in groups.items():
+                if any(g.get(k) is not None for k in keys):
+                    statuses[group] = "available"
+                else:
+                    states = [(r.get("metric_status") or {}).get(group, "unavailable") for _, r in reads]
+                    statuses[group] = ("warming_up" if "warming_up" in states else
+                                       "unsupported" if all(state == "unsupported" for state in states) else "unavailable")
+            s["gpu_metric_status"] = statuses
         if self.ps:
             try:
                 s["cpu"] = self.ps.cpu_percent(interval=None)
@@ -509,7 +524,7 @@ class Telemetry:
                 s = self.sample()
                 with self.lock:
                     self.now = s
-                    for k in ("gpu_util", "gpu_mem_used", "gpu_temp", "gpu_power", "gpu_pcie_rx_mb", "cpu", "ram_used",
+                    for k in ("gpu_util", "gpu_mem_used", "gpu_temp", "gpu_power", "gpu_pcie_rx_mb", "gpu_pcie_tx_mb", "cpu", "ram_used",
                               "disk_read_mb", "tok_s", "prefill_tok_s_mean"):
                         v = s.get(k)
                         self.hist[k].append(round(v, 2) if isinstance(v, float) else v)

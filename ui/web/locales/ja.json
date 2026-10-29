@@ -382,7 +382,7 @@
   "monitor.cachedExperts": "{n}個のエキスパートをキャッシュ",
   "monitor.powerLimit": "上限{n} W",
   "monitor.toGpu": "GPUへ {rate} MB/s",
-  "monitor.idlePcie": " · 待機時 Gen{n}",
+  "monitor.idlePcie": " · 現在Gen{n}",
   "monitor.coresThreads": "{cores}コア · {threads}スレッド",
   "monitor.threads": "{n}スレッド",
   "monitor.diskWrite": "書き込み {rate} MB/s",
@@ -455,5 +455,15 @@
   "model.switchBusy": "回答や処理が終わるまでお待ちください。",
   "model.noVision": "このモデルは画像入力に対応していません。テキストのみのチャットを開始するか、画像対応モデルを選んでください。",
   "model.thinkingRequired": "このモデルでは思考が必須です。",
-  "model.catalogUnavailable": "モデルの切り替えは利用できません。"
+  "model.catalogUnavailable": "モデルの切り替えは利用できません。",
+  "monitor.metricUnsupported": "未対応",
+  "monitor.metricUnsupportedHint": "この機器またはドライバーでは、この値を取得できません。",
+  "monitor.metricUnavailable": "取得できません",
+  "monitor.metricUnavailableHint": "現在、この値を取得できません。",
+  "monitor.metricWarming": "計測中…",
+  "monitor.metricWarmingHint": "最初の有効な計測値を待っています。",
+  "monitor.fromGpu": "GPUから {rate} MB/s",
+  "monitor.chipPower": "GPUチップのみ",
+  "monitor.mixedPower": "GPUごとに計測範囲が異なります",
+  "monitor.pcieMaxGen": "最大Gen{n}"
 }

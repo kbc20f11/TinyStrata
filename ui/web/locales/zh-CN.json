@@ -382,7 +382,7 @@
   "monitor.cachedExperts": "已缓存 {n} 个专家",
   "monitor.powerLimit": "功耗上限 {n} W",
   "monitor.toGpu": "传入 GPU {rate} MB/s",
-  "monitor.idlePcie": " · 空闲时 Gen{n}",
+  "monitor.idlePcie": " · 当前 Gen{n}",
   "monitor.coresThreads": "{cores} 核心 · {threads} 线程",
   "monitor.threads": "{n} 线程",
   "monitor.diskWrite": "写入 {rate} MB/s",
@@ -455,5 +455,15 @@
   "model.switchBusy": "请等待当前回答或操作完成。",
   "model.noVision": "此模型不支持图像。请开始纯文本聊天，或选择支持图像的模型。",
   "model.thinkingRequired": "此模型必须启用思考。",
-  "model.catalogUnavailable": "模型切换不可用。"
+  "model.catalogUnavailable": "模型切换不可用。",
+  "monitor.metricUnsupported": "不支持",
+  "monitor.metricUnsupportedHint": "此设备或驱动程序不提供此读数。",
+  "monitor.metricUnavailable": "无法获取",
+  "monitor.metricUnavailableHint": "当前无法获取此读数。",
+  "monitor.metricWarming": "正在测量…",
+  "monitor.metricWarmingHint": "正在等待第一个有效样本。",
+  "monitor.fromGpu": "来自 GPU {rate} MB/s",
+  "monitor.chipPower": "仅 GPU 芯片",
+  "monitor.mixedPower": "各 GPU 的测量范围不同",
+  "monitor.pcieMaxGen": "最高 Gen{n}"
 }
