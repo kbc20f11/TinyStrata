@@ -3848,7 +3848,7 @@ int strata::qwen35::run(int argc, char** argv) {
                         "  --bench-pp N --bench-tg N Benchmark prompt and generation\n"
                         "  --max-context auto|N     KV capacity (default: auto, total GPU VRAM selects 64K/128K/256K)\n"
 #if defined(STRATA_USE_HIP) || defined(__HIPCC__)
-                        "  --kv-type auto|int8|fp8|fp8-mma  HIP auto: INT8; native FP8 is opt-in on RDNA4\n"
+                        "  --kv-type auto|int8|fp8|fp8-mma  HIP auto: native FP8 on supported RDNA4, otherwise INT8\n"
 #else
                         "  --kv-type auto|fp32|int8|fp8|fp8-mma  Default auto: native FP8, otherwise INT8; fp8 = fp8-mma\n"
 #endif
@@ -3993,11 +3993,6 @@ int strata::qwen35::run(int argc, char** argv) {
     E.gpu_cc = prop.major * 10 + prop.minor;
 #endif
     if (E.kv_auto) {
-#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
-        // Native FP8 is opt-in on HIP; the established INT8 path stays the default.
-        kv_format = P::kInt8Kv;
-        const char* reason = "HIP defaults to INT8; native FP8 is opt-in";
-#else
         const bool shape = m.g.head_dim == 256 && m.g.n_head == 8 * m.g.n_head_kv;
         const bool native_fp8 = shape && strata::qwen35::fp8_attention::available();
         if (!native_fp8) cudaGetLastError(); // optional capability probe must leave a clean fallback error state
@@ -4006,7 +4001,6 @@ int strata::qwen35::run(int argc, char** argv) {
                            : !shape ? "model shape does not support native FP8"
                            : E.gpu_cc > 0 && E.gpu_cc < 89 ? "device has no native FP8 MMA"
                            : "native FP8 kernel unavailable in this backend/build";
-#endif
         E.kv_format = kv_format;
         std::fprintf(stderr, "tinystrata: automatic KV/attention: %s (GPU CC %d; %s)\n", E.kv_name(), E.gpu_cc, reason);
     } else {

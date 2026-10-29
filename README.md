@@ -4,7 +4,7 @@
 
 **TinyStrata is a fast, Windows-only inference engine for 30B-class MoE models.** It primarily targets PCs with mainstream graphics cards (**8–24 GB of VRAM**) and **32 GB of system RAM or less**. It offers an API and an optional chat UI.
 
-**NVIDIA Ampere and newer GPUs (CUDA) and AMD RDNA 4 GPUs (HIP/ROCm) are supported. The AMD path uses INT8 KV.**
+**NVIDIA Ampere and newer GPUs (CUDA) and AMD RDNA 4 GPUs (HIP/ROCm) are supported.**
 
 ## Why we are building TinyStrata
 
@@ -40,7 +40,7 @@ All three engines use an automatic VRAM Expert cache, CPU Expert computation fro
 | KV formats | FP32 / INT8 / native FP8 | FP16 / INT8 / native FP8 (experimental) | FP16 / INT8 / native FP8 |
 | Automatic KV (default) | FP8 → INT8 | INT8 | FP8 → INT8 |
 
-The column headings link to the official model cards. **FP8 → INT8** means native FP8 KV and FP8 Tensor Core Attention when the GPU and compiled kernels support it, otherwise INT8. KV precision is separate from GGUF weight quantization; lower-precision KV can change outputs relative to FP32 (Qwen) or FP16 (Gemma/LFM).
+The column headings link to the official model cards. **FP8 → INT8** means FP8 KV and native FP8 Attention (Tensor Cores on NVIDIA, WMMA on AMD RDNA 4) when the GPU and compiled kernels support it, otherwise INT8. KV precision is separate from GGUF weight quantization; lower-precision KV can change outputs relative to FP32 (Qwen) or FP16 (Gemma/LFM).
 
 Gemma uses INT8 by default. Native FP8 is experimental and can be selected explicitly with `run-api.bat --model-family gemma4 --kv-type fp8-mma`.
 
@@ -201,7 +201,7 @@ The KV cache stays in VRAM; system RAM holds Expert data for this offload mechan
 
 New configurations choose KV/Attention and context capacity automatically. You do not need to select an 8 GB, 12 GB or 16 GB recipe.
 
-For Qwen3.6, an RTX 3060 selects INT8. Supported RTX 40/50-series environments can select native FP8; the engine checks the compiled kernels and GPU capabilities as well as the hardware generation. If native FP8 is unavailable, automatic mode uses INT8. This chooses a supported path without running a speed or quality benchmark at startup.
+For Qwen3.6 and LFM2.5, an RTX 3060 selects INT8. Supported RTX 40/50-series and AMD RDNA 4 environments select native FP8 automatically; the engine checks the compiled kernels and GPU capabilities as well as the hardware generation. If native FP8 is unavailable, automatic mode uses INT8. Gemma uses INT8 by default on both NVIDIA and AMD. This chooses a supported path without running a speed or quality benchmark at startup.
 
 The native engine estimates the prompt chunk size at startup, choosing 512, 1024, 2048 or 4096 tokens from available VRAM, context capacity and whether the Experts fit on the GPU. Larger chunks can reduce repeated RAM-to-GPU weight transfers during input processing. `run-api.bat --chunk N` fixes the size; `run-api.bat --chunk auto` restores native automatic selection.
 

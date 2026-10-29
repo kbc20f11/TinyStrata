@@ -4,7 +4,7 @@
 
 **TinyStrata 是一款正在开发中的高速推理引擎，面向 30B 级 MoE 模型，仅支持 Windows。** 主要面向配备主流显卡、显存为 **8–24 GB** 且系统内存**不超过 32 GB** 的 PC。 提供 API 和可选的聊天 UI。
 
-**支持 NVIDIA Ampere 及更新架构的 GPU（CUDA）和 AMD RDNA 4 GPU（HIP/ROCm）。AMD 路径使用 INT8 KV。**
+**支持 NVIDIA Ampere 及更新架构的 GPU（CUDA）和 AMD RDNA 4 GPU（HIP/ROCm）。**
 
 ## 为什么开发 TinyStrata？
 
@@ -40,7 +40,7 @@ TinyStrata 会根据你的硬件自动选择推理和内存设置，因此无需
 | KV 格式 | FP32 / INT8 / 原生 FP8 | FP16 / INT8 / 原生 FP8（实验性） | FP16 / INT8 / 原生 FP8 |
 | KV 自动选择（默认） | FP8 → INT8 | INT8 | FP8 → INT8 |
 
-表头中的模型名称链接到官方模型卡。**FP8 → INT8** 表示 GPU 与已编译内核支持时使用 FP8 KV 和原生 FP8 Tensor Core Attention，否则使用 INT8。KV 精度与 GGUF 权重量化相互独立；低精度 KV 可能产生与 FP32（Qwen）或 FP16（Gemma/LFM）不同的输出。
+表头中的模型名称链接到官方模型卡。**FP8 → INT8** 表示 GPU 与已编译内核支持时使用 FP8 KV 和原生 FP8 Attention（NVIDIA 使用 Tensor Core，AMD RDNA 4 使用 WMMA），否则使用 INT8。KV 精度与 GGUF 权重量化相互独立；低精度 KV 可能产生与 FP32（Qwen）或 FP16（Gemma/LFM）不同的输出。
 
 Gemma 默认使用 INT8。原生 FP8 为实验性功能，可通过 `run-api.bat --model-family gemma4 --kv-type fp8-mma` 显式选择。
 
@@ -189,7 +189,7 @@ KV 缓存始终保留在显存中；在这一卸载机制中，系统内存用�
 
 新配置会自动选择 KV/Attention 和上下文容量，无需选择适用于 8 GB、12 GB 或 16 GB 的配置方案。
 
-Qwen3.6 在 RTX 3060 上会选择 INT8。受支持的 RTX 40/50 系列环境可以选择原生 FP8；引擎会检查已编译的内核和 GPU 功能，以及硬件代际。如果原生 FP8 不可用，自动模式会使用 INT8。这一过程会选择受支持的路径，而无需在启动时运行速度或质量基准测试。
+Qwen3.6 和 LFM2.5 在 RTX 3060 上会选择 INT8。在受支持的 RTX 40/50 系列和 AMD RDNA 4 环境中会自动选择原生 FP8；引擎会检查已编译的内核和 GPU 功能，以及硬件代际。如果原生 FP8 不可用，自动模式会使用 INT8。Gemma 在 NVIDIA 和 AMD 上均默认使用 INT8。这一过程会选择受支持的路径，而无需在启动时运行速度或质量基准测试。
 
 原生引擎在启动时，根据空闲显存、上下文容量以及专家能否装入 GPU，从 512、1024、2048 或 4096 token 中估算并选择输入分块大小。较大的分块可以减少输入处理期间重复从 RAM 向 GPU 传输权重的次数。`run-api.bat --chunk N` 可固定大小；`run-api.bat --chunk auto` 可恢复原生自动选择。
 

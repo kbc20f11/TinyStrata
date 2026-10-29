@@ -1008,7 +1008,7 @@ function Invoke-TinyStrataInstaller {
         if (-not $sourceReady -or $RefreshSource) { Write-Host 'First download TinyStrata sources from GitHub (no git installation required).' }
         Write-Host "Backend: $selectedBackend"
         Write-Host 'Plan: reuse installed components; prepare Python/dependencies; reuse or build the selected GPU engine; prepare its runtime; save configuration.'
-        if ($selectedBackend -eq 'hip') { Write-Host 'AMD: reuse an existing SDK or prepare a private ROCm/HIP SDK; KV is INT8.' }
+        if ($selectedBackend -eq 'hip') { Write-Host 'AMD: reuse an existing SDK or prepare a private ROCm/HIP SDK; Qwen/LFM select native FP8 when available, otherwise INT8; Gemma uses INT8.' }
         if (-not $DoNotStart) { Write-Host 'Then start the API and install the fixed model through its API if needed.' }
         if ($IncludeUI) { Write-Host $(if ($DoNotStart) { 'Prepare the optional UI launcher without starting services.' } else { 'Then start the optional UI and open it in the browser.' }) }
         return
@@ -1047,7 +1047,7 @@ function Invoke-TinyStrataInstaller {
         if ($selectedBackend -eq 'hip') {
             $hipRoot = Ensure-TinyStrataHipToolkit -DestinationDirectory (Join-Path $workRoot 'rocm-venv') -Python $python -Directory $HipDirectory -Architectures $HipArchitectures
             $hipArchs = Get-TinyStrataHipArchitectures -Directory $hipRoot -Requested $HipArchitectures
-            Write-Host "AMD HIP SDK: $hipRoot ($hipArchs); INT8 KV."
+            Write-Host "AMD HIP SDK: $hipRoot ($hipArchs); automatic KV selection."
         }
         $search = @()
         if ($cfg -and $cfg.lib_dirs -and $cfg.backend -eq $selectedBackend) { $search += @($cfg.lib_dirs) }

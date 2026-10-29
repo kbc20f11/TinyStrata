@@ -114,7 +114,7 @@ def _executable_backend(executable: str, modified_ns: int, size: int,
 
 
 def configure_backend(cfg: dict, requested: str | None = None, *, explicit_kv: str | None = None) -> dict:
-    """HIP defaults to INT8; explicit native FP8 is checked by the engine."""
+    """Keep automatic KV selection in the engine and preserve saved HIP choices."""
     saved = cfg.get("backend")
     if saved not in (None, "cuda", "hip"):
         raise ValueError("backend must be cuda or hip")
@@ -129,15 +129,17 @@ def configure_backend(cfg: dict, requested: str | None = None, *, explicit_kv: s
     if backend == "hip":
         if explicit_kv not in (None, "auto", "int8", "fp8", "fp8-mma"):
             raise ValueError("The AMD HIP route supports --kv-type auto, int8 or native fp8")
-        # A saved HIP choice is deliberate. Moving a CUDA profile to HIP keeps
-        # INT8 as the safe default unless FP8 was explicitly requested now.
+        # Let the model engine choose FP8 or INT8 from its actual capabilities.
+        # Keep deliberate HIP choices, including auto, across later starts.
+        # A profile from another backend starts with hardware-aware auto unless
+        # the caller explicitly selects a format for this backend now.
         previous_kv = config.value_of(result, "kv_type")
         if explicit_kv is not None:
             chosen_kv = explicit_kv
-        elif saved == "hip" and previous_kv in ("int8", "fp8", "fp8-mma"):
+        elif saved == "hip" and previous_kv in ("auto", "int8", "fp8", "fp8-mma"):
             chosen_kv = previous_kv
         else:
-            chosen_kv = "int8"
+            chosen_kv = "auto"
         result, _ = config.apply(result, {"kv_type": chosen_kv})
         # The engine chooses growable KV by default. Keep saved allocation modes:
         # an older --kv-whole may be a user's explicit choice, and old settings

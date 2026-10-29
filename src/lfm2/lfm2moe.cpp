@@ -65,8 +65,6 @@ void Lfm2Moe::load_geometry() {
 #if defined(STRATA_USE_HIP)
     if (opt_.kv_format != KvFmt::kAuto && opt_.kv_format != KvFmt::kQ8_0 && opt_.kv_format != KvFmt::kFp8)
         throw std::runtime_error("the AMD HIP backend supports --kv-type auto, int8 or native fp8");
-    // RDNA4 FP8 is available explicitly, while HIP auto keeps INT8.
-    if (opt_.kv_format == KvFmt::kAuto) opt_.kv_format = KvFmt::kQ8_0;
 #endif
     const bool native_fp8 = (opt_.kv_format == KvFmt::kAuto || opt_.kv_format == KvFmt::kFp8) &&
                             strata::fp8_attention::available(head_dim_);

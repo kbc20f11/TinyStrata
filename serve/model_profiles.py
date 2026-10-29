@@ -135,7 +135,7 @@ class ModelProfiles:
                            source.get("backend", "cuda") != self._hardware["backend"])
         # Normalize KV while the profile still names its original backend.
         # Overwriting it first would mistake a CUDA FP8 setting for a deliberate
-        # HIP opt-in and bypass the migration's INT8 default.
+        # HIP choice and bypass the migration's engine auto policy.
         source = configure_backend(source, self._hardware.get("backend"))
         if self._hardware.get("backend") == "hip" or backend_changed:
             for key in ("gpu", "hip_ordinal", "backend", "lib_dirs"):

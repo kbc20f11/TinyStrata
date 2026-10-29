@@ -4,7 +4,7 @@
 
 **TinyStrata es un motor de inferencia de alta velocidad en desarrollo para modelos MoE de la clase 30B, exclusivo de Windows.** Está orientado principalmente a PC equipados con tarjetas gráficas de uso común de **8–24 GB** de VRAM y con **32 GB de RAM del sistema o menos**. Ofrece una API y una interfaz de chat opcional.
 
-**Se admiten GPU NVIDIA de la generación Ampere o posterior (CUDA) y GPU AMD RDNA 4 (HIP/ROCm). La ruta AMD usa KV INT8.**
+**Se admiten GPU NVIDIA de la generación Ampere o posterior (CUDA) y GPU AMD RDNA 4 (HIP/ROCm).**
 
 ## ¿Por qué desarrollamos TinyStrata?
 
@@ -40,7 +40,7 @@ Los tres motores utilizan caché automática de expertos en VRAM, cálculo de ex
 | Formatos KV | FP32 / INT8 / FP8 nativo | FP16 / INT8 / FP8 nativo (experimental) | FP16 / INT8 / FP8 nativo |
 | KV automático (predeterminado) | FP8 → INT8 | INT8 | FP8 → INT8 |
 
-Los encabezados enlazan a las fichas oficiales de los modelos. **FP8 → INT8** indica KV FP8 y Attention nativa con Tensor Cores FP8 cuando la GPU y los kernels compilados lo permiten, o INT8 en caso contrario. La precisión KV es independiente de la cuantización de pesos GGUF; un KV de menor precisión puede cambiar la salida respecto a FP32 (Qwen) o FP16 (Gemma/LFM).
+Los encabezados enlazan a las fichas oficiales de los modelos. **FP8 → INT8** indica KV FP8 y Attention FP8 nativa (Tensor Cores en NVIDIA, WMMA en AMD RDNA 4) cuando la GPU y los kernels compilados lo permiten, o INT8 en caso contrario. La precisión KV es independiente de la cuantización de pesos GGUF; un KV de menor precisión puede cambiar la salida respecto a FP32 (Qwen) o FP16 (Gemma/LFM).
 
 Gemma usa INT8 de forma predeterminada. FP8 nativo es experimental y puede seleccionarse explícitamente con `run-api.bat --model-family gemma4 --kv-type fp8-mma`.
 
@@ -189,7 +189,7 @@ La caché KV permanece en la VRAM; la RAM del sistema almacena los datos de los 
 
 Las configuraciones nuevas eligen automáticamente KV/Attention y la capacidad de contexto. No necesitas seleccionar una receta para 8 GB, 12 GB o 16 GB.
 
-En Qwen3.6, una RTX 3060 selecciona INT8. Los entornos compatibles con RTX de las series 40/50 pueden seleccionar FP8 nativo; el motor comprueba los kernels compilados y las capacidades de la GPU, además de la generación del hardware. Si FP8 nativo no está disponible, el modo automático usa INT8. Esto elige una ruta compatible sin ejecutar una prueba de velocidad o calidad al iniciar.
+En Qwen3.6 y LFM2.5, una RTX 3060 selecciona INT8. Los entornos compatibles con RTX de las series 40/50 y AMD RDNA 4 seleccionan FP8 nativo automáticamente; el motor comprueba los kernels compilados y las capacidades de la GPU, además de la generación del hardware. Si FP8 nativo no está disponible, el modo automático usa INT8. Gemma usa INT8 por defecto tanto en NVIDIA como en AMD. Esto elige una ruta compatible sin ejecutar una prueba de velocidad o calidad al iniciar.
 
 El motor nativo estima al iniciar un tamaño de bloque de entrada de 512, 1024, 2048 o 4096 tokens, según la VRAM libre, la capacidad de contexto y si los expertos caben en la GPU. Los bloques mayores pueden reducir las transferencias repetidas de pesos de RAM a GPU durante el procesamiento de la entrada. `run-api.bat --chunk N` fija el tamaño; `run-api.bat --chunk auto` restablece la selección automática nativa.
 
