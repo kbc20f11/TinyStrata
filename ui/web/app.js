@@ -1124,7 +1124,7 @@ function msgEl(m, i) {
     meta.textContent = `${tr("chat.you", "You")} · ${timeStr(m.time)}`;
     el.appendChild(meta);
   } else {
-    el.innerHTML = `<div class="terminal-author"><img class="terminal-author__mark" src="web/terminal-logo.svg?v=20261029.1" alt="" aria-hidden="true"><strong>TinyStrata</strong>${m.model ? `<span class="terminal-model">${esc(m.model)}</span>` : ""}</div>` +
+    el.innerHTML = `<div class="terminal-author"><img class="terminal-author__mark" src="web/terminal-logo.svg?v=20261030.1" alt="" aria-hidden="true"><strong>TinyStrata</strong>${m.model ? `<span class="terminal-model">${esc(m.model)}</span>` : ""}</div>` +
       `<details class="st-collapse think" hidden><summary>${icon("thinking", "st-icon st-icon--sm")}<span class="think-title"></span>` +
       `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body thinking"></div></details>` +
       `<div class="st-bubble"></div><div class="terminal-phase" hidden></div><div class="terminal-stats" hidden aria-live="off"></div><div class="st-msg__meta"><span class="meta-text"></span>` +
