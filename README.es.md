@@ -158,23 +158,12 @@ Los mismos tres textos se ejecutaron dos veces por configuración FP8/INT8 con l
 
 Velocidad en tarjetas Radeon, medida con [tinystrata-bench-v1](benchmark/README.md#english). Cada tarjeta tiene su propia página con el hardware, el controlador, el commit del motor, los ajustes y todas las columnas: [`benchmark/results/`](benchmark/results/). Valores: generación / entrada 4K / entrada 16K, en tok/s.
 
-| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M |
-| --- | ---: | ---: | ---: |
-| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 |
-| [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 |
-
-### Clover-35B-A3B-Preview Q4_0 — RX 9060 XT
-
-Medido el 2026-10-30 con contexto 128K, crecimiento KV, ajustes de generación de la ficha del modelo y cuatro inicios independientes de API por perfil. Tasas en tok/s; las imágenes no se aplican. [Ajustes y resultados completos](benchmark/results/rx-9060-xt.md#clover-35b-a3b-preview-q4_0).
-
-| Perfil | Generación tras entrada corta | Entrada 4K | Entrada 16K | Generación tras 16K |
+| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover Q4_0 |
 | --- | ---: | ---: | ---: | ---: |
-| Estándar v1: INT8 D0, workers/chunk auto | 47.77 | 791.90 | 720.44 | 38.37 |
-| FP8 D0, workers/chunk auto | 47.58 | 790.33 | 721.12 | 41.90 |
-| Ajuste causal: FP8 D0, W9 C1024 | 52.12 | 777.54 | 709.39 | 46.82 |
-| Entradas cortas: INT8 D4, W9 C1024 | 59.06 | 779.82 | 714.10 | 28.21 |
+| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 46.96 / 793.74 / 723.24 |
+| [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 | — |
 
-Frente a FP8 D0 con workers/chunk automáticos, el ajuste causal mejora la generación corta un 9.5% y la generación tras 16K un 11.7%, mientras ambas tasas de entrada bajan alrededor del 1.6%. INT8 D4 se orienta a entradas cortas (+24.1%), pero la generación tras 16K baja un 32.7%. La autoespeculación sigue desactivada por defecto (D0); elige según la carga de trabajo. W son los workers de expertos y C el tamaño del chunk de entrada. INT8 D4 usa `STRATA_TSUM=1`; los perfiles causales no usan variables de entorno de ajuste.
+Clover usa el perfil común INT8 D0 en esta tabla, distinto del [ajuste FP8 de este PC y de las comparaciones de parámetros realizadas antes ese mismo día](benchmark/results/rx-9060-xt.md#clover-tuning-comparison-2026-10-30).
 
 ## ¿Qué proyecto debería usar?
 

@@ -158,23 +158,12 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 Radeon 显卡上的速度，使用 [tinystrata-bench-v1](benchmark/README.md#english) 测得。每张卡都有单独的页面，包含硬件、驱动、引擎提交、设置和全部列：[`benchmark/results/`](benchmark/results/)。数值为 生成 / 4K 输入 / 16K 输入（tok/s）。
 
-| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M |
-| --- | ---: | ---: | ---: |
-| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 |
-| [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 |
-
-### Clover-35B-A3B-Preview Q4_0 — RX 9060 XT
-
-于 2026-10-30 测量，使用 128K 上下文、KV 分阶段分配和模型卡规定的生成设置，每个配置独立启动 API 四次。单位为 tok/s；图像不适用。[全部设置和详细结果](benchmark/results/rx-9060-xt.md#clover-35b-a3b-preview-q4_0)。
-
-| 配置 | 短输入后的生成 | 4K 输入 | 16K 输入 | 16K 输入后的生成 |
+| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover Q4_0 |
 | --- | ---: | ---: | ---: | ---: |
-| v1 标准：INT8 D0，worker/chunk 自动 | 47.77 | 791.90 | 720.44 | 38.37 |
-| FP8 D0，worker/chunk 自动 | 47.58 | 790.33 | 721.12 | 41.90 |
-| 因果解码调优：FP8 D0，W9 C1024 | 52.12 | 777.54 | 709.39 | 46.82 |
-| 短输入调优：INT8 D4，W9 C1024 | 59.06 | 779.82 | 714.10 | 28.21 |
+| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 46.96 / 793.74 / 723.24 |
+| [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 | — |
 
-相较于 worker/chunk 自动的 FP8 D0，因果解码调优使短输入生成提升 9.5%、16K 输入后生成提升 11.7%，但两项输入处理速度都下降约 1.6%。INT8 D4 面向短输入（+24.1%），16K 输入后生成则下降 32.7%。自投机默认仍关闭（D0），应按实际用途选择。W 为专家 worker 数，C 为输入 chunk 大小。INT8 D4 使用 `STRATA_TSUM=1`，各因果解码配置不使用调优环境变量。
+表中的 Clover 使用统一的 INT8 D0 配置，与[本机日常使用的 FP8 调优及当天较早进行的参数比较](benchmark/results/rx-9060-xt.md#clover-tuning-comparison-2026-10-30)是分别测量的。
 
 ## 我应该使用哪个项目？
 
