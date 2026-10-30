@@ -22,7 +22,7 @@ TinyStrata automatically selects inference and memory settings for your hardware
 
 ## Model focus
 
-[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) remains the default model, with a balance of speed, memory efficiency and answer quality for PCs with mainstream graphics cards. TinyStrata focuses on compact MoE models and also supports **Gemma 4 26B-A4B-it and LFM2.5-24B-A2B**.
+[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) remains the default model, with a balance of speed, memory efficiency and answer quality for PCs with mainstream graphics cards. TinyStrata focuses on compact MoE models and also supports **Gemma 4 26B-A4B-it, LFM2.5-24B-A2B and Clover-35B-A3B-Preview**.
 
 **Qwen3.6-35B-A3B UD-IQ3_XXS** uses the fixed [Unsloth MTP GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf). The two downloads total about **15.0 GB**: language model including MTP weights **14.1 GB**, and vision projector (`mmproj-F16.gguf`) **0.9 GB**.
 
@@ -30,7 +30,9 @@ TinyStrata automatically selects inference and memory settings for your hardware
 
 **LFM2.5-24B-A2B Q4_K_M** uses the official [LiquidAI GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF). Its single language-model download is **14.53 GB**.
 
-All three engines use an automatic VRAM Expert cache, CPU Expert computation from system RAM, prompt weight streaming and CUDA Graphs. They share the same API and support live model switching, with settings saved separately for each model. Selected Experts are not omitted. They also support automatic physical KV growth without changing the maximum context capacity.
+**Clover-35B-A3B-Preview Q4_0** uses the [official DiffuSpace GGUF](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview-GGUF), a **19.587 GB** download with its own tokenizer and bidirectional GDN parameters. It supports a maximum **128K** context and text input. Clover's self-speculative decoding uses the same model for draft and causal verification, rather than a separate MTP head. Select it with `run-api.bat --model-family clover`; a new standalone profile uses port **18083**. Causal decoding (`--clover-draft 0`) is the default. Self-speculative decoding is optional: enable it with `--clover-draft 3`, `7` or `15`; its speed benefit depends on the workload. Settings are stored separately in `config-clover.json`. It uses an Expert cache sized to available VRAM, CPU Expert computation from system RAM, and physical KV growth with sequence length.
+
+The Qwen, Gemma and LFM engines use an automatic VRAM Expert cache, CPU Expert computation from system RAM, prompt weight streaming and CUDA Graphs. They share the same API and support live model switching, with settings saved separately for each model. Selected Experts are not omitted. They also support automatic physical KV growth without changing the maximum context capacity.
 
 | Feature | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) |
 | --- | --- | --- | --- |
@@ -46,7 +48,7 @@ Gemma uses INT8 by default. Native FP8 is experimental and can be selected expli
 
 **Automatic context capacity** uses the GPU’s total VRAM as shown below; available free VRAM determines the Expert cache size. An explicit `--max-context N` takes priority.
 
-| Total VRAM (examples) | Qwen3.6 / Gemma 4 | LFM2.5 |
+| Total VRAM (examples) | Qwen3.6 / Gemma 4 | LFM2.5 / Clover |
 | --- | ---: | ---: |
 | 8 GB | 64K | 64K |
 | 12 GB | 128K | 128K |
@@ -117,6 +119,8 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 To start directly with Gemma, run `run-api.bat --model-family gemma4`; its default API address is `http://127.0.0.1:18082/v1`. For LFM, replace `gemma-4-26b-a4b-it` in the download, progress and switch requests above with `lfm2.5-24b-a2b`, or start it with `run-api.bat --model-family lfm2` (default API address `http://127.0.0.1:18081/v1`).
 
+For Clover, use `clover-35b-a3b-preview` in the same download, progress and switch requests. The running API's port stays unchanged.
+
 Poll `GET /v1/model/switch` until `state` is `ready`. To return to Qwen, send the same switch request with `{"model":"qwen3.6-35b-a3b"}`. Starting a download or switch returns `202`; a switch during generation returns `409`, so retry after generation finishes. Inference during switching returns `503`. The port and authentication stay unchanged. Selection lasts for the current server session; restarting uses the model selected by the launcher.
 
 ## Measured speed — Qwen3.6
@@ -175,7 +179,7 @@ Speed on Radeon cards, measured with [tinystrata-bench-v1](benchmark/README.md#e
 
 | Your goal and hardware                                                                                                                       | Project                                                               |
 | -------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| You want Qwen3.6 / Gemma 4 / LFM2.5 inference on a **Windows** PC with a mainstream graphics card, **8–24 GB of VRAM and 32 GB of system RAM or less**. | TinyStrata (**Windows only**, under development)                      |
+| You want Qwen3.6 / Gemma 4 / LFM2.5 / Clover inference on a **Windows** PC with a mainstream graphics card, **8–24 GB of VRAM and 32 GB of system RAM or less**. | TinyStrata (**Windows only**, under development)                      |
 | You have both **an RTX 3060-class GPU or better** and **64 GB of system RAM or more**.                                                        | We recommend [Strata (upstream)](https://github.com/Niko1221/Strata). |
 | You want a **chat UI with live generation statistics**. | TinyStrata with the [optional UI installer](install-ui.ps1). |
 
@@ -225,16 +229,17 @@ TinyStrata provides OpenAI-compatible Chat Completions (`/v1/chat/completions`) 
 
 New configurations use model-specific sampling defaults. Per-request settings take precedence; saved custom settings remain in effect.
 
-| Setting | Qwen3.6 | Gemma 4 | LFM2.5 |
-| --- | ---: | ---: | ---: |
-| `temperature` | 0.7 | 1.0 | 0.1 |
-| `top_p` | 0.95 | 0.95 | 1.0 |
-| `top_k` | 20 | 64 | 50 |
-| `min_p` | 0.0 | 0.0 | 0.0 |
-| `presence_penalty` | 1.5 | 0.0 | 0.0 |
-| `repetition_penalty` | 1.0 | 1.0 | 1.05 |
-| `enable_thinking` | true | true | true (always enabled) |
-| `max_tokens` (including thinking) | 32768 | 32768 | 32768 |
+| Setting | Qwen3.6 | Gemma 4 | LFM2.5 | Clover |
+| --- | ---: | ---: | ---: | ---: |
+| `temperature` | 0.7 | 1.0 | 0.1 | 0.0 |
+| `top_p` | 0.95 | 0.95 | 1.0 | 1.0 |
+| `top_k` | 20 | 64 | 50 | 64 |
+| `min_p` | 0.0 | 0.0 | 0.0 | 0.0 |
+| `presence_penalty` | 1.5 | 0.0 | 0.0 | 0.9 |
+| `frequency_penalty` | 0.0 | 0.0 | 0.0 | 0.0 |
+| `repetition_penalty` | 1.0 | 1.0 | 1.05 | 1.05 |
+| `enable_thinking` | true | true | true (always enabled) | true (can be disabled) |
+| `max_tokens` (including thinking) | 32768 | 32768 | 32768 | 24576 |
 
 The API listens on `http://127.0.0.1:18080` by default. To use another port, run `run-api.bat --port 18081` from the installed TinyStrata folder.
 

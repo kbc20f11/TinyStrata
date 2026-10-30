@@ -6593,7 +6593,7 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
     A bad value refuses to start the server (a typo'd config should not quietly change sampling); unknown keys
     are named at startup and ignored."""
     out = {}
-    from serve.tinyconfig import DEFAULT_SAMPLING, LFM2_SAMPLING, GEMMA4_SAMPLING
+    from serve.tinyconfig import DEFAULT_SAMPLING, LFM2_SAMPLING, GEMMA4_SAMPLING, CLOVER_SAMPLING
     block = dict(cfg.get("sampling") or {})
     for alias, canon in SAMPLING_ALIASES.items():      # #1819: llama.cpp's names for the same two fields
         if block.get(alias) is not None:
@@ -6601,7 +6601,8 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
                 raise SystemExit(f"[strata] config sampling: both {alias!r} and {canon!r} are set; they are the same "
                                  f"setting, keep one")
             block[canon] = block.pop(alias)
-    defaults = {"lfm2moe": LFM2_SAMPLING, "gemma4": GEMMA4_SAMPLING}.get(cfg.get("arch"), DEFAULT_SAMPLING)
+    defaults = {"lfm2moe": LFM2_SAMPLING, "gemma4": GEMMA4_SAMPLING,
+                "clover_moe": CLOVER_SAMPLING}.get(cfg.get("arch"), DEFAULT_SAMPLING)
     block = {**defaults, **{key: value for key, value in block.items() if value is not None}}
     for key, value in block.items():
         if value is None:
@@ -6733,7 +6734,8 @@ def check_request_sampling(req) -> None:
 
 
 # the API's model name per model family (the GGUF architecture, "arch" in the config) when the config names none
-FAMILY_MODEL_NAMES = {"qwen35moe": "qwen3.6-35b-a3b", "lfm2moe": "lfm2.5-24b-a2b", "gemma4": "gemma-4-26b-a4b-it"}
+FAMILY_MODEL_NAMES = {"qwen35moe": "qwen3.6-35b-a3b", "lfm2moe": "lfm2.5-24b-a2b", "gemma4": "gemma-4-26b-a4b-it",
+                      "clover_moe": "clover-35b-a3b-preview"}
 
 
 def default_model_name(cfg: dict) -> str:
@@ -6792,7 +6794,7 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
         if exe is None or not Path(exe).is_file():
             raise ValueError("the model is downloaded, but the native executable is missing; build TinyStrata "
                              "and configure it with run.py --exe PATH, then retry")
-        want_vision = updated.get("arch") != "lfm2moe" and updated.get("vision_mode") != "no"
+        want_vision = updated.get("arch") not in ("lfm2moe", "clover_moe") and updated.get("vision_mode") != "no"
         if want_vision and not updated.get("vision"):
             raise ValueError("the model and projector are verified, but tinystrata-vision is missing; "
                              "reinstall or build the image encoder, then retry")
@@ -6868,10 +6870,10 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
                     existing_paths=(existing,) if existing is not None else (),
                     projector_paths=(Path(projector),) if projector else (),
                     assistant_paths=(Path(assistant),) if assistant else ())
-    elif cfg.get("arch") == "lfm2moe":
+    elif cfg.get("arch") in ("lfm2moe", "clover_moe"):
         svc.downloads = FixedModelDownloader(directory, on_ready=activate,
                                              existing_paths=(existing,) if existing is not None else (),
-                                             _manifest=manifest_for_arch("lfm2moe"))
+                                             _manifest=manifest_for_arch(cfg["arch"]))
     else:
         projector = (cfg.get("vision") or {}).get("mmproj")
         svc.downloads = FixedModelBundleDownloader(directory, on_ready=activate,

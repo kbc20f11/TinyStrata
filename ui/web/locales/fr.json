@@ -470,5 +470,6 @@
   "monitor.fromGpu": "depuis le GPU {rate} Mo/s",
   "monitor.chipPower": "Puce GPU uniquement",
   "monitor.mixedPower": "Le périmètre mesuré varie selon le GPU",
-  "monitor.pcieMaxGen": "Gen{n} max."
+  "monitor.pcieMaxGen": "Gen{n} max.",
+  "about.selfDraft": "Brouillons auto-spéculatifs jusqu’à {n} jetons"
 }

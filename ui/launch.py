@@ -16,7 +16,8 @@ import webbrowser
 APP_ID = "tinystrata-ui"
 PROFILES = {"qwen36": ("qwen3.6-35b-a3b", "config.json"),
             "gemma4": ("gemma-4-26b-a4b-it", "config-gemma4.json"),
-            "lfm2": ("lfm2.5-24b-a2b", "config-lfm2.json")}
+            "lfm2": ("lfm2.5-24b-a2b", "config-lfm2.json"),
+            "clover": ("clover-35b-a3b-preview", "config-clover.json")}
 MODELS = {model: family for family, (model, _) in PROFILES.items()}
 
 
@@ -112,7 +113,7 @@ class Launcher:
         self.port = port_number(args.port if args.port is not None else settings.get("port", 3000))
         self.family = args.model_family or settings.get("model_family", "qwen36")
         if self.family not in PROFILES:
-            raise ValueError("Unknown saved model family; specify --model-family qwen36, gemma4 or lfm2")
+            raise ValueError("Unknown saved model family; specify --model-family qwen36, gemma4, lfm2 or clover")
         if self.api_port == self.port:
             raise ValueError("The UI and API must use different ports")
         self.python = self.runtime / ".venv" / "Scripts" / "python.exe"
@@ -169,7 +170,7 @@ class Launcher:
 
     def save_api_process(self, process, config):
         name = {"qwen36": "server-state.json", "gemma4": "server-state-gemma4.json",
-                "lfm2": "server-state-lfm2.json"}[self.family]
+                "lfm2": "server-state-lfm2.json", "clover": "server-state-clover.json"}[self.family]
         target = self.runtime / name
         temporary = target.with_name(f"{target.name}.{os.getpid()}.tmp")
         values = {"pid": process.pid, "started": process_started(process.pid),

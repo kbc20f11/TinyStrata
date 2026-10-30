@@ -22,7 +22,7 @@ TinyStrata 会根据你的硬件自动选择推理和内存设置，因此无需
 
 ## 重点支持的模型
 
-[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) 仍是默认模型，适合在配备主流显卡的 PC 上兼顾速度、内存效率和回答质量。TinyStrata 专注于较小的 MoE 模型，并支持 **Gemma 4 26B-A4B-it 和 LFM2.5-24B-A2B**。
+[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) 仍是默认模型，适合在配备主流显卡的 PC 上兼顾速度、内存效率和回答质量。TinyStrata 专注于较小的 MoE 模型，并支持 **Gemma 4 26B-A4B-it、LFM2.5-24B-A2B 和 Clover-35B-A3B-Preview**。
 
 **Qwen3.6-35B-A3B UD-IQ3_XXS** 使用固定版本的 [Unsloth MTP GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf)。两个文件共约 **15.0 GB**：包含 MTP 权重的语言模型 **14.1 GB**，视觉投影器（`mmproj-F16.gguf`）**0.9 GB**。
 
@@ -30,7 +30,9 @@ TinyStrata 会根据你的硬件自动选择推理和内存设置，因此无需
 
 **LFM2.5-24B-A2B Q4_K_M** 使用官方 [LiquidAI GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF)。仅需下载一个语言模型文件，大小为 **14.53 GB**。
 
-三个引擎均支持根据空闲显存自动调整的专家缓存、利用系统 RAM 的 CPU 专家计算、输入阶段权重流式传输及 CUDA Graph。它们使用相同的 API，支持运行中切换模型，并分别保存各模型的设置。不省略模型选中的专家。还支持按实际序列长度自动扩展 KV 物理内存，最大上下文容量保持不变。
+**Clover-35B-A3B-Preview Q4_0** 使用 [DiffuSpace 官方 GGUF](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview-GGUF)，下载大小为 **19.587 GB**，包含 Clover 自己的分词器和双向 GDN 附加参数。最大上下文为 **128K**，仅支持文本输入。自投机解码使用同一个模型进行草稿生成和因果验证，不使用独立的 MTP 头。通过 `run-api.bat --model-family clover` 选择；新建的独立配置默认使用端口 **18083**。默认仅使用因果解码（`--clover-draft 0`）。自投机解码为可选功能，可通过 `--clover-draft 3`、`7` 或 `15` 显式启用；加速效果取决于实际输入和生成内容。设置单独保存在 `config-clover.json`。 支持按空闲显存调整的专家缓存、利用系统 RAM 的 CPU 专家计算，以及随序列长度增长的 KV 分阶段分配。
+
+Qwen、Gemma 和 LFM 引擎均支持根据空闲显存自动调整的专家缓存、利用系统 RAM 的 CPU 专家计算、输入阶段权重流式传输及 CUDA Graph。它们使用相同的 API，支持运行中切换模型，并分别保存各模型的设置。不省略模型选中的专家。还支持按实际序列长度自动扩展 KV 物理内存，最大上下文容量保持不变。
 
 | 功能 | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) |
 | --- | --- | --- | --- |
@@ -46,7 +48,7 @@ Gemma 默认使用 INT8。原生 FP8 为实验性功能，可通过 `run-api.bat
 
 **上下文容量自动选择**依据 GPU 总显存，如下表所示；可用显存决定专家缓存的大小。显式指定 `--max-context N` 时，以该值为准。
 
-| GPU 总显存（示例） | Qwen3.6 / Gemma 4 | LFM2.5 |
+| GPU 总显存（示例） | Qwen3.6 / Gemma 4 | LFM2.5 / Clover |
 | --- | ---: | ---: |
 | 8 GB | 64K | 64K |
 | 12 GB | 128K | 128K |
@@ -104,6 +106,8 @@ Invoke-RestMethod "$api/v1/model/switch"
 ```
 
 通过 `run-api.bat --model-family gemma4` 可直接启动 Gemma，默认 API 地址为 `http://127.0.0.1:18082/v1`。使用 LFM 时，将上述下载、进度查询和切换请求中的 `gemma-4-26b-a4b-it` 替换为 `lfm2.5-24b-a2b`；也可通过 `run-api.bat --model-family lfm2` 直接启动，默认地址为 `http://127.0.0.1:18081/v1`。
+
+使用 Clover 时，在相同的下载、进度查询和切换请求中指定 `clover-35b-a3b-preview`。运行中的 API 端口保持不变。
 
 轮询 `GET /v1/model/switch`，直到 `state` 为 `ready`。切回 Qwen 时，向相同切换接口发送 `{"model":"qwen3.6-35b-a3b"}`。下载或切换开始时返回 `202`；生成期间的切换请求返回 `409`，请在生成结束后重试。切换期间的推理请求返回 `503`。端口和身份验证保持不变。模型选择只在当前服务会话中有效，重启后使用启动器选择的模型。
 
@@ -163,7 +167,7 @@ Radeon 显卡上的速度，使用 [tinystrata-bench-v1](benchmark/README.md#eng
 
 | 你的目标和硬件 | 项目 |
 | --- | --- |
-| 你希望在 **Windows** 上使用 Qwen3.6 / Gemma 4 / LFM2.5 推理，设备是配备主流显卡的 PC，配置为 **8–24 GB 显存、系统内存不超过 32 GB**。 | TinyStrata（**仅支持 Windows**，开发中） |
+| 你希望在 **Windows** 上使用 Qwen3.6 / Gemma 4 / LFM2.5 / Clover 推理，设备是配备主流显卡的 PC，配置为 **8–24 GB 显存、系统内存不超过 32 GB**。 | TinyStrata（**仅支持 Windows**，开发中） |
 | 你同时拥有 **RTX 3060 级别或更高性能的 GPU** 和 **64 GB 或更多系统内存**。 | 推荐使用 [Strata（上游项目）](https://github.com/Niko1221/Strata)。 |
 | 你希望使用**带实时生成统计的聊天 UI**。 | TinyStrata 的[可选 UI 安装脚本](install-ui.ps1)。 |
 
@@ -213,16 +217,17 @@ TinyStrata 提供兼容 OpenAI 的 Chat Completions（`/v1/chat/completions`）�
 
 新配置采用各模型自己的采样默认值。每次请求指定的值优先；已保存的自定义设置保持不变。
 
-| 设置 | Qwen3.6 | Gemma 4 | LFM2.5 |
-| --- | ---: | ---: | ---: |
-| `temperature` | 0.7 | 1.0 | 0.1 |
-| `top_p` | 0.95 | 0.95 | 1.0 |
-| `top_k` | 20 | 64 | 50 |
-| `min_p` | 0.0 | 0.0 | 0.0 |
-| `presence_penalty` | 1.5 | 0.0 | 0.0 |
-| `repetition_penalty` | 1.0 | 1.0 | 1.05 |
-| `enable_thinking` | true | true | true（始终启用） |
-| `max_tokens`（包含思考） | 32768 | 32768 | 32768 |
+| 设置 | Qwen3.6 | Gemma 4 | LFM2.5 | Clover |
+| --- | ---: | ---: | ---: | ---: |
+| `temperature` | 0.7 | 1.0 | 0.1 | 0.0 |
+| `top_p` | 0.95 | 0.95 | 1.0 | 1.0 |
+| `top_k` | 20 | 64 | 50 | 64 |
+| `min_p` | 0.0 | 0.0 | 0.0 | 0.0 |
+| `presence_penalty` | 1.5 | 0.0 | 0.0 | 0.9 |
+| `frequency_penalty` | 0.0 | 0.0 | 0.0 | 0.0 |
+| `repetition_penalty` | 1.0 | 1.0 | 1.05 | 1.05 |
+| `enable_thinking` | true | true | true（始终启用） | true（可关闭） |
+| `max_tokens`（包含思考） | 32768 | 32768 | 32768 | 24576 |
 
 API 默认监听 `http://127.0.0.1:18080`。要使用其他端口，请在已安装的 TinyStrata 文件夹中运行 `run-api.bat --port 18081`。
 

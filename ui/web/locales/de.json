@@ -470,5 +470,6 @@
   "monitor.fromGpu": "von der GPU {rate} MB/s",
   "monitor.chipPower": "Nur GPU-Chip",
   "monitor.mixedPower": "Messumfang je nach GPU unterschiedlich",
-  "monitor.pcieMaxGen": "max. Gen{n}"
+  "monitor.pcieMaxGen": "max. Gen{n}",
+  "about.selfDraft": "Selbstspekulative Entwürfe mit bis zu {n} Tokens"
 }

@@ -22,7 +22,7 @@ TinyStrata wählt Inferenz- und Speichereinstellungen automatisch passend zu Ihr
 
 ## Modellschwerpunkt
 
-[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) bleibt das Standardmodell und bietet auf PCs mit gängigen Grafikkarten ein ausgewogenes Verhältnis von Geschwindigkeit, Speicherbedarf und Antwortqualität. TinyStrata konzentriert sich auf kompakte MoE-Modelle und unterstützt zusätzlich **Gemma 4 26B-A4B-it und LFM2.5-24B-A2B**.
+[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) bleibt das Standardmodell und bietet auf PCs mit gängigen Grafikkarten ein ausgewogenes Verhältnis von Geschwindigkeit, Speicherbedarf und Antwortqualität. TinyStrata konzentriert sich auf kompakte MoE-Modelle und unterstützt zusätzlich **Gemma 4 26B-A4B-it, LFM2.5-24B-A2B und Clover-35B-A3B-Preview**.
 
 **Qwen3.6-35B-A3B UD-IQ3_XXS** verwendet den festgelegten [Unsloth-MTP-GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf). Die zwei Downloads umfassen zusammen etwa **15.0 GB**: Sprachmodell einschließlich MTP-Gewichten **14.1 GB** und Vision-Projektor (`mmproj-F16.gguf`) **0.9 GB**.
 
@@ -30,7 +30,9 @@ TinyStrata wählt Inferenz- und Speichereinstellungen automatisch passend zu Ihr
 
 **LFM2.5-24B-A2B Q4_K_M** verwendet den offiziellen [LiquidAI-GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF). Der einzelne Sprachmodell-Download ist **14.53 GB** groß.
 
-Alle drei Engines verwenden einen automatischen VRAM-Expertencache, CPU-Expertenberechnung aus dem Arbeitsspeicher, Gewichtsstreaming bei der Eingabe und CUDA Graphs. Sie nutzen dieselbe API und unterstützen Modellwechsel im laufenden Betrieb; die Einstellungen werden pro Modell gespeichert. Ausgewählte Experten werden nicht ausgelassen. Sie unterstützen außerdem automatisches Wachstum des physischen KV-Speichers, ohne die maximale Kontextkapazität zu ändern.
+**Clover-35B-A3B-Preview Q4_0** verwendet den [offiziellen DiffuSpace-GGUF](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview-GGUF), einen Download von **19.587 GB** mit eigenem Tokenizer und zusätzlichen bidirektionalen GDN-Parametern. Der maximale Kontext beträgt **128K**; Eingaben sind nur als Text möglich. Bei der selbstspekulativen Dekodierung erzeugt und überprüft dasselbe Modell die Entwürfe über seinen kausalen Pfad, ohne separaten MTP-Kopf. Die Auswahl erfolgt mit `run-api.bat --model-family clover`; ein neues eigenständiges Profil verwendet Port **18083**. Standard ist die rein kausale Dekodierung (`--clover-draft 0`). Die selbstspekulative Dekodierung lässt sich mit `--clover-draft 3`, `7` oder `15` aktivieren; ihr Geschwindigkeitsvorteil hängt von der Arbeitslast ab. Die Einstellungen werden separat in `config-clover.json` gespeichert. Der Expertencache passt sich dem freien VRAM an; Experten können aus dem Arbeitsspeicher auf der CPU berechnet werden, und der physische KV-Speicher wächst mit der Sequenzlänge.
+
+Die Qwen-, Gemma- und LFM-Engines verwenden einen automatischen VRAM-Expertencache, CPU-Expertenberechnung aus dem Arbeitsspeicher, Gewichtsstreaming bei der Eingabe und CUDA Graphs. Sie nutzen dieselbe API und unterstützen Modellwechsel im laufenden Betrieb; die Einstellungen werden pro Modell gespeichert. Ausgewählte Experten werden nicht ausgelassen. Sie unterstützen außerdem automatisches Wachstum des physischen KV-Speichers, ohne die maximale Kontextkapazität zu ändern.
 
 | Funktion | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) |
 | --- | --- | --- | --- |
@@ -46,7 +48,7 @@ Gemma verwendet standardmäßig INT8. Natives FP8 ist experimentell und kann mit
 
 Die **automatische Kontextkapazität** richtet sich wie unten gezeigt nach dem gesamten VRAM der GPU; der freie VRAM bestimmt die Größe des Expertencaches. Ein explizites `--max-context N` hat Vorrang.
 
-| Gesamter VRAM (Beispiele) | Qwen3.6 / Gemma 4 | LFM2.5 |
+| Gesamter VRAM (Beispiele) | Qwen3.6 / Gemma 4 | LFM2.5 / Clover |
 | --- | ---: | ---: |
 | 8 GB | 64K | 64K |
 | 12 GB | 128K | 128K |
@@ -104,6 +106,8 @@ Invoke-RestMethod "$api/v1/model/switch"
 ```
 
 Mit `run-api.bat --model-family gemma4` starten Sie direkt mit Gemma unter `http://127.0.0.1:18082/v1`. Für LFM ersetzen Sie `gemma-4-26b-a4b-it` in den obigen Download-, Fortschritts- und Wechselanfragen durch `lfm2.5-24b-a2b`; mit `run-api.bat --model-family lfm2` starten Sie LFM direkt unter `http://127.0.0.1:18081/v1`.
+
+Für Clover verwenden Sie in denselben Download-, Fortschritts- und Wechselanfragen `clover-35b-a3b-preview`. Der Port der laufenden API bleibt unverändert.
 
 Fragen Sie `GET /v1/model/switch` bis `state: ready` ab. Zum Zurückwechseln senden Sie dieselbe Wechselanfrage mit `{"model":"qwen3.6-35b-a3b"}`. Der Start eines Downloads oder Wechsels liefert `202`; ein Wechsel während einer Generierung liefert `409`, daher nach deren Ende erneut versuchen. Inferenzanfragen während des Wechsels liefern `503`. Port und Authentifizierung bleiben unverändert. Die Auswahl gilt für die aktuelle Serversitzung; nach einem Neustart wird das im Launcher gewählte Modell verwendet.
 
@@ -163,7 +167,7 @@ Geschwindigkeit auf Radeon-Karten, gemessen mit [tinystrata-bench-v1](benchmark/
 
 | Ihr Ziel und Ihre Hardware | Projekt |
 | --- | --- |
-| Sie möchten Qwen3.6 / Gemma 4 / LFM2.5-Inferenz unter **Windows**, mit **8–24 GB VRAM und höchstens 32 GB Arbeitsspeicher**, etwa auf einem PC mit einer gängigen Grafikkarte. | TinyStrata (**nur Windows**, in Entwicklung) |
+| Sie möchten Qwen3.6 / Gemma 4 / LFM2.5 / Clover-Inferenz unter **Windows**, mit **8–24 GB VRAM und höchstens 32 GB Arbeitsspeicher**, etwa auf einem PC mit einer gängigen Grafikkarte. | TinyStrata (**nur Windows**, in Entwicklung) |
 | Sie verfügen sowohl über **eine GPU der RTX 3060-Klasse oder besser** als auch über **mindestens 64 GB Arbeitsspeicher**. | Wir empfehlen [Strata (Upstream)](https://github.com/Niko1221/Strata). |
 | Sie möchten eine **Chat-Oberfläche mit Live-Statistiken**. | TinyStrata mit dem [optionalen UI-Installer](install-ui.ps1). |
 
@@ -213,16 +217,17 @@ TinyStrata stellt OpenAI-kompatible APIs für Chat Completions (`/v1/chat/comple
 
 Neue Konfigurationen verwenden modellspezifische Sampling-Standardwerte. Werte pro Anfrage haben Vorrang; gespeicherte benutzerdefinierte Einstellungen bleiben erhalten.
 
-| Einstellung | Qwen3.6 | Gemma 4 | LFM2.5 |
-| --- | ---: | ---: | ---: |
-| `temperature` | 0.7 | 1.0 | 0.1 |
-| `top_p` | 0.95 | 0.95 | 1.0 |
-| `top_k` | 20 | 64 | 50 |
-| `min_p` | 0.0 | 0.0 | 0.0 |
-| `presence_penalty` | 1.5 | 0.0 | 0.0 |
-| `repetition_penalty` | 1.0 | 1.0 | 1.05 |
-| `enable_thinking` | true | true | true (immer aktiv) |
-| `max_tokens` (einschließlich Thinking) | 32768 | 32768 | 32768 |
+| Einstellung | Qwen3.6 | Gemma 4 | LFM2.5 | Clover |
+| --- | ---: | ---: | ---: | ---: |
+| `temperature` | 0.7 | 1.0 | 0.1 | 0.0 |
+| `top_p` | 0.95 | 0.95 | 1.0 | 1.0 |
+| `top_k` | 20 | 64 | 50 | 64 |
+| `min_p` | 0.0 | 0.0 | 0.0 | 0.0 |
+| `presence_penalty` | 1.5 | 0.0 | 0.0 | 0.9 |
+| `frequency_penalty` | 0.0 | 0.0 | 0.0 | 0.0 |
+| `repetition_penalty` | 1.0 | 1.0 | 1.05 | 1.05 |
+| `enable_thinking` | true | true | true (immer aktiv) | true (abschaltbar) |
+| `max_tokens` (einschließlich Thinking) | 32768 | 32768 | 32768 | 24576 |
 
 Die API lauscht standardmäßig unter `http://127.0.0.1:18080`. Um einen anderen Port zu verwenden, führen Sie `run-api.bat --port 18081` im installierten TinyStrata-Ordner aus.
 

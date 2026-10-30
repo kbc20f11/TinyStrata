@@ -18,9 +18,10 @@ _MODELS = {
     "qwen3.6-35b-a3b": "qwen35moe",
     "lfm2.5-24b-a2b": "lfm2moe",
     "gemma-4-26b-a4b-it": "gemma4",
+    "clover-35b-a3b-preview": "clover_moe",
 }
 # Supported model/engine ceilings, not automatically allocated KV capacities.
-_CONTEXT_LIMITS = {"qwen35moe": 262144, "lfm2moe": 131072, "gemma4": 262144}
+_CONTEXT_LIMITS = {"qwen35moe": 262144, "lfm2moe": 131072, "gemma4": 262144, "clover_moe": 131072}
 _ALIASES = {
     "qwen36": "qwen3.6-35b-a3b", "qwen3.6": "qwen3.6-35b-a3b",
     "qwen35moe": "qwen3.6-35b-a3b",
@@ -28,6 +29,7 @@ _ALIASES = {
     "lfm2moe": "lfm2.5-24b-a2b",
     "gemma4": "gemma-4-26b-a4b-it", "gemma-4": "gemma-4-26b-a4b-it",
     "gemma4-26b-a4b": "gemma-4-26b-a4b-it", "gemma4-26b-a4b-it": "gemma-4-26b-a4b-it",
+    "clover": "clover-35b-a3b-preview", "clover_moe": "clover-35b-a3b-preview",
 }
 
 
@@ -100,7 +102,8 @@ class ModelProfiles:
     def _profile_path(parent: Path, arch: str, current: Path) -> Path:
         names = {"qwen35moe": ("config.json", "config-qwen36.json"),
                  "lfm2moe": ("config-lfm2.json", "config-lfm2-profile.json"),
-                 "gemma4": ("config-gemma4.json", "config-gemma4-profile.json")}[arch]
+                 "gemma4": ("config-gemma4.json", "config-gemma4-profile.json"),
+                 "clover_moe": ("config-clover.json", "config-clover-profile.json")}[arch]
         for filename in names:
             path = parent / filename
             if path == current:
@@ -115,6 +118,8 @@ class ModelProfiles:
         args = ["--max-context", "auto", "--kv-type", "auto", "--chunk", "auto"]
         if arch in ("qwen35moe", "gemma4"):
             args += ["--mtp", "3"]
+        if arch == "clover_moe":
+            args += ["--clover-draft", "0"]
         result = {"arch": arch, "model_name": name, "cwd": str(model_setup.ROOT),
                   "args": args, "memory_policy_version": tinyconfig.MEMORY_POLICY_VERSION,
                   **deepcopy(self._hardware)}

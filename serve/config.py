@@ -15,6 +15,7 @@ ENGINE_OPTIONS = {
     "expert_vram": ("--expert-vram", 0, None, False),
     "vram_reserve_mib": ("--vram-reserve-mib", 0, None, True),
     "mtp": ("--mtp", 0, 7, True),
+    "clover_draft": ("--clover-draft", 0, 31, True),
     "chunk": ("--chunk", 1, 4096, True),
 }
 

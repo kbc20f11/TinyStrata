@@ -633,7 +633,8 @@ function renderAbout(eng, hw, st) {
     [tr("about.context", "Context"), eng.max_context ? tr("common.tokenCount", "{n} tokens", {n: fmt(eng.max_context)}) : null],
     [tr("about.kvCache", "KV cache"), kv ? `${kv} · ${eng.kv_resident ? tr("about.streamedKv", "{n} positions per layer in VRAM; the rest in RAM", {n: fmt(eng.kv_resident)}) : tr("about.residentKv", "all in VRAM")}` : null],
     [tr("monitor.expertsVram", "Experts in VRAM"), eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)` : null],
-    [tr("about.speculation", "Speculation"), eng.spec ? tr("about.mtp", "MTP drafts up to {n} tokens", {n: fmt(Math.max(0, (eng.mtp_max || eng.spec) - 1))}) + (eng.lookup ? tr("about.lookupOn", " · prompt lookup on") : "") : null],
+    [tr("about.speculation", "Speculation"), eng.clover_draft ? tr("about.selfDraft", "Self-speculative drafts up to {n} tokens", {n: fmt(eng.clover_draft)})
+      : eng.spec ? tr("about.mtp", "MTP drafts up to {n} tokens", {n: fmt(Math.max(0, (eng.mtp_max || eng.spec) - 1))}) + (eng.lookup ? tr("about.lookupOn", " · prompt lookup on") : "") : null],
     [tr("tab.images", "Images"), eng.images ? tr("common.on", "on") : tr("common.off", "off")],
     [tr("about.projectionLabel", "Experimental speed projection"), projectionText(eng.cvec)],
   ]);
@@ -856,7 +857,7 @@ let busy = null;                      // {controller, msg, cut, cutAfterTool}
 let pending = null;                   // a message parked while an answer is written: {text, images, files, mode}
 let modelCatalog = [], modelCatalogTick = 0, modelCatalogLoading = false;
 let modelSwitchAvailable = false, modelSwitching = false, modelSwitchTimer = null;
-const modelNames = {"qwen3.6-35b-a3b": "Qwen3.6", "gemma-4-26b-a4b-it": "Gemma 4", "lfm2.5-24b-a2b": "LFM2.5"};
+const modelNames = {"qwen3.6-35b-a3b": "Qwen3.6", "gemma-4-26b-a4b-it": "Gemma 4", "lfm2.5-24b-a2b": "LFM2.5", "clover-35b-a3b-preview": "Clover"};
 function canUseModelImages(rows = messages, extra = []) {
   if (health.images || (!extra.some((image) => image.url) && !rows.some((m) => (m.images || []).some((image) => image.url)))) return true;
   toast("warn", tr("model.noVision", "This model does not support images. Start a text-only chat or choose a vision model."), "", 7000);

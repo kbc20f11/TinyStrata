@@ -465,5 +465,6 @@
   "monitor.fromGpu": "GPUから {rate} MB/s",
   "monitor.chipPower": "GPUチップのみ",
   "monitor.mixedPower": "GPUごとに計測範囲が異なります",
-  "monitor.pcieMaxGen": "最大Gen{n}"
+  "monitor.pcieMaxGen": "最大Gen{n}",
+  "about.selfDraft": "自己投機デコード（最大{n}トークン）"
 }

@@ -15,22 +15,23 @@ $python = "$env:LOCALAPPDATA\TinyStrata-work\runtime\.venv\Scripts\python.exe"
 & $python "$env:LOCALAPPDATA\TinyStrata\benchmark\run.py" --model all
 ```
 
-From a source checkout, use `.\benchmark\run.py` instead. `--model qwen`, `--model gemma` and `--model lfm` select one model. The runner uses the existing model/configuration files, starts its own loopback API, and does not change the saved configuration. Results go under `%LOCALAPPDATA%\TinyStrata-work\benchmarks\`; generated logs and results do not belong in Git.
+From a source checkout, use `.\benchmark\run.py` instead. `--model qwen`, `--model gemma`, `--model lfm` and `--model clover` select one model. Clover uses `config-clover.json`. The runner uses the existing model/configuration files, starts its own loopback API, and does not change the saved configuration. Results go under `%LOCALAPPDATA%\TinyStrata-work\benchmarks\`; generated logs and results do not belong in Git.
 
 ### Common configuration
 
-Use the project's fixed model files: Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS, Google Gemma 4 26B-A4B-it QAT Q4_0 with its matching vision projector and QAT MTP assistant, and LiquidAI LFM2.5-24B-A2B Q4_K_M. Record the actual model and binary hashes, TinyStrata version/commit, GPU/VRAM, CPU, system RAM, OS and driver version with a submission.
+Use the project's fixed model files: Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS, Google Gemma 4 26B-A4B-it QAT Q4_0 with its matching vision projector and QAT MTP assistant, LiquidAI LFM2.5-24B-A2B Q4_K_M, and DiffuSpace Clover-35B-A3B-Preview Q4_0. Record the actual model and binary hashes, TinyStrata version/commit, GPU/VRAM, CPU, system RAM, OS and driver version with a submission.
 
 - **INT8 KV** is the common comparison profile on NVIDIA and Radeon. FP8 or manually tuned settings belong in separately labelled results.
 - KV growth, automatic context capacity, automatic input chunk size, automatic Expert placement and automatic CPU worker selection. Graphs use their normal defaults. Do not add tuning environment variables or omit Experts/tokens.
-- MTP **3** and a **GPU-resident vision encoder** for Qwen/Gemma, including the three text benchmarks. LFM has neither MTP nor Vision.
-- One request at a time; **seed 1234**. The following sampling values are fixed in `cases.json`:
+- MTP **3** and a **GPU-resident vision encoder** for Qwen/Gemma, including the three text benchmarks. LFM and Clover have neither MTP nor Vision. The standard Clover profile uses causal decoding (`--clover-draft 0`); self-speculative measurements need a separate label.
+- One request at a time; **seed 1234**. The following sampling values are fixed in `cases.json`, with the added Clover profile fixed in `run.py` so the existing v1 input hashes remain unchanged:
 
 | Model | Temperature | top_p | top_k | min_p | presence_penalty | repetition_penalty |
 |---|---:|---:|---:|---:|---:|---:|
 | Qwen3.6 | 0.7 | 0.95 | 20 | 0 | 1.5 | 1.0 |
 | Gemma 4 | 1.0 | 0.95 | 64 | 0 | 0 | 1.0 |
 | LFM2.5 | 0.1 | 1.0 | 50 | 0 | 0 | 1.05 |
+| Clover | 0 | 1.0 | 64 | 0 | 0.9 | 1.05 |
 
 Frequency penalty is zero. Thinking is enabled for generation and the two input-processing benchmarks; image description disables thinking so its first output is part of the description. The model's early EOS is respected: count the tokens actually generated, not an assumed output length.
 
@@ -41,7 +42,7 @@ Frequency penalty is zero. Thinking is enabled for generation and the two input-
 | Generation | The three `generation` texts in `cases.json`, in order, twice each; maximum 128 output tokens per request, including thinking | Total generated tokens ÷ total native decode seconds, tok/s |
 | 4K input | The numbered document defined by `long_paragraph` and `long_question`, adjusted to exactly **4,096 input tokens including the chat template**; maximum 32 output tokens | Total input tokens actually read ÷ total native prompt-processing seconds, tok/s |
 | 16K input | The same construction at exactly **16,384 input tokens including the chat template**; maximum 32 output tokens | Same input-processing rate, tok/s |
-| Image description | Unmodified **1,024 × 768** `image.png` and `image_prompt`; maximum 128 output tokens; first real image request after each fresh API start | Median client first-output time and median completion time, seconds; LFM is **N/A** |
+| Image description | Unmodified **1,024 × 768** `image.png` and `image_prompt`; maximum 128 output tokens; first real image request after each fresh API start | Median client first-output time and median completion time, seconds; LFM and Clover are **N/A** |
 
 The runner uses the normal Messages API, including MTP, rather than the native `--tokens` generation loop. It uses the same request with `/v1/messages/count_tokens` to construct the 4K/16K inputs, then checks the actual native counts. The published texts/image and their hashes identify the inputs; the native prompt counts identify their token lengths for each model.
 
@@ -93,22 +94,23 @@ $python = "$env:LOCALAPPDATA\TinyStrata-work\runtime\.venv\Scripts\python.exe"
 & $python "$env:LOCALAPPDATA\TinyStrata\benchmark\run.py" --model all
 ```
 
-ソースを取得したフォルダーでは、スクリプトのパスを `.\benchmark\run.py` に置き換えます。個別に測る場合は `--model qwen`、`--model gemma`、`--model lfm` を使います。既存のモデルと設定ファイルを使って計測専用 API を起動し、保存済みの設定は書き換えません。結果は `%LOCALAPPDATA%\TinyStrata-work\benchmarks\` に保存します。生成したログや結果は Git に含めません。
+ソースを取得したフォルダーでは、スクリプトのパスを `.\benchmark\run.py` に置き換えます。個別に測る場合は `--model qwen`、`--model gemma`、`--model lfm`、`--model clover` を使います。Clover の設定ファイルは `config-clover.json` です。既存のモデルと設定ファイルを使って計測専用 API を起動し、保存済みの設定は書き換えません。結果は `%LOCALAPPDATA%\TinyStrata-work\benchmarks\` に保存します。生成したログや結果は Git に含めません。
 
 ### 共通設定
 
-モデルはプロジェクト指定の Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS、Google Gemma 4 26B-A4B-it QAT Q4_0 と対応する画像プロジェクタ・QAT MTP アシスタント、LiquidAI LFM2.5-24B-A2B Q4_K_M を使います。モデルとバイナリのハッシュ、TinyStrata のバージョン／コミット、GPU・搭載 VRAM、CPU、RAM、OS、ドライバーを結果に併記します。
+モデルはプロジェクト指定の Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS、Google Gemma 4 26B-A4B-it QAT Q4_0 と対応する画像プロジェクタ・QAT MTP アシスタント、LiquidAI LFM2.5-24B-A2B Q4_K_M、DiffuSpace Clover-35B-A3B-Preview Q4_0 を使います。モデルとバイナリのハッシュ、TinyStrata のバージョン／コミット、GPU・搭載 VRAM、CPU、RAM、OS、ドライバーを結果に併記します。
 
 - NVIDIA・Radeon 共通の比較は **INT8 KV**。FP8 や手動調整を加えた結果は別枠です。
 - KV は段階確保。コンテキスト容量・入力チャンク・Expert 配置・CPU ワーカー数は自動選択、Graph は既定の動作です。高速化用の環境変数や Expert／トークンの省略は追加しません。
-- Qwen・Gemma は **MTP 3 と GPU 常駐 Vision** を使用します。テキストの計測でも画像エンコーダーを常駐させます。LFM は MTP・Vision ともに使用しません。
-- 同時実行は 1 リクエスト、**seed は 1234**。サンプリングは下表で固定します。
+- Qwen・Gemma は **MTP 3 と GPU 常駐 Vision** を使用します。テキストの計測でも画像エンコーダーを常駐させます。LFM・Clover は MTP・Vision ともに使用しません。標準の Clover は因果経路のみ（`--clover-draft 0`）で測り、自己投機の計測は別枠にします。
+- 同時実行は 1 リクエスト、**seed は 1234**。サンプリングは下表で固定します。既存 v1 入力のハッシュを維持するため、追加した Clover の設定は `run.py` に、他のモデルは `cases.json` に定義します。
 
 | モデル | temperature | top_p | top_k | min_p | presence_penalty | repetition_penalty |
 |---|---:|---:|---:|---:|---:|---:|
 | Qwen3.6 | 0.7 | 0.95 | 20 | 0 | 1.5 | 1.0 |
 | Gemma 4 | 1.0 | 0.95 | 64 | 0 | 0 | 1.0 |
 | LFM2.5 | 0.1 | 1.0 | 50 | 0 | 0 | 1.05 |
+| Clover | 0 | 1.0 | 64 | 0 | 0.9 | 1.05 |
 
 frequency_penalty は 0。生成・4K・16K は思考有効、画像説明は説明本文の開始時間を測るため思考無効です。早期 EOS はそのまま扱い、出力上限まで生成したと仮定せず、実生成トークン数を使います。
 
@@ -119,7 +121,7 @@ frequency_penalty は 0。生成・4K・16K は思考有効、画像説明は説
 | 生成速度 | `cases.json` の `generation` 3 入力を順に各 2 回。各リクエスト最大 128 トークン、思考を含む | 総生成トークン数 ÷ 総デコード秒数（tok/s） |
 | 4K 入力 | `long_paragraph` と `long_question` から作る文書を、**テンプレート込みで 4,096 入力トークン**に調整。出力上限 32 | 新しく読んだ総入力トークン数 ÷ 総入力処理秒数（tok/s） |
 | 16K 入力 | 同じ方法で **テンプレート込み 16,384 入力トークン**。出力上限 32 | 同じ入力処理速度（tok/s） |
-| 画像説明 | 無加工の **1,024 × 768** `image.png` と `image_prompt`。出力上限 128。API 起動後、最初の実画像リクエスト | 最初の出力まで／説明完了までの秒数の中央値。LFM は対象外 |
+| 画像説明 | 無加工の **1,024 × 768** `image.png` と `image_prompt`。出力上限 128。API 起動後、最初の実画像リクエスト | 最初の出力まで／説明完了までの秒数の中央値。LFM・Clover は対象外 |
 
 MTP を含む通常の Messages API を使い、native の `--tokens` 生成ループでは測りません。4K・16K は同じリクエストを `/v1/messages/count_tokens` で数えて作成し、実際のエンジンの入力数でも確認します。テキスト・画像のハッシュで入力を識別し、各モデルの実トークン数で長さを確認します。
 

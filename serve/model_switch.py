@@ -379,7 +379,7 @@ class ModelSwitcher:
             extra = {'assistant': assistant, 'assistant_verified': True} if profile.arch == 'gemma4' else {}
             self.profiles.prepare(model, model_path=path, projector=projector, projector_verified=True, **extra)
 
-        if profile.arch == 'lfm2moe':
+        if profile.arch in ('lfm2moe', 'clover_moe'):
             manager = FixedModelDownloader(directory, on_ready=prepared,
                                            existing_paths=(existing,) if existing is not None else (),
                                            _manifest=manifest_for_arch(profile.arch))

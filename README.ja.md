@@ -22,7 +22,7 @@ TinyStrata は Strata を基盤に、限られた VRAM でも 30B 級の MoE モ
 
 ## 対象モデル
 
-一般的なグラフィックボードを搭載した PC での速度・省メモリ性・回答品質のバランスを重視し、[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) を既定のモデルとしています。比較的小さな MoE モデルに注力し、**Gemma 4 26B-A4B-it と LFM2.5-24B-A2B にも対応しています**。
+一般的なグラフィックボードを搭載した PC での速度・省メモリ性・回答品質のバランスを重視し、[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) を既定のモデルとしています。比較的小さな MoE モデルに注力し、**Gemma 4 26B-A4B-it、LFM2.5-24B-A2B、Clover-35B-A3B-Preview にも対応しています**。
 
 **Qwen3.6-35B-A3B UD-IQ3_XXS** は、固定版の [Unsloth MTP GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf) を使います。ダウンロードは 2 ファイル、合計約 **15.0 GB** です。MTP の重みを含む言語モデルが **14.1 GB**、ビジョンプロジェクタ（`mmproj-F16.gguf`）が **0.9 GB** です。
 
@@ -30,7 +30,9 @@ TinyStrata は Strata を基盤に、限られた VRAM でも 30B 級の MoE モ
 
 **LFM2.5-24B-A2B Q4_K_M** は、公式の [LiquidAI GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF) を使います。ダウンロードは言語モデルの 1 ファイルで、**14.53 GB** です。
 
-3 モデルとも、空き VRAM に合わせたエキスパートキャッシュ、システム RAM を使った CPU でのエキスパート計算、入力時の重みのストリーミング、CUDA Graph に対応しています。共通の API と起動中のモデル切り替えを利用でき、設定はモデルごとに保存します。モデルが選んだエキスパートは省略しません。また、最大コンテキスト容量を変えずに、会話の長さに応じて KV の物理メモリを自動で増やせます。
+**Clover-35B-A3B-Preview Q4_0** は、[DiffuSpace 公式 GGUF](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview-GGUF) を使います。ダウンロードは **19.587 GB** で、Clover 専用のトークナイザーと双方向 GDN の追加重みを含みます。最大コンテキストは **128K**、入力はテキストのみです。自己投機デコードでは、別の MTP ヘッドではなく、同じモデルで仮生成と因果経路による検証を行います。`run-api.bat --model-family clover` で選択でき、新規の単独プロファイルではポート **18083** を使います。既定は因果経路のみの生成（`--clover-draft 0`）です。自己投機デコードは `--clover-draft 3`・`7`・`15` などで明示的に有効にできます。高速化の効果は入力や生成内容によって変わります。設定は `config-clover.json` に個別保存します。 空き VRAM に応じたエキスパートキャッシュ、システム RAM を使った CPU でのエキスパート計算、会話長に応じた KV の段階確保に対応します。
+
+Qwen・Gemma・LFM はいずれも、空き VRAM に合わせたエキスパートキャッシュ、システム RAM を使った CPU でのエキスパート計算、入力時の重みのストリーミング、CUDA Graph に対応しています。共通の API と起動中のモデル切り替えを利用でき、設定はモデルごとに保存します。モデルが選んだエキスパートは省略しません。また、最大コンテキスト容量を変えずに、会話の長さに応じて KV の物理メモリを自動で増やせます。
 
 | 機能 | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) |
 | --- | --- | --- | --- |
@@ -46,7 +48,7 @@ Gemma の既定は INT8 です。ネイティブ FP8 は実験的な機能で、
 
 **コンテキスト容量の自動選択**は、下表のように GPU の総 VRAM を基準とし、空き VRAM はエキスパートキャッシュの容量に反映されます。`--max-context N` を指定した場合は、その値を優先します。
 
-| GPU の総 VRAM（目安） | Qwen3.6 / Gemma 4 | LFM2.5 |
+| GPU の総 VRAM（目安） | Qwen3.6 / Gemma 4 | LFM2.5 / Clover |
 | --- | ---: | ---: |
 | 8 GB | 64K | 64K |
 | 12 GB | 128K | 128K |
@@ -117,6 +119,8 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 初めから Gemma で起動する場合は `run-api.bat --model-family gemma4` を実行します。既定の API アドレスは `http://127.0.0.1:18082/v1` です。LFM を使う場合は、上のダウンロード・進捗確認・切り替えリクエストの `gemma-4-26b-a4b-it` を `lfm2.5-24b-a2b` に置き換えるか、`run-api.bat --model-family lfm2`（既定の API アドレス `http://127.0.0.1:18081/v1`）で起動してください。
 
+Clover を使う場合は、同じダウンロード・進捗確認・切り替えリクエストで `clover-35b-a3b-preview` を指定します。起動中の API のポートは変わりません。
+
 `GET /v1/model/switch` で `state` が `ready` になるまで確認してください。Qwen に戻す場合は、同じ切り替えリクエストに `{"model":"qwen3.6-35b-a3b"}` を指定します。ダウンロード・切り替えの開始時は `202`、生成中の切り替え要求は `409` を返すので、生成終了後に再試行してください。切り替え中の推論リクエストは `503` になります。ポートと認証設定はそのままです。モデルの選択は今回の起動中だけ有効で、再起動時はランチャーで選んだモデルを使用します。
 
 ## 実測速度 — Qwen3.6
@@ -175,7 +179,7 @@ Radeon カードでの速度を [tinystrata-bench-v1](benchmark/README.md#日本
 
 | 目的とハードウェア | プロジェクト |
 | --- | --- |
-| 一般的なグラフィックボードを搭載した、**VRAM が 8–24 GB、システム RAM が 32 GB 以下**の **Windows** PC で、Qwen3.6 / Gemma 4 / LFM2.5 を使いたい。 | TinyStrata（**Windows 専用**、開発中） |
+| 一般的なグラフィックボードを搭載した、**VRAM が 8–24 GB、システム RAM が 32 GB 以下**の **Windows** PC で、Qwen3.6 / Gemma 4 / LFM2.5 / Clover を使いたい。 | TinyStrata（**Windows 専用**、開発中） |
 | **RTX 3060 クラス以上の GPU** と **64 GB 以上のシステム RAM** の両方を備えている。 | [Strata（上流プロジェクト）](https://github.com/Niko1221/Strata) をお勧めします。 |
 | **生成状況をリアルタイム表示するチャット UI** を使いたい。 | TinyStrata の [UI ありインストーラー](install-ui.ps1)。 |
 
@@ -225,16 +229,17 @@ TinyStrata は OpenAI 互換の Chat Completions（`/v1/chat/completions`）と 
 
 新しい構成では、モデルごとのサンプリング設定を使います。リクエストで指定した値が優先され、保存済みの手動設定も維持されます。
 
-| 設定 | Qwen3.6 | Gemma 4 | LFM2.5 |
-| --- | ---: | ---: | ---: |
-| `temperature` | 0.7 | 1.0 | 0.1 |
-| `top_p` | 0.95 | 0.95 | 1.0 |
-| `top_k` | 20 | 64 | 50 |
-| `min_p` | 0.0 | 0.0 | 0.0 |
-| `presence_penalty` | 1.5 | 0.0 | 0.0 |
-| `repetition_penalty` | 1.0 | 1.0 | 1.05 |
-| `enable_thinking` | true | true | true（常に有効） |
-| `max_tokens`（思考を含む） | 32768 | 32768 | 32768 |
+| 設定 | Qwen3.6 | Gemma 4 | LFM2.5 | Clover |
+| --- | ---: | ---: | ---: | ---: |
+| `temperature` | 0.7 | 1.0 | 0.1 | 0.0 |
+| `top_p` | 0.95 | 0.95 | 1.0 | 1.0 |
+| `top_k` | 20 | 64 | 50 | 64 |
+| `min_p` | 0.0 | 0.0 | 0.0 | 0.0 |
+| `presence_penalty` | 1.5 | 0.0 | 0.0 | 0.9 |
+| `frequency_penalty` | 0.0 | 0.0 | 0.0 | 0.0 |
+| `repetition_penalty` | 1.0 | 1.0 | 1.05 | 1.05 |
+| `enable_thinking` | true | true | true（常に有効） | true（無効化可） |
+| `max_tokens`（思考を含む） | 32768 | 32768 | 32768 | 24576 |
 
 API は、デフォルトで `http://127.0.0.1:18080` で待ち受けます。別のポートを使うには、インストール先の TinyStrata フォルダで `run-api.bat --port 18081` を実行してください。
 

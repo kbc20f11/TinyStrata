@@ -18,8 +18,10 @@ LFM2_SAMPLING = {"temperature": 0.1, "top_p": 1.0, "top_k": 50, "min_p": 0.0,
                  "presence_penalty": 0.0, "repetition_penalty": 1.05}
 GEMMA4_SAMPLING = {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0,
                    "presence_penalty": 0.0, "repetition_penalty": 1.0}
+CLOVER_SAMPLING = {"temperature": 0.0, "top_p": 1.0, "top_k": 64, "min_p": 0.0,
+                   "presence_penalty": 0.9, "frequency_penalty": 0.0, "repetition_penalty": 1.05}
 MODEL_NAMES = {"qwen35moe": "qwen3.6-35b-a3b", "lfm2moe": "lfm2.5-24b-a2b",
-               "gemma4": "gemma-4-26b-a4b-it"}
+               "gemma4": "gemma-4-26b-a4b-it", "clover_moe": "clover-35b-a3b-preview"}
 
 
 def migrate_generation_settings(cfg: dict) -> tuple[dict, bool]:
@@ -35,14 +37,15 @@ def migrate_generation_settings(cfg: dict) -> tuple[dict, bool]:
     if cfg.get("arch", "qwen35moe") == "qwen35moe" and cfg.get("generation_policy_version") != GENERATION_POLICY_VERSION and \
             sampling == {"temperature": 0}:
         sampling = {}
-    defaults = dict({"lfm2moe": LFM2_SAMPLING, "gemma4": GEMMA4_SAMPLING}.get(cfg.get("arch"), DEFAULT_SAMPLING))
+    defaults = dict({"lfm2moe": LFM2_SAMPLING, "gemma4": GEMMA4_SAMPLING,
+                     "clover_moe": CLOVER_SAMPLING}.get(cfg.get("arch"), DEFAULT_SAMPLING))
     # Preserve the upstream spelling as well as the canonical spelling.
     if sampling.get("repeat_penalty") is not None:
         defaults.pop("repetition_penalty")
     sampling = {**defaults, **sampling}
     new = {**cfg, "sampling": sampling, "generation_policy_version": GENERATION_POLICY_VERSION}
     new.setdefault("enable_thinking", True)
-    new.setdefault("max_tokens", DEFAULT_MAX_TOKENS)
+    new.setdefault("max_tokens", 24576 if cfg.get("arch") == "clover_moe" else DEFAULT_MAX_TOKENS)
     return new, new != cfg
 
 
@@ -100,16 +103,16 @@ def migrate_chunk_settings(cfg: dict) -> tuple[dict, bool]:
 
 def check_vision_options(cfg: dict) -> str:
     """Validate launcher preferences independently of installed image assets."""
-    lfm2 = cfg.get("arch") == "lfm2moe"
-    mode = cfg.get("vision_mode", "no" if lfm2 else "gpu")
+    text_only = cfg.get("arch") in ("lfm2moe", "clover_moe")
+    mode = cfg.get("vision_mode", "no" if text_only else "gpu")
     if mode not in ("gpu", "cpu", "no"):
         raise ValueError("vision_mode must be gpu, cpu or no")
     if "vision_tokens" in cfg:
         tokens = cfg["vision_tokens"]
         if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
             raise ValueError("vision_tokens must be a positive whole number")
-    if lfm2 and (mode != "no" or cfg.get("vision")):
-        raise ValueError("LFM2.5-24B-A2B is text-only; use --vision no")
+    if text_only and (mode != "no" or cfg.get("vision")):
+        raise ValueError(f"{MODEL_NAMES[cfg['arch']]} is text-only; use --vision no")
     return mode
 
 
@@ -167,7 +170,7 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         raise ValueError("max_tokens must be a positive whole number")
     arch = cfg.get("arch", "qwen35moe")
     if arch not in MODEL_NAMES:
-        raise ValueError("TinyStrata supports qwen35moe, lfm2moe and gemma4 models")
+        raise ValueError("TinyStrata supports qwen35moe, lfm2moe, gemma4 and clover_moe models")
     if arch == "lfm2moe" and cfg.get("enable_thinking", True) is False:
         raise ValueError("LFM2.5-24B-A2B always uses thinking")
     for key in ("images", "replicas", "layer_split", "vram_elastic", "slot_save_path",
@@ -191,7 +194,7 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
     if not isinstance(args, list) or not all(isinstance(x, str) for x in args):
         raise ValueError("args must be a list of engine argument strings")
     values = {"--model", "--draft-model", "--max-context", "--kv-type", "--chunk", "--mtp", "--expert-vram",
-              "--expert-slots", "--cpu-threads", "--hybrid-rows", "--vram-reserve-mib"}
+              "--expert-slots", "--cpu-threads", "--hybrid-rows", "--vram-reserve-mib", "--clover-draft"}
     switches = {"--no-graph", "--no-warmup", "--hybrid-graph", "--no-hybrid-graph", "--vision",
                 "--kv-grow", "--kv-whole", "--no-kv-grow"}
     seen = set()
@@ -211,11 +214,13 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         raise ValueError("Choose a GGUF model with run.py --model PATH")
     if len(seen.intersection({"--kv-grow", "--kv-whole", "--no-kv-grow"})) > 1:
         raise ValueError("Choose only one KV allocation mode: --kv-grow or --kv-whole")
-    for key in ("kv_type", "max_context", "expert_vram", "vram_reserve_mib", "mtp", "chunk"):
+    for key in ("kv_type", "max_context", "expert_vram", "vram_reserve_mib", "mtp", "chunk", "clover_draft"):
         value = config.value_of(cfg, key)
         if value is not None:
             config.check(key, value, cfg)
     kv = config.value_of(cfg, "kv_type")
+    if arch != "clover_moe" and "--clover-draft" in seen:
+        raise ValueError("--clover-draft is only supported by Clover")
     if arch == "lfm2moe":
         qwen_only = seen.intersection({"--hybrid-graph", "--no-hybrid-graph", "--hybrid-rows",
                                        "--expert-slots", "--no-warmup"})
@@ -239,6 +244,16 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
             raise ValueError("Gemma 4 supports --kv-type auto, fp16, int8, fp8 or fp8-mma")
         if config.value_of(cfg, "mtp") not in (None, 0) and "--draft-model" not in seen and not allow_uninstalled:
             raise ValueError("Gemma 4 MTP requires its matching QAT assistant (--draft-model)")
+    elif arch == "clover_moe":
+        if "--vision" in seen:
+            raise ValueError("Clover-35B-A3B-Preview is text-only; remove --vision")
+        if config.value_of(cfg, "mtp") not in (None, 0):
+            raise ValueError("Clover has no MTP head; use --clover-draft for self-speculative decoding")
+        context = config.value_of(cfg, "max_context")
+        if context not in (None, "auto") and context > 131072:
+            raise ValueError("Clover supports at most 131072 context tokens")
+        if kv == "fp16":
+            raise ValueError("Clover does not support --kv-type fp16")
     elif kv == "fp16":
         raise ValueError("Qwen3.6 does not support --kv-type fp16")
     if arch != "gemma4" and "--draft-model" in seen:

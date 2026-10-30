@@ -91,3 +91,12 @@ The upstream MIT copyright and license are preserved in LICENSE.
 Outfit fonts are distributed under the SIL Open Font License 1.1; see
 ui/web/fonts/OFL.txt. The offline KaTeX dependency is MIT licensed; see
 ui/web/vendor/katex/LICENSE and ui/web/vendor/katex/PROVENANCE.json.
+
+Clover-35B-A3B-Preview support independently implements its published
+bidirectional GDN, block coreset, and generation-control equations. References:
+Diffuspace/Clover-35B-A3B-Preview at 4b0402b (Apache-2.0 model/custom code),
+Maphist0/llama.cpp-pub dev-clover at 4838ffb0c8ade92f34d9157deea38d92758ab824
+(llama.cpp PR #31306, MIT), and WilliamZR/sglang feature/clover-support at
+2243dc6edb416073b60be0765904cabae9eb61cf (SGLang PR #46927, Apache-2.0).
+Clover weights are downloaded separately from the official Diffuspace GGUF
+repository and retain their Apache-2.0 model license and upstream Qwen attribution.

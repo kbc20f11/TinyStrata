@@ -17,7 +17,7 @@ param(
     [ValidateSet('auto', 'cuda', 'hip')][string]$Backend = 'auto',
     [string]$HipDirectory,
     [ValidatePattern('^gfx[0-9a-f]+(;gfx[0-9a-f]+)*$')][string]$HipArchitectures,
-    [ValidateSet('qwen36', 'qwen3.6', 'lfm2', 'lfm2.5', 'gemma4', 'gemma-4')][string]$ModelFamily = 'qwen36',
+    [ValidateSet('qwen36', 'qwen3.6', 'lfm2', 'lfm2.5', 'gemma4', 'gemma-4', 'clover')][string]$ModelFamily = 'qwen36',
     [ValidateRange(0, 65535)][int]$Port = 0,
     [switch]$WithUI,
     [ValidateRange(1, 65535)][int]$UiPort = 3000,
@@ -875,7 +875,7 @@ function Invoke-TinyStrataApi {
 
 function Test-TinyStrataInferenceReady {
     param($Health, $Configuration)
-    $requireImages = -not ($Configuration -and ($Configuration.vision_mode -eq 'no' -or $Configuration.arch -eq 'lfm2moe'))
+    $requireImages = -not ($Configuration -and ($Configuration.vision_mode -eq 'no' -or $Configuration.arch -in @('lfm2moe', 'clover_moe')))
     return [bool]($Health.loaded -and (-not $requireImages -or $Health.images))
 }
 
@@ -890,6 +890,9 @@ function Get-TinyStrataModelFamily {
         }
         { $_ -in @('gemma4', 'gemma-4') } {
             return [pscustomobject]@{ Name = 'gemma4'; ConfigFile = 'config-gemma4.json'; StateFile = 'server-state-gemma4.json'; NativeFile = 'tinystrata-gemma4.exe'; Port = 18082 }
+        }
+        'clover' {
+            return [pscustomobject]@{ Name = 'clover'; ConfigFile = 'config-clover.json'; StateFile = 'server-state-clover.json'; NativeFile = 'tinystrata.exe'; Port = 18083 }
         }
         default { throw "Unsupported TinyStrata model family: $Name" }
     }

@@ -112,6 +112,12 @@ inline std::vector<TensorWant> layer_tensors(const ModelGeometry& g, int64_t lay
         add("ssm_a", {g.ssm_v_heads});
         add("ssm_dt.bias", {g.ssm_v_heads});
         add("ssm_norm.weight", {g.ssm_state_size});
+        if (g.family == strata::ModelFamily::CloverMoe) {
+            add("ssm_conv1d.weight_right", {g.ssm_d_conv - 1, g.ssm_conv_channels});
+            add("ssm_bd_logit_scale.weight", {g.ssm_v_heads});
+            add("ssm_bd_history.bias", {g.ssm_v_heads});
+            add("ssm_bd_history.weight", {g.ssm_v_heads});
+        }
     } else {
         // attention (query + output gate in attn_q), also the MTP block's
         add("attn_q.weight", {N, 2 * g.n_head * g.head_dim});
@@ -138,7 +144,7 @@ inline std::vector<TensorWant> global_tensors(const ModelGeometry& g) {
 }
 
 /// Whether the family's table names every blk.* tensor its files carry (then an unnamed one is an error).
-inline bool layout_table_complete(const ModelGeometry& g) { return g.family == strata::ModelFamily::Qwen35Moe; }
+inline bool layout_table_complete(const ModelGeometry& g) { return strata::model_family_runs(g.family); }
 
 /// Checks the model `m` (all shards) against the layout table of `g`.  `checked` counts the tensors found.
 inline bool check_gguf_layout(const strata::GgufModel& m, const ModelGeometry& g, std::string& err,

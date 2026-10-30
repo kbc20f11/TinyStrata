@@ -23,7 +23,7 @@ def model_architecture(path: str | Path) -> str:
 
 def shared_library_dirs(cfg: dict) -> dict:
     """Reuse a matching installed GPU runtime for another model config."""
-    if cfg.get("arch") not in ("lfm2moe", "gemma4") or "lib_dirs" in cfg:
+    if cfg.get("arch") not in ("lfm2moe", "gemma4", "clover_moe") or "lib_dirs" in cfg:
         return cfg
     work = ROOT.with_name(ROOT.name + "-work")
     directories = []
@@ -120,8 +120,8 @@ def _extract_tokenizer(model: Path, cache: Path) -> None:
     from serve.tokenizer import extract
 
     md = GGUFFile(model).metadata
-    if md.get("general.architecture") not in ("qwen35moe", "lfm2moe", "gemma4"):
-        raise ValueError("This launcher supports qwen35moe, lfm2moe and gemma4 GGUF models")
+    if md.get("general.architecture") not in ("qwen35moe", "lfm2moe", "gemma4", "clover_moe"):
+        raise ValueError("This launcher supports qwen35moe, lfm2moe, gemma4 and clover_moe GGUF models")
     if not md.get("tokenizer.chat_template"):
         raise ValueError("The GGUF does not contain its chat template")
     print("Extracting the model tokenizer and chat template ...", flush=True)
@@ -245,7 +245,8 @@ def prepare_installed_model(cfg: dict, config_path: str | Path, model_path: str 
     args = new["args"]
     args[args.index("--model") + 1] = str(model)
     new["tokenizer"] = str(tokenizer)
-    new["log"] = str(path.parent / {"lfm2moe": "engine-lfm2.log", "gemma4": "engine-gemma4.log"}.get(actual_arch, "engine.log"))
+    new["log"] = str(path.parent / {"lfm2moe": "engine-lfm2.log", "gemma4": "engine-gemma4.log",
+                                    "clover_moe": "engine-clover.log"}.get(actual_arch, "engine.log"))
     exe = resolve_executable(new)
     if exe is not None:
         new["exe"] = str(exe)

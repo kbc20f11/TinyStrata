@@ -136,12 +136,12 @@ __global__ void k_attn_prep(const float* qg, const float* kx, const float* vx, c
 /// nothing (the merge stops before them).  grid (n_chunk, n_rows), block 256, HD == 256.
 template<int Format>
 __global__ void k_attn_part(const float* q, KvCache cache, const int32_t* pos0, int t0, int H,
-                            int HKV, int ctx, float scale, int n_chunk, float* pacc, float* pm, float* pl) {
+                            int HKV, int ctx, float scale, int n_chunk, float* pacc, float* pm, float* pl, int visible_end = 0) {
     constexpr int HD = 256;
     __shared__ float qs[HD], sc[kChunkCells], sh[kThreads];
     const int c = blockIdx.x, row = blockIdx.y;
     const int t = t0 + row / H, h = row % H, kvh = h / (H / HKV);
-    const int npos = *pos0 + t + 1;
+    const int npos = visible_end > 0 ? visible_end : *pos0 + t + 1;
     const int p0 = c * kChunkCells;
     if (p0 >= npos) return;
     const int j = threadIdx.x;
@@ -173,10 +173,10 @@ __global__ void k_attn_part(const float* q, KvCache cache, const int32_t* pos0, 
 }
 /// The chunks merged, times sigmoid(gate): grid (n_rows), block HD.
 __global__ void k_attn_merge(const float* pacc, const float* pm, const float* pl, const float* gate,
-                             const int32_t* pos0, int t0, int H, int n_chunk, float* out) {
+                             const int32_t* pos0, int t0, int H, int n_chunk, float* out, int visible_end = 0) {
     constexpr int HD = 256;
     const int row = blockIdx.x, t = t0 + row / H, h = row % H, d = threadIdx.x;
-    const int npos = *pos0 + t + 1;
+    const int npos = visible_end > 0 ? visible_end : *pos0 + t + 1;
     const int nc = (npos + kChunkCells - 1) / kChunkCells;
     float M = -INFINITY;
     for (int c = 0; c < nc; ++c) M = fmaxf(M, pm[(size_t) row * n_chunk + c]);

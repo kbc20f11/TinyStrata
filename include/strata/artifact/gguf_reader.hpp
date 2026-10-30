@@ -640,8 +640,19 @@ inline std::string check_architecture_qwen35moe(const GgufFile& g) {
 inline std::string check_architecture(const GgufFile& g) {
     const MetaValue* arch = g.get("general.architecture");
     if (!arch) return "missing general.architecture";
+    if (arch->s == "clover_moe") {
+        for (const char* key : {"block_count", "embedding_length", "attention.head_count", "attention.head_count_kv",
+              "attention.key_length", "attention.value_length", "expert_count", "expert_used_count",
+              "expert_feed_forward_length", "expert_shared_feed_forward_length", "ssm.conv_kernel", "ssm.state_size",
+              "ssm.group_count", "ssm.time_step_rank", "ssm.inner_size", "full_attention_interval"}) {
+            const std::string name = "clover_moe." + std::string(key);
+            const MetaValue* value = g.get(name);
+            if (!value || !value->is_num()) return "missing or nonnumeric " + name;
+        }
+        return {};
+    }
     if (arch->s != "qwen35moe")
-        return "architecture is '" + arch->s + "', TinyStrata requires 'qwen35moe'";
+        return "architecture is '" + arch->s + "', TinyStrata requires 'qwen35moe' or 'clover_moe'";
     return check_architecture_qwen35moe(g);
 }
 inline std::string check_engine_architecture(const GgufFile& g) { return check_architecture(g); }

@@ -24,6 +24,8 @@
 #include "strata/prefill/moe_mmq.hpp"
 #include "strata/qwen35/engine.hpp"
 #include "q36_kernels.cuh"
+#include "clover_kernels.cuh"
+#include "strata/qwen35/clover_decode.hpp"
 #include "strata/qwen35/attention.cuh"
 #include "strata/qwen35/int8_attention.hpp"
 #include "strata/qwen35/fp8_attention.hpp"
@@ -846,6 +848,7 @@ struct Layer {
     // GDN
     Mat qkv, zg, ssm_out;
     const float *alpha = nullptr, *beta = nullptr, *dt = nullptr, *ssm_a = nullptr, *conv = nullptr, *ssm_norm = nullptr;
+    const float *conv_right = nullptr, *bd_scale = nullptr, *bd_bias = nullptr, *bd_c = nullptr;
     // attention
     Mat wq, wk, wv, wo;
     const float *q_norm = nullptr, *k_norm = nullptr;
@@ -869,6 +872,9 @@ struct Model {
     strata::core::ModelGeometry g;
     std::shared_ptr<strata::GgufModel> file;   // kept mapped: the experts are placed after the engine's buffers
     bool hybrid = false;                       // not every expert fits in VRAM: slots + the CPU pool
+    bool clover = false, clover_coreset = true;
+    float clover_top_p = 0.9f;
+    int32_t mask_token = 151669;
     // the packed Q8_0 decode copies (gguf weights, packed copy, bytes): given back when that lets every expert fit
     std::vector<std::tuple<const uint8_t*, uint8_t*, size_t>> packed;
     // the GGUF-native MTP block (blk.<n_layers>, loaded with --mtp): eh_proj over [enorm(e) | hnorm(h)], then an
@@ -949,7 +955,17 @@ float* upload_f32(const strata::TensorInfo& t, const uint8_t* src) {
     else if (t.type == 1)   // F16
         for (size_t i = 0; i < h.size(); ++i)
             h[i] = f16_to_f32((uint16_t) (src[2 * i] | (src[2 * i + 1] << 8)));
-    else if (t.type == 8 && h.size() % 32 == 0) {
+    else if (t.type == 2 && h.size() % 32 == 0) {
+        // Official Clover Q4_0 also quantizes the small alpha/beta matrices.
+        for (size_t b = 0; b < h.size() / 32; ++b) {
+            const uint8_t* block = src + b * 18;
+            const float d = f16_to_f32((uint16_t) (block[0] | (block[1] << 8)));
+            for (int j = 0; j < 16; ++j) {
+                h[b * 32 + j] = d * ((int) (block[2 + j] & 15) - 8);
+                h[b * 32 + j + 16] = d * ((int) (block[2 + j] >> 4) - 8);
+            }
+        }
+    } else if (t.type == 8 && h.size() % 32 == 0) {
         // Q8_0 (the Q8_0 file stores ssm_alpha / ssm_beta so): blocks of an fp16 scale and 32 int8, widened here
         for (size_t b = 0; b < h.size() / 32; ++b) {
             const uint8_t* q = src + b * 34;
@@ -971,8 +987,9 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
     m.file = std::make_shared<strata::GgufModel>(strata::GgufModel::open(path));
     const strata::GgufModel& gm = *m.file;
     if (!strata::core::geometry_from_gguf(gm.meta(), m.g, m.top_k, err)) return false;
-    if (m.g.family != strata::ModelFamily::Qwen35Moe) {
-        err = "tinystrata runs Qwen3.6-35B-A3B (qwen35moe) files only";
+    m.clover = m.g.family == strata::ModelFamily::CloverMoe;
+    if (!strata::model_family_runs(m.g.family)) {
+        err = "tinystrata requires qwen35moe or clover_moe";
         return false;
     }
     size_t checked = 0;
@@ -982,7 +999,13 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
         err = "a geometry this driver's kernels do not take (head 256, state 128, conv 4, <= 512 experts, top-k <= 15)";
         return false;
     }
-    const std::string p = "qwen35moe.";
+    const std::string p = std::string(strata::model_family_arch(m.g.family)) + ".";
+    if (m.clover) {
+        m.vision_rope = false;
+        if (const auto* v = gm.meta().get(p + "moe_block_coreset_enabled")) m.clover_coreset = v->u != 0;
+        if (const auto* v = gm.meta().get(p + "moe_block_coreset_top_p")) m.clover_top_p = (float) v->num();
+        if (!(m.clover_top_p > 0.f && m.clover_top_p <= 1.f)) { err = "invalid Clover coreset top_p"; return false; }
+    }
     if (const strata::MetaValue* v = gm.meta().get(p + "attention.layer_norm_rms_epsilon")) m.eps = (float) v->num();
     if (const strata::MetaValue* v = gm.meta().get(p + "rope.freq_base")) m.rope_base = (float) v->num();
     if (const strata::MetaValue* v = gm.meta().get(p + "rope.dimension_count")) m.n_rot = (int) v->u;
@@ -1060,6 +1083,17 @@ bool load(const std::string& path, Model& m, std::string& err, bool want_mtp) {
             y.ssm_a = f32(L(l, "ssm_a"));
             y.conv = f32(L(l, "ssm_conv1d.weight"));
             y.ssm_norm = f32(L(l, "ssm_norm.weight"));
+            if (m.clover) {
+                // Clover exports raw A_log, whereas Qwen exports -exp(A_log).
+                std::vector<float> raw((size_t) g.ssm_v_heads);
+                CK(cudaMemcpy(raw.data(), y.ssm_a, raw.size() * sizeof(float), cudaMemcpyDeviceToHost));
+                for (float& value : raw) value = -std::exp(value);
+                CK(cudaMemcpy(const_cast<float*>(y.ssm_a), raw.data(), raw.size() * sizeof(float), cudaMemcpyHostToDevice));
+                y.conv_right = f32(L(l, "ssm_conv1d.weight_right"));
+                y.bd_scale = f32(L(l, "ssm_bd_logit_scale.weight"));
+                y.bd_bias = f32(L(l, "ssm_bd_history.bias"));
+                y.bd_c = f32(L(l, "ssm_bd_history.weight"));
+            }
         } else {
             y.wq = mat(L(l, "attn_q.weight"));
             y.wk = mat(L(l, "attn_k.weight"));
@@ -1196,7 +1230,10 @@ struct Engine {
     bool tiled_prompt() const { return int8_prompt || fp8_prompt; }
     const char* kv_name() const { return kv_format == 3 ? "fp8-mma" : kv_format == 2 ? "int8" : kv_format == 1 ? "fp8" : "fp32"; }
     // verify windows (T <= kVerify): the GDN inputs of every row per layer, kept for the commit
-    static constexpr int kVerify = 8;
+    static constexpr int kVerify = 32;
+    int verify_capacity = 8;
+    int clover_draft = 0;
+    bool clover_preview = false;
     std::vector<float*> v_qkv, v_hc, v_alpha, v_beta;
     // the MTP block (when loaded)
     float *mtp_cat = nullptr, *hmtp = nullptr, *logits_m = nullptr;
@@ -1308,6 +1345,7 @@ struct Engine {
 
     void init(const Model& model, int ctx_, int tmax_) {
         m = &model;
+        verify_capacity = m->clover ? kVerify : 8;
         ctx = ctx_;
         if (kv_grow && !strata::qwen35::kv_grow::api().ok) {
             std::fprintf(stderr, "tinystrata: KV growth unavailable on this device/build; using whole KV allocation\n");
@@ -1320,7 +1358,7 @@ struct Engine {
                          strata::qwen35::kv_grow::api().gran >> 20);
         }
 #endif
-        tmax = std::max(tmax_, kVerify);
+        tmax = std::max(tmax_, verify_capacity);
         const auto& g = m->g;
 #if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
         fair_rebalance = true;
@@ -1344,7 +1382,7 @@ struct Engine {
         logits_r = dalloc(T * (g.n_expert + 1));
         eparts = dalloc(T * Kp * N); moe_out = dalloc(T * N);
         sg = dalloc(T * g.n_ff_shexp); su = dalloc(T * g.n_ff_shexp); shh = dalloc(T * g.n_ff_shexp); sy = dalloc(T * N);
-        sgate = dalloc(T); ewts = dalloc(T * Kp); logits = dalloc((size_t) kVerify * g.n_vocab);
+        sgate = dalloc(T); ewts = dalloc(T * Kp); logits = dalloc((size_t) verify_capacity * g.n_vocab);
         const int max_in = (int) std::max<int64_t>({2 * g.n_embd, g.ssm_value_dim, g.n_head * g.head_dim, g.n_ff_shexp});
         CK(cudaMalloc(&q8, K::native_q8_1_bytes(max_in, 1) * T));
         CK(cudaMalloc(&xq, K::native_q8_1_bytes((int) N, 1) * T));
@@ -1449,19 +1487,18 @@ struct Engine {
         ent_tok = dalloc_t<int32_t>(T * Kp);
         tok = dalloc_t<int32_t>(T);
         pos0 = dalloc_t<int32_t>(1);
-        pick = dalloc_t<int32_t>(kVerify);
-        amv = dalloc((size_t) kArgBlocks * kVerify);
-        ami = dalloc_t<int32_t>((size_t) kArgBlocks * kVerify);
+        pick = dalloc_t<int32_t>(verify_capacity);
+        amv = dalloc((size_t) kArgBlocks * verify_capacity);
+        ami = dalloc_t<int32_t>((size_t) kArgBlocks * verify_capacity);
         CK(cudaHostAlloc((void**) &hpin, 64 * sizeof(int32_t), cudaHostAllocDefault));
         n_chunk = (ctx + kChunkCells - 1) / kChunkCells;
-        int partial_queries = tiled_prompt() ? kVerify : 64;
+        int partial_queries = tiled_prompt() ? 8 : 64;
 #if defined(STRATA_USE_HIP) || defined(__HIPCC__)
-        static_assert(kVerify == kGemmT, "split-K scratch must cover every non-GEMM query batch");
         // Larger prompt batches use GEMM (or tiled attention), not these
         // split-K partials. Decode and verify need at most kGemmT == kVerify
         // queries. Keep the old allocation available for paired measurements.
         const char* legacy_partials = std::getenv("TINYSTRATA_Q36_LEGACY_ATTN_SCRATCH");
-        partial_queries = legacy_partials && std::strcmp(legacy_partials, "1") == 0 ? 64 : kVerify;
+        partial_queries = legacy_partials && std::strcmp(legacy_partials, "1") == 0 ? 64 : 8;
 #endif
         att_rows = (int) (g.n_head * std::min<int64_t>((int64_t) T, partial_queries));
         pacc = dalloc((size_t) att_rows * n_chunk * g.head_dim);
@@ -1516,10 +1553,10 @@ struct Engine {
                 conv.push_back(dalloc(C * (g.ssm_d_conv - 1)));
                 S.push_back(dalloc((size_t) g.ssm_v_heads * g.ssm_state_size * g.ssm_state_size));
                 kv.push_back({});
-                v_qkv.push_back(dalloc((size_t) kVerify * C));
-                v_hc.push_back(dalloc((size_t) kVerify * C));
-                v_alpha.push_back(dalloc((size_t) kVerify * g.ssm_v_heads));
-                v_beta.push_back(dalloc((size_t) kVerify * g.ssm_v_heads));
+                v_qkv.push_back(dalloc((size_t) verify_capacity * C));
+                v_hc.push_back(dalloc((size_t) verify_capacity * C));
+                v_alpha.push_back(dalloc((size_t) verify_capacity * g.ssm_v_heads));
+                v_beta.push_back(dalloc((size_t) verify_capacity * g.ssm_v_heads));
             }
         }
         if (m->has_mtp) {   // the MTP block's own K / V (an attention layer at index n_layers)
@@ -1647,7 +1684,7 @@ struct Engine {
     /// y [T][n_out] = W [n_out][n_in] (f32) x [T][n_in]: a decode batch on the warp-per-row kernel, a prompt chunk on
     /// cuBLAS's FP32 GEMM (the router and the GDN alpha / beta stay in FP32, as llama.cpp keeps them).
     void f32mm(const float* W, const float* xin, float* out, int n_in, int n_out, int T) {
-        if (T <= kGemmT) {
+        if (decode_rows(T)) {
             k_gemv_f32<<<dim3(rows8(n_out), T), kThreads, 0, st>>>(W, xin, out, n_in, n_out);
             return;
         }
@@ -1678,12 +1715,13 @@ struct Engine {
     /// A batch above kGemmT tokens (a prompt chunk) runs its projections as GEMMs (prefill::Gemm::native: the GGUF
     /// blocks dequantized to FP16, the activations FP16); a decode batch on the native MMVQ (q8_1 activations).
     static constexpr int kGemmT = 8;
+    bool decode_rows(int T) const { return T <= kGemmT || (m->clover && rows_deferred && !clover_preview); }
     void prep(const float* xin, int n, int T, void* q) {
-        if (T > kGemmT) k_to_f16<<<grid1((int64_t) n * T), kThreads, 0, st>>>(xin, x16, (int64_t) n * T);
+        if (!decode_rows(T)) k_to_f16<<<grid1((int64_t) n * T), kThreads, 0, st>>>(xin, x16, (int64_t) n * T);
         else quant(xin, n, T, q);
     }
     void apply(const Mat& w, const void* q, float* out, int T) {
-        if (T > kGemmT) gemm.native((const uint16_t*) x16, w.type, w.d, out, T, w.n_out, w.n_in);
+        if (!decode_rows(T)) gemm.native((const uint16_t*) x16, w.type, w.d, out, T, w.n_out, w.n_in);
         else mmq(w, q, out, T);
     }
     /// x [T][n] -> its q8_1 image (T contiguous columns: one vector of T * n), for every matrix that reads x.
@@ -1747,7 +1785,7 @@ struct Engine {
     void verify_q8(const char* what, const float* hsrc, int T, const std::string& tag) {
         const int N = (int) m->g.n_embd;
         const size_t qb = K::native_q8_1_bytes(N, 1);
-        if (!vq) CK(cudaMalloc(&vq, K::native_q8_1_bytes((int) std::max(m->g.n_embd, m->g.n_ff_shexp), 1) * 8));
+        if (!vq) CK(cudaMalloc(&vq, K::native_q8_1_bytes((int) std::max(m->g.n_embd, m->g.n_ff_shexp), 1) * verify_capacity));
         K::native_quantize_q8_1(hsrc, vq, N * T, 1, st);
         const long long before = v_bad;
         verify_cmp(what, (const float*) xq, (const float*) vq, qb * (size_t) T / 4, tag);
@@ -1778,7 +1816,7 @@ struct Engine {
         }
     }
     void prep_in(int T) {
-        if (xq_ready && T <= kGemmT) {
+        if (xq_ready && decode_rows(T)) {
             xq_ready = false;
             return;
         }
@@ -1788,11 +1826,11 @@ struct Engine {
     void add_rms_post(const Layer& L, int T) {
         const int N = (int) m->g.n_embd;
         xq_post = false;
-        if (fast_k && T >= 1 && T <= kGemmT && N > 0 && N % 32 == 0) {
+        if (fast_k && T >= 1 && decode_rows(T) && N > 0 && N % 32 == 0) {
             if (verify_k) {
                 if (!vx_) {
-                    CK(cudaMalloc((void**) &vx_, (size_t) 8 * m->g.n_embd * 4));
-                    CK(cudaMalloc((void**) &vh_, (size_t) 8 * m->g.n_embd * 4));
+                    CK(cudaMalloc((void**) &vx_, (size_t) verify_capacity * m->g.n_embd * 4));
+                    CK(cudaMalloc((void**) &vh_, (size_t) verify_capacity * m->g.n_embd * 4));
                 }
                 CK(cudaMemcpyAsync(vx_, x, (size_t) T * N * 4, cudaMemcpyDeviceToDevice, st));
                 k_add_rms<<<T, kThreads, 0, st>>>(vx_, y, L.post_norm, vh_, N, m->eps);
@@ -1952,11 +1990,11 @@ struct Engine {
     /// The MoE block's end (k_moe_out) for T rows.
     void moe_end(int T, const int32_t* prow, const float* shared, const float* sgate, const float* wn, float* hout, int sgs = 1) {
         const int N = (int) m->g.n_embd, Kp = (int) m->top_k;
-        const bool small = fast_k && T >= 1 && T <= 8 && N > 0 && N <= 2048 && N % 256 == 0 && Kp > 0 && Kp <= 15;
+        const bool small = fast_k && T >= 1 && decode_rows(T) && N > 0 && N <= 2048 && N % 256 == 0 && Kp > 0 && Kp <= 15;
         if (small && verify_k) {
             if (!vx_) {
-                CK(cudaMalloc((void**) &vx_, (size_t) 8 * m->g.n_embd * 4));
-                CK(cudaMalloc((void**) &vh_, (size_t) 8 * m->g.n_embd * 4));
+                CK(cudaMalloc((void**) &vx_, (size_t) verify_capacity * m->g.n_embd * 4));
+                CK(cudaMalloc((void**) &vh_, (size_t) verify_capacity * m->g.n_embd * 4));
             }
             CK(cudaMemcpyAsync(vx_, x, (size_t) T * N * 4, cudaMemcpyDeviceToDevice, st));
             k_moe_out<<<T, kThreads, 0, st>>>(vx_, eparts, prow, ewts, Kp, shared, sgate, sgs, wn, vh_, N, m->eps);
@@ -2005,7 +2043,7 @@ struct Engine {
             prep_in(T);
             apply(L.qkv, xq, qkv_b, T);
             apply(L.zg, xq, z, T);
-            if (T <= kGemmT) {
+            if (T <= kGemmT || (m->clover && T <= verify_capacity)) {
                 k_gdn_ab<<<dim3(rows8(2 * HV), T), kThreads, 0, st>>>(L.alpha, L.beta, h, L.dt, L.ssm_a, al_b, be_b, N,
                                                                       HV);
             } else {
@@ -2019,6 +2057,13 @@ struct Engine {
             // differently from k_conv_seq's, a 1-ulp difference in h that the Q8_1 activation rounding can turn into a
             // flipped near-tie later; with them the KL is the same, 1.05x / 0.81x the floor, but MTP would not be exact.)
             const int tiles = (fast_k && T > kGemmT && !verify) ? (T + kConvTile - 1) / kConvTile : 1;
+            if (clover_preview) {
+                strata::qwen35::clover::conv_preview<<<dim3(C / 128, T), 128, 0, st>>>(conv[li], qkv_b, L.conv,
+                    L.conv_right, hc_b, C, HK, m->eps, T);
+                strata::qwen35::clover::gdn_preview<<<dim3(HV, T), 128, 0, st>>>(S[li], hc_b, al_b, L.bd_scale,
+                    L.bd_bias, L.bd_c, gdn_y, C, HK, HV, T);
+                k_gdn_norm<<<dim3(HV, T), 128, 0, st>>>(gdn_y, z, L.ssm_norm, m->eps, gdn_y, HV);
+            } else {
             k_conv_seq<<<dim3(C / 128, tiles), 128, 0, st>>>(conv[li], qkv_b, L.conv, hc_b, C, 2 * HK, m->eps, T, !verify);
             if (T > kGemmT && !verify) {   // a prompt chunk: the column-split delta rule, then the norm
                 if (fast_k)
@@ -2032,6 +2077,7 @@ struct Engine {
                 k_gdn_seq<<<HV, dim3(128, 4), 0, st>>>(S[li], hc_b, C, al_b, be_b, z, L.ssm_norm, m->eps, gdn_y, HK, HV,
                                                        T, !verify);
             }
+            }
             mm(L.ssm_out, gdn_y, y, T);
         } else {
             prep_in(T);
@@ -2041,7 +2087,21 @@ struct Engine {
             auto attention = [&]<int Format>() {
                 A::k_attn_prep<Format><<<dim3(H + HKV, T), kThreads, 0, st>>>(qg, kx, vx, L.q_norm, L.k_norm, q, gate, kv[li], H,
                                                                   HKV, HD, m->n_rot, dpos, ctx, m->rope_base, m->eps, mrope);
-                if (T > kGemmT && tiled_prompt()) {
+                if (clover_preview) {
+                    // Every preview query sees the entire noisy block and the
+                    // committed prefix. KV suffix writes are temporary: verify
+                    // overwrites them, and logical position never advances here.
+                    const int end = (int) p0 + T, nc = (end + kChunkCells - 1) / kChunkCells;
+                    const int rows_per = att_rows / H;
+                    for (int t0 = 0; t0 < T; t0 += rows_per) {
+                        const int nt = std::min(rows_per, T - t0);
+                        A::k_attn_part<Format><<<dim3(nc, nt * H), kChunkCells, 0, st>>>(q, kv[li], dpos, t0,
+                            H, HKV, ctx, 1.f / sqrtf((float) HD), n_chunk, pacc, pm, pl, end);
+                        A::k_attn_merge<<<nt * H, HD, 0, st>>>(pacc, pm, pl, gate, dpos, t0, H, n_chunk, att, end);
+                    }
+                    return;
+                }
+                if (!decode_rows(T) && tiled_prompt()) {
                     const auto& c = kv[li];
                     if constexpr (Format == 3) {
                         strata::qwen35::fp8_attention::Cache view{(const uint8_t*) c.key, (const uint8_t*) c.value,
@@ -2054,7 +2114,7 @@ struct Engine {
                     }
                     CK(cudaGetLastError());
                     k_gate_mul<<<grid1((int64_t) T * H * HD), kThreads, 0, st>>>(att, gate, (int64_t) T * H * HD);
-                } else if (T > kGemmT) {
+                } else if (!decode_rows(T)) {
                     // a prompt chunk: scores = Q K^T and out = P V as FP16 GEMMs (FP32 accumulation, FP32 scores) per KV
                     // head (its query heads one strided batch over the shared K / V), the causal softmax in between writing
                     // FP16 probabilities; the queries in slices whose scores fit
@@ -2127,16 +2187,19 @@ struct Engine {
         // routed experts (one token: the router and the shared expert's gate in one product, the gate its last row)
         const bool one = T == 1;
         // Decode batches append the shared expert's gate, using the same per-row F32 dot products.
-        const bool ext = one || (fast_k && std::getenv("STRATA_Q36_NO_EXT") == nullptr && !verify_k &&
-                                 T >= 1 && T <= kGemmT && g.n_expert == 256 && Kp == 8);
+        const bool ext = !clover_preview && (one || (fast_k && std::getenv("STRATA_Q36_NO_EXT") == nullptr && !verify_k &&
+                                 T >= 1 && T <= kGemmT && g.n_expert == 256 && Kp == 8));
         if (ext) f32mm(L.router_ext, h, logits_r, N, (int) g.n_expert + 1, T);
         else f32mm(L.router, h, logits_r, N, (int) g.n_expert, T);
+        if (clover_preview && m->clover_coreset)
+            strata::qwen35::clover::router_coreset<<<1, 256, 0, st>>>(logits_r, T, (int) g.n_expert, Kp,
+                (int) g.n_expert, m->clover_top_p);
         // the hybrid rows path: a batch of up to hybrid_t rows; when only the MTP block is hybrid, its every batch
         // (its prompt pass too: no staging buffers then)
-        const bool hy_rows = lhy(li) && (T <= hybrid_t || !main_hybrid || (stage_loan && !stage_loan_active));
+        const bool hy_rows = lhy(li) && ((m->clover && verify) || T <= hybrid_t || !main_hybrid || (stage_loan && !stage_loan_active));
         const bool mmq_rows = !hy_rows && T > kGemmT && use_mmq;
         const bool native_stream_rows = native_stream_ready() && !hy_rows && lhy(li);
-        if (mmq_rows || native_stream_rows || !route_group(L, hy_rows ? hy[li].slot_of_d : nullptr, T,
+        if (clover_preview || mmq_rows || native_stream_rows || !route_group(L, hy_rows ? hy[li].slot_of_d : nullptr, T,
                                                           ext ? (int) g.n_expert + 1 : (int) g.n_expert))
             K::native_router_topk(logits_r, ids, ewts, (int) g.n_expert, Kp, T, st);
         const int64_t n_ent = (int64_t) T * Kp;
@@ -2195,12 +2258,12 @@ struct Engine {
             }
         }
         // the shared expert, scaled by sigmoid(w . h)
-        if (T > kGemmT) k_to_f16<<<grid1((int64_t) N * T), kThreads, 0, st>>>(h, x16, (int64_t) N * T);
-        if (T <= kGemmT) {
+        if (!decode_rows(T)) k_to_f16<<<grid1((int64_t) N * T), kThreads, 0, st>>>(h, x16, (int64_t) N * T);
+        if (decode_rows(T)) {
             if (!shared_gu(L, T)) {
                 apply(L.sh_gate, xq, sg, T);
                 apply(L.sh_up, xq, su, T);
-                K::native_swiglu_quantize_q8_1(sg, su, q8, FS, T, st);
+                K::native_swiglu_quantize_q8_1(sg, su, q8, FS * T, 1, st);
             }
             mmq(L.sh_down, q8, sy, T);
         } else {
@@ -2222,7 +2285,7 @@ struct Engine {
         xq_ready = false;
         const auto& g = m->g;
         const int N = (int) g.n_embd;
-        if (main_hybrid && T > hybrid_t && (use_mmq || native_stream_ready())) {
+        if (main_hybrid && !(m->clover && verify) && T > hybrid_t && (use_mmq || native_stream_ready())) {
             std::vector<int> seq;
             for (size_t l = 0; l < m->layers.size(); ++l)
                 if (lhy(l)) seq.push_back((int) l);
@@ -2901,10 +2964,10 @@ struct Engine {
             return cudaHostGetDevicePointer(device, *host, 0) == cudaSuccess;
         };
         const bool ok = mapped((void**) &graph_flags, (void**) &graph_flags_d, sizeof(*graph_flags)) &&
-                        mapped((void**) &graph_h, (void**) &graph_h_d, kVerify * N * sizeof(float)) &&
-                        mapped((void**) &graph_ids, (void**) &graph_ids_d, kVerify * Kp * sizeof(int32_t)) &&
-                        mapped((void**) &graph_cpu, (void**) &graph_cpu_d, kVerify * Kp * N * sizeof(float)) &&
-                        mapped((void**) &graph_miss, (void**) &graph_miss_d, kVerify * Kp * sizeof(int32_t));
+                        mapped((void**) &graph_h, (void**) &graph_h_d, verify_capacity * N * sizeof(float)) &&
+                        mapped((void**) &graph_ids, (void**) &graph_ids_d, verify_capacity * Kp * sizeof(int32_t)) &&
+                        mapped((void**) &graph_cpu, (void**) &graph_cpu_d, verify_capacity * Kp * N * sizeof(float)) &&
+                        mapped((void**) &graph_miss, (void**) &graph_miss_d, verify_capacity * Kp * sizeof(int32_t));
         if (!ok) {
             cudaGetLastError();
             for (void* p : {(void*) graph_flags, (void*) graph_h, (void*) graph_ids, (void*) graph_cpu, (void*) graph_miss})
@@ -3105,6 +3168,41 @@ struct Engine {
     /// the MTP seed rows of a prompt chunk: a buffer the block's own forward does not use (`moe_out`, [tmax][N])
     float* mtp_seed() { return moe_out; }
 
+    // Clover drafts with the SAME model, without an MTP head. Preview has its
+    // own read-only GDN path; only the causal accepted prefix is committed.
+    template <class Verify>
+    int clover_step_with(int anchor, const strata::qwen35::clover_decode::Plan& plan,
+                         std::vector<int32_t>& drafts, int32_t* picks, Verify verify) {
+        namespace CD = strata::qwen35::clover_decode;
+        const int64_t start = pos;
+        ensure_kv(start + plan.preview_rows);
+        auto block = CD::masked_block(anchor, plan, m->mask_token);
+        CK(cudaStreamSynchronize(st));
+        hpin[1] = (int32_t) start;
+        std::copy(block.begin(), block.end(), hpin + 16);
+        CK(cudaMemcpyAsync(tok, hpin + 16, block.size() * sizeof(int32_t), cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(pos0, hpin + 1, sizeof(int32_t), cudaMemcpyHostToDevice, st));
+        rows_deferred = clover_preview = true;
+        forward(plan.preview_rows, start, plan.preview_rows, false, true);
+        clover_preview = rows_deferred = false;
+        std::vector<int32_t> preview_picks((size_t) plan.preview_rows);
+        CK(cudaMemcpyAsync(preview_picks.data(), pick, preview_picks.size() * sizeof(int32_t), cudaMemcpyDeviceToHost, st));
+        CK(cudaStreamSynchronize(st));
+        drafts = CD::drafts_from_preview(preview_picks, plan);
+        block = CD::verify_inputs(anchor, drafts);
+        std::copy(block.begin(), block.end(), hpin + 16);
+        CK(cudaMemcpyAsync(tok, hpin + 16, block.size() * sizeof(int32_t), cudaMemcpyHostToDevice, st));
+        rows_deferred = true;
+        forward((int) block.size(), start, (int) block.size(), false, true);
+        rows_deferred = false;
+        const int accepted = verify((int) block.size(), drafts, picks);
+        commit(accepted + 1);
+        CK(cudaMemcpyAsync(hlast, hmain + (size_t) accepted * m->g.n_embd, (size_t) m->g.n_embd * sizeof(float), cudaMemcpyDeviceToDevice, st));
+        pos += accepted + 1;
+        after_rows(accepted + 1);
+        return accepted;
+    }
+
     /// One speculative step with D MTP drafts: `x` is the next token (decided, not processed); `fix` the
     /// tokens of the rows the block must redo first (the drafts the last window accepted, seeded by hmain rows
     /// 0 .. fix.size() - 1 of that window).  Drafts d1 .. dD, then the window [x, d1 .. dD] through the main model;
@@ -3218,6 +3316,20 @@ struct Engine {
             int32_t picks[16];
             spec_step(filler, fix, mtp_d, drafts, picks);
         }
+        if (clover_draft > 0) {
+            const auto plan = strata::qwen35::clover_decode::plan(clover_draft, pos, ctx);
+            if (plan) {
+                std::vector<int32_t> drafts;
+                int32_t selected[kVerify];
+                clover_step_with(filler, plan, drafts, selected,
+                    [&](int rows, const std::vector<int32_t>& proposed, int32_t* picks) {
+                        CK(cudaMemcpyAsync(picks, pick, (size_t) rows * sizeof(int32_t), cudaMemcpyDeviceToHost, st));
+                        CK(cudaStreamSynchronize(st));
+                        return strata::qwen35::clover_decode::exact_prefix(proposed,
+                            std::span<const int32_t>(picks, (size_t) rows)).accepted;
+                    });
+            }
+        }
         CK(cudaStreamSynchronize(st));
         warming = false;
         for (Hy& H : hy) std::fill(H.score.begin(), H.score.end(), 0.0);
@@ -3225,7 +3337,7 @@ struct Engine {
         hy_cpu_ms = 0;
         reset();
         std::fprintf(stderr, "tinystrata: warmed up in %.1f s (one prompt chunk, a decode step%s)\n",
-                     ms_since(t0) / 1000.0, mtp_d > 0 ? ", a speculative step" : "");
+                     ms_since(t0) / 1000.0, mtp_d > 0 || clover_draft > 0 ? ", a speculative step" : "");
     }
 
     int greedy() {
@@ -3574,11 +3686,18 @@ struct Sampling {
     float temperature = 0.f, top_p = 1.f, min_p = 0.f, repeat = 1.f, freq = 0.f, present = 0.f;
     int top_k = 20, last_n = 0;
     unsigned long long seed = 0;
-    bool needs_logits() const { return temperature > 0.f || repeat != 1.f || freq != 0.f || present != 0.f; }
+    bool clover = false;
+    bool needs_logits() const { return clover || temperature > 0.f || repeat != 1.f || freq != 0.f || present != 0.f; }
 };
 
 int sample(std::vector<float>& lg, const Sampling& s, const std::vector<int32_t>& hist, std::mt19937_64& rng) {
-    if (s.last_n != 0 && (s.repeat != 1.f || s.freq != 0.f || s.present != 0.f)) {
+    if (s.clover) {
+        strata::qwen35::clover_decode::PenaltyOptions controls;
+        controls.presence = s.present;
+        controls.frequency = s.freq;
+        controls.repetition = s.repeat;
+        strata::qwen35::clover_decode::apply_penalties(lg, hist, controls);
+    } else if (s.last_n != 0 && (s.repeat != 1.f || s.freq != 0.f || s.present != 0.f)) {
         std::map<int, int> cnt;
         const size_t from = s.last_n < 0 || (size_t) s.last_n >= hist.size() ? 0 : hist.size() - (size_t) s.last_n;
         for (size_t i = from; i < hist.size(); ++i) ++cnt[hist[i]];
@@ -3649,12 +3768,16 @@ int serve(Engine& E) {
     std::printf("INFO version=0.1.0 kv=%s expert_slots=%d expert_cache_mib=%zu expert_cache_bytes=%zu "
                 "expert_arena_bytes=%zu expert_auto=%d vram_free_bytes=%zu vram_cuda_free_bytes=%zu "
                 "vram_physical_free_bytes=%zu vram_free_source=%s vram_reserve_mib=%zu mtp=%d "
-                "kv_auto=%d context_auto=%d gpu_cc=%d vision=%d chunk=%d\n",
+                "kv_auto=%d context_auto=%d gpu_cc=%d vision=%d chunk=%d clover_draft=%d\n",
                 E.kv_name(), expert_slots, expert_bytes >> 20, expert_bytes, arena_bytes, E.expert_auto ? 1 : 0,
                 memory.free, memory.cuda_free, memory.physical ? memory.physical_free : memory.cuda_free,
                 memory.source(), E.vram_reserve >> 20, E.mtp_d,
-                E.kv_auto ? 1 : 0, E.context_auto ? 1 : 0, E.gpu_cc, E.vision_enabled ? 1 : 0, E.tmax);
+                E.kv_auto ? 1 : 0, E.context_auto ? 1 : 0, E.gpu_cc, E.vision_enabled ? 1 : 0, E.tmax, E.clover_draft);
     E.print_kv_info();
+#if defined(STRATA_Q36_CPU_POOL)
+    if (E.pool) std::printf("INFO cpu_workers=%d cpu_threads=%d\n", E.pool->workers(),
+                           E.pool->workers() + (E.pool->host_works() ? 1 : 0));
+#endif
     std::printf("READY %d stop\n", E.ctx);
     std::fflush(stdout);
     std::mutex mu;
@@ -3699,6 +3822,11 @@ int serve(Engine& E) {
         char* p = nullptr;
         const long long max_new = std::strtoll(line.c_str() + (image_request ? 5 : 4), &p, 10);
         Sampling smp;
+        smp.clover = E.m->clover;
+        // A request may select a smaller/larger self-draft window without
+        // reloading weights or changing the configured default. The benchmark
+        // harness uses this native-protocol key to compare the same cache.
+        int request_clover_draft = E.clover_draft;
         int64_t turn_at = 0;
         bool checkpoint = true;
         for (;;) {
@@ -3721,6 +3849,14 @@ int serve(Engine& E) {
             else if (key == "seed") smp.seed = std::strtoull(v, nullptr, 10);
             else if (key == "turn_at") turn_at = std::strtoll(v, nullptr, 10);
             else if (key == "ckpt") checkpoint = std::atoi(v) != 0;
+            else if (key == "clover_draft" && E.m->clover) {
+                char* end = nullptr;
+                const long parsed = std::strtol(v, &end, 10);
+                request_clover_draft = end == v || *end || parsed < 0 || parsed > 31 ? -1 : (int) parsed;
+            }
+        }
+        if (request_clover_draft < 0) {
+            std::printf("ERR clover_draft takes 0 .. 31\n"); std::fflush(stdout); continue;
         }
         std::string embeddings_path;
         if (image_request) {
@@ -3818,7 +3954,7 @@ int serve(Engine& E) {
         live.insert(live.end(), ids.begin() + (long) reuse, ids.end());
         const double prompt_ms = ms_since(t0);
         std::mt19937_64 rng(smp.seed);
-        std::vector<int32_t> hist = ids;
+        std::vector<int32_t> hist = E.m->clover ? std::vector<int32_t>{} : ids;
         const auto d0 = Clock::now();
         long long produced = 0, offered = 0, accepted = 0;
         const char* finish = "length";
@@ -3829,7 +3965,7 @@ int serve(Engine& E) {
         const bool spec = E.mtp_d > 0;
         std::vector<int32_t> fix, drafts;
         std::vector<float> verify_rows;
-        int32_t picks[16];
+        int32_t picks[Engine::kVerify];
         int nx;
         if (sampled) {
             E.host_logits(lg);
@@ -3848,6 +3984,33 @@ int serve(Engine& E) {
                 return true;
             };
             if (!emit(nx)) break;
+            const int clover_budget = (int) std::min<long long>(max_new - produced - 1,
+                E.main_hybrid ? Engine::kRebalanceEvery - E.pos % Engine::kRebalanceEvery - 1 : request_clover_draft);
+            const auto clover_plan = strata::qwen35::clover_decode::plan(request_clover_draft, E.pos, E.ctx,
+                std::max(0, clover_budget));
+            if (clover_plan) {
+                std::vector<int32_t> row_history = hist;
+                const int a = E.clover_step_with(nx, clover_plan, drafts, picks,
+                    [&](int T, const std::vector<int32_t>& proposed, int32_t* selected) {
+                        verify_rows.resize((size_t) T * E.m->g.n_vocab);
+                        CK(cudaMemcpyAsync(verify_rows.data(), E.logits, verify_rows.size() * sizeof(float), cudaMemcpyDeviceToHost, E.st));
+                        CK(cudaStreamSynchronize(E.st));
+                        return strata::qwen35::speculative_sampling::select_prefix(proposed.data(), T - 1, selected,
+                            [&](int row) {
+                                if (row > 0) row_history.push_back(proposed[(size_t) row - 1]);
+                                lg.assign(verify_rows.data() + (size_t) row * E.m->g.n_vocab,
+                                          verify_rows.data() + (size_t) (row + 1) * E.m->g.n_vocab);
+                                return sample(lg, smp, row_history, rng);
+                            }, [&](int token) { return is_eos(token) || stop.load(); });
+                    });
+                offered += (long long) drafts.size(); accepted += a;
+                live.push_back(nx);
+                live.insert(live.end(), drafts.begin(), drafts.begin() + a);
+                fix.clear();
+                for (int i = 0; i < a; ++i) if (!emit(drafts[(size_t) i])) { done = true; break; }
+                nx = picks[a];
+                continue;
+            }
             if (spec && (sampled || E.pos + E.mtp_d + 1 <= E.ctx)) {
                 int a;
                 if (sampled) {
@@ -3910,6 +4073,7 @@ int serve(Engine& E) {
 int strata::qwen35::run(int argc, char** argv) {
     std::string model, tokens, force, dump_full;
     int ctx = 0, chunk = 0, n_gen = 64, bench_pp = 0, bench_tg = 0, mtp_d = 0, cpu_threads = 0, hybrid_rows = 128;
+    int clover_draft = -1;
     double expert_vram = -1.0;
     size_t vram_reserve = (size_t) 768 << 20;
     bool reserve_explicit = false;
@@ -3942,6 +4106,7 @@ int strata::qwen35::run(int argc, char** argv) {
                         "  --kv-grow --kv-whole      Grow physical KV with sequence length (default: grow)\n"
                         "  --chunk auto|N           Prompt chunk size (default: auto)\n"
                         "  --mtp N                  MTP drafts, 0..7 (default: 0)\n"
+                        "  --clover-draft N         Clover self drafts, 0..31 (default: 0, exact verification)\n"
                         "  --expert-vram auto|GiB   Routed expert budget (default: available VRAM)\n"
                         "  --expert-slots N         Resident expert slots per layer\n"
                         "  --vram-reserve-mib N     Override automatic VRAM reserve (default: 768, near-fit: 256)\n"
@@ -3997,6 +4162,15 @@ int strata::qwen35::run(int argc, char** argv) {
             if (!v.empty() && std::isdigit((unsigned char) v[0])) mtp_d = std::atoi(v.c_str());
             else { std::fprintf(stderr, "tinystrata: --mtp requires a number of drafts\n"); return 2; }
         }
+        else if (a == "--clover-draft") {
+            const std::string value = next();
+            char* end = nullptr;
+            const long parsed = std::strtol(value.c_str(), &end, 10);
+            if (end == value.c_str() || *end || parsed < 0 || parsed > 31) {
+                std::fprintf(stderr, "tinystrata: --clover-draft takes 0 .. 31\n"); return 2;
+            }
+            clover_draft = (int) parsed;
+        }
         else if (a == "--expert-vram") {
             const std::string v = next();
             char* end = nullptr;
@@ -4046,14 +4220,12 @@ int strata::qwen35::run(int argc, char** argv) {
     if (mtp_d < 0 || mtp_d > 7) { std::fprintf(stderr, "tinystrata: --mtp takes 0 .. 7 drafts\n"); return 2; }
     if (chunk < 0 || chunk > 4096) { std::fprintf(stderr, "tinystrata: bad --chunk\n"); return 2; }
     const bool context_auto = ctx == 0;
+    VramAvailability context_memory;
     if (context_auto) {
         // Installed capacity fixes the context class; other applications and
         // Vision reduce the Expert cache, not the selected context capacity.
-        const auto memory = available_vram(true);
-        ctx = P::resolve_context(ctx, memory.cuda_total);
-        std::fprintf(stderr, "tinystrata: automatic context: %.2f GiB total GPU VRAM -> %d tokens "
-                             "(%.2f GiB free, %s)\n",
-                     memory.cuda_total / 1073741824.0, ctx, memory.free / 1073741824.0, memory.source());
+        context_memory = available_vram(true);
+        ctx = P::resolve_context(ctx, context_memory.cuda_total);
     }
     Model m;
     std::string err;
@@ -4063,7 +4235,24 @@ int strata::qwen35::run(int argc, char** argv) {
         std::fprintf(stderr, "tinystrata: %s\n", e.what());
         return 1;
     }
+    if (m.clover) {
+        if (vision || mtp_d != 0) {
+            std::fprintf(stderr, "tinystrata: Clover has no Vision or MTP head; use --clover-draft for self drafting\n");
+            return 2;
+        }
+        if (context_auto) ctx = std::min(ctx, 131072);
+        if (ctx > 131072) { std::fprintf(stderr, "tinystrata: Clover supports at most 131072 context tokens\n"); return 2; }
+        if (clover_draft < 0) clover_draft = 0;
+    } else if (clover_draft > 0) {
+        std::fprintf(stderr, "tinystrata: --clover-draft requires a Clover model\n"); return 2;
+    }
+    if (context_auto)
+        std::fprintf(stderr, "tinystrata: automatic context: %.2f GiB total GPU VRAM -> %d tokens "
+                             "(%.2f GiB free, %s)\n",
+                     context_memory.cuda_total / 1073741824.0, ctx,
+                     context_memory.free / 1073741824.0, context_memory.source());
     Engine E;
+    E.clover_draft = m.clover ? clover_draft : 0;
     if (vision && (m.n_rot != 64 || !m.vision_rope || m.image_pad < 0 || m.image_pad >= m.g.n_vocab)) {
         std::fprintf(stderr, "tinystrata: vision requires Qwen3.6 interleaved M-RoPE with 64 rotary dimensions and sections 11/11/10\n");
         return 2;
@@ -4164,7 +4353,13 @@ int strata::qwen35::run(int argc, char** argv) {
     E.reset();
     E.mtp_d = m.has_mtp ? mtp_d : 0;
     if (warm) E.warmup();
-    if (serve_mode) return serve(E);
+    if (serve_mode) {
+        try { return serve(E); }
+        catch (const std::exception& failure) {
+            std::fprintf(stderr, "tinystrata: generation failed: %s\n", failure.what());
+            return 1;
+        }
+    }
     if (bench_pp > 0 || bench_tg > 0) {
         // llama-bench's shapes: a prompt of bench_pp tokens from a fresh state, then bench_tg tokens one at a time
         std::vector<int32_t> toks((size_t) std::max(bench_pp, 1));

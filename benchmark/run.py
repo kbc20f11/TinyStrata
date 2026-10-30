@@ -32,8 +32,13 @@ MODELS = {
     'qwen': ('config.json', 'qwen35moe', 'qwen3.6-35b-a3b'),
     'gemma': ('config-gemma4.json', 'gemma4', 'gemma-4-26b-a4b-it'),
     'lfm': ('config-lfm2.json', 'lfm2moe', 'lfm2.5-24b-a2b'),
+    'clover': ('config-clover.json', 'clover_moe', 'clover-35b-a3b-preview'),
 }
-ENGINE_KEYS = ('model', 'version', 'kv', 'kv_grow', 'mtp', 'vision', 'images',
+TEXT_ONLY_MODELS = ('lfm', 'clover')
+# Adding a model must not change the existing v1 texts/image or their hashes.
+CLOVER_SAMPLING = {'temperature': 0.0, 'top_p': 1.0, 'top_k': 64, 'min_p': 0.0,
+                   'presence_penalty': 0.9, 'repetition_penalty': 1.05, 'frequency_penalty': 0.0}
+ENGINE_KEYS = ('model', 'version', 'kv', 'kv_grow', 'mtp', 'clover_draft', 'vision', 'images',
                'max_context', 'context_auto', 'chunk', 'chunk_auto', 'expert_auto',
                'expert_slots', 'expert_cache_bytes', 'expert_cache_mib',
                'kv_logical_bytes', 'kv_mapped_bytes', 'kv_committed_rows', 'gpu_cc')
@@ -64,6 +69,10 @@ def child_environment(environ=None):
             or not k.startswith(tuning)}
 
 
+def model_sampling(model, cases):
+    return dict(CLOVER_SAMPLING if model == 'clover' else cases['sampling'][model])
+
+
 def controlled_config(original, model, folder, port, cases):
     file, arch, name = MODELS[model]
     if original.get('arch', 'qwen35moe') != arch:
@@ -82,21 +91,23 @@ def controlled_config(original, model, folder, port, cases):
               '--kv-type', 'int8', '--kv-grow']
     if model == 'gemma':
         native += ['--draft-model', value('--draft-model')]
-    if model != 'lfm':
+    if model not in TEXT_ONLY_MODELS:
         native += ['--mtp', '3', '--vision']
+    elif model == 'clover':
+        native += ['--clover-draft', '0']
     cfg = {key: copy.deepcopy(original[key]) for key in
            ('exe', 'tokenizer', 'backend', 'lib_dirs', 'gpu', 'hip_ordinal', 'cuda_device')
            if key in original}
     cfg.update(arch=arch, model_name=name, args=native, cwd=str(ROOT),
                host='127.0.0.1', port=port, log=str(Path(folder) / 'engine.log'),
-               env={}, parallel=1, enable_thinking=True, max_tokens=32768,
-               sampling=dict(cases['sampling'][model]), vision_mode='no' if model == 'lfm' else 'gpu')
+               env={}, parallel=1, enable_thinking=True, max_tokens=24576 if model == 'clover' else 32768,
+               sampling=model_sampling(model, cases), vision_mode='no' if model in TEXT_ONLY_MODELS else 'gpu')
     for key in ('exe', 'tokenizer'):
         if key in cfg:
             cfg[key] = resolved(cfg[key])
     if cfg.get('lib_dirs'):
         cfg['lib_dirs'] = [resolved(path) for path in cfg['lib_dirs']]
-    if model != 'lfm':
+    if model not in TEXT_ONLY_MODELS:
         vision = original.get('vision')
         if not isinstance(vision, dict) or not all(vision.get(k) for k in ('exe', 'mmproj', 'model')):
             raise ValueError(f'{file} needs its installed GPU Vision model')
@@ -107,7 +118,7 @@ def controlled_config(original, model, folder, port, cases):
 
 
 def request_body(model, text, limit, cases, thinking=True):
-    sampling = {'frequency_penalty': 0.0, **cases['sampling'][model]}
+    sampling = {'frequency_penalty': 0.0, **model_sampling(model, cases)}
     return dict(model=MODELS[model][2], messages=[dict(role='user', content=text)],
                 max_tokens=limit, stream=True, enable_thinking=thinking,
                 seed=cases['seed'], **sampling)
@@ -474,7 +485,8 @@ def main():
     try:
         for model in models:
             original = json.loads((options.config_dir / MODELS[model][0]).read_text(encoding='utf-8-sig'))
-            data = dict(runs=[], sampling=cases['sampling'][model], assets=[])
+            data = dict(runs=[], sampling=model_sampling(model, cases), assets=[],
+                        image_supported=model not in TEXT_ONLY_MODELS)
             report['models'][model] = data
             prepared = controlled_config(original, model, options.output, free_port(), cases)
             sys.path.insert(0, str(ROOT))
@@ -505,8 +517,10 @@ def main():
                     run['vision_start'] = identity
                     run['startup_engine'] = service.engine()
                     info = run['startup_engine']
-                    if info.get('kv') != 'int8' or info.get('kv_grow') != 1 or info.get('mtp') != (0 if model == 'lfm' else 3):
+                    if info.get('kv') != 'int8' or info.get('kv_grow') != 1 or info.get('mtp') != (0 if model in TEXT_ONLY_MODELS else 3):
                         raise ValueError(f'Engine does not match protocol settings: {info}')
+                    if model == 'clover' and info.get('clover_draft') != 0:
+                        raise ValueError(f'The standard Clover profile uses causal decoding: {info}')
                     cache_bytes(info)
                     warmup = request_body(model, cases['warmup_text'], cases['warmup_max_tokens'], cases)
                     save(folder / 'warmup.json', service.generate(warmup))
@@ -541,7 +555,7 @@ def main():
                         text, _ = exact_length_text(count, cases['long_paragraph'], cases['long_question'], length)
                         measure(category, category, request_body(model, text, cases['prefill_max_tokens'], cases), length)
                     run['after_16k_engine'] = service.engine()
-                    if model != 'lfm':
+                    if model not in TEXT_ONLY_MODELS:
                         image = dict(type='image', source=dict(type='base64', media_type='image/png',
                                      data=base64.b64encode((HERE / 'image.png').read_bytes()).decode('ascii')))
                         body = request_body(model, [image, dict(type='text', text=cases['image_prompt'])],

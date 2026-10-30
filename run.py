@@ -68,7 +68,7 @@ def prepare(a) -> tuple[dict, Path]:
     selected = getattr(a, "model_family", None)
     requested_arch = {"qwen36": "qwen35moe", "qwen3.6": "qwen35moe",
                       "lfm2": "lfm2moe", "lfm2.5": "lfm2moe",
-                      "gemma4": "gemma4", "gemma-4": "gemma4"}.get(selected)
+                      "gemma4": "gemma4", "gemma-4": "gemma4", "clover": "clover_moe"}.get(selected)
     if a.model:
         local = a.model.expanduser().resolve()
         if not local.is_file():
@@ -79,15 +79,15 @@ def prepare(a) -> tuple[dict, Path]:
         requested_arch = actual_arch
     config_path = getattr(a, "config", None)
     path = (config_path or RUNTIME / ".tinystrata" /
-            {"lfm2moe": "config-lfm2.json", "gemma4": "config-gemma4.json"}
+            {"lfm2moe": "config-lfm2.json", "gemma4": "config-gemma4.json", "clover_moe": "config-clover.json"}
             .get(requested_arch, "config.json")).expanduser().resolve()
     arch = requested_arch or "qwen35moe"
     cfg = config.load(path) if path.exists() else {
-        "arch": arch, "model_name": {"lfm2moe": "lfm2.5-24b-a2b", "gemma4": "gemma-4-26b-a4b-it"}
+        "arch": arch, "model_name": {"lfm2moe": "lfm2.5-24b-a2b", "gemma4": "gemma-4-26b-a4b-it", "clover_moe": "clover-35b-a3b-preview"}
                                     .get(arch, "qwen3.6-35b-a3b"),
         "cwd": str(ROOT),
         "args": ["--max-context", "auto", "--kv-type", "auto", "--chunk", "auto"] +
-                ([] if arch == "lfm2moe" else ["--mtp", "3"]),
+                (["--clover-draft", "0"] if arch == "clover_moe" else [] if arch == "lfm2moe" else ["--mtp", "3"]),
         "memory_policy_version": MEMORY_POLICY_VERSION,
         "host": "127.0.0.1",
     }
@@ -99,7 +99,7 @@ def prepare(a) -> tuple[dict, Path]:
         explicit_backend = executable_backend(a.exe, [str(p) for p in a.lib_dir or []]) if a.exe else None
         requested_backend = explicit_backend or hardware_backend()
     cfg = configure_backend(cfg, requested_backend, explicit_kv=a.kv_type)
-    cfg.setdefault("port", {"lfm2moe": 18081, "gemma4": 18082}.get(cfg.get("arch"), 18080))
+    cfg.setdefault("port", {"lfm2moe": 18081, "gemma4": 18082, "clover_moe": 18083}.get(cfg.get("arch"), 18080))
     if a.model:
         set_arg(cfg, "--model", a.model.expanduser().resolve())
         # An explicit local selection keeps the existing eager-launch behavior.
@@ -118,8 +118,8 @@ def prepare(a) -> tuple[dict, Path]:
         cfg["vision_mode"] = {"yes": "gpu", "none": "no"}.get(a.vision, a.vision)
     if getattr(a, "vision_tokens", None) is not None:
         cfg["vision_tokens"] = a.vision_tokens
-    for key in ("max_context", "kv_type", "mtp", "expert_vram", "vram_reserve_mib", "chunk"):
-        value = getattr(a, key)
+    for key in ("max_context", "kv_type", "mtp", "expert_vram", "vram_reserve_mib", "chunk", "clover_draft"):
+        value = getattr(a, key, None)
         if value is not None:
             if key == "expert_vram" and value == "auto":
                 cfg = automatic_experts(cfg)
@@ -155,7 +155,7 @@ def prepare(a) -> tuple[dict, Path]:
     check_files(cfg, allow_uninstalled=True)
     if a.model and not model.is_file():
         raise ValueError(f"TinyStrata model not found: {model}")
-    cfg["log"] = str(path.parent / {"lfm2moe": "engine-lfm2.log", "gemma4": "engine-gemma4.log"}
+    cfg["log"] = str(path.parent / {"lfm2moe": "engine-lfm2.log", "gemma4": "engine-gemma4.log", "clover_moe": "engine-clover.log"}
                     .get(cfg.get("arch"), "engine.log"))
     if model.is_file():
         cfg = prepare_installed_model(cfg, path, model)
@@ -171,8 +171,8 @@ def prepare(a) -> tuple[dict, Path]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", type=Path, help="existing supported GGUF (the local header selects its model family)")
-    ap.add_argument("--model-family", choices=("qwen36", "qwen3.6", "lfm2", "lfm2.5", "gemma4", "gemma-4"),
-                    help="Qwen3.6 (default), LFM2.5 or Gemma4; settings are separate per family")
+    ap.add_argument("--model-family", choices=("qwen36", "qwen3.6", "lfm2", "lfm2.5", "gemma4", "gemma-4", "clover"),
+                    help="Qwen3.6 (default), LFM2.5, Gemma4 or Clover; settings are separate per family")
     ap.add_argument("--draft-model", type=Path, help="existing Gemma4 QAT assistant GGUF for MTP")
     ap.add_argument("--exe", type=Path, help="built tinystrata executable")
     ap.add_argument("--backend", choices=("auto", "cuda", "hip"), default="auto",
@@ -193,6 +193,8 @@ def main() -> int:
     kv_allocation.add_argument("--kv-whole", "--no-kv-grow", dest="kv_grow", action="store_false",
                                help="allocate the whole context's KV at load; saved for later starts")
     ap.add_argument("--mtp", type=int)
+    ap.add_argument("--clover-draft", type=int, metavar="N",
+                    help="Clover self-speculative draft tokens, 0-31 (default: 0, causal decoding); opt in with e.g. 3, 7 or 15")
     ap.add_argument("--expert-vram", type=expert_budget, metavar="auto|GiB",
                     help="fit experts to available VRAM (default: auto), or set an advanced GiB limit; 0 = CPU experts")
     ap.add_argument("--vram-reserve-mib", type=int,

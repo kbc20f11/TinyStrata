@@ -54,6 +54,18 @@ FIXED_LFM2_MODEL = _Manifest(
     f"https://huggingface.co/{LFM2_MODEL_REPO}/resolve/{LFM2_MODEL_REVISION}/{LFM2_MODEL_FILENAME}?download=true",
 )
 
+# Official Clover quantization, including its learned bidirectional GDN tensors
+# and its own modified vocabulary/merges. Never reuse Qwen's tokenizer cache.
+CLOVER_MODEL_REPO = "Diffuspace/Clover-35B-A3B-Preview-GGUF"
+CLOVER_MODEL_REVISION = "32e22a02b885e173177b7ce7661ad13448b4f89e"
+CLOVER_MODEL_FILENAME = "Clover-35B-A3B-Preview-Q4_0.gguf"
+CLOVER_MODEL_SIZE = 19_586_909_600
+CLOVER_MODEL_SHA256 = "3e2cf14ca47f6e41c251f08237ac79cd37ad81a2ea2a220fff731e34c66930d5"
+FIXED_CLOVER_MODEL = _Manifest(
+    CLOVER_MODEL_REPO, CLOVER_MODEL_REVISION, CLOVER_MODEL_FILENAME, CLOVER_MODEL_SIZE, CLOVER_MODEL_SHA256,
+    f"https://huggingface.co/{CLOVER_MODEL_REPO}/resolve/{CLOVER_MODEL_REVISION}/{CLOVER_MODEL_FILENAME}?download=true",
+)
+
 # Google publishes the QAT Q4_0 target/projector directly. Its matching QAT
 # assistant is converted to GGUF by Unsloth (not a non-QAT or abliterated model).
 # Source: https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-gguf
@@ -97,6 +109,8 @@ def manifest_for_arch(arch: str = "qwen35moe") -> _Manifest:
         return FIXED_LFM2_MODEL
     if arch == "gemma4":
         return FIXED_GEMMA4_MODEL
+    if arch == "clover_moe":
+        return FIXED_CLOVER_MODEL
     raise ValueError(f"Unsupported TinyStrata model architecture: {arch}")
 
 
