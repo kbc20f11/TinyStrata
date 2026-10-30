@@ -30,7 +30,7 @@ O **Gemma 4 26B-A4B-it QAT Q4_0** usa [o modelo e o projetor de visão oficiais 
 
 O **LFM2.5-24B-A2B Q4_K_M** usa o [GGUF oficial da LiquidAI](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF). Seu único arquivo de modelo de linguagem ocupa **14.53 GB**.
 
-O **Clover-35B-A3B-Preview Q4_0** usa o [GGUF oficial da DiffuSpace](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview-GGUF), um download de **19.587 GB** com seu próprio tokenizador e parâmetros GDN bidirecionais adicionais. O contexto máximo é de **128K**, com entrada somente de texto. A decodificação autoespeculativa usa o mesmo modelo para gerar rascunhos e verificá-los pela rota causal, sem uma cabeça MTP separada. Selecione-o com `run-api.bat --model-family clover`; um novo perfil independente usa a porta **18083**. O padrão é a decodificação causal (`--clover-draft 0`). A decodificação autoespeculativa é opcional: ative-a com `--clover-draft 3`, `7` ou `15`; o ganho de velocidade depende da carga de trabalho. As configurações são salvas separadamente em `config-clover.json`. Oferece cache de especialistas ajustado à VRAM disponível, cálculo de especialistas na CPU a partir da RAM e crescimento da memória KV física conforme a sequência aumenta.
+O **Clover-35B-A3B-Preview Q4_0** usa o [GGUF oficial da DiffuSpace](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview-GGUF), um download de **19.587 GB** com seu próprio tokenizador e parâmetros GDN bidirecionais adicionais. O contexto máximo é de **128K**, com entrada somente de texto. A decodificação autoespeculativa usa o mesmo modelo para gerar rascunhos e verificá-los pela rota causal, sem uma cabeça MTP separada. Selecione-o com `run-api.bat --model-family clover`; um novo perfil independente usa a porta **18083**. O padrão é a decodificação causal (`--clover-draft 0`). A decodificação autoespeculativa é opcional: ative-a com `--clover-draft 4`; o ganho de velocidade depende da carga de trabalho. As configurações são salvas separadamente em `config-clover.json`. Oferece cache de especialistas ajustado à VRAM disponível, cálculo de especialistas na CPU a partir da RAM e crescimento da memória KV física conforme a sequência aumenta.
 
 Os motores Qwen, Gemma e LFM usam cache automático de especialistas na VRAM, cálculo de especialistas na CPU a partir da RAM, streaming de pesos durante a entrada e CUDA Graphs. Compartilham a mesma API e permitem trocar o modelo sem reiniciar, com configurações salvas separadamente para cada modelo. Os especialistas selecionados não são omitidos. Também oferecem crescimento automático da memória KV física, sem alterar a capacidade máxima de contexto.
 
@@ -162,6 +162,19 @@ Velocidade em placas Radeon, medida com [tinystrata-bench-v1](benchmark/README.m
 | --- | ---: | ---: | ---: |
 | [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 |
 | [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 |
+
+### Clover-35B-A3B-Preview Q4_0 — RX 9060 XT
+
+Medido em 2026-10-30 com contexto 128K, crescimento KV, configurações de geração da ficha do modelo e quatro inicializações independentes da API por perfil. Taxas em tok/s; imagens não se aplicam. [Configurações e resultados completos](benchmark/results/rx-9060-xt.md#clover-35b-a3b-preview-q4_0).
+
+| Perfil | Geração após entrada curta | Entrada 4K | Entrada 16K | Geração após 16K |
+| --- | ---: | ---: | ---: | ---: |
+| Padrão v1: INT8 D0, workers/chunk auto | 47.77 | 791.90 | 720.44 | 38.37 |
+| FP8 D0, workers/chunk auto | 47.58 | 790.33 | 721.12 | 41.90 |
+| Ajuste causal: FP8 D0, W9 C1024 | 52.12 | 777.54 | 709.39 | 46.82 |
+| Entradas curtas: INT8 D4, W9 C1024 | 59.06 | 779.82 | 714.10 | 28.21 |
+
+Em relação ao FP8 D0 com workers/chunk automáticos, o ajuste causal melhora a geração curta em 9.5% e a geração após 16K em 11.7%, enquanto as duas taxas de entrada caem cerca de 1.6%. INT8 D4 é voltado a entradas curtas (+24.1%), mas a geração após 16K cai 32.7%. A autoespeculação continua desativada por padrão (D0); escolha conforme a carga de trabalho. W indica workers de especialistas e C o tamanho do chunk de entrada. INT8 D4 usa `STRATA_TSUM=1`; os perfis causais não usam variáveis de ambiente de ajuste.
 
 ## Qual projeto devo usar?
 

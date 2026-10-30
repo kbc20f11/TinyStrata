@@ -30,7 +30,7 @@ TinyStrata elige automáticamente los ajustes de inferencia y memoria para tu ha
 
 **LFM2.5-24B-A2B Q4_K_M** utiliza el [GGUF oficial de LiquidAI](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF). Su único archivo de modelo de lenguaje ocupa **14.53 GB**.
 
-**Clover-35B-A3B-Preview Q4_0** utiliza el [GGUF oficial de DiffuSpace](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview-GGUF), una descarga de **19.587 GB** con su propio tokenizador y parámetros GDN bidireccionales adicionales. El contexto máximo es de **128K** y solo admite entrada de texto. La decodificación autoespeculativa utiliza el mismo modelo para generar borradores y verificarlos mediante la ruta causal, sin una cabeza MTP independiente. Selecciónalo con `run-api.bat --model-family clover`; un nuevo perfil independiente usa el puerto **18083**. La decodificación causal (`--clover-draft 0`) es la predeterminada. La decodificación autoespeculativa es opcional: actívala con `--clover-draft 3`, `7` o `15`; la mejora de velocidad depende de la carga de trabajo. Los ajustes se guardan por separado en `config-clover.json`. Admite caché de expertos ajustada a la VRAM disponible, cálculo de expertos en CPU desde la RAM y crecimiento de la memoria KV física con la longitud de la secuencia.
+**Clover-35B-A3B-Preview Q4_0** utiliza el [GGUF oficial de DiffuSpace](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview-GGUF), una descarga de **19.587 GB** con su propio tokenizador y parámetros GDN bidireccionales adicionales. El contexto máximo es de **128K** y solo admite entrada de texto. La decodificación autoespeculativa utiliza el mismo modelo para generar borradores y verificarlos mediante la ruta causal, sin una cabeza MTP independiente. Selecciónalo con `run-api.bat --model-family clover`; un nuevo perfil independiente usa el puerto **18083**. La decodificación causal (`--clover-draft 0`) es la predeterminada. La decodificación autoespeculativa es opcional: actívala con `--clover-draft 4`; la mejora de velocidad depende de la carga de trabajo. Los ajustes se guardan por separado en `config-clover.json`. Admite caché de expertos ajustada a la VRAM disponible, cálculo de expertos en CPU desde la RAM y crecimiento de la memoria KV física con la longitud de la secuencia.
 
 Los motores Qwen, Gemma y LFM utilizan caché automática de expertos en VRAM, cálculo de expertos en CPU desde la RAM, streaming de pesos durante la entrada y CUDA Graphs. Comparten la misma API y permiten cambiar de modelo sin reiniciar, con los ajustes guardados por separado para cada modelo. No se omiten expertos seleccionados. También admiten el crecimiento automático de la memoria KV física, sin cambiar la capacidad máxima de contexto.
 
@@ -162,6 +162,19 @@ Velocidad en tarjetas Radeon, medida con [tinystrata-bench-v1](benchmark/README.
 | --- | ---: | ---: | ---: |
 | [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 |
 | [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 |
+
+### Clover-35B-A3B-Preview Q4_0 — RX 9060 XT
+
+Medido el 2026-10-30 con contexto 128K, crecimiento KV, ajustes de generación de la ficha del modelo y cuatro inicios independientes de API por perfil. Tasas en tok/s; las imágenes no se aplican. [Ajustes y resultados completos](benchmark/results/rx-9060-xt.md#clover-35b-a3b-preview-q4_0).
+
+| Perfil | Generación tras entrada corta | Entrada 4K | Entrada 16K | Generación tras 16K |
+| --- | ---: | ---: | ---: | ---: |
+| Estándar v1: INT8 D0, workers/chunk auto | 47.77 | 791.90 | 720.44 | 38.37 |
+| FP8 D0, workers/chunk auto | 47.58 | 790.33 | 721.12 | 41.90 |
+| Ajuste causal: FP8 D0, W9 C1024 | 52.12 | 777.54 | 709.39 | 46.82 |
+| Entradas cortas: INT8 D4, W9 C1024 | 59.06 | 779.82 | 714.10 | 28.21 |
+
+Frente a FP8 D0 con workers/chunk automáticos, el ajuste causal mejora la generación corta un 9.5% y la generación tras 16K un 11.7%, mientras ambas tasas de entrada bajan alrededor del 1.6%. INT8 D4 se orienta a entradas cortas (+24.1%), pero la generación tras 16K baja un 32.7%. La autoespeculación sigue desactivada por defecto (D0); elige según la carga de trabajo. W son los workers de expertos y C el tamaño del chunk de entrada. INT8 D4 usa `STRATA_TSUM=1`; los perfiles causales no usan variables de entorno de ajuste.
 
 ## ¿Qué proyecto debería usar?
 

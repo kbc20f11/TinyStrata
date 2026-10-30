@@ -30,7 +30,7 @@ TinyStrata automatically selects inference and memory settings for your hardware
 
 **LFM2.5-24B-A2B Q4_K_M** uses the official [LiquidAI GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF). Its single language-model download is **14.53 GB**.
 
-**Clover-35B-A3B-Preview Q4_0** uses the [official DiffuSpace GGUF](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview-GGUF), a **19.587 GB** download with its own tokenizer and bidirectional GDN parameters. It supports a maximum **128K** context and text input. Clover's self-speculative decoding uses the same model for draft and causal verification, rather than a separate MTP head. Select it with `run-api.bat --model-family clover`; a new standalone profile uses port **18083**. Causal decoding (`--clover-draft 0`) is the default. Self-speculative decoding is optional: enable it with `--clover-draft 3`, `7` or `15`; its speed benefit depends on the workload. Settings are stored separately in `config-clover.json`. It uses an Expert cache sized to available VRAM, CPU Expert computation from system RAM, and physical KV growth with sequence length.
+**Clover-35B-A3B-Preview Q4_0** uses the [official DiffuSpace GGUF](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview-GGUF), a **19.587 GB** download with its own tokenizer and bidirectional GDN parameters. It supports a maximum **128K** context and text input. Clover's self-speculative decoding uses the same model for draft and causal verification, rather than a separate MTP head. Select it with `run-api.bat --model-family clover`; a new standalone profile uses port **18083**. Causal decoding (`--clover-draft 0`) is the default. Self-speculative decoding is optional: enable it with `--clover-draft 4`; its speed benefit depends on the workload. Settings are stored separately in `config-clover.json`. It uses an Expert cache sized to available VRAM, CPU Expert computation from system RAM, and physical KV growth with sequence length.
 
 The Qwen, Gemma and LFM engines use an automatic VRAM Expert cache, CPU Expert computation from system RAM, prompt weight streaming and CUDA Graphs. They share the same API and support live model switching, with settings saved separately for each model. Selected Experts are not omitted. They also support automatic physical KV growth without changing the maximum context capacity.
 
@@ -174,6 +174,19 @@ Speed on Radeon cards, measured with [tinystrata-bench-v1](benchmark/README.md#e
 | --- | ---: | ---: | ---: |
 | [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 |
 | [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 |
+
+### Clover-35B-A3B-Preview Q4_0 — RX 9060 XT
+
+Measured on 2026-10-30 with 128K context, KV growth, model-card sampling and four independent API starts per profile. Rates are tok/s; images are N/A. [Full settings and results](benchmark/results/rx-9060-xt.md#clover-35b-a3b-preview-q4_0).
+
+| Profile | Short generation | 4K input | 16K input | Generation after 16K |
+| --- | ---: | ---: | ---: | ---: |
+| v1 standard: INT8 D0, automatic workers/chunk | 47.77 | 791.90 | 720.44 | 38.37 |
+| FP8 D0, automatic workers/chunk | 47.58 | 790.33 | 721.12 | 41.90 |
+| Causal tuning: FP8 D0, W9 C1024 | 52.12 | 777.54 | 709.39 | 46.82 |
+| Short-input tuning: INT8 D4, W9 C1024 | 59.06 | 779.82 | 714.10 | 28.21 |
+
+Compared with FP8 D0 using automatic workers/chunk, causal tuning improves short generation by 9.5% and generation after 16K by 11.7%, while both input-processing rates fall about 1.6%. The INT8 D4 profile targets short inputs (+24.1%) but generation after 16K falls 32.7%. Self-speculation remains off by default (D0); choose settings for the workload. W is Expert workers and C is input chunk size; INT8 D4 uses `STRATA_TSUM=1`, while the causal profiles use no tuning environment variables.
 
 ## Which project should I use?
 

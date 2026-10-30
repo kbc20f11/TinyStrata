@@ -30,7 +30,7 @@ TinyStrata 会根据你的硬件自动选择推理和内存设置，因此无需
 
 **LFM2.5-24B-A2B Q4_K_M** 使用官方 [LiquidAI GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF)。仅需下载一个语言模型文件，大小为 **14.53 GB**。
 
-**Clover-35B-A3B-Preview Q4_0** 使用 [DiffuSpace 官方 GGUF](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview-GGUF)，下载大小为 **19.587 GB**，包含 Clover 自己的分词器和双向 GDN 附加参数。最大上下文为 **128K**，仅支持文本输入。自投机解码使用同一个模型进行草稿生成和因果验证，不使用独立的 MTP 头。通过 `run-api.bat --model-family clover` 选择；新建的独立配置默认使用端口 **18083**。默认仅使用因果解码（`--clover-draft 0`）。自投机解码为可选功能，可通过 `--clover-draft 3`、`7` 或 `15` 显式启用；加速效果取决于实际输入和生成内容。设置单独保存在 `config-clover.json`。 支持按空闲显存调整的专家缓存、利用系统 RAM 的 CPU 专家计算，以及随序列长度增长的 KV 分阶段分配。
+**Clover-35B-A3B-Preview Q4_0** 使用 [DiffuSpace 官方 GGUF](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview-GGUF)，下载大小为 **19.587 GB**，包含 Clover 自己的分词器和双向 GDN 附加参数。最大上下文为 **128K**，仅支持文本输入。自投机解码使用同一个模型进行草稿生成和因果验证，不使用独立的 MTP 头。通过 `run-api.bat --model-family clover` 选择；新建的独立配置默认使用端口 **18083**。默认仅使用因果解码（`--clover-draft 0`）。自投机解码为可选功能，可通过 `--clover-draft 4` 显式启用；加速效果取决于实际输入和生成内容。设置单独保存在 `config-clover.json`。 支持按空闲显存调整的专家缓存、利用系统 RAM 的 CPU 专家计算，以及随序列长度增长的 KV 分阶段分配。
 
 Qwen、Gemma 和 LFM 引擎均支持根据空闲显存自动调整的专家缓存、利用系统 RAM 的 CPU 专家计算、输入阶段权重流式传输及 CUDA Graph。它们使用相同的 API，支持运行中切换模型，并分别保存各模型的设置。不省略模型选中的专家。还支持按实际序列长度自动扩展 KV 物理内存，最大上下文容量保持不变。
 
@@ -162,6 +162,19 @@ Radeon 显卡上的速度，使用 [tinystrata-bench-v1](benchmark/README.md#eng
 | --- | ---: | ---: | ---: |
 | [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 |
 | [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 |
+
+### Clover-35B-A3B-Preview Q4_0 — RX 9060 XT
+
+于 2026-10-30 测量，使用 128K 上下文、KV 分阶段分配和模型卡规定的生成设置，每个配置独立启动 API 四次。单位为 tok/s；图像不适用。[全部设置和详细结果](benchmark/results/rx-9060-xt.md#clover-35b-a3b-preview-q4_0)。
+
+| 配置 | 短输入后的生成 | 4K 输入 | 16K 输入 | 16K 输入后的生成 |
+| --- | ---: | ---: | ---: | ---: |
+| v1 标准：INT8 D0，worker/chunk 自动 | 47.77 | 791.90 | 720.44 | 38.37 |
+| FP8 D0，worker/chunk 自动 | 47.58 | 790.33 | 721.12 | 41.90 |
+| 因果解码调优：FP8 D0，W9 C1024 | 52.12 | 777.54 | 709.39 | 46.82 |
+| 短输入调优：INT8 D4，W9 C1024 | 59.06 | 779.82 | 714.10 | 28.21 |
+
+相较于 worker/chunk 自动的 FP8 D0，因果解码调优使短输入生成提升 9.5%、16K 输入后生成提升 11.7%，但两项输入处理速度都下降约 1.6%。INT8 D4 面向短输入（+24.1%），16K 输入后生成则下降 32.7%。自投机默认仍关闭（D0），应按实际用途选择。W 为专家 worker 数，C 为输入 chunk 大小。INT8 D4 使用 `STRATA_TSUM=1`，各因果解码配置不使用调优环境变量。
 
 ## 我应该使用哪个项目？
 
