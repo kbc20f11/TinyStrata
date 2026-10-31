@@ -33,6 +33,7 @@ class DecodePolicy(unittest.TestCase):
         self.assertEqual(new['clover_decode_policy_version'],tinyconfig.CLOVER_DECODE_POLICY_VERSION)
         for key,value in tinyconfig.CLOVER_DECODE_DEFAULTS.items():self.assertEqual(config.value_of(new,key),value)
         self.assertEqual(config.value_of(new,'kv_type'),'int8')
+        self.assertEqual(new['env']['STRATA_IQ_MT_MIN'],'1')
         again,changed=tinyconfig.migrate_clover_decode_settings(new)
         self.assertFalse(changed);self.assertEqual(again,new)
 
@@ -77,7 +78,7 @@ class DecodePolicy(unittest.TestCase):
 
     def test_other_families_are_untouched(self):
         for arch in ('qwen35moe','gemma4','lfm2moe'):
-            cfg={'arch':arch,'args':[]}
+            cfg={'arch':arch,'args':[],'env':{'USER_FIXTURE':'keep'}}
             self.assertEqual(tinyconfig.migrate_clover_decode_settings(cfg),(cfg,False))
             self.assertIs(tinyconfig.clover_decode_defaults(cfg),cfg)
 
@@ -87,6 +88,30 @@ class DecodePolicy(unittest.TestCase):
         for key,value in tinyconfig.CLOVER_DECODE_DEFAULTS.items():self.assertEqual(config.value_of(new,key),value)
         self.assertEqual(config.value_of(new,'kv_type'),'int8')
         self.assertEqual(new['clover_decode_policy_version'],tinyconfig.CLOVER_DECODE_POLICY_VERSION)
+        self.assertEqual(new['env']['STRATA_IQ_MT_MIN'],'1')
+
+    def test_environment_defaults_copy_and_preserve_explicit_values(self):
+        for explicit in (None,'2','0'):
+            environment={'USER_FIXTURE':'keep'}
+            if explicit is not None:environment['STRATA_IQ_MT_MIN']=explicit
+            original=stock(env=environment);before=copy.deepcopy(original)
+            for new in (tinyconfig.clover_decode_defaults(original),tinyconfig.migrate_clover_decode_settings(original)[0]):
+                self.assertEqual(original,before)
+                self.assertEqual(new['env'],{'USER_FIXTURE':'keep','STRATA_IQ_MT_MIN':explicit if explicit is not None else '1'})
+                self.assertIsNot(new['env'],environment)
+                new['env']['USER_FIXTURE']='modified copy'
+                self.assertEqual(original,before)
+            migrated,_=tinyconfig.migrate_clover_decode_settings(original)
+            again,changed=tinyconfig.migrate_clover_decode_settings(migrated)
+            self.assertFalse(changed);self.assertEqual(again,migrated)
+
+    def test_custom_and_local_profiles_do_not_gain_environment_defaults(self):
+        local=stock(model_source='local',env={'USER_FIXTURE':'keep'})
+        custom,_=config.apply(stock(env={'USER_FIXTURE':'keep'}),{'clover_mode':'self-spec','clover_draft':7})
+        for original in (local,custom):
+            new,_=tinyconfig.migrate_clover_decode_settings(original)
+            self.assertEqual(new['env'],original['env'])
+            self.assertNotIn('STRATA_IQ_MT_MIN',new['env'])
 
 
 class LauncherPolicy(unittest.TestCase):
@@ -132,6 +157,7 @@ class LauncherPolicy(unittest.TestCase):
         cfg=self.prepare()
         for key,value in tinyconfig.CLOVER_DECODE_DEFAULTS.items():self.assertEqual(config.value_of(cfg,key),value)
         self.assertEqual(config.value_of(cfg,'kv_type'),'int8')
+        self.assertEqual(cfg['env']['STRATA_IQ_MT_MIN'],'1')
 
     def test_explicit_local_guard_precedes_migration(self):
         selected=self.root/'custom.gguf';selected.write_bytes(b'custom')

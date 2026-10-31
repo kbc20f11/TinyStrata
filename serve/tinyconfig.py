@@ -15,6 +15,7 @@ CLOVER_DECODE_POLICY_VERSION = 1
 # Approximate acceptance stays opt-in: the coding screen found extra failures.
 CLOVER_DECODE_DEFAULTS = {"clover_mode": "self-spec", "clover_draft": 3,
                           "clover_accept": "exact", "clover_accept_ratio": 0.9, "clover_accept_delta": 0.6}
+CLOVER_DECODE_ENV_DEFAULTS = {"STRATA_IQ_MT_MIN": "1"}
 CHUNK_POLICY_VERSION = config.CHUNK_POLICY_VERSION
 DEFAULT_MAX_TOKENS = 32768
 DEFAULT_SAMPLING = {
@@ -45,7 +46,8 @@ def clover_decode_defaults(cfg: dict) -> dict:
     if cfg.get("arch") != "clover_moe":
         return cfg
     new, _ = config.apply(cfg, {**CLOVER_DECODE_DEFAULTS, "kv_type": "int8"})
-    return {**new, "clover_decode_policy_version": CLOVER_DECODE_POLICY_VERSION}
+    return {**new, "env": {**CLOVER_DECODE_ENV_DEFAULTS, **dict(new.get("env") or {})},
+            "clover_decode_policy_version": CLOVER_DECODE_POLICY_VERSION}
 
 
 def migrate_clover_decode_settings(cfg: dict) -> tuple[dict, bool]:
@@ -79,6 +81,9 @@ def migrate_clover_decode_settings(cfg: dict) -> tuple[dict, bool]:
         if config.value_of(cfg, "kv_type") in (None, "auto"):
             changes["kv_type"] = "int8"
         new, _ = config.apply(new, changes)
+        # Match single-row and grouped CPU IQ expert accumulation paths.
+        # Existing explicit environment choices always take precedence.
+        new["env"] = {**CLOVER_DECODE_ENV_DEFAULTS, **dict(new.get("env") or {})}
     return new, new != cfg
 
 
