@@ -30,7 +30,7 @@ TinyStrata 会根据你的硬件自动选择推理和内存设置，因此无需
 
 **LFM2.5-24B-A2B Q4_K_M** 使用官方 [LiquidAI GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF)。仅需下载一个语言模型文件，大小为 **14.53 GB**。
 
-**Clover-35B-A3B-Preview Q4_0** 使用 [DiffuSpace 官方 GGUF](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview-GGUF)，下载大小为 **19.587 GB**，包含 Clover 自己的分词器和双向 GDN 附加参数。最大上下文为 **128K**，仅支持文本输入。通过 `run-api.bat --model-family clover` 选择；新建的独立配置使用端口 **18083**，设置保存在 `config-clover.json`。默认仍使用因果解码（`--clover-mode causal`）。通过 `--clover-mode diffusion --kv-type int8 --clover-block-size 32 --clover-threshold 0.95` 可使用原生块扩散：LowConfidence 通过双向 GDN 预览填充掩码位置，并将已提交的 KV/GDN 状态单独保留。可选的自投机路径（`--clover-mode self-spec --clover-draft 4`）则使用同一个模型生成草稿并进行因果验证，无需独立的 MTP 头。所有路径都支持按空闲显存调整的专家缓存、利用系统 RAM 的 CPU 专家计算，以及随序列长度增长的 KV 物理内存分阶段分配。
+**Clover-35B-A3B-Preview IQ3_XXS** 默认使用 [AtomicChat 提供的 GGUF](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf)，专家的 **gate/up 使用 IQ3_XXS，down 使用 IQ3_S**。下载大小为 **15.515 GB**，保留 Clover 自己的分词器和已学习的双向 GDN 参数。最大上下文为 **128K**，仅支持文本输入。通过 `run-api.bat --model-family clover` 选择；新建的独立配置使用端口 **18083**，设置保存在 `config-clover.json`。默认仍使用因果解码（`--clover-mode causal`）。通过 `--clover-mode diffusion --kv-type int8 --clover-block-size 32 --clover-threshold 0.95` 可使用原生块扩散：LowConfidence 通过双向 GDN 预览填充掩码位置，并将已提交的 KV/GDN 状态单独保留。可选的自投机路径（`--clover-mode self-spec --clover-draft 4`）则使用同一个模型生成草稿并进行因果验证，无需独立的 MTP 头。所有路径都支持按空闲显存调整的专家缓存、利用系统 RAM 的 CPU 专家计算，以及随序列长度增长的 KV 物理内存分阶段分配。
 
 Qwen、Gemma 和 LFM 引擎均支持根据空闲显存自动调整的专家缓存、利用系统 RAM 的 CPU 专家计算、输入阶段权重流式传输及 CUDA Graph。它们使用相同的 API，支持运行中切换模型，并分别保存各模型的设置。不省略模型选中的专家。还支持按实际序列长度自动扩展 KV 物理内存，最大上下文容量保持不变。
 
@@ -163,7 +163,7 @@ Radeon 显卡上的速度，使用 [tinystrata-bench-v1](benchmark/README.md#eng
 | [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 45.20 / 800.61 / 727.25 |
 | [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 | — |
 
-**Clover 因果生成与块扩散 — RX 9060 XT（2026-10-31）**
+**Clover Q4_0 历史测量：因果生成与块扩散 — RX 9060 XT（2026-10-31）**
 
 五种配置均启用思考，并独立启动 API 四次；KV 格式在表中分别列出。标准配置自动选择工作线程和输入分块（本机为 15／2048）；另外四种使用 9 个工作线程、1024 输入分块。专家缓存为启动时 → 16K 输入后的实际容量（GiB）。
 

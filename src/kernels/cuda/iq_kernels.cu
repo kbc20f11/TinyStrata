@@ -2704,6 +2704,36 @@ void native_expert_set_mode(int mode, int phase) {
 
 namespace {
 bool g_grouped_v1 = env_on("STRATA_GROUPED_V1");
+
+bool hip_iq3s_down_rows() {
+#if defined(__HIPCC__) || defined(STRATA_USE_HIP)
+    static const bool enabled = [] {
+        const char* value = std::getenv("TINYSTRATA_HIP_IQ3S_DOWN_ROWS");
+        return !value || (value[0] == '1' && value[1] == '\0');
+    }();
+    if (!enabled) return false;
+    int device = 0;
+    if (cudaGetDevice(&device) != cudaSuccess || device < 0 || device >= 64) {
+        (void) cudaGetLastError();
+        return false;
+    }
+    // Cache the optional architecture probe per host thread/device. Other HIP
+    // architectures retain their existing launch even when the flag is set.
+    static thread_local int supported[64]{}; // 0 unknown, 1 no, 2 gfx12
+    if (!supported[device]) {
+        cudaDeviceProp properties{};
+        if (cudaGetDeviceProperties(&properties, device) != cudaSuccess) {
+            (void) cudaGetLastError();
+            supported[device] = 1;
+        } else {
+            supported[device] = gfx_arch_is_gfx12(properties.gcnArchName) ? 2 : 1;
+        }
+    }
+    return supported[device] == 2;
+#else
+    return false;
+#endif
+}
 }  // namespace
 
 void native_grouped_set_v1(bool v1) { g_grouped_v1 = v1; }
@@ -2815,6 +2845,16 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     const int d_rows = 8;
     const dim3 gd((unsigned) ((L.n_embd + d_rows - 1) / d_rows), (unsigned) gy);
 #if STRATA_EXP_LAYOUTS
+    if (!v1 && L.d_type == 21 && cap_entries <= 8 && L.tail_off == 0 && L.n_embd == 2048 && L.n_ff == 512 &&
+        hip_iq3s_down_rows()) {
+        // One-query decode: reuse each activation across 32 output rows per
+        // CTA. Larger batches keep the multi-entry kernel, which shares each
+        // decoded weight across entries. Products and reduction order agree.
+        const dim3 gl((unsigned) ((L.n_embd + 31) / 32), (unsigned) cap_groups);
+        native_down_amd_kernel<21, 4><<<gl, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+        check("native_expert_grouped/IQ3_S down R4");
+        return;
+    }
     if ((em0 == 7 || em0 == 8) && (L.d_type == 20 || L.d_type == 42)) {
         const dim3 gl((unsigned) ((L.n_embd + LDS_RB - 1) / LDS_RB), (unsigned) cap_groups);
         const size_t sh = (size_t) LDS_NT * (size_t) (L.n_ff / 32) * sizeof(block_q8_1);

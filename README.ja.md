@@ -30,7 +30,7 @@ TinyStrata は Strata を基盤に、限られた VRAM でも 30B 級の MoE モ
 
 **LFM2.5-24B-A2B Q4_K_M** は、公式の [LiquidAI GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF) を使います。ダウンロードは言語モデルの 1 ファイルで、**14.53 GB** です。
 
-**Clover-35B-A3B-Preview Q4_0** は、[DiffuSpace 公式 GGUF](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview-GGUF) を使います。ダウンロードは **19.587 GB** で、Clover 専用のトークナイザーと双方向 GDN の追加重みを含みます。最大コンテキストは **128K**、入力はテキストのみです。`run-api.bat --model-family clover` で選択でき、新規の単独プロファイルではポート **18083** を使い、設定は `config-clover.json` に保存します。既定は因果デコード（`--clover-mode causal`）です。`--clover-mode diffusion --kv-type int8 --clover-block-size 32 --clover-threshold 0.95` で、確定済みの KV・GDN 状態を保ちながら、双方向 GDN の仮計算でマスク位置を埋める LowConfidence 方式のブロック拡散を利用できます。自己投機デコード（`--clover-mode self-spec --clover-draft 4`）は、同じモデルで仮生成と因果検証を行う別の方式で、独立した MTP ヘッドは使いません。いずれも空き VRAM に応じたエキスパートキャッシュ、システム RAM を使う CPU でのエキスパート計算、会話長に応じた KV の段階確保に対応します。
+**Clover-35B-A3B-Preview IQ3_XXS** は、[AtomicChat 配布の GGUF](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf) を既定で使います。エキスパートの **gate/up は IQ3_XXS、down は IQ3_S** です。ダウンロードは **15.515 GB** で、Clover 専用のトークナイザーと学習済みの双方向 GDN の追加重みを保持しています。最大コンテキストは **128K**、入力はテキストのみです。`run-api.bat --model-family clover` で選択でき、新規の単独プロファイルではポート **18083** を使い、設定は `config-clover.json` に保存します。既定は因果デコード（`--clover-mode causal`）です。`--clover-mode diffusion --kv-type int8 --clover-block-size 32 --clover-threshold 0.95` で、確定済みの KV・GDN 状態を保ちながら、双方向 GDN の仮計算でマスク位置を埋める LowConfidence 方式のブロック拡散を利用できます。自己投機デコード（`--clover-mode self-spec --clover-draft 4`）は、同じモデルで仮生成と因果検証を行う別の方式で、独立した MTP ヘッドは使いません。いずれも空き VRAM に応じたエキスパートキャッシュ、システム RAM を使う CPU でのエキスパート計算、会話長に応じた KV の段階確保に対応します。
 
 Qwen・Gemma・LFM はいずれも、空き VRAM に合わせたエキスパートキャッシュ、システム RAM を使った CPU でのエキスパート計算、入力時の重みのストリーミング、CUDA Graph に対応しています。共通の API と起動中のモデル切り替えを利用でき、設定はモデルごとに保存します。モデルが選んだエキスパートは省略しません。また、最大コンテキスト容量を変えずに、会話の長さに応じて KV の物理メモリを自動で増やせます。
 
@@ -175,7 +175,7 @@ Radeon カードでの速度を [tinystrata-bench-v1](benchmark/README.md#日本
 | [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 45.20 / 800.61 / 727.25 |
 | [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 | — |
 
-**Clover の因果生成とブロック拡散 — RX 9060 XT（2026-10-31）**
+**Clover Q4_0 の過去の計測：因果生成とブロック拡散 — RX 9060 XT（2026-10-31）**
 
 5 条件とも思考有効で、API を独立に 4 回起動して測定しました。KV 形式は表に明記しています。標準はワーカー数・チャンクを自動選択（この PC では 15／2,048）、ほかの 4 条件はワーカー 9・チャンク 1,024 です。エキスパートキャッシュは起動時 → 16K 入力後の実容量（GiB）です。
 

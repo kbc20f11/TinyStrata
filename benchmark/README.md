@@ -42,7 +42,7 @@ For a separate Clover comparison without thinking, add `--thinking off`. The def
 
 ### Common configuration
 
-Use the project's fixed model files: Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS, Google Gemma 4 26B-A4B-it QAT Q4_0 with its matching vision projector and QAT MTP assistant, LiquidAI LFM2.5-24B-A2B Q4_K_M, and DiffuSpace Clover-35B-A3B-Preview Q4_0. Record the actual model and binary hashes, TinyStrata version/commit, GPU/VRAM, CPU, system RAM, OS and driver version with a submission.
+Use the project's fixed model files: Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS, Google Gemma 4 26B-A4B-it QAT Q4_0 with its matching vision projector and QAT MTP assistant, LiquidAI LFM2.5-24B-A2B Q4_K_M, and [AtomicChat Clover-35B-A3B-Preview IQ3_XXS](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf) (`Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf`; Expert gate/up IQ3_XXS, down IQ3_S). Keep older Clover Q4_0 measurements labeled separately; they do not represent this IQ3_XXS profile. Record the actual model and binary hashes, TinyStrata version/commit, GPU/VRAM, CPU, system RAM, OS and driver version with a submission.
 
 - **INT8 KV** is the common comparison profile on NVIDIA and Radeon. FP8 or manually tuned settings belong in separately labelled results.
 - KV growth, automatic context capacity, automatic input chunk size, automatic Expert placement and automatic CPU worker selection. Graphs use their normal defaults. Do not add tuning environment variables or omit Experts/tokens.
@@ -144,7 +144,7 @@ Clover で思考なしの比較を別途行う場合は、`--thinking off` を�
 
 ### 共通設定
 
-モデルはプロジェクト指定の Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS、Google Gemma 4 26B-A4B-it QAT Q4_0 と対応する画像プロジェクタ・QAT MTP アシスタント、LiquidAI LFM2.5-24B-A2B Q4_K_M、DiffuSpace Clover-35B-A3B-Preview Q4_0 を使います。モデルとバイナリのハッシュ、TinyStrata のバージョン／コミット、GPU・搭載 VRAM、CPU、RAM、OS、ドライバーを結果に併記します。
+モデルはプロジェクト指定の Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS、Google Gemma 4 26B-A4B-it QAT Q4_0 と対応する画像プロジェクタ・QAT MTP アシスタント、LiquidAI LFM2.5-24B-A2B Q4_K_M、[AtomicChat Clover-35B-A3B-Preview IQ3_XXS](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf)（`Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf`、エキスパートの gate/up は IQ3_XXS、down は IQ3_S）を使います。過去の Clover Q4_0 の計測は別途 Q4_0 と明記し、この IQ3_XXS プロファイルの結果として扱いません。モデルとバイナリのハッシュ、TinyStrata のバージョン／コミット、GPU・搭載 VRAM、CPU、RAM、OS、ドライバーを結果に併記します。
 
 - NVIDIA・Radeon 共通の比較は **INT8 KV**。FP8 や手動調整を加えた結果は別枠です。
 - KV は段階確保。コンテキスト容量・入力チャンク・Expert 配置・CPU ワーカー数は自動選択、Graph は既定の動作です。高速化用の環境変数や Expert／トークンの省略は追加しません。

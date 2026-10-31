@@ -159,6 +159,14 @@ class ModelProfiles:
         source.setdefault("arch", profile.arch)
         source.setdefault("model_name", profile.id)
         result, _ = tinyconfig.migrate_settings(source)
+        # Resolve retired managed defaults before collecting existing files, or
+        # the old artifact would win the lookup again simply because it exists.
+        result = model_setup.migrate_managed_clover_model(result, profile.path)
+        selected = model_setup.model_path(result)
+        managed = profile.path.parent / "model-files" / manifest_for_arch(profile.arch).filename
+        local_clover = (profile.arch == "clover_moe" and selected is not None and
+                        (result.get("model_source") == "local" or
+                         (result.get("model_source") != "managed" and selected != managed.resolve())))
         # Retain an explicitly configured download directory as a lookup source
         # before configure_download normalizes the managed destination.
         candidates = [model_setup.model_path(result)]
@@ -170,6 +178,9 @@ class ModelProfiles:
         result = model_setup.shared_library_dirs(model_setup.configure_download(result, profile.path))
         candidates += [model_setup.model_path(result)]
         candidates += [directory / manifest_for_arch(profile.arch).filename for directory in self._directories]
+        if local_clover:
+            # A missing custom model must not silently become the fixed model.
+            candidates = [selected]
         existing = next((path for path in candidates if path is not None and path.is_file()), None)
         if existing is not None:
             index = result["args"].index("--model") + 1

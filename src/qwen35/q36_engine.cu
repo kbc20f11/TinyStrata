@@ -20,6 +20,7 @@
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/native_router.hpp"
+#include "strata/kernels/gfx_arch.hpp"
 #include "strata/prefill/gemm.hpp"
 #include "strata/prefill/moe_mmq.hpp"
 #include "strata/qwen35/engine.hpp"
@@ -1481,6 +1482,35 @@ struct Engine {
         };
         for (const Layer& L : m->layers) use_mmq = use_mmq && mmq_ok(L);
         if (m->has_mtp) use_mmq = use_mmq && mmq_ok(m->mtp);
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
+        if (use_mmq && m->clover && !m->layers.empty() &&
+            std::all_of(m->layers.begin(), m->layers.end(), [](const Layer& L) {
+                return L.L.gu_type == 18 && L.L.d_type == 21;
+            })) {
+            int device = 0;
+            cudaDeviceProp properties{};
+            CK(cudaGetDevice(&device));
+            CK(cudaGetDeviceProperties(&properties, device));
+            if (K::gfx_arch_is_gfx12(properties.gcnArchName)) {
+                size_t free = 0, total = 0, experts = 0;
+                CK(resident_mem_info(&free, &total));
+                for (const Layer& L : m->layers) experts += L.stride * (size_t) g.n_expert + kMmqTail;
+                const size_t budget = free > vram_reserve ? free - vram_reserve : 0;
+                // Dense weights and base buffers are already allocated; later
+                // KV/work buffers can only reduce this upper bound. If even
+                // the Experts alone cannot fit, retain the measured CPU/GPU
+                // route and lend MMQ's permanent scratch/staging to the cache.
+                // Larger-memory devices keep the existing MMQ prompt route.
+                if (experts > budget) {
+                    use_mmq = false;
+                    std::fprintf(stderr, "tinystrata: automatic HIP Clover IQ3 prompt policy: native grouped kernels "
+                                         "(all Experts %zu MiB exceed %zu MiB free less %zu MiB reserve); "
+                                         "no permanent MMQ scratch/staging\n",
+                                 experts >> 20, free >> 20, vram_reserve >> 20);
+                }
+            }
+        }
+#endif
         if (use_mmq) {
             const int64_t ne = (int64_t) T * Kp;
             mctx = std::make_unique<MMQ::Context>();
@@ -4720,6 +4750,7 @@ int strata::qwen35::run(int argc, char** argv) {
             std::fprintf(stderr, "tinystrata: chunk rule: free %.2f GiB (raw %.2f, with %.2f packed), main experts %.2f GiB, chunk %d\n",
                          fr / 1073741824.0, fr_raw / 1073741824.0, packed / 1073741824.0, experts / 1073741824.0, chunk);
     }
+    E.vram_reserve = vram_reserve;
     E.init(m, ctx, chunk);
     if (!place_experts(m, E, expert_vram, cpu_threads, hybrid_rows, expert_slots, vram_reserve, reserve_explicit, err)) {
         std::fprintf(stderr, "tinystrata: %s\n", err.c_str());

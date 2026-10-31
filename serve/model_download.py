@@ -54,16 +54,22 @@ FIXED_LFM2_MODEL = _Manifest(
     f"https://huggingface.co/{LFM2_MODEL_REPO}/resolve/{LFM2_MODEL_REVISION}/{LFM2_MODEL_FILENAME}?download=true",
 )
 
-# Official Clover quantization, including its learned bidirectional GDN tensors
-# and its own modified vocabulary/merges. Never reuse Qwen's tokenizer cache.
-CLOVER_MODEL_REPO = "Diffuspace/Clover-35B-A3B-Preview-GGUF"
-CLOVER_MODEL_REVISION = "32e22a02b885e173177b7ce7661ad13448b4f89e"
-CLOVER_MODEL_FILENAME = "Clover-35B-A3B-Preview-Q4_0.gguf"
-CLOVER_MODEL_SIZE = 19_586_909_600
-CLOVER_MODEL_SHA256 = "3e2cf14ca47f6e41c251f08237ac79cd37ad81a2ea2a220fff731e34c66930d5"
+# Mixed IQ3_XXS Clover quantization, retaining its learned bidirectional GDN
+# tensors and its own vocabulary/merges. Never reuse Qwen's tokenizer cache.
+CLOVER_MODEL_REPO = "AtomicChat/Clover-35B-A3B-Preview-GGUF"
+CLOVER_MODEL_REVISION = "4f7e2918e5315634d9d9720ea4f6e8a9a627a875"
+CLOVER_MODEL_FILENAME = "Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf"
+CLOVER_MODEL_SIZE = 15_515_157_952
+CLOVER_MODEL_SHA256 = "03816cdc365892dfb628d49e0cae2c80003de903966b9d30db2ece231699c2d3"
 FIXED_CLOVER_MODEL = _Manifest(
     CLOVER_MODEL_REPO, CLOVER_MODEL_REVISION, CLOVER_MODEL_FILENAME, CLOVER_MODEL_SIZE, CLOVER_MODEL_SHA256,
     f"https://huggingface.co/{CLOVER_MODEL_REPO}/resolve/{CLOVER_MODEL_REVISION}/{CLOVER_MODEL_FILENAME}?download=true",
+)
+# Migration identity only. Explicit local selections of this file remain valid.
+_LEGACY_CLOVER_MODEL = _Manifest(
+    "Diffuspace/Clover-35B-A3B-Preview-GGUF", "32e22a02b885e173177b7ce7661ad13448b4f89e",
+    "Clover-35B-A3B-Preview-Q4_0.gguf", 19_586_909_600,
+    "3e2cf14ca47f6e41c251f08237ac79cd37ad81a2ea2a220fff731e34c66930d5", "",
 )
 
 # Google publishes the QAT Q4_0 target/projector directly. Its matching QAT
