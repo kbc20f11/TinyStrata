@@ -114,6 +114,22 @@ $("api-key").oninput = () => saveApiKey();
 $("api-key").onchange = () => saveApiKey(true);
 
 let health = {model: "strata", images: false, max_context: 0};
+let healthReadSerial = 0;
+function healthRequestPath() {
+  // Older local chat UIs cached /health in a service worker even with no-store.
+  // Until that worker retires, every authoritative health read needs a new URL.
+  return navigator.serviceWorker && navigator.serviceWorker.controller
+    ? `health?_fresh=${Date.now()}-${++healthReadSerial}` : "health";
+}
+function retireLegacyUiWorker() {
+  if (!navigator.serviceWorker || !navigator.serviceWorker.getRegistration) return;
+  navigator.serviceWorker.getRegistration().then((registration) => {
+    const worker = registration && registration.active;
+    if (worker && registration.scope === `${location.origin}/` &&
+        worker.scriptURL === new URL("/sw.js", location.origin).href) return registration.update();
+  }).catch(() => {});   // Health reads remain uncached if an old worker cannot update.
+}
+retireLegacyUiWorker();
 // the texts that depend on what this server offers: the empty chat's line and the attach button's hint
 function renderEmptyChat() {
   $("attach-btn").title = health.images ? tr("composer.attachPictures", "Attach a text file or a picture (or drop it here)")
@@ -122,7 +138,7 @@ function renderEmptyChat() {
 }
 async function loadHealth() {
   try {
-    const r = await fetch("health", {cache: "no-store"});
+    const r = await fetch(healthRequestPath(), {cache: "no-store"});
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const next = await r.json();
     if (next.status !== "ok" || typeof next.model !== "string") throw new Error("Invalid model health");
@@ -866,6 +882,10 @@ let busy = null;                      // {controller, msg, cut, cutAfterTool}
 let pending = null;                   // a message parked while an answer is written: {text, images, files, mode}
 let modelCatalog = [], modelCatalogTick = 0, modelCatalogLoading = false;
 let modelSwitchAvailable = false, modelSwitching = false, modelSwitchTimer = null;
+let modelSwitchTarget = null, modelSwitchDownload = null;
+let modelSelectionSerial = 0;
+const modelDownloads = new Map();
+let modelDownloadDialogTarget = null, modelDownloadsRecovered = false;
 const modelNames = {"qwen3.6-35b-a3b": "Qwen3.6", "gemma-4-26b-a4b-it": "Gemma 4", "lfm2.5-24b-a2b": "LFM2.5", "clover-35b-a3b-preview": "Clover"};
 function canUseModelImages(rows = messages, extra = []) {
   if (health.images || (!extra.some((image) => image.url) && !rows.some((m) => (m.images || []).some((image) => image.url)))) return true;
@@ -877,15 +897,17 @@ function effortForModel(s = settings) {
 }
 function syncComposerControls() {
   const select = $("composer-model");
-  const locked = modelSwitching || sharedSaving || !!modelOp || !!panel || !!pending || turnBlocksUnload(lastMetrics && lastMetrics.live);
+  const locked = modelOperationBusy();
   select.disabled = !modelSwitchAvailable || locked;
   select.title = !modelSwitchAvailable ? tr("model.catalogUnavailable", "Model switching is unavailable.")
     : locked ? tr("model.switchBusy", "Wait for the current reply or operation to finish.") : "";
   for (const option of select.options) {
     const item = modelCatalog.find((row) => row.id === option.value);
-    option.disabled = !item || (!item.installed && !item.active);
+    option.disabled = !item;
+    const transfer = modelDownloads.get(option.value);
     option.textContent = (modelNames[option.value] || option.value) +
-      (item && !item.installed && !item.active ? ` · ${tr("model.notInstalled", "Not downloaded")}` : "");
+      (transfer && downloadIsActive(transfer) ? ` · ${tr("model.downloadInProgress", "Downloading")}`
+        : item && !item.installed && !item.active ? ` · ${tr("model.notInstalled", "Not downloaded")}` : "");
   }
   // Keep the requested selection visible until the server finishes switching.
   if (!modelSwitching && [...select.options].some((option) => option.value === health.model)) select.value = health.model;
@@ -910,6 +932,270 @@ async function modelControl(path, options = {}) {
   }
   return data;
 }
+function downloadIsActive(flow) {
+  return flow.requestBusy || ["downloading", "verifying", "loading", "recovering", "cancelling"].includes(flow.stage);
+}
+function modelOperationBusy() {
+  return modelSwitching || sharedSaving || !!busy || pageBusy() || !!modelOp || !!panel || !!pending || turnBlocksUnload(lastMetrics && lastMetrics.live);
+}
+function downloadSize(bytes) { return `${fmt(bytes / 1e9, 2)} GB`; }
+function saveModelDownloads() {
+  store.set("model-downloads", [...modelDownloads.values()].filter((flow) =>
+    flow.confirmed && !["done", "cancelled"].includes(flow.stage)).map((flow) => ({model: flow.target, switchWhenReady: flow.autoSwitch})));
+}
+function clearDownloadSwitchIntents(except = null) {
+  for (const flow of modelDownloads.values()) if (flow !== except) {
+    flow.autoSwitch = false;
+    if (flow.stage === "waiting") flow.stage = "ready";
+  }
+  saveModelDownloads();
+}
+function downloadFlow(target) {
+  if (!modelDownloads.has(target)) modelDownloads.set(target,
+    {target, stage: "confirm", job: null, error: "", confirmed: false, autoSwitch: false,
+      requestBusy: false, pollBusy: false, cancelRequested: false, timer: null});
+  return modelDownloads.get(target);
+}
+function scheduleModelDownload(flow, delay = 1000) {
+  clearTimeout(flow.timer);
+  flow.timer = setTimeout(() => pollModelDownload(flow), delay);
+}
+function renderModelDownload() {
+  const flow = modelDownloads.get(modelDownloadDialogTarget);
+  if (!flow) return;
+  const name = modelNames[flow.target] || flow.target;
+  const state = flow.stage, job = flow.job || {};
+  $("model-download-title").textContent = tr("model.downloadTitle", "Download {model}", {model: name});
+  const description = state === "confirm" ? tr("model.downloadConfirm",
+    "Download the model files, then switch to {model}? The current model stays active during download.", {model: name})
+    : downloadIsActive(flow) && !flow.cancelRequested ? tr("model.downloadBackground",
+      "The download continues if you close this window. You can keep using the current model.") : "";
+  $("model-download-description").textContent = description +
+    (Number.isFinite(job.total_bytes) && job.total_bytes > 0 ? " " + tr("model.downloadSize", "Download size: {size}", {size: downloadSize(job.total_bytes)}) : "");
+  const status = {
+    confirm: ["model.downloadChecking", "Checking download status…"],
+    checking: ["model.downloadChecking", "Checking download status…"],
+    downloading: ["model.downloadDownloading", "Downloading model files…"],
+    verifying: ["model.downloadVerifying", "Verifying model files…"],
+    loading: ["model.downloadLoading", "Preparing the downloaded model…"],
+    recovering: ["model.downloadReconnect", "Connection interrupted. Checking download status again…"],
+    cancelling: ["model.downloadCancelling", "Cancelling the download…"],
+    waiting: ["model.downloadWaiting", "Download complete. Waiting for the current operation before switching…"],
+    ready: ["model.downloadReady", "Model files are ready."],
+    switching: ["model.switching", "Switching model…"],
+    done: ["model.switched", "Model switched"],
+    error: ["model.downloadFailed", "The model download failed."],
+    blocked: ["model.downloadBusy", "A model operation is running. Wait for it to finish."],
+    cancelled: ["model.downloadCancelled", "Download cancelled. Downloaded files are kept so you can resume."]
+  }[state] || ["model.downloadChecking", "Checking download status…"];
+  const statusText = state === "confirm" && flow.job && !flow.requestBusy ? "" : tr(...status);
+  if ($("model-download-status").textContent !== statusText) $("model-download-status").textContent = statusText;
+  $("model-download-error").hidden = !flow.error;
+  $("model-download-error").textContent = flow.error;
+  const showProgress = !!flow.job && state !== "confirm" && state !== "done" || flow.requestBusy;
+  $("model-download-progress-wrap").hidden = !showProgress;
+  const progress = $("model-download-progress");
+  const fraction = Number.isFinite(job.progress) && job.total_bytes > 0 ? Math.max(0, Math.min(1, job.progress)) : null;
+  if (fraction != null) progress.value = fraction * 100;
+  else progress.removeAttribute("value");
+  $("model-download-percent").textContent = fraction == null ? "" : tr("model.downloadPercent", "{percent}%", {percent: fmt(fraction * 100, 1)});
+  $("model-download-bytes").textContent = Number.isFinite(job.bytes_downloaded) && job.total_bytes > 0
+    ? tr("model.downloadBytes", "{received} / {total}", {received: downloadSize(job.bytes_downloaded), total: downloadSize(job.total_bytes)}) : "";
+  $("model-download-dismiss").textContent = state === "confirm" ? tr("cancel", "Cancel") : tr("close", "Close");
+  const action = $("model-download-action");
+  action.hidden = state === "done" || state === "switching" || (downloadIsActive(flow) && flow.confirmed);
+  action.disabled = flow.requestBusy || flow.pollBusy || (["ready", "waiting"].includes(state) && modelOperationBusy());
+  action.textContent = ["ready", "waiting"].includes(state) ? tr("model.downloadSwitch", "Switch model")
+    : ["error", "cancelled", "blocked"].includes(state) ? tr("model.downloadRetry", "Retry / resume")
+    : tr("model.downloadStart", "Download and switch");
+  const cancel = $("model-download-cancel");
+  cancel.hidden = job.can_cancel !== true || !["downloading", "verifying", "cancelling", "recovering"].includes(state);
+  cancel.disabled = flow.requestBusy;
+  cancel.textContent = tr("model.downloadCancel", "Cancel download");
+}
+function showModelDownload(flow) {
+  modelDownloadDialogTarget = flow.target;
+  const dialog = $("model-download-dialog");
+  dialog.setAttribute("aria-labelledby", "model-download-title");
+  renderModelDownload();
+  if (!dialog.open) dialog.showModal();
+}
+function dismissModelDownload() {
+  const flow = modelDownloads.get(modelDownloadDialogTarget);
+  if (flow && flow.stage === "confirm") {
+    flow.autoSwitch = false; flow.confirmed = false;
+    clearTimeout(flow.timer);
+    modelDownloads.delete(flow.target);
+    saveModelDownloads();
+  }
+  modelDownloadDialogTarget = null;
+  $("model-download-dialog").close();
+  syncComposerControls();
+}
+function downloadFailure(flow, error) {
+  flow.stage = "error";
+  flow.error = error.message || String(error);
+  saveModelDownloads();
+  renderModelDownload();
+  if (modelDownloadDialogTarget !== flow.target) toast("error", tr("model.downloadFailed", "The model download failed."), flow.error, 7000);
+}
+async function downloadCanSwitch(flow) {
+  if (!flow.autoSwitch || flow.cancelRequested) return;
+  const dialog = $("model-download-dialog");
+  if (modelOperationBusy() || (dialog.open && modelDownloadDialogTarget !== flow.target) ||
+      [...modelDownloads.values()].some((other) => other !== flow && downloadIsActive(other))) {
+    flow.stage = "waiting";
+    renderModelDownload();
+    scheduleModelDownload(flow);
+    return;
+  }
+  flow.stage = "switching";
+  renderModelDownload();
+  await requestModelSwitch(flow.target, flow);
+}
+async function acceptDownloadStatus(flow, job, {confirmation = false} = {}) {
+  if (modelDownloads.get(flow.target) !== flow) return;
+  if (!job || job.model_id !== flow.target || !["idle", "downloading", "verifying", "loading", "ready", "cancelled", "error"].includes(job.state)) throw new Error("Invalid model download status");
+  flow.job = job;
+  if (confirmation) { renderModelDownload(); return; }
+  flow.error = "";
+  flow.stage = flow.cancelRequested && ["downloading", "verifying"].includes(job.state) ? "cancelling" : job.state;
+  if (job.state === "error") downloadFailure(flow, new Error(job.error || tr("model.downloadFailed", "The model download failed.")));
+  else if (job.state === "cancelled") {
+    flow.autoSwitch = false;
+    saveModelDownloads();
+  } else if (job.state === "ready") {
+    await refreshModelCatalog();
+    await downloadCanSwitch(flow);
+  } else if (job.state === "idle") {
+    // A timed-out POST may never have arrived. A read-only poll must never
+    // silently turn into a new download request.
+    flow.stage = "confirm";
+  } else scheduleModelDownload(flow);
+  renderModelDownload();
+  syncComposerControls();
+}
+async function pollModelDownload(flow) {
+  clearTimeout(flow.timer);
+  if (flow.pollBusy || flow.requestBusy || modelDownloads.get(flow.target) !== flow) return;
+  if (["ready", "waiting"].includes(flow.stage)) { await downloadCanSwitch(flow); return; }
+  flow.pollBusy = true;
+  try {
+    const job = await modelControl(`v1/model/download?model=${encodeURIComponent(flow.target)}`);
+    await acceptDownloadStatus(flow, job);
+  } catch (error) {
+    if ([401, 403, 404].includes(error.status)) downloadFailure(flow, error);
+    else {
+      flow.stage = "recovering";
+      flow.error = error.message || String(error);
+      renderModelDownload();
+      scheduleModelDownload(flow, 2000);
+    }
+  } finally { flow.pollBusy = false; renderModelDownload(); }
+}
+async function startModelDownload(flow) {
+  if (flow.requestBusy || flow.pollBusy) return;
+  clearDownloadSwitchIntents(flow);
+  flow.confirmed = true;
+  flow.autoSwitch = true;
+  flow.cancelRequested = false;
+  flow.requestBusy = true;
+  flow.stage = "checking";
+  flow.error = "";
+  saveModelDownloads();
+  renderModelDownload();
+  try {
+    let job = await modelControl(`v1/model/download?model=${encodeURIComponent(flow.target)}`);
+    if (!["downloading", "verifying", "loading", "ready"].includes(job.state)) {
+      job = await modelControl("v1/model/download", {method: "POST", body: JSON.stringify({model: flow.target})});
+    }
+    flow.requestBusy = false;
+    await acceptDownloadStatus(flow, job);
+  } catch (error) {
+    flow.requestBusy = false;
+    if (!error.status) {
+      flow.stage = "recovering";
+      flow.error = error.message || String(error);
+      scheduleModelDownload(flow, 1500);
+    } else if ([409, 429, 503].includes(error.status)) {
+      flow.stage = "blocked";
+      flow.error = error.message || String(error);
+    } else downloadFailure(flow, error);
+  } finally { flow.requestBusy = false; renderModelDownload(); syncComposerControls(); }
+}
+async function cancelModelDownload(flow) {
+  if (!flow || flow.requestBusy || !flow.job || !flow.job.can_cancel) return;
+  flow.cancelRequested = true;
+  flow.autoSwitch = false;
+  flow.requestBusy = true;
+  flow.stage = "cancelling";
+  saveModelDownloads();
+  renderModelDownload();
+  try {
+    const job = await modelControl("v1/model/download/cancel", {method: "POST", body: JSON.stringify({model: flow.target})});
+    flow.requestBusy = false;
+    await acceptDownloadStatus(flow, job);
+  } catch (error) {
+    flow.error = error.message || String(error);
+    flow.stage = "recovering";
+    scheduleModelDownload(flow, 1500);
+  } finally { flow.requestBusy = false; renderModelDownload(); }
+}
+async function openModelDownload(target, knownJob = null) {
+  const flow = downloadFlow(target);
+  showModelDownload(flow);
+  if (flow.stage !== "confirm") { if (downloadIsActive(flow)) scheduleModelDownload(flow, 0); return; }
+  flow.requestBusy = true;
+  renderModelDownload();
+  try {
+    const job = knownJob || await modelControl(`v1/model/download?model=${encodeURIComponent(target)}`);
+    await acceptDownloadStatus(flow, job, {confirmation: true});
+  } catch (error) { flow.error = error.message || String(error); }
+  finally { flow.requestBusy = false; renderModelDownload(); }
+}
+async function recoverModelDownloads() {
+  if (modelDownloadsRecovered || !modelSwitchAvailable) return;
+  modelDownloadsRecovered = true;
+  const saved = store.get("model-downloads", []);
+  const intents = new Map((Array.isArray(saved) ? saved : []).filter((row) => row && typeof row.model === "string")
+    .map((row) => [row.model, row.switchWhenReady === true]));
+  const rows = [...modelCatalog];
+  const results = await Promise.allSettled(rows.map(async (row) => ({target: row.id,
+    job: await modelControl(`v1/model/download?model=${encodeURIComponent(row.id)}`)})));
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i], target = rows[i].id;
+    if (!target || modelDownloads.has(target)) continue;
+    if (result.status === "rejected") {
+      if (intents.has(target)) {
+        const flow = downloadFlow(target);
+        flow.confirmed = true; flow.autoSwitch = intents.get(target); flow.stage = "recovering";
+        scheduleModelDownload(flow, 1500);
+      }
+      continue;
+    }
+    const {job} = result.value;
+    if (!intents.has(target) && !["downloading", "verifying", "loading"].includes(job.state)) continue;
+    const flow = downloadFlow(target);
+    flow.confirmed = intents.has(target); flow.autoSwitch = intents.get(target) === true;
+    await acceptDownloadStatus(flow, job);
+    if (flow.confirmed && flow.stage !== "done") showModelDownload(flow);
+  }
+  saveModelDownloads();
+  syncComposerControls();
+}
+$("model-download-dismiss").onclick = dismissModelDownload;
+$("model-download-dialog").oncancel = (event) => { event.preventDefault(); dismissModelDownload(); };
+$("model-download-action").onclick = async () => {
+  const flow = modelDownloads.get(modelDownloadDialogTarget);
+  if (!flow || flow.requestBusy || flow.pollBusy) return;
+  if (["ready", "waiting"].includes(flow.stage)) {
+    clearDownloadSwitchIntents(flow);
+    flow.cancelRequested = false;
+    flow.autoSwitch = true; flow.confirmed = true; saveModelDownloads();
+    await downloadCanSwitch(flow);
+  } else await startModelDownload(flow);
+};
+$("model-download-cancel").onclick = () => cancelModelDownload(modelDownloads.get(modelDownloadDialogTarget));
 async function refreshModelCatalog() {
   if (modelCatalogLoading) return;
   modelCatalogLoading = true;
@@ -920,6 +1206,7 @@ async function refreshModelCatalog() {
     const active = modelCatalog.find((row) => row.active);
     if (active && active.id !== health.model && !modelSwitching) await loadHealth();
     if (modelCatalog.some((row) => row.status && row.status.value === "loading") && !modelSwitching) {
+      modelSwitchTarget = modelCatalog.find((row) => row.status && row.status.value === "loading").id;
       modelSwitching = true;
       setBusy(!!busy);
       pollModelSwitch();
@@ -930,6 +1217,7 @@ async function refreshModelCatalog() {
     modelCatalogLoading = false;
     syncComposerControls();
   }
+  if (modelSwitchAvailable) recoverModelDownloads();
 }
 async function pollModelSwitch() {
   clearTimeout(modelSwitchTimer);
@@ -941,17 +1229,42 @@ async function pollModelSwitch() {
     }
     // /health is the authority after success or rollback; never guess the active model.
     if (!await loadHealth()) throw new Error("Model health is unavailable");
+    const target = modelSwitchTarget;
+    const flow = modelDownloads.get(modelSwitchDownload);
+    const succeeded = !state.error && state.state === "ready" && (!target || (state.model === target && health.model === target));
+    if (flow) {
+      flow.stage = succeeded ? "done" : "ready";
+      flow.autoSwitch = false;
+      flow.error = succeeded ? "" : state.error || tr("model.switchFailed", "Model switch failed");
+      saveModelDownloads();
+      renderModelDownload();
+    }
+    modelSwitchTarget = modelSwitchDownload = null;
     modelSwitching = false;
     lastMetrics = null;
     setBusy(!!busy);
     await refreshModelCatalog();
-    if (state.error) toast("error", tr("model.switchFailed", "Model switch failed"), state.error, 8000);
-    else if (state.state === "ready") toast("success", tr("model.switched", "Model switched"), modelNames[health.model] || health.model);
+    if (!succeeded) {
+      toast("error", tr("model.switchFailed", "Model switch failed"), state.error || tr("model.downloadBusy", "A model operation is running. Wait for it to finish."), 8000);
+      // Catalog availability covers the main GGUF only. After an API restart,
+      // an interrupted Vision/assistant bundle has an idle download manager.
+      // Offer the normal confirmation instead of trapping it in switch errors.
+      if (target && /not installed|projector.*missing|assistant.*missing|download.*(?:model bundle|before switching|support first)/i.test(state.error || "")) {
+        const repair = downloadFlow(target);
+        repair.stage = "confirm"; repair.confirmed = false; repair.autoSwitch = false;
+        repair.cancelRequested = false; repair.error = state.error;
+        saveModelDownloads();
+        await openModelDownload(target);
+      }
+    } else toast("success", tr("model.switched", "Model switched"), modelNames[health.model] || health.model);
   } catch (e) {
     // A disconnected POST may already have started the switch. Keep sends blocked
     // and recover through the read-only status endpoint without repeating the POST.
-    if (e.status === 401 || e.status === 404) {
+    if (e.status === 401 || e.status === 403 || e.status === 404) {
       modelSwitching = false;
+      const flow = modelDownloads.get(modelSwitchDownload);
+      if (flow) { flow.stage = "ready"; flow.autoSwitch = false; flow.error = e.message; saveModelDownloads(); renderModelDownload(); }
+      modelSwitchTarget = modelSwitchDownload = null;
       modelSwitchAvailable = false;
       setBusy(!!busy);
       toast("error", tr("model.switchFailed", "Model switch failed"), e.message, 8000);
@@ -961,14 +1274,11 @@ async function pollModelSwitch() {
     modelSwitchTimer = setTimeout(pollModelSwitch, 2000);
   }
 }
-$("composer-model").onchange = async () => {
-  const target = $("composer-model").value;
-  if (!target || target === health.model) return;
-  if (modelSwitching || sharedSaving || modelOp || panel || pending || turnBlocksUnload(lastMetrics && lastMetrics.live)) {
-    syncComposerControls();
-    toast("warn", tr("model.busy", "Model is busy"), tr("model.switchBusy", "Wait for the current reply or operation to finish."));
-    return;
-  }
+async function requestModelSwitch(target, flow = null) {
+  if (modelOperationBusy()) return;
+  if (!flow) clearDownloadSwitchIntents();
+  modelSwitchTarget = target;
+  modelSwitchDownload = flow ? flow.target : null;
   modelSwitching = true;
   setBusy(!!busy);
   paintLive();
@@ -977,13 +1287,56 @@ $("composer-model").onchange = async () => {
   } catch (e) {
     if (e.status) {
       modelSwitching = false;
+      modelSwitchTarget = modelSwitchDownload = null;
+      if (flow) {
+        flow.stage = [409, 429, 503].includes(e.status) ? "waiting" : "ready";
+        flow.error = e.message;
+        if (flow.stage === "waiting") scheduleModelDownload(flow, 1500);
+        else flow.autoSwitch = false;
+        saveModelDownloads(); renderModelDownload();
+      }
       await loadHealth();
       setBusy(!!busy);
-      toast("error", tr("model.switchFailed", "Model switch failed"), e.message, 8000);
+      if (!flow || ![409, 429, 503].includes(e.status)) toast("error", tr("model.switchFailed", "Model switch failed"), e.message, 8000);
       return;
     }
   }
   pollModelSwitch();
+}
+$("composer-model").onchange = async () => {
+  const selection = ++modelSelectionSerial;
+  const target = $("composer-model").value;
+  if (!target) return;
+  const existing = modelDownloads.get(target);
+  if (existing && !["done", "confirm"].includes(existing.stage)) {
+    syncComposerControls(); showModelDownload(existing); return;
+  }
+  if (target === health.model) return;
+  if (modelOperationBusy()) {
+    syncComposerControls();
+    toast("warn", tr("model.busy", "Model is busy"), tr("model.switchBusy", "Wait for the current reply or operation to finish."));
+    return;
+  }
+  const row = modelCatalog.find((item) => item.id === target);
+  syncComposerControls();
+  if (!row) return;
+  if (!row.installed) { await openModelDownload(target); return; }
+  clearDownloadSwitchIntents();
+  // installed only describes the main GGUF, not a complete Gemma/Vision bundle.
+  try {
+    const job = await modelControl(`v1/model/download?model=${encodeURIComponent(target)}`);
+    if (selection !== modelSelectionSerial) return;
+    if (["downloading", "verifying", "loading", "cancelled", "error"].includes(job.state)) {
+      const flow = downloadFlow(target);
+      if (["downloading", "verifying", "loading"].includes(job.state)) await acceptDownloadStatus(flow, job);
+      else { flow.stage = "confirm"; flow.job = job; }
+      showModelDownload(flow);
+      return;
+    }
+  } catch (error) {
+    toast("error", tr("model.switchFailed", "Model switch failed"), error.message, 7000); return;
+  }
+  await requestModelSwitch(target);
 };
 $("composer-effort").onchange = async () => {
   const effort = $("composer-effort").value;
@@ -2024,6 +2377,7 @@ function showLanguage() {
   outputs();
   renderChat();
   setBusy(!!busy);
+  renderModelDownload();
   if (lastMetrics) render(lastMetrics);
 }
 $("lang").onchange = async () => {

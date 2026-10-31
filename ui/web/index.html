@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="web/tokens.css">
 <link rel="stylesheet" href="web/components.css">
 <link rel="stylesheet" href="web/app.css">
-<link rel="stylesheet" href="web/terminal-theme.css?v=20261030.1">
+<link rel="stylesheet" href="web/terminal-theme.css?v=20261031.3">
 <script>
   // Match the operating system before the first paint, including older installs.
   try {
@@ -332,14 +332,33 @@
   </div>
 </aside>
 <div class="scrim" id="scrim" hidden></div>
+<dialog class="model-download-dialog" id="model-download-dialog" aria-labelledby="model-download-title" aria-describedby="model-download-description model-download-status">
+  <div class="model-download-dialog__body">
+    <h2 id="model-download-title">Model download</h2>
+    <p class="muted" id="model-download-description"></p>
+    <p id="model-download-status" role="status" aria-live="polite"></p>
+    <div class="model-download-progress-wrap" id="model-download-progress-wrap" hidden>
+      <progress id="model-download-progress" max="100" aria-labelledby="model-download-status" aria-describedby="model-download-bytes"></progress>
+      <div class="model-download-progress__numbers">
+        <span id="model-download-percent"></span><span id="model-download-bytes"></span>
+      </div>
+    </div>
+    <p class="model-download-error" id="model-download-error" role="alert" hidden></p>
+  </div>
+  <div class="model-download-dialog__actions">
+    <button class="st-btn st-btn--secondary" id="model-download-dismiss" type="button" autofocus>Cancel</button>
+    <button class="st-btn st-btn--danger" id="model-download-cancel" type="button" hidden>Cancel download</button>
+    <button class="st-btn st-btn--primary" id="model-download-action" type="button">Download</button>
+  </div>
+</dialog>
 <div class="st-toasts" id="toasts" aria-live="polite"></div>
-<script src="web/i18n.js?v=20261030.3"></script>
+<script src="web/i18n.js?v=20261031.3"></script>
 <script src="web/preview.js"></script>
 <script src="web/math.js"></script>
 <script src="web/math-adapter.js"></script>
 <script src="web/history.js"></script>
 <script src="web/chatstore.js"></script>
 <script src="web/chats-ui.js?v=20261030.2"></script>
-<script src="web/app.js?v=20261031.1"></script>
+<script src="web/app.js?v=20261031.4"></script>
 </body>
 </html>

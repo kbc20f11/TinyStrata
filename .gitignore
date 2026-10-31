@@ -28,9 +28,10 @@
 !/ui/
 !/tests/
 
-# Keep only the public installer regression test, not local test artifacts.
+# Keep only the public regression tests, not local test artifacts.
 /tests/**
 !/tests/installer-entrypoints.ps1
+!/tests/ui-model-download.cjs
 
 # Only build/runtime sources and the fixed public benchmark inputs belong here.
 /benchmark/**

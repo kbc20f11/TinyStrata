@@ -89,6 +89,8 @@ class Handler(SimpleHTTPRequestHandler):
     def asset(self, path):
         if path == "/":
             relative = "index.html"
+        elif path == "/sw.js":
+            relative = "sw.js"       # Retire the earlier local chat UI's root worker.
         elif path.startswith("/web/"):
             relative = unquote(path[5:])
         elif path.startswith("/fonts/"):
@@ -111,6 +113,8 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 self.send_response(200)
                 self.send_header("Content-Type", self.guess_type(str(target)))
+                if path == "/sw.js":
+                    self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Length", str(os.fstat(source.fileno()).st_size))
                 self.end_headers()
                 if self.command != "HEAD":
