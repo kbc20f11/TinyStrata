@@ -1188,6 +1188,8 @@ class StrataEngine:
         if isinstance(tk, int) and not isinstance(tk, bool) and tk >= 0:
             # the engine's sampled path keeps at most 64 candidates: 0 ("off") and wider lists get all 64
             keys += f" top_k={tk if 1 <= tk <= 64 else 64}"
+        for key, value in config.clover_request_options(sampling).items():
+            keys += f" {key}={value!r}" if isinstance(value, float) else f" {key}={value}"
         mp = sampling.get("min_p")
         if isinstance(mp, (int, float)) and 0.0 < float(mp) <= 1.0:
             keys += f" min_p={float(mp)!r}"
@@ -3164,6 +3166,9 @@ class Service:
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
                  fit_max_tokens: bool = False, generation_defaults: dict | None = None):
         self.engine, self.tok, self.template, self.model, self.vision = engine, tokenizer, template, model_name, vision
+        # Keep the configured family on the engine bundle so live model switches
+        # cannot leave request validation using the previous model's family.
+        engine._tinystrata_arch = (generation_defaults or {}).get("arch")
         self.template_tokens = dict(getattr(tokenizer, "template_tokens", {}))
         self.call_format = getattr(template, "call_format", "function")
         self.literals = literal_tags(getattr(tokenizer, "control_tokens", ()))   # texts that stay text inside a message
@@ -4013,25 +4018,75 @@ class Service:
                     content[n] = {"type": "text", "text": f"[image omitted: {why}]"}
         return fetched
 
-    def clover_preview_block(self) -> int | None:
-        """The active diffusion canvas; explicit legacy Clover draft choices stay causal/self-spec."""
-        from serve import config
+    def clover_request_settings(self, req: dict | None = None) -> dict | None:
+        """Resolve validated per-request Clover controls against resident defaults."""
+        options = config.clover_request_options(req)
         info = getattr(self.engine, "info", {}) or {}
         spawn = getattr(self.engine, "spawn", ())
         args = list(spawn[1]) if len(spawn) > 1 and isinstance(spawn[1], (tuple, list)) else []
-        mode = info.get("clover_mode")
-        if mode is None:
-            if self.model != "clover-35b-a3b-preview" and not any(arg.startswith("--clover-") for arg in args):
-                return None
-            mode = config.clover_mode({"args": args})
-        if mode != "diffusion":
+        arch = getattr(self.engine, "_tinystrata_arch", None)
+        is_clover = arch == "clover_moe" or (arch is None and
+                    (self.model == "clover-35b-a3b-preview" or any(arg.startswith("--clover-") for arg in args)))
+        if not is_clover:
+            if options:
+                raise ValueError(f"{next(iter(options))}: this option requires a Clover model")
             return None
-        block = info.get("clover_block_size", config.value_of({"args": args}, "clover_block_size"))
-        return config.check("clover_block_size", 32 if block is None else block, {})
+        cfg = {"args": args}
+        mode = options.get("clover_mode", info.get("clover_mode", config.clover_mode(cfg)))
+        draft = options.get("clover_draft", info.get("clover_draft", config.value_of(cfg, "clover_draft")))
+        draft = (4 if mode == "self-spec" else 0) if draft is None else config.check("clover_draft", draft, {})
+        if "clover_draft" in options and "clover_mode" not in options:
+            mode = "self-spec" if draft > 0 else "causal"
+        elif "clover_mode" in options and "clover_draft" not in options:
+            draft = max(1, draft or 4) if mode == "self-spec" else 0
+        if (mode == "self-spec") != (draft > 0):
+            raise ValueError("clover_mode: self-spec requires positive clover_draft; other modes require zero drafts")
+        settings = {"clover_mode": mode, "clover_draft": draft}
+        for key, default in (("clover_block_size", 32), ("clover_threshold", 0.95), ("clover_accept", "exact"),
+                             ("clover_accept_ratio", 0.9), ("clover_accept_delta", 0.6)):
+            value = options.get(key, info.get(key, config.value_of(cfg, key)))
+            # Native INFO carries floating point values as strings.
+            if isinstance(value, str) and key not in ("clover_mode", "clover_accept"):
+                try:
+                    value = float(value)
+                except ValueError:
+                    pass
+            settings[key] = config.check(key, default if value is None else value, {})
+        if (self.vision is not None or info.get("vision") == 1) and mode != "causal":
+            raise ValueError("clover_mode: experimental Clover Vision supports causal generation only")
+        if settings["clover_accept"] == "threshold":
+            temperature = (req or {}).get("temperature")
+            if temperature is None:
+                temperature = self.shared.get("temperature", self.sampling_defaults.get("temperature", 0.0))
+            invalid_temperature = isinstance(temperature, bool) or not isinstance(temperature, (int, float)) or temperature != 0
+            if mode != "self-spec" or invalid_temperature:
+                if options.get("clover_accept") == "threshold":
+                    if mode != "self-spec":
+                        raise ValueError("clover_accept: threshold requires clover_mode self-spec")
+                    raise ValueError("clover_accept: threshold requires temperature 0")
+                # An ordinary client can change temperature or select causal
+                # mode without knowing the profile's approximate default.
+                # Explicit threshold requests retain strict validation.
+                settings["clover_accept"] = "exact"
+                settings["_accept_fallback"] = True
+        return settings
 
-    def fit_clover_preview(self, prompt_tokens: int, max_new: int, context: int, *, allow_clamp: bool) -> int:
+    def clover_request_sampling(self, sampling: dict | None = None) -> dict:
+        """Forward an inherited-threshold fallback explicitly to the native engine."""
+        settings = self.clover_request_settings(sampling)
+        if settings is not None and settings.get("_accept_fallback"):
+            return {**(sampling or {}), "clover_accept": "exact"}
+        return sampling or {}
+
+    def clover_preview_block(self, req: dict | None = None) -> int | None:
+        """The request's diffusion canvas, including explicit mode/block overrides."""
+        settings = self.clover_request_settings(req)
+        return settings["clover_block_size"] if settings is not None and settings["clover_mode"] == "diffusion" else None
+
+    def fit_clover_preview(self, prompt_tokens: int, max_new: int, context: int, *, allow_clamp: bool,
+                           req: dict | None = None) -> int:
         """Keep the full final diffusion block inside the actual native context."""
-        block = self.clover_preview_block()
+        block = self.clover_preview_block(req)
         if block is None:
             return max_new
         preview = ((max_new + block - 1) // block) * block
@@ -4055,6 +4110,7 @@ class Service:
         prompt; with thinking, Service.run writes it once the thinking is over."""
         # `cancel` (#1999): set when the client hangs up; the downloads, the wait for the turn and the encodes stop
         # between pictures and raise ClientGone
+        self.clover_request_settings(req)
         kwargs = self.template_defaults(kwargs, req)
         default_limit = max_new is None or bool((req or {}).get("_tinystrata_default_max_tokens"))
         if max_new is None:
@@ -4158,7 +4214,7 @@ class Service:
                                  f"max_tokens (at most {max(0, room)} here), or add \"fit_max_tokens\": true to the "
                                  "model's strata-<model>.json to shorten it to the room left (#545)")
             max_new = max(1, room)          # --fit-max-tokens: a shorter completion beats a 400
-        max_new = self.fit_clover_preview(len(ids), max_new, ctx, allow_clamp=flexible_limit)
+        max_new = self.fit_clover_preview(len(ids), max_new, ctx, allow_clamp=flexible_limit, req=req)
         if images:
             # The request's images in one file for GENI (~10 MB a picture), written once nothing above refuses the
             # request: one refused after it (the engine starting, no room) left it in the vision directory for good,
@@ -4315,6 +4371,7 @@ class Service:
         if defaults:                   # the request's own fields win (explicit 0 stays greedy)
             req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
             sampling = {**defaults, **req_values}
+        sampling = self.clover_request_sampling(sampling)
         # A caller cannot choose the engine's checkpoint position. prepare()
         # calculated this request's literal-safe token boundary on this thread.
         sampling = {k: v for k, v in (sampling or {}).items() if k != "_tinystrata_turn_at"}
@@ -4442,13 +4499,13 @@ class Service:
                         if getattr(self.engine, "context_auto", False):
                             ctx = self.engine.max_context
                             room = ctx - CTX_SLACK - len(ids)
-                            can_fit = self.fit_max_tokens or (self.clover_preview_block() is not None and flexible_clover_limit)
+                            can_fit = self.fit_max_tokens or (self.clover_preview_block(sampling) is not None and flexible_clover_limit)
                             if room < 1 or (max_new > room and not can_fit):
                                 raise ValueError("request exceeds the context window after automatic environment "
                                                  f"selection: prompt ({len(ids)} tokens) + max tokens ({max_new}) "
                                                  f"exceeds the context ({ctx}); requests are never truncated")
                             max_new = min(max_new, room)
-                            max_new = self.fit_clover_preview(len(ids), max_new, ctx, allow_clamp=can_fit)
+                            max_new = self.fit_clover_preview(len(ids), max_new, ctx, allow_clamp=can_fit, req=sampling)
                             if budget:
                                 reserve = min(max(ANSWER_RESERVE_MIN, max_new // 4), max_new // 2)
                                 budget = min(budget, max(1, max_new - reserve))
@@ -6212,6 +6269,7 @@ def make_handler(svc: Service):
             kw = svc.template_defaults(kw, req)
             stop_strings(req)                                 # the same 400 as the request itself would get
             check_request_sampling(req)                       # ... likewise a sampling field of the wrong type
+            svc.clover_request_settings(req)
             self._json(200, {"input_tokens": len(svc.encode_prompt(messages, tools, kw))})
 
         def _anthropic(self, req):
@@ -6749,6 +6807,7 @@ def check_request_sampling(req) -> None:
     types are checked: a number (int or float, never bool) for temperature, top_p, min_p and the three penalties; an
     integer (never bool or float) for top_k, penalty_last_n and seed.  Ranges behave as before (a temperature <= 0 is
     greedy, top_k 0 or above 64 is clamped, a seed <= 0 is unset), and an absent or null field is not checked."""
+    config.clover_request_options(req)
     if isinstance(req, dict):      # #1819: llama.cpp's names; the OpenAI-style field wins when both are sent
         if req.get("repeat_penalty") is not None and req.get("repetition_penalty") is None:
             req["repetition_penalty"] = req["repeat_penalty"]
@@ -6852,6 +6911,7 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
         name, defaults = default_model_name(updated), sampling_defaults_from_config(updated)
         candidate = StrataEngine(str(exe), engine_args(updated) + (effort or []), cwd=updated.get("cwd"),
                                  log=updated.get("log"), env=child_env(updated), lazy=True)
+        candidate._tinystrata_arch = updated.get("arch")
         candidate.silence_s = engine_silence_s(updated)
         image_candidate = (Vision(updated["vision"],
                                   log=open(updated["log"], "a", encoding="utf-8") if updated.get("log") else None,

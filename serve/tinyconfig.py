@@ -9,6 +9,12 @@ from serve import config
 MEMORY_POLICY_VERSION = 1
 VISION_POLICY_VERSION = 1
 GENERATION_POLICY_VERSION = 1
+CLOVER_DECODE_POLICY_VERSION = 1
+# Kept separate from sampling and artifact policies: a decode-profile change
+# must neither reset user sampling choices nor select another model file.
+# Approximate acceptance stays opt-in: the coding screen found extra failures.
+CLOVER_DECODE_DEFAULTS = {"clover_mode": "self-spec", "clover_draft": 3,
+                          "clover_accept": "exact", "clover_accept_ratio": 0.9, "clover_accept_delta": 0.6}
 CHUNK_POLICY_VERSION = config.CHUNK_POLICY_VERSION
 DEFAULT_MAX_TOKENS = 32768
 DEFAULT_SAMPLING = {
@@ -32,6 +38,48 @@ def experimental_clover_vision(cfg: dict) -> bool:
     Saved experimental settings cannot enable it without the environment flag.
     """
     return cfg.get("arch") == "clover_moe" and os.environ.get("TINYSTRATA_CLOVER_VISION") == "1"
+
+
+def clover_decode_defaults(cfg: dict) -> dict:
+    """The fresh managed Clover profile; do not use for explicit local models."""
+    if cfg.get("arch") != "clover_moe":
+        return cfg
+    new, _ = config.apply(cfg, {**CLOVER_DECODE_DEFAULTS, "kv_type": "int8"})
+    return {**new, "clover_decode_policy_version": CLOVER_DECODE_POLICY_VERSION}
+
+
+def migrate_clover_decode_settings(cfg: dict) -> tuple[dict, bool]:
+    """Advance the former stock managed causal profile once, retaining custom settings.
+
+    Old files did not record generation-setting provenance. An explicit old
+    causal/D0 choice identical to the factory profile is indistinguishable and
+    follows this one-time stock-pattern migration. Unmarked/local model origins
+    are retained; the managed model marker alone never overrides custom decode,
+    sampler or Vision choices. The version also protects later explicit D0.
+    """
+    if cfg.get("arch") != "clover_moe" or cfg.get("clover_decode_policy_version") == CLOVER_DECODE_POLICY_VERSION:
+        return cfg, False
+    new = {**cfg, "clover_decode_policy_version": CLOVER_DECODE_POLICY_VERSION}
+    args = cfg.get("args") if isinstance(cfg.get("args"), list) else []
+    custom_flags = {"--clover-accept", "--clover-accept-ratio", "--clover-accept-delta",
+                    "--clover-block-size", "--clover-threshold"}
+    sampling = cfg.get("sampling")
+    sampling = {} if sampling is None else sampling
+    stock_sampling = isinstance(sampling, dict) and all(
+        value is None or value == CLOVER_SAMPLING.get({"repeat_penalty": "repetition_penalty"}.get(key, key))
+        for key, value in sampling.items())
+    stock = (cfg.get("model_source") == "managed" and not custom_flags.intersection(args) and stock_sampling and
+             config.value_of(cfg, "clover_mode") in (None, "causal") and
+             config.value_of(cfg, "clover_draft") in (None, 0) and
+             "--vision" not in args and not cfg.get("vision") and cfg.get("vision_mode", "no") == "no")
+    if stock:
+        changes = dict(CLOVER_DECODE_DEFAULTS)
+        # Only the former automatic/omitted KV choice follows the new INT8
+        # default. An explicitly chosen FP8/INT8 profile remains that choice.
+        if config.value_of(cfg, "kv_type") in (None, "auto"):
+            changes["kv_type"] = "int8"
+        new, _ = config.apply(new, changes)
+    return new, new != cfg
 
 
 def migrate_generation_settings(cfg: dict) -> tuple[dict, bool]:
@@ -153,6 +201,8 @@ def migrate_settings(cfg: dict) -> tuple[dict, bool]:
     changed = changed or memory_changed
     new, generation_changed = migrate_generation_settings(new)
     changed = changed or generation_changed
+    new, decode_changed = migrate_clover_decode_settings(new)
+    changed = changed or decode_changed
     # Old configs default to GPU encoding; explicit CPU/off preferences survive
     # both migration and model preparation on every subsequent launch.
     mode = check_vision_options(new)
@@ -205,7 +255,8 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         raise ValueError("args must be a list of engine argument strings")
     values = {"--model", "--draft-model", "--max-context", "--kv-type", "--chunk", "--mtp", "--expert-vram",
               "--expert-slots", "--cpu-threads", "--hybrid-rows", "--vram-reserve-mib", "--clover-draft",
-              "--clover-mode", "--clover-block-size", "--clover-threshold"}
+              "--clover-mode", "--clover-block-size", "--clover-threshold", "--clover-accept",
+              "--clover-accept-ratio", "--clover-accept-delta"}
     switches = {"--no-graph", "--no-warmup", "--hybrid-graph", "--no-hybrid-graph", "--vision",
                 "--kv-grow", "--kv-whole", "--no-kv-grow"}
     seen = set()
@@ -226,12 +277,14 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
     if len(seen.intersection({"--kv-grow", "--kv-whole", "--no-kv-grow"})) > 1:
         raise ValueError("Choose only one KV allocation mode: --kv-grow or --kv-whole")
     for key in ("kv_type", "max_context", "expert_vram", "vram_reserve_mib", "mtp", "chunk", "clover_draft",
-                "clover_mode", "clover_block_size", "clover_threshold"):
+                "clover_mode", "clover_block_size", "clover_threshold", "clover_accept",
+                "clover_accept_ratio", "clover_accept_delta"):
         value = config.value_of(cfg, key)
         if value is not None:
             config.check(key, value, cfg)
     kv = config.value_of(cfg, "kv_type")
-    clover_options = seen.intersection({"--clover-draft", "--clover-mode", "--clover-block-size", "--clover-threshold"})
+    clover_options = seen.intersection({"--clover-draft", "--clover-mode", "--clover-block-size", "--clover-threshold",
+                                       "--clover-accept", "--clover-accept-ratio", "--clover-accept-delta"})
     if arch != "clover_moe" and clover_options:
         raise ValueError("Clover-only engine options: " + ", ".join(sorted(clover_options)))
     if arch == "lfm2moe":
@@ -264,6 +317,14 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
             raise ValueError("--clover-draft greater than zero requires --clover-mode self-spec")
         if mode == "self-spec" and draft == 0:
             raise ValueError("--clover-mode self-spec requires 1..31 draft tokens, or omit --clover-draft")
+        if config.value_of(cfg, "clover_accept") == "threshold" and mode != "self-spec":
+            raise ValueError("--clover-accept threshold requires --clover-mode self-spec")
+        if config.value_of(cfg, "clover_accept") == "threshold":
+            temperature = (cfg.get("sampling") or {}).get("temperature", 0.0)
+            if temperature is None:
+                temperature = CLOVER_SAMPLING["temperature"]
+            if isinstance(temperature, bool) or not isinstance(temperature, (int, float)) or temperature != 0:
+                raise ValueError("--clover-accept threshold requires sampling.temperature 0")
         if "--vision" in seen and not experimental_clover_vision(cfg):
             raise ValueError("Clover-35B-A3B-Preview is text-only; remove --vision")
         if ("--vision" in seen or cfg.get("vision") or cfg.get("vision_mode", "no") != "no") and mode != "causal":

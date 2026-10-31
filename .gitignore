@@ -33,6 +33,9 @@
 !/tests/installer-entrypoints.ps1
 !/tests/ui-model-download.cjs
 !/tests/model-artifact-migration.py
+!/tests/clover-self-spec.cpp
+!/tests/clover-self-spec-gpu.cu
+!/tests/clover-decode-settings.py
 
 # Only build/runtime sources and the fixed public benchmark inputs belong here.
 /benchmark/**

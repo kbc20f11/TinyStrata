@@ -5,11 +5,15 @@
 // PR #46927 (2243dc6), clover_utils.py. Penalty semantics were checked against
 // Diffuspace/Clover-35B-A3B-Preview (4b0402b), sampling_clover_moe.py
 // (Apache-2.0). This is an independent C++ implementation of those rules.
+// Optional entropy acceptance uses the rule in llama.cpp PR #31306 (cb09d43),
+// common/sampling.cpp (MIT), with caller-penalized logits. Unlike that sampler,
+// a terminal target argmax always ends the prefix instead of being overridden.
 #pragma once
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <span>
 #include <stdexcept>
@@ -96,6 +100,96 @@ Accepted exact_prefix(std::span<const int32_t> drafts, std::span<const int32_t> 
 
 inline Accepted exact_prefix(std::span<const int32_t> drafts, std::span<const int32_t> selected) {
     return exact_prefix(drafts, selected, [](int32_t t) { return t == kEndOfText || t == kEndOfTurn; });
+}
+
+struct AcceptOptions {
+    float ratio = 0.9f;
+    float delta = 0.6f;
+};
+
+inline void validate_accept_options(const AcceptOptions& options) {
+    if (!std::isfinite(options.ratio) || options.ratio < 0 || options.ratio > 1 ||
+        !std::isfinite(options.delta) || options.delta < 0 || options.delta > 1)
+        throw std::invalid_argument("Clover acceptance ratio and delta must be finite and in [0, 1]");
+}
+
+struct ThresholdStats {
+    int32_t selected = 0;       // Target argmax, lowest token ID first on ties.
+    float probability = 0;     // Full-vocabulary probability of the proposed token.
+    float entropy = 0;         // Full-vocabulary entropy in natural logarithms.
+};
+
+// The caller applies its penalties before this T=1 distribution is measured.
+// A masked -infinity has zero probability; NaN, +infinity and an entirely
+// masked vocabulary are invalid. Proposal -1 denotes the bonus row: its
+// probability is unused/zero, while argmax and entropy remain well-defined.
+inline ThresholdStats threshold_stats(std::span<const float> logits, int32_t proposal) {
+    if (logits.empty() || logits.size() > static_cast<size_t>(std::numeric_limits<int32_t>::max()) ||
+        proposal < -1 || (proposal >= 0 && static_cast<size_t>(proposal) >= logits.size()))
+        throw std::invalid_argument("Invalid Clover acceptance logits or proposed token");
+    float maximum = -std::numeric_limits<float>::infinity();
+    int32_t selected = 0;
+    for (size_t i = 0; i < logits.size(); ++i) {
+        const float value = logits[i];
+        if (std::isnan(value) || value == std::numeric_limits<float>::infinity())
+            throw std::invalid_argument("Nonfinite Clover acceptance logits");
+        if (value > maximum) { maximum = value; selected = static_cast<int32_t>(i); }
+    }
+    if (!std::isfinite(maximum))
+        throw std::invalid_argument("Clover acceptance logits have no finite token");
+    double sum = 0, weighted_gap = 0;
+    for (float value : logits) {
+        if (!std::isfinite(value)) continue;
+        const double gap = static_cast<double>(maximum) - value;
+        const double mass = std::exp(-gap);
+        sum += mass;
+        weighted_gap += mass * gap;
+    }
+    // H = log(sum exp(x-max)) + E[max-x] avoids log(0) for tiny probabilities.
+    const double entropy = std::log(sum) + weighted_gap / sum;
+    const double probability = proposal < 0 ? 0.0 :
+        std::exp(static_cast<double>(logits[static_cast<size_t>(proposal)]) - maximum) / sum;
+    return {selected, static_cast<float>(probability), static_cast<float>(entropy)};
+}
+
+// This is approximate acceptance, not greedy equivalence or distribution-
+// preserving rejection sampling. Only the contiguous accepted prefix matters;
+// rows after a rejection are ignored because their drafted history is invalid.
+// Both target-terminal and accepted draft-terminal tokens are returned as an
+// uncommitted boundary. Target argmax terminals take priority, deliberately
+// differing from upstream entropy acceptance which may override them.
+template <class Terminal>
+Accepted threshold_prefix(std::span<const int32_t> drafts, std::span<const ThresholdStats> stats,
+                          float ratio, float delta, Terminal terminal) {
+    const AcceptOptions options{ratio, delta};
+    validate_accept_options(options);
+    if (drafts.size() > kMaxDrafts || stats.size() < drafts.size() + 1)
+        throw std::invalid_argument("Incomplete Clover threshold verification");
+    const auto checked = [](const ThresholdStats& row) {
+        if (row.selected < 0 || !std::isfinite(row.probability) || row.probability < 0 || row.probability > 1 ||
+            !std::isfinite(row.entropy) || row.entropy < 0)
+            throw std::invalid_argument("Invalid Clover acceptance statistics");
+    };
+    size_t row = 0;
+    for (; row < drafts.size(); ++row) {
+        checked(stats[row]);
+        if (drafts[row] < 0) throw std::invalid_argument("Invalid Clover drafted token");
+        if (terminal(stats[row].selected)) break;
+        const float threshold = std::min(options.ratio, options.delta * std::exp(-stats[row].entropy));
+        // A zero-probability proposal is never admissible, even when the
+        // configured threshold is zero or exp(-entropy) underflows.
+        if (!(stats[row].probability > 0) || stats[row].probability < threshold) break;
+        if (terminal(drafts[row]))
+            return {static_cast<int>(row), static_cast<int>(row) + 1, drafts[row]};
+    }
+    checked(stats[row]);
+    return {static_cast<int>(row), static_cast<int>(row) + 1, stats[row].selected};
+}
+
+inline Accepted threshold_prefix(std::span<const int32_t> drafts, std::span<const ThresholdStats> stats,
+                                 float ratio = 0.9f, float delta = 0.6f) {
+    return threshold_prefix(drafts, stats, ratio, delta,
+        [](int32_t t) { return t == kEndOfText || t == kEndOfTurn; });
 }
 
 struct PenaltyOptions {

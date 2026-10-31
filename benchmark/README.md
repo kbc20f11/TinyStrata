@@ -17,7 +17,7 @@ $python = "$env:LOCALAPPDATA\TinyStrata-work\runtime\.venv\Scripts\python.exe"
 
 From a source checkout, use `.\benchmark\run.py` instead. `--model qwen`, `--model gemma`, `--model lfm` and `--model clover` select one model. Clover uses `config-clover.json`. The runner uses the existing model/configuration files, starts its own loopback API, and does not change the saved configuration. Results go under `%LOCALAPPDATA%\TinyStrata-work\benchmarks\`; generated logs and results do not belong in Git.
 
-Fresh Clover profiles use causal decoding. Native LowConfidence block diffusion is available explicitly; measure the two modes separately:
+The app's selected Clover route and the fixed benchmark regulation are separate. The standard benchmark always uses **INT8 causal decoding, D0**, independently of the app profile. Native LowConfidence block diffusion is measured separately:
 
 ```powershell
 & $python .\benchmark\run.py --model clover --clover-mode causal
@@ -28,7 +28,18 @@ The first command retains the **`tinystrata-bench-v1` causal baseline**. The sec
 
 Both profiles keep Clover's model-specific sampling settings; this protocol uses greedy generation and does not characterize sampled generation.
 
-`--clover-block-size` accepts **1, 2, 4, 8, 16 or 32** (default **32**). `--clover-threshold` accepts **0–1** (default **0.95**); a pending masked position is filled when its confidence is strictly above the threshold, with at least one position filled per pass. These are diffusion settings. Legacy `--clover-draft 0` selects causal decoding; a positive draft count selects the separate self-speculative route, which uses causal verification.
+`--clover-block-size` accepts **1, 2, 4, 8, 16 or 32** (default **32**). `--clover-threshold` accepts **0–1** (default **0.95**); a pending masked position is filled when its confidence is strictly above the threshold, with at least one position filled per pass. These are diffusion settings. In the native engine and `run.py`, legacy `--clover-draft 0` selects causal decoding; a positive draft count selects the separate self-speculative route, which uses causal verification. The benchmark selects each mode explicitly.
+
+Self-speculative generation is another separately labelled variant. Use exact acceptance as the control; threshold acceptance is an explicit experimental option:
+
+```powershell
+& $python .\benchmark\run.py --model clover --clover-mode self-spec --clover-draft 3 --clover-accept exact
+& $python .\benchmark\run.py --model clover --clover-mode self-spec --clover-draft 3 --clover-accept threshold --clover-accept-ratio 0.9 --clover-accept-delta 0.6
+```
+
+The first command accepts only drafts that match the causal verifier's selected token; the second measures the experimental threshold policy. Both report **`tinystrata-bench-v1-clover-self-spec`**, `standard: false`, with the same v1 workloads, sampling, repetitions and timers. In this benchmark runner, `--clover-draft` accepts **1–31** and defaults to **4** in self-spec mode; `--clover-accept` defaults to **exact**. Ratio and delta accept finite values in **0–1**, defaulting to **0.9** and **0.6**, and require self-spec mode. Specify these options explicitly when comparing policies.
+
+`threshold` is approximate acceptance at temperature 0, not distribution-preserving speculative sampling. It uses target probabilities and entropy with the same response-count snapshot, including the already emitted anchor, for all preview and verification rows in a round; uncommitted drafts are excluded. It does not guarantee the causal/exact token sequence. A target EOS always stops, and an accepted draft EOS also remains a stopping boundary. Count final output tokens once and include preview, verification, transfers and acceptance work in decode time. The runner records the actual native settings, accepted/offered counts, transfers and kernel flags; report quality separately from throughput.
 
 Clover-only optional overrides are `--kv-type int8|fp8-mma`, `--cpu-workers N` (0 = auto), `--chunk auto|N`, and repeatable `--engine-env STRATA_NAME=VALUE` / `TINYSTRATA_NAME=VALUE`. For example:
 
@@ -119,7 +130,7 @@ $python = "$env:LOCALAPPDATA\TinyStrata-work\runtime\.venv\Scripts\python.exe"
 
 ソースを取得したフォルダーでは、スクリプトのパスを `.\benchmark\run.py` に置き換えます。個別に測る場合は `--model qwen`、`--model gemma`、`--model lfm`、`--model clover` を使います。Clover の設定ファイルは `config-clover.json` です。既存のモデルと設定ファイルを使って計測専用 API を起動し、保存済みの設定は書き換えません。結果は `%LOCALAPPDATA%\TinyStrata-work\benchmarks\` に保存します。生成したログや結果は Git に含めません。
 
-Clover の新規プロファイルは因果デコードを既定とします。LowConfidence 方式のネイティブなブロック拡散は明示的に選択でき、因果生成とは別々に測定します。
+Clover のアプリで選ぶ生成経路と、固定ベンチ規約は別です。標準ベンチはアプリのプロファイルにかかわらず、**INT8・因果生成・D0** を使います。LowConfidence 方式のネイティブなブロック拡散は別々に測定します。
 
 ```powershell
 & $python .\benchmark\run.py --model clover --clover-mode causal
@@ -130,7 +141,18 @@ Clover の新規プロファイルは因果デコードを既定とします。L
 
 両方式とも Clover のモデル別サンプリング設定を維持します。本規約は greedy 生成を測るため、確率的にサンプリングする場合の結果を示すものではありません。
 
-`--clover-block-size` は **1・2・4・8・16・32**（既定 **32**）、`--clover-threshold` は **0〜1**（既定 **0.95**）を指定できます。未確定のマスク位置のうち、信頼度が閾値を上回る位置を埋め、該当位置がなくても1回の反復で最低1位置は確定させます。どちらもブロック拡散の設定です。従来の `--clover-draft 0` は因果デコード、正のドラフト数は因果検証を使う別方式の自己投機デコードを選びます。
+`--clover-block-size` は **1・2・4・8・16・32**（既定 **32**）、`--clover-threshold` は **0〜1**（既定 **0.95**）を指定できます。未確定のマスク位置のうち、信頼度が閾値を上回る位置を埋め、該当位置がなくても1回の反復で最低1位置は確定させます。どちらもブロック拡散の設定です。native エンジンと `run.py` の従来の `--clover-draft 0` は因果デコード、正のドラフト数は因果検証を使う別方式の自己投機デコードを選びます。ベンチでは生成方式を明示します。
+
+自己投機デコードも別枠の variant として測定できます。exact を対照条件とし、閾値採用は実験的な明示選択として扱います。
+
+```powershell
+& $python .\benchmark\run.py --model clover --clover-mode self-spec --clover-draft 3 --clover-accept exact
+& $python .\benchmark\run.py --model clover --clover-mode self-spec --clover-draft 3 --clover-accept threshold --clover-accept-ratio 0.9 --clover-accept-delta 0.6
+```
+
+前者は因果検証が選んだトークンと一致するドラフトだけを採用し、後者は実験的な閾値採用を測ります。どちらも **`tinystrata-bench-v1-clover-self-spec`**・`standard: false` とし、v1 の入力・サンプリング・反復数・計時範囲を維持します。このベンチスクリプトでは `--clover-draft` は **1〜31**、自己投機を選んだ場合の既定は **4**、`--clover-accept` の既定は **exact** です。ratio と delta は有限の **0〜1**、既定は **0.9** と **0.6** で、自己投機のときだけ指定できます。採用規則の比較では各値を明示してください。
+
+`threshold` は temperature 0 で使う近似的な採用規則で、確率分布を保存する投機サンプリングではありません。1 ラウンドの preview・検証の全行で、出力済み anchor を含む応答トークン数の履歴を固定し、未確定ドラフトを追加せずに本体の確率とエントロピーから採否を決めます。因果生成や exact と同じトークン列は保証しません。本体が選んだ EOS と採用されたドラフトの EOS は、いずれも応答終了として扱います。最終出力は各トークンを一度だけ数え、preview・因果検証・転送・採用判定もデコード時間に含めます。実際のエンジン設定・採用数／提案数・転送量・カーネル設定を保存し、品質は速度と分けて報告してください。
 
 Clover 専用の調整項目として、`--kv-type int8|fp8-mma`、`--cpu-workers N`（0 は自動）、`--chunk auto|N`、繰り返し指定できる `--engine-env STRATA_NAME=VALUE`／`TINYSTRATA_NAME=VALUE` も使えます。例：
 

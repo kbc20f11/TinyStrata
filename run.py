@@ -61,7 +61,8 @@ def vision_tokens(value: str) -> int:
 def prepare(a) -> tuple[dict, Path]:
     from serve import config
     from serve.backend import configure_backend, executable_backend, hardware_backend, hip_ordinal
-    from serve.tinyconfig import MEMORY_POLICY_VERSION, automatic_experts, check_files, migrate_settings, validate
+    from serve.tinyconfig import (CLOVER_DECODE_POLICY_VERSION, CLOVER_SAMPLING, MEMORY_POLICY_VERSION, automatic_experts,
+                                 check_files, clover_decode_defaults, migrate_settings, validate)
     from serve.model_setup import (configure_download, configure_vision, model_architecture, model_path, prepare_installed_model,
                                    resolve_executable, save_settings, shared_library_dirs)
 
@@ -82,7 +83,8 @@ def prepare(a) -> tuple[dict, Path]:
             {"lfm2moe": "config-lfm2.json", "gemma4": "config-gemma4.json", "clover_moe": "config-clover.json"}
             .get(requested_arch, "config.json")).expanduser().resolve()
     arch = requested_arch or "qwen35moe"
-    cfg = config.load(path) if path.exists() else {
+    fresh = not path.exists()
+    cfg = config.load(path) if not fresh else {
         "arch": arch, "model_name": {"lfm2moe": "lfm2.5-24b-a2b", "gemma4": "gemma-4-26b-a4b-it", "clover_moe": "clover-35b-a3b-preview"}
                                     .get(arch, "qwen3.6-35b-a3b"),
         "cwd": str(ROOT),
@@ -92,8 +94,18 @@ def prepare(a) -> tuple[dict, Path]:
         "memory_policy_version": MEMORY_POLICY_VERSION,
         "host": "127.0.0.1",
     }
+    if fresh and arch == "clover_moe" and not a.model and getattr(a, "vision", None) not in ("gpu", "cpu", "yes"):
+        cfg = clover_decode_defaults(cfg)
     if requested_arch is not None and cfg.get("arch", "qwen35moe") != requested_arch:
         raise ValueError("This config belongs to another model family; choose a separate --config path")
+    if cfg.get("arch") == "clover_moe":
+        # Protect explicit selections before the one-time managed-default
+        # migration sees the former stock configuration.
+        if a.model:
+            cfg["model_source"] = "local"
+        if any(getattr(a, key, None) is not None for key in config.CLOVER_REQUEST_KEYS) or \
+                getattr(a, "vision", None) in ("gpu", "cpu", "yes"):
+            cfg["clover_decode_policy_version"] = CLOVER_DECODE_POLICY_VERSION
     cfg, migrated = migrate_settings(cfg)
     requested_backend = getattr(a, "backend", None)
     if requested_backend in (None, "auto") and not cfg.get("backend"):
@@ -122,7 +134,8 @@ def prepare(a) -> tuple[dict, Path]:
     if getattr(a, "vision_tokens", None) is not None:
         cfg["vision_tokens"] = a.vision_tokens
     for key in ("max_context", "kv_type", "mtp", "expert_vram", "vram_reserve_mib", "chunk", "clover_draft",
-                "clover_mode", "clover_block_size", "clover_threshold"):
+                "clover_mode", "clover_block_size", "clover_threshold", "clover_accept",
+                "clover_accept_ratio", "clover_accept_delta"):
         value = getattr(a, key, None)
         if value is not None:
             if key == "expert_vram" and value == "auto":
@@ -137,6 +150,13 @@ def prepare(a) -> tuple[dict, Path]:
             cfg, _ = config.apply(cfg, {"clover_draft": 4})
         elif a.clover_mode != "self-spec" and draft not in (None, 0):
             cfg, _ = config.apply(cfg, {"clover_draft": 0})
+    if cfg.get("arch") == "clover_moe":
+        temperature = (cfg.get("sampling") or {}).get("temperature")
+        if temperature is None:
+            temperature = CLOVER_SAMPLING["temperature"]
+        if getattr(a, "clover_accept", None) is None and config.value_of(cfg, "clover_accept") == "threshold" and (
+                config.clover_mode(cfg) != "self-spec" or temperature != 0):
+            cfg, _ = config.apply(cfg, {"clover_accept": "exact"})
     if getattr(a, "kv_grow", None) is not None:
         cfg["args"] = [x for x in cfg["args"] if x not in ("--kv-grow", "--kv-whole", "--no-kv-grow")]
         cfg["args"].append("--kv-grow" if a.kv_grow else "--kv-whole")
@@ -208,11 +228,19 @@ def main() -> int:
     ap.add_argument("--clover-draft", type=int, metavar="N",
                     help="legacy Clover self-speculative draft tokens, 0-31; 0 selects causal, positive values self-spec")
     ap.add_argument("--clover-mode", choices=("causal", "self-spec", "diffusion"),
-                    help="Clover generation mode (default: causal); diffusion enables native LowConfidence block generation")
+                    help="Clover generation mode (default: saved profile; new managed profiles use self-spec, "
+                         "explicit local models use causal); diffusion enables native LowConfidence blocks")
     ap.add_argument("--clover-block-size", type=int, metavar="N",
                     help="Clover diffusion block size: 1, 2, 4, 8, 16 or 32 (default: 32)")
     ap.add_argument("--clover-threshold", type=float, metavar="P",
                     help="Clover diffusion confidence threshold in [0,1] (default: 0.95)")
+    ap.add_argument("--clover-accept", choices=("exact", "threshold"),
+                    help="Clover self-speculative acceptance (default: inherited profile): exact or experimental "
+                         "threshold (greedy only)")
+    ap.add_argument("--clover-accept-ratio", type=float, metavar="P",
+                    help="Clover threshold acceptance probability ratio in [0,1] (default: 0.9)")
+    ap.add_argument("--clover-accept-delta", type=float, metavar="P",
+                    help="Clover threshold acceptance entropy factor in [0,1] (default: 0.6)")
     ap.add_argument("--expert-vram", type=expert_budget, metavar="auto|GiB",
                     help="fit experts to available VRAM (default: auto), or set an advanced GiB limit; 0 = CPU experts")
     ap.add_argument("--vram-reserve-mib", type=int,

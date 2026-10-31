@@ -40,17 +40,24 @@ TEXT_ONLY_MODELS = ('lfm', 'clover')
 CLOVER_SAMPLING = {'temperature': 0.0, 'top_p': 1.0, 'top_k': 64, 'min_p': 0.0,
                    'presence_penalty': 0.9, 'repetition_penalty': 1.05, 'frequency_penalty': 0.0}
 ENGINE_KEYS = ('model', 'version', 'kv', 'kv_grow', 'mtp', 'clover_draft', 'clover_mode',
+               'clover_accept', 'clover_accept_ratio', 'clover_accept_delta',
+               'clover_draft_penalty_gpu', 'clover_gpu_exact_verify',
                'clover_block_size', 'clover_threshold', 'clover_blocks', 'clover_passes',
                'clover_preview_ms', 'clover_replay_ms', 'clover_select_ms', 'clover_copy_bytes',
                'clover_preview_cpu_entries', 'clover_preview_gpu_entries', 'clover_preview_cpu_ms',
                'clover_preview_wmma_calls', 'clover_preview_simt_calls',
                'clover_last_mode', 'clover_last_block_size', 'clover_last_threshold',
+               'clover_last_accept', 'clover_last_accept_ratio', 'clover_last_accept_delta',
+               'clover_last_draft_penalty_gpu', 'clover_last_gpu_exact_verify',
                'cpu_workers', 'cpu_threads', 'vision', 'images',
                'max_context', 'context_auto', 'chunk', 'chunk_auto', 'expert_auto',
                'expert_slots', 'expert_cache_bytes', 'expert_cache_mib',
                'kv_logical_bytes', 'kv_mapped_bytes', 'kv_committed_rows', 'gpu_cc')
 CLOVER_INFO_FLOATS = ('clover_threshold', 'clover_last_threshold', 'clover_preview_ms',
-                      'clover_replay_ms', 'clover_select_ms', 'clover_preview_cpu_ms')
+                      'clover_replay_ms', 'clover_select_ms', 'clover_preview_cpu_ms',
+                      'clover_accept_ratio', 'clover_accept_delta', 'clover_last_accept_ratio', 'clover_last_accept_delta')
+CLOVER_INFO_PROBABILITIES = ('clover_threshold', 'clover_last_threshold', 'clover_accept_ratio',
+                            'clover_accept_delta', 'clover_last_accept_ratio', 'clover_last_accept_delta')
 
 
 def engine_snapshot(info):
@@ -75,8 +82,28 @@ def validate_engine_snapshot(info):
         value = info[key]
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
             raise ValueError(f'Invalid native Clover INFO number: {key}={value!r}')
-        if key in ('clover_threshold', 'clover_last_threshold') and value > 1:
-            raise ValueError(f'Invalid native Clover confidence threshold: {key}={value!r}')
+        if key in CLOVER_INFO_PROBABILITIES and value > 1:
+            raise ValueError(f'Invalid native Clover probability setting: {key}={value!r}')
+
+
+def validate_clover_self_spec(info, profile, *, after_request=False):
+    """Require native confirmation of an explicitly labelled self-spec profile."""
+    if info.get('clover_mode') != 'self-spec' or info.get('clover_draft') != profile['draft'] or \
+            info.get('clover_accept') != profile['accept']:
+        raise ValueError(f'Clover self-spec settings differ from requested profile: {info}')
+    for field in ('accept_ratio', 'accept_delta'):
+        value = info.get('clover_' + field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or \
+                not math.isfinite(value) or abs(value - profile[field]) > 1e-6:
+            raise ValueError(f'Clover self-spec {field} differs from requested profile: {info}')
+    if after_request:
+        if info.get('clover_last_mode') != 'self-spec' or info.get('clover_last_accept') != profile['accept']:
+            raise ValueError(f'Clover request did not use the selected self-spec acceptance rule: {info}')
+        for field in ('accept_ratio', 'accept_delta'):
+            value = info.get('clover_last_' + field)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or \
+                    not math.isfinite(value) or abs(value - profile[field]) > 1e-6:
+                raise ValueError(f'Clover request used a different {field}: {info}')
 
 
 def save(path, value):
@@ -129,7 +156,8 @@ def engine_environment(value):
 
 def controlled_config(original, model, folder, port, cases, *, clover_mode='causal',
                       clover_block_size=32, clover_threshold=0.95, clover_kv='int8',
-                      clover_workers=None, clover_chunk='auto', clover_env=None, clover_thinking=True):
+                      clover_workers=None, clover_chunk='auto', clover_env=None, clover_thinking=True,
+                      clover_draft=None, clover_accept='exact', clover_accept_ratio=0.9, clover_accept_delta=0.6):
     file, arch, name = MODELS[model]
     if original.get('arch', 'qwen35moe') != arch:
         raise ValueError(f'{file} does not select {arch}')
@@ -150,8 +178,18 @@ def controlled_config(original, model, folder, port, cases, *, clover_mode='caus
     if model not in TEXT_ONLY_MODELS:
         native += ['--mtp', '3', '--vision']
     elif model == 'clover':
-        if clover_mode not in ('causal', 'diffusion'):
-            raise ValueError('Benchmark Clover modes are causal or diffusion')
+        if clover_mode not in ('causal', 'self-spec', 'diffusion'):
+            raise ValueError('Benchmark Clover modes are causal, self-spec or diffusion')
+        if clover_accept not in ('exact', 'threshold'):
+            raise ValueError('Clover acceptance must be exact or threshold')
+        for key, value in (('ratio', clover_accept_ratio), ('delta', clover_accept_delta)):
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 1:
+                raise ValueError(f'Clover acceptance {key} must be finite and in [0,1]')
+        if clover_draft is not None and (isinstance(clover_draft, bool) or not isinstance(clover_draft, int) or not 0 <= clover_draft <= 31):
+            raise ValueError('Clover drafts must be an integer in 0..31')
+        if clover_mode != 'self-spec' and (clover_draft not in (None, 0) or clover_accept != 'exact' or
+                                         clover_accept_ratio != .9 or clover_accept_delta != .6):
+            raise ValueError('Clover draft/acceptance overrides require self-spec mode')
         native[native.index('--kv-type') + 1] = clover_kv
         native[native.index('--chunk') + 1] = str(clover_chunk)
         native += ['--clover-mode', clover_mode]
@@ -159,6 +197,12 @@ def controlled_config(original, model, folder, port, cases, *, clover_mode='caus
             native += ['--cpu-threads', str(clover_workers)]
         if clover_mode == 'diffusion':
             native += ['--clover-block-size', str(clover_block_size), '--clover-threshold', str(clover_threshold)]
+        elif clover_mode == 'self-spec':
+            draft = 4 if clover_draft is None else clover_draft
+            if isinstance(draft, bool) or not isinstance(draft, int) or not 1 <= draft <= 31:
+                raise ValueError('Clover self-spec drafts must be an integer in 1..31')
+            native += ['--clover-draft', str(draft), '--clover-accept', clover_accept,
+                       '--clover-accept-ratio', str(clover_accept_ratio), '--clover-accept-delta', str(clover_accept_delta)]
         else:
             native += ['--clover-draft', '0']
     cfg = {key: copy.deepcopy(original[key]) for key in
@@ -499,6 +543,9 @@ def render_report(report):
                    f'thinking {"on" if profile.get("thinking", True) else "off"}')
         if profile['mode'] == 'diffusion':
             details += f', block {profile["block_size"]}, confidence > {profile["threshold"]}'
+        elif profile['mode'] == 'self-spec':
+            details += (f', drafts {profile["draft"]}, acceptance {profile["accept"]}, '
+                        f'ratio {profile["accept_ratio"]}, delta {profile["accept_delta"]}')
         details += ', environment ' + (', '.join(f'{key}={value}' for key, value in profile['env'].items()) or 'none') + '.'
         lines[4:4] = [details, '']
     for model, data in report['models'].items():
@@ -536,10 +583,18 @@ def main():
     parser.add_argument('--request-timeout', type=float, default=600)
     parser.add_argument('--startup-timeout', type=float, default=300)
     parser.add_argument('--label', default='', help='Optional GPU/system label for the report')
-    parser.add_argument('--clover-mode', choices=('causal', 'diffusion'), default='causal',
-                        help='causal retains protocol v1; diffusion is a separately labelled Clover-only variant')
+    parser.add_argument('--clover-mode', choices=('causal', 'self-spec', 'diffusion'), default='causal',
+                        help='causal retains protocol v1; self-spec/diffusion are separately labelled Clover-only variants')
     parser.add_argument('--clover-block-size', type=int, choices=(1, 2, 4, 8, 16, 32), default=32)
     parser.add_argument('--clover-threshold', type=float, default=0.95)
+    parser.add_argument('--clover-draft', type=int, metavar='N',
+                        help='self-spec drafts, 1..31 (default:4 when self-spec is selected)')
+    parser.add_argument('--clover-accept', choices=('exact', 'threshold'),
+                        help='self-spec acceptance (default:exact); threshold is approximate and greedy-only')
+    parser.add_argument('--clover-accept-ratio', type=float, metavar='P',
+                        help='self-spec entropy acceptance cap in [0,1] (default:0.9)')
+    parser.add_argument('--clover-accept-delta', type=float, metavar='P',
+                        help='self-spec entropy acceptance multiplier in [0,1] (default:0.6)')
     parser.add_argument('--thinking', choices=('on', 'off'), default='on',
                         help='thinking on retains v1; off is a separately labelled Clover-only variant')
     parser.add_argument('--kv-type', choices=('int8', 'fp8-mma'),
@@ -556,8 +611,22 @@ def main():
         parser.error('runs must be1..20 and timeouts must be positive')
     if not math.isfinite(options.clover_threshold) or not 0 <= options.clover_threshold <= 1:
         parser.error('clover-threshold must be finite and in [0,1]')
-    if options.clover_mode == 'diffusion' and options.model != 'clover':
-        parser.error('--clover-mode diffusion requires --model clover')
+    if options.clover_mode != 'causal' and options.model != 'clover':
+        parser.error('--clover-mode self-spec/diffusion requires --model clover')
+    spec_options = (options.clover_draft, options.clover_accept, options.clover_accept_ratio, options.clover_accept_delta)
+    if any(value is not None for value in spec_options) and options.clover_mode != 'self-spec':
+        parser.error('draft/acceptance overrides require --clover-mode self-spec')
+    if options.clover_draft is not None and not 1 <= options.clover_draft <= 31:
+        parser.error('clover-draft must be in 1..31')
+    for key in ('clover_accept_ratio', 'clover_accept_delta'):
+        value = getattr(options, key)
+        if value is not None and (not math.isfinite(value) or not 0 <= value <= 1):
+            parser.error(key.replace('_', '-') + ' must be finite and in [0,1]')
+    options.clover_accept = options.clover_accept or 'exact'
+    options.clover_accept_ratio = .9 if options.clover_accept_ratio is None else options.clover_accept_ratio
+    options.clover_accept_delta = .6 if options.clover_accept_delta is None else options.clover_accept_delta
+    if options.clover_mode == 'self-spec' and options.clover_draft is None:
+        options.clover_draft = 4
     if options.thinking == 'off' and options.model != 'clover':
         parser.error('--thinking off requires --model clover')
     manual_variant = (any(value is not None for value in (options.kv_type, options.cpu_workers, options.chunk))
@@ -566,7 +635,7 @@ def main():
         parser.error('KV/worker/chunk/environment overrides require --model clover')
     if options.cpu_workers is not None and not 0 <= options.cpu_workers <= 1024:
         parser.error('cpu-workers must be in 0..1024')
-    if options.clover_mode == 'causal' and (options.clover_block_size != 32 or options.clover_threshold != 0.95):
+    if options.clover_mode != 'diffusion' and (options.clover_block_size != 32 or options.clover_threshold != 0.95):
         parser.error('block size and threshold overrides require --clover-mode diffusion')
     options.config_dir, options.output = options.config_dir.resolve(), options.output.resolve()
     cases = json.loads((HERE / 'cases.json').read_text(encoding='utf-8'))
@@ -580,13 +649,18 @@ def main():
     except (OSError, subprocess.CalledProcessError):
         commit = None
     diffusion_variant = options.clover_mode == 'diffusion'
-    variant = diffusion_variant or manual_variant
-    variant_suffix = '-clover-diffusion' if diffusion_variant else '-clover-causal-variant' if manual_variant else ''
+    self_spec_variant = options.clover_mode == 'self-spec'
+    variant = diffusion_variant or self_spec_variant or manual_variant
+    variant_suffix = ('-clover-diffusion' if diffusion_variant else '-clover-self-spec' if self_spec_variant
+                      else '-clover-causal-variant' if manual_variant else '')
     clover_profile = dict(mode=options.clover_mode, kv=options.kv_type or 'int8',
                           block_size=options.clover_block_size, threshold=options.clover_threshold,
                           cpu_workers=options.cpu_workers if options.cpu_workers is not None else 'auto',
                           chunk=options.chunk if options.chunk is not None else 'auto', env=dict(options.engine_env),
                           thinking=options.thinking == 'on')
+    if self_spec_variant:
+        clover_profile.update(draft=options.clover_draft, accept=options.clover_accept,
+                              accept_ratio=options.clover_accept_ratio, accept_delta=options.clover_accept_delta)
     report = dict(protocol=cases['protocol'] + variant_suffix,
                   base_protocol=cases['protocol'], standard=options.runs == cases['runs'] and not variant,
                   clover_mode=options.clover_mode, clover_block_size=options.clover_block_size,
@@ -596,6 +670,9 @@ def main():
                   cases_sha256=sha256(HERE / 'cases.json'), image_sha256=sha256(HERE / 'image.png'),
                   platform=platform.platform(), cpu=platform.processor(), ram_bytes=psutil.virtual_memory().total,
                   runs=options.runs, seed=cases['seed'], models={}, started=time.time())
+    if self_spec_variant:
+        report.update(clover_draft=options.clover_draft, clover_accept=options.clover_accept,
+                      clover_accept_ratio=options.clover_accept_ratio, clover_accept_delta=options.clover_accept_delta)
     def persist():
         save(options.output / 'result.json', report)
         (options.output / 'report.md').write_text(render_report(report), encoding='utf-8')
@@ -611,6 +688,9 @@ def main():
                                    clover_threshold=options.clover_threshold, clover_kv=options.kv_type or 'int8',
                                    clover_workers=options.cpu_workers, clover_chunk=options.chunk if options.chunk is not None else 'auto',
                                    clover_env=dict(options.engine_env), clover_thinking=options.thinking == 'on')
+            if self_spec_variant:
+                profile_options.update(clover_draft=options.clover_draft, clover_accept=options.clover_accept,
+                                       clover_accept_ratio=options.clover_accept_ratio, clover_accept_delta=options.clover_accept_delta)
             prepared = controlled_config(original, model, options.output, free_port(), cases, **profile_options)
             sys.path.insert(0, str(ROOT))
             from serve import tinyconfig
@@ -644,7 +724,7 @@ def main():
                     expected_kv = clover_profile['kv'] if model == 'clover' else 'int8'
                     if info.get('kv') != expected_kv or info.get('kv_grow') != 1 or info.get('mtp') != (0 if model in TEXT_ONLY_MODELS else 3):
                         raise ValueError(f'Engine does not match protocol settings: {info}')
-                    if model == 'clover' and info.get('clover_draft') != 0:
+                    if model == 'clover' and not self_spec_variant and info.get('clover_draft') != 0:
                         raise ValueError(f'The causal/diffusion profiles do not use self-speculative drafts: {info}')
                     if model == 'clover':
                         if options.cpu_workers and info.get('cpu_workers') != options.cpu_workers:
@@ -660,6 +740,8 @@ def main():
                                 info.get('clover_block_size') != options.clover_block_size or
                                 abs(float(info.get('clover_threshold', -1)) - options.clover_threshold) > 1e-6):
                             raise ValueError(f'Clover diffusion settings differ from requested profile: {info}')
+                        if self_spec_variant:
+                            validate_clover_self_spec(info, clover_profile)
                     cache_bytes(info)
                     thinking = options.thinking == 'on' if model == 'clover' else True
                     warmup = request_body(model, cases['warmup_text'], cases['warmup_max_tokens'], cases, thinking=thinking)
@@ -668,6 +750,12 @@ def main():
                         save(folder / f'{name}-request.json', body)
                         record = dict(category=category, name=name, **service.generate(body))
                         validate_native(record['native'], target)
+                        if model == 'clover' and self_spec_variant:
+                            validate_clover_self_spec(record['engine_after'], clover_profile, after_request=True)
+                            native = record['native']
+                            offered, accepted = native.get('drafts_offered'), native.get('drafts_accepted')
+                            if any(isinstance(v, bool) or not isinstance(v, int) for v in (offered, accepted)) or not 0 <= accepted <= offered:
+                                raise ValueError(f'Invalid self-spec accepted/offered counts: {native}')
                         if record['native']['engine_generated'] > body['max_tokens']:
                             raise ValueError('Engine generated more than the requested output limit')
                         if identity is not None and service.vision_identity() != identity:

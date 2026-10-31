@@ -19,6 +19,9 @@ ENGINE_OPTIONS = {
     "clover_mode": ("--clover-mode", ("causal", "self-spec", "diffusion")),
     "clover_block_size": ("--clover-block-size", 1, 32, True),
     "clover_threshold": ("--clover-threshold", 0, 1, False),
+    "clover_accept": ("--clover-accept", ("exact", "threshold")),
+    "clover_accept_ratio": ("--clover-accept-ratio", 0, 1, False),
+    "clover_accept_delta": ("--clover-accept-delta", 0, 1, False),
     "chunk": ("--chunk", 1, 4096, True),
 }
 
@@ -71,6 +74,31 @@ def clover_mode(cfg: dict) -> str:
     if draft is not None:
         draft = check("clover_draft", draft, cfg)
     return "self-spec" if draft is not None and draft > 0 else "causal"
+
+
+CLOVER_REQUEST_KEYS = ("clover_mode", "clover_draft", "clover_block_size", "clover_threshold",
+                       "clover_accept", "clover_accept_ratio", "clover_accept_delta")
+
+
+def clover_request_options(req: dict | None) -> dict:
+    """Validate explicit JSON generation overrides without coercing strings or booleans.
+
+    An omitted or null field keeps the resident engine's setting. Mode/draft
+    compatibility also depends on that setting and is checked by Service.
+    """
+    out = {}
+    for key in CLOVER_REQUEST_KEYS:
+        value = (req or {}).get(key)
+        if value is None:
+            continue
+        if key in ("clover_draft", "clover_block_size") and \
+                (isinstance(value, bool) or not isinstance(value, int)):
+            raise ValueError(f"{key}: expected a whole number")
+        try:
+            out[key] = check(key, value, {})
+        except OverflowError:
+            raise ValueError(f"{key}: expected a finite number in [0,1]") from None
+    return out
 
 
 def apply(cfg: dict, changes: dict) -> tuple[dict, list[str]]:

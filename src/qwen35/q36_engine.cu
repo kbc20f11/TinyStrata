@@ -1239,6 +1239,16 @@ struct Engine {
     std::string clover_mode = "causal";
     int clover_block_size = 32;
     float clover_threshold = 0.95f;
+    std::string clover_accept = "exact";
+    float clover_accept_ratio = 0.9f, clover_accept_delta = 0.6f;
+    bool clover_draft_penalty_gpu = [] {
+        const char* value = std::getenv("TINYSTRATA_CLOVER_DRAFT_PENALTY_GPU");
+        return !value || std::strcmp(value, "0") != 0;
+    }();
+    bool clover_gpu_exact_verify = [] {
+        const char* value = std::getenv("TINYSTRATA_CLOVER_GPU_EXACT_VERIFY");
+        return !value || std::strcmp(value, "0") != 0;
+    }();
     long long clover_blocks = 0, clover_passes = 0;
     double clover_preview_ms = 0, clover_replay_ms = 0;
     double clover_select_ms = 0;
@@ -1249,6 +1259,7 @@ struct Engine {
     int64_t* clover_counts = nullptr;
     int32_t* clover_predictions = nullptr;
     float* clover_confidences = nullptr;
+    float* clover_entropies = nullptr;
     int* clover_bad = nullptr;
     float* clover_route_mass = nullptr;
     cudaEvent_t clover_select_begin = nullptr, clover_select_end = nullptr;
@@ -1372,6 +1383,8 @@ struct Engine {
 
     void init(const Model& model, int ctx_, int tmax_) {
         m = &model;
+        clover_draft_penalty_gpu = m->clover && clover_draft_penalty_gpu;
+        clover_gpu_exact_verify = m->clover && clover_gpu_exact_verify;
         verify_capacity = m->clover ? kVerify : 8;
         ctx = ctx_;
         if (kv_grow && !strata::qwen35::kv_grow::api().ok) {
@@ -1417,6 +1430,7 @@ struct Engine {
             clover_route_mass = dalloc_t<float>((size_t) 32 * g.n_expert);
             clover_predictions = dalloc_t<int32_t>(kVerify);
             clover_confidences = dalloc(kVerify);
+            clover_entropies = dalloc(kVerify);
             clover_bad = dalloc_t<int>(1);
             CK(cudaEventCreate(&clover_select_begin));
             CK(cudaEventCreate(&clover_select_end));
@@ -3326,7 +3340,9 @@ struct Engine {
     // own read-only GDN path; only the causal accepted prefix is committed.
     template <class Verify>
     int clover_step_with(int anchor, const strata::qwen35::clover_decode::Plan& plan,
-                         std::vector<int32_t>& drafts, int32_t* picks, Verify verify) {
+                         std::vector<int32_t>& drafts, int32_t* picks, Verify verify,
+                         const strata::qwen35::clover_diffusion_gpu::Controls* preview_controls = nullptr,
+                          int64_t response_length = 0) {
         namespace CD = strata::qwen35::clover_decode;
         const int64_t start = pos;
         ensure_kv(start + plan.preview_rows);
@@ -3337,7 +3353,18 @@ struct Engine {
         CK(cudaMemcpyAsync(tok, hpin + 16, block.size() * sizeof(int32_t), cudaMemcpyHostToDevice, st));
         CK(cudaMemcpyAsync(pos0, hpin + 1, sizeof(int32_t), cudaMemcpyHostToDevice, st));
         rows_deferred = clover_preview = true;
-        forward(plan.preview_rows, start, plan.preview_rows, false, true);
+        try {
+            forward(plan.preview_rows, start, plan.preview_rows, false, true);
+            if (preview_controls) {
+                CK(strata::qwen35::clover_diffusion_gpu::launch_self_spec_stats(logits, clover_counts,
+                    response_length - 1, nullptr, plan.preview_rows, (int) m->g.n_vocab,
+                    *preview_controls, pick, nullptr, nullptr, clover_bad, st));
+                int bad = 0;
+                CK(cudaMemcpyAsync(&bad, clover_bad, sizeof(int), cudaMemcpyDeviceToHost, st));
+                CK(cudaStreamSynchronize(st));
+                if (bad) throw std::runtime_error("invalid Clover self-spec preview distribution");
+            }
+        } catch (...) { clover_preview = rows_deferred = false; throw; }
         clover_preview = rows_deferred = false;
         std::vector<int32_t> preview_picks((size_t) plan.preview_rows);
         CK(cudaMemcpyAsync(preview_picks.data(), pick, preview_picks.size() * sizeof(int32_t), cudaMemcpyDeviceToHost, st));
@@ -3347,7 +3374,8 @@ struct Engine {
         std::copy(block.begin(), block.end(), hpin + 16);
         CK(cudaMemcpyAsync(tok, hpin + 16, block.size() * sizeof(int32_t), cudaMemcpyHostToDevice, st));
         rows_deferred = true;
-        forward((int) block.size(), start, (int) block.size(), false, true);
+        try { forward((int) block.size(), start, (int) block.size(), false, true); }
+        catch (...) { rows_deferred = false; throw; }
         rows_deferred = false;
         const int accepted = verify((int) block.size(), drafts, picks);
         commit(accepted + 1);
@@ -3976,12 +4004,15 @@ int serve(Engine& E) {
                 "expert_arena_bytes=%zu expert_auto=%d vram_free_bytes=%zu vram_cuda_free_bytes=%zu "
                 "vram_physical_free_bytes=%zu vram_free_source=%s vram_reserve_mib=%zu mtp=%d "
                 "kv_auto=%d context_auto=%d gpu_cc=%d vision=%d chunk=%d clover_draft=%d "
-                "clover_mode=%s clover_block_size=%d clover_threshold=%.9g\n",
+                "clover_mode=%s clover_block_size=%d clover_threshold=%.9g "
+                "clover_accept=%s clover_accept_ratio=%.9g clover_accept_delta=%.9g clover_draft_penalty_gpu=%d clover_gpu_exact_verify=%d\n",
                 E.kv_name(), expert_slots, expert_bytes >> 20, expert_bytes, arena_bytes, E.expert_auto ? 1 : 0,
                 memory.free, memory.cuda_free, memory.physical ? memory.physical_free : memory.cuda_free,
                 memory.source(), E.vram_reserve >> 20, E.mtp_d,
                 E.kv_auto ? 1 : 0, E.context_auto ? 1 : 0, E.gpu_cc, E.vision_enabled ? 1 : 0, E.tmax, E.clover_draft,
-                E.clover_mode.c_str(), E.clover_block_size, (double) E.clover_threshold);
+                E.clover_mode.c_str(), E.clover_block_size, (double) E.clover_threshold,
+                E.clover_accept.c_str(), (double) E.clover_accept_ratio, (double) E.clover_accept_delta,
+                E.clover_draft_penalty_gpu ? 1 : 0, E.clover_gpu_exact_verify ? 1 : 0);
     E.print_kv_info();
 #if defined(STRATA_Q36_CPU_POOL)
     if (E.pool) std::printf("INFO cpu_workers=%d cpu_threads=%d\n", E.pool->workers(),
@@ -4045,7 +4076,9 @@ int serve(Engine& E) {
         std::string request_clover_mode = E.clover_mode;
         int request_clover_block = E.clover_block_size;
         float request_clover_threshold = E.clover_threshold;
-        bool request_mode_explicit = false, request_draft_explicit = false;
+        std::string request_clover_accept = E.clover_accept;
+        float request_clover_accept_ratio = E.clover_accept_ratio, request_clover_accept_delta = E.clover_accept_delta;
+        bool request_mode_explicit = false, request_draft_explicit = false, request_accept_explicit = false;
         int64_t turn_at = 0;
         bool checkpoint = true;
         for (;;) {
@@ -4088,6 +4121,16 @@ int serve(Engine& E) {
                 const float parsed = std::strtof(v, &end);
                 request_clover_threshold = end == v || *end || !std::isfinite(parsed) || parsed < 0 || parsed > 1 ? -1.f : parsed;
             }
+            else if (key == "clover_accept" && E.m->clover) {
+                request_accept_explicit = true;
+                request_clover_accept = v;
+            }
+            else if ((key == "clover_accept_ratio" || key == "clover_accept_delta") && E.m->clover) {
+                char* end = nullptr;
+                const float parsed = std::strtof(v, &end);
+                const float checked = end == v || *end || !std::isfinite(parsed) || parsed < 0 || parsed > 1 ? -1.f : parsed;
+                (key == "clover_accept_ratio" ? request_clover_accept_ratio : request_clover_accept_delta) = checked;
+            }
         }
         if (request_clover_draft < 0) {
             std::printf("ERR clover_draft takes 0 .. 31\n"); std::fflush(stdout); continue;
@@ -4103,6 +4146,18 @@ int serve(Engine& E) {
         }
         if (E.m->clover && E.vision_enabled && request_clover_mode != "causal") {
             std::printf("ERR experimental Clover vision supports causal generation only\n"); std::fflush(stdout); continue;
+        }
+        // A client may override a managed greedy/self-spec default with a
+        // temperature or a causal request. Inherit exact verification there;
+        // an explicit, incompatible threshold request remains an error.
+        if (!request_accept_explicit && request_clover_accept == "threshold" &&
+            (request_clover_mode != "self-spec" || smp.temperature != 0.f))
+            request_clover_accept = "exact";
+        if ((request_clover_accept != "exact" && request_clover_accept != "threshold") ||
+            request_clover_accept_ratio < 0 || request_clover_accept_delta < 0 ||
+            (request_clover_accept == "threshold" && (request_clover_mode != "self-spec" || smp.temperature != 0.f))) {
+            std::printf("ERR Clover threshold acceptance requires self-spec, temperature=0 and finite ratio/delta in [0,1]\n");
+            std::fflush(stdout); continue;
         }
         std::string embeddings_path;
         if (image_request) {
@@ -4309,6 +4364,19 @@ int serve(Engine& E) {
         // whose proposed history has already been rejected.
         const bool sampled = smp.needs_logits();
         const bool spec = E.mtp_d > 0;
+        const bool threshold_spec = request_clover_mode == "self-spec" && request_clover_accept == "threshold";
+        const bool gpu_spec_drafts = request_clover_mode == "self-spec" &&
+            (threshold_spec || E.clover_draft_penalty_gpu);
+        const bool gpu_exact_spec = request_clover_mode == "self-spec" &&
+            request_clover_accept == "exact" && smp.temperature == 0.f && E.clover_gpu_exact_verify;
+        const bool gpu_spec_counts = gpu_spec_drafts || gpu_exact_spec;
+        strata::qwen35::clover_diffusion_gpu::Controls spec_controls;
+        spec_controls.presence = smp.present;
+        spec_controls.frequency = smp.freq;
+        spec_controls.repetition = smp.repeat;
+        spec_controls.mask = E.m->mask_token;
+        std::vector<int64_t> spec_counts;
+        if (gpu_spec_counts) spec_counts.resize((size_t) E.m->g.n_vocab);
         std::vector<int32_t> fix, drafts;
         std::vector<float> verify_rows;
         int32_t picks[Engine::kVerify];
@@ -4324,6 +4392,7 @@ int serve(Engine& E) {
                 std::fflush(stdout);
                 ++produced;
                 hist.push_back(t);
+                if (gpu_spec_counts && t >= 0 && t < E.m->g.n_vocab) ++spec_counts[(size_t) t];
                 if (is_eos(t)) { finish = "stop"; return false; }
                 if (produced >= max_new) return false;
                 if (stop.load()) { finish = "cancel"; return false; }
@@ -4335,10 +4404,60 @@ int serve(Engine& E) {
             const auto clover_plan = strata::qwen35::clover_decode::plan(request_clover_draft, E.pos, E.ctx,
                 std::max(0, clover_budget));
             if (clover_plan) {
+                if (gpu_spec_counts)
+                    CK(cudaMemcpyAsync(E.clover_counts, spec_counts.data(), spec_counts.size() * sizeof(int64_t), cudaMemcpyHostToDevice, E.st));
                 std::vector<int32_t> row_history = hist;
                 const int a = E.clover_step_with(nx, clover_plan, drafts, picks,
                     [&](int T, const std::vector<int32_t>& proposed, int32_t* selected) {
+                        if (threshold_spec) {
+                            namespace CD = strata::qwen35::clover_decode;
+                            std::vector<int32_t> candidates(proposed);
+                            candidates.push_back(-1); // final causal row supplies only the boundary bonus
+                            CK(cudaMemcpyAsync(E.clover_predictions, candidates.data(), (size_t) T * sizeof(int32_t), cudaMemcpyHostToDevice, E.st));
+                            CK(strata::qwen35::clover_diffusion_gpu::launch_self_spec_stats(E.logits, E.clover_counts,
+                                (int64_t) hist.size(), E.clover_predictions, T, (int) E.m->g.n_vocab, spec_controls,
+                                E.pick, E.clover_confidences, E.clover_entropies, E.clover_bad, E.st));
+                            std::vector<int32_t> target((size_t) T);
+                            std::vector<float> probabilities((size_t) T), entropies((size_t) T);
+                            int bad = 0;
+                            CK(cudaMemcpyAsync(target.data(), E.pick, (size_t) T * sizeof(int32_t), cudaMemcpyDeviceToHost, E.st));
+                            CK(cudaMemcpyAsync(probabilities.data(), E.clover_confidences, (size_t) T * sizeof(float), cudaMemcpyDeviceToHost, E.st));
+                            CK(cudaMemcpyAsync(entropies.data(), E.clover_entropies, (size_t) T * sizeof(float), cudaMemcpyDeviceToHost, E.st));
+                            CK(cudaMemcpyAsync(&bad, E.clover_bad, sizeof(int), cudaMemcpyDeviceToHost, E.st));
+                            CK(cudaStreamSynchronize(E.st));
+                            if (bad) throw std::runtime_error("invalid Clover threshold verification distribution");
+                            E.clover_copy_bytes += (size_t) T * (sizeof(int32_t) + 2 * sizeof(float)) + sizeof(int);
+                            std::vector<CD::ThresholdStats> stats((size_t) T);
+                            for (int row = 0; row < T; ++row)
+                                stats[(size_t) row] = {target[(size_t) row], probabilities[(size_t) row], entropies[(size_t) row]};
+                            const auto accepted_prefix = CD::threshold_prefix(proposed, stats, request_clover_accept_ratio,
+                                request_clover_accept_delta, [&](int token) { return is_eos(token) || stop.load(); });
+                            for (int row = 0; row < accepted_prefix.accepted; ++row) selected[row] = proposed[(size_t) row];
+                            selected[accepted_prefix.accepted] = accepted_prefix.next;
+                            return accepted_prefix.accepted;
+                        }
+                        if (gpu_exact_spec) {
+                            namespace CD = strata::qwen35::clover_decode;
+                            std::vector<int32_t> candidates(proposed);
+                            candidates.push_back(-1);
+                            CK(cudaMemcpyAsync(E.clover_predictions, candidates.data(), (size_t) T * sizeof(int32_t), cudaMemcpyHostToDevice, E.st));
+                            CK(strata::qwen35::clover_diffusion_gpu::launch_self_spec_exact(E.logits, E.clover_counts,
+                                (int64_t) hist.size(), E.clover_predictions, T, (int) E.m->g.n_vocab, spec_controls,
+                                E.pick, E.clover_bad, E.st));
+                            std::vector<int32_t> target((size_t) T);
+                            int bad = 0;
+                            CK(cudaMemcpyAsync(target.data(), E.pick, (size_t) T * sizeof(int32_t), cudaMemcpyDeviceToHost, E.st));
+                            CK(cudaMemcpyAsync(&bad, E.clover_bad, sizeof(int), cudaMemcpyDeviceToHost, E.st));
+                            CK(cudaStreamSynchronize(E.st));
+                            if (bad) throw std::runtime_error("invalid Clover exact verification distribution");
+                            E.clover_copy_bytes += (size_t) T * sizeof(int32_t) + sizeof(int);
+                            const auto prefix = CD::exact_prefix(proposed, target,
+                                [&](int token) { return is_eos(token) || stop.load(); });
+                            std::copy_n(target.begin(), prefix.accepted + 1, selected);
+                            return prefix.accepted;
+                        }
                         verify_rows.resize((size_t) T * E.m->g.n_vocab);
+                        E.clover_copy_bytes += verify_rows.size() * sizeof(float);
                         CK(cudaMemcpyAsync(verify_rows.data(), E.logits, verify_rows.size() * sizeof(float), cudaMemcpyDeviceToHost, E.st));
                         CK(cudaStreamSynchronize(E.st));
                         return strata::qwen35::speculative_sampling::select_prefix(proposed.data(), T - 1, selected,
@@ -4348,7 +4467,7 @@ int serve(Engine& E) {
                                           verify_rows.data() + (size_t) (row + 1) * E.m->g.n_vocab);
                                 return sample(lg, smp, row_history, rng);
                             }, [&](int token) { return is_eos(token) || stop.load(); });
-                    });
+                    }, gpu_spec_drafts ? &spec_controls : nullptr, (int64_t) hist.size());
                 offered += (long long) drafts.size(); accepted += a;
                 live.push_back(nx);
                 live.insert(live.end(), drafts.begin(), drafts.begin() + a);
@@ -4410,11 +4529,16 @@ int serve(Engine& E) {
         const double decode_ms = ms_since(d0);
         if (E.m->clover)
             std::printf("INFO clover_last_mode=%s clover_last_block_size=%d clover_last_threshold=%.9g "
+                         "clover_last_accept=%s clover_last_accept_ratio=%.9g clover_last_accept_delta=%.9g "
+                         "clover_last_draft_penalty_gpu=%d clover_last_gpu_exact_verify=%d "
                         "clover_blocks=%lld clover_passes=%lld clover_preview_ms=%.1f clover_replay_ms=%.1f "
                         "clover_select_ms=%.1f clover_copy_bytes=%zu "
                         "clover_preview_cpu_entries=%lld clover_preview_gpu_entries=%lld clover_preview_cpu_ms=%.1f "
                         "clover_preview_wmma_calls=%lld clover_preview_simt_calls=%lld\n",
                         request_clover_mode.c_str(), request_clover_block, (double) request_clover_threshold,
+                        request_clover_accept.c_str(), (double) request_clover_accept_ratio, (double) request_clover_accept_delta,
+                         request_clover_mode == "self-spec" && (request_clover_accept == "threshold" || E.clover_draft_penalty_gpu) ? 1 : 0,
+                         request_clover_mode == "self-spec" && request_clover_accept == "exact" && smp.temperature == 0.f && E.clover_gpu_exact_verify ? 1 : 0,
                         E.clover_blocks, E.clover_passes, E.clover_preview_ms, E.clover_replay_ms, E.clover_select_ms, E.clover_copy_bytes,
                         E.clover_preview_cpu_entries, E.clover_preview_gpu_entries, E.clover_preview_cpu_ms,
                         E.clover_preview_wmma_calls, E.clover_preview_simt_calls);
@@ -4434,6 +4558,8 @@ int strata::qwen35::run(int argc, char** argv) {
     std::string clover_mode;
     int clover_block_size = 32;
     float clover_threshold = 0.95f;
+    std::string clover_accept = "exact";
+    float clover_accept_ratio = 0.9f, clover_accept_delta = 0.6f;
     bool clover_diffusion_option = false;
     double expert_vram = -1.0;
     size_t vram_reserve = (size_t) 768 << 20;
@@ -4471,6 +4597,9 @@ int strata::qwen35::run(int argc, char** argv) {
                         "  --clover-draft N         Legacy self drafts, 0..31 (0: causal, positive: self-spec)\n"
                         "  --clover-block-size N    Diffusion width: 1,2,4,8,16,32 (default: 32)\n"
                         "  --clover-threshold P     LowConfidence threshold in [0,1] (default: 0.95)\n"
+                        "  --clover-accept MODE     Self-spec acceptance: exact (default), threshold (approximate, greedy only)\n"
+                        "  --clover-accept-ratio P  Entropy acceptance cap in [0,1] (default: 0.9)\n"
+                        "  --clover-accept-delta P  Entropy acceptance multiplier in [0,1] (default: 0.6)\n"
                         "  --expert-vram auto|GiB   Routed expert budget (default: available VRAM)\n"
                         "  --expert-slots N         Resident expert slots per layer\n"
                         "  --vram-reserve-mib N     Override automatic VRAM reserve (default: 768, near-fit: 256)\n"
@@ -4561,6 +4690,23 @@ int strata::qwen35::run(int argc, char** argv) {
             }
             clover_diffusion_option = true;
         }
+        else if (a == "--clover-accept") {
+            clover_accept = next();
+            if (clover_accept != "exact" && clover_accept != "threshold") {
+                std::fprintf(stderr, "tinystrata: --clover-accept takes exact or threshold\n"); return 2;
+            }
+            clover_diffusion_option = true;
+        }
+        else if (a == "--clover-accept-ratio" || a == "--clover-accept-delta") {
+            const std::string value = next();
+            char* end = nullptr;
+            const float parsed = std::strtof(value.c_str(), &end);
+            if (end == value.c_str() || *end || !std::isfinite(parsed) || parsed < 0 || parsed > 1) {
+                std::fprintf(stderr, "tinystrata: %s takes a finite value in [0,1]\n", a.c_str()); return 2;
+            }
+            (a == "--clover-accept-ratio" ? clover_accept_ratio : clover_accept_delta) = parsed;
+            clover_diffusion_option = true;
+        }
         else if (a == "--expert-vram") {
             const std::string v = next();
             char* end = nullptr;
@@ -4644,6 +4790,9 @@ int strata::qwen35::run(int argc, char** argv) {
         if ((clover_mode == "self-spec") != (clover_draft > 0)) {
             std::fprintf(stderr, "tinystrata: self-spec requires positive --clover-draft; other modes require zero drafts\n"); return 2;
         }
+        if (clover_accept == "threshold" && clover_mode != "self-spec") {
+            std::fprintf(stderr, "tinystrata: threshold acceptance requires --clover-mode self-spec\n"); return 2;
+        }
         if (vision) {
             if (clover_mode != "causal" || clover_draft != 0) {
                 std::fprintf(stderr, "tinystrata: experimental Clover vision supports --clover-mode causal only\n"); return 2;
@@ -4675,6 +4824,9 @@ int strata::qwen35::run(int argc, char** argv) {
     E.clover_mode = m.clover ? clover_mode : "causal";
     E.clover_block_size = clover_block_size;
     E.clover_threshold = clover_threshold;
+    E.clover_accept = clover_accept;
+    E.clover_accept_ratio = clover_accept_ratio;
+    E.clover_accept_delta = clover_accept_delta;
     if (vision && (m.n_rot != 64 || !m.vision_rope || m.image_pad < 0 || m.image_pad >= m.g.n_vocab)) {
         std::fprintf(stderr, "tinystrata: vision requires Qwen3.6 interleaved M-RoPE with 64 rotary dimensions and sections 11/11/10\n");
         return 2;
