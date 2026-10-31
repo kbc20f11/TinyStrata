@@ -53,6 +53,15 @@ Any such override makes the result a **variant** even when causal mode is select
 
 For a separate Clover comparison without thinking, add `--thinking off`. The default is `--thinking on`; disabling it marks even a causal run as a **variant**, records `thinking: false`, and applies to warm-up, token counting and every text request. The canonical short texts, sampler and seed stay fixed; the different chat template changes short-input token counts. Long inputs are still counted to exactly 4K/16K. This option does not change the saved profile or the standard v1 workload.
 
+For a longer Clover comparison, add **`--include-64k`**:
+
+```powershell
+& $python .\benchmark\run.py --model clover --include-64k
+& $python .\benchmark\run.py --model clover --include-64k --clover-mode self-spec --clover-draft 3 --clover-accept exact --engine-env STRATA_IQ_MT_MIN=1
+```
+
+This opt-in extension adds one fresh **65,536-token input including the chat template**, with the existing **32-token output limit**, after the six short-generation requests and the 4K/16K requests on each start. It keeps the warm-up, inputs, sampler, seed, thinking and default four starts unchanged. Startup context must hold at least **65,568 tokens**; otherwise measurement stops before any generation request. Results are nonstandard, carry a **`-64k` protocol suffix** and `include_64k: true`, and report 64K input processing plus generation after 64K using actual output counts. The 16K cache snapshot stays at the 16K boundary; a separate 64K snapshot records Expert cache and physically mapped KV. Without this flag, the v1 workload and report fields remain unchanged. The option requires `--model clover`.
+
 ### Common configuration
 
 Use the project's fixed model files: Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS, Google Gemma 4 26B-A4B-it QAT Q4_0 with its matching vision projector and QAT MTP assistant, LiquidAI LFM2.5-24B-A2B Q4_K_M, and [AtomicChat Clover-35B-A3B-Preview IQ3_XXS](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf) (`Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf`; Expert gate/up IQ3_XXS, down IQ3_S). Keep older Clover Q4_0 measurements labeled separately; they do not represent this IQ3_XXS profile. Record the actual model and binary hashes, TinyStrata version/commit, GPU/VRAM, CPU, system RAM, OS and driver version with a submission.
@@ -167,6 +176,15 @@ Clover 専用の調整項目として、`--kv-type int8|fp8-mma`、`--cpu-worker
 いずれかを指定すると、因果生成の場合も **variant（条件を明示した別枠の測定）** として保存します。保存済みのモデル設定は変更しません。指定条件を記録し、実際の生成方式・KV・ブロック・閾値・明示したワーカー数とチャンクが一致することを確認します。エンジンが返す実ワーカー数・総スレッド数・ブロック数・反復数・preview／replay 時間も記録します。因果生成とブロック拡散の比較では同じ調整値を指定してください。調整指定のない既定コマンドは、INT8・自動設定・因果生成の v1 基準値のままです。
 
 Clover で思考なしの比較を別途行う場合は、`--thinking off` を追加します。既定は `--thinking on` です。無効にすると因果生成でも **variant** とし、`thinking: false` を記録して、ウォームアップ・トークン数の確認・すべてのテキスト生成へ適用します。規定の短文本文・サンプラー・seed は同じですが、チャットテンプレートが変わるため短い入力のトークン数は変わります。長文入力は引き続き正確に 4K／16K に合わせます。保存済み設定や標準の v1 条件は変更しません。
+
+Clover の長文比較には **`--include-64k`** を追加できます。
+
+```powershell
+& $python .\benchmark\run.py --model clover --include-64k
+& $python .\benchmark\run.py --model clover --include-64k --clover-mode self-spec --clover-draft 3 --clover-accept exact --engine-env STRATA_IQ_MT_MIN=1
+```
+
+各起動で、短文生成 6 回・4K・16K の後に、**テンプレート込みで正確に 65,536 入力トークン**、既存の**出力上限 32 トークン**の新規入力を 1 回追加します。ウォームアップ・入力本文・サンプラー・seed・思考設定・既定の 4 回起動は同じです。起動時のコンテキスト容量が **65,568 トークン**未満なら、生成リクエストを送る前に停止します。結果は標準 v1 と区別し、プロトコル名に **`-64k`**、メタデータに `include_64k: true` を付け、64K の入力処理速度と入力後の生成速度を実出力数で集計します。16K 時点のキャッシュ記録は維持し、64K 後の Expert キャッシュ・実際に割り当てた KV 領域も別途記録します。フラグなしでは v1 の測定内容と報告項目を変更しません。`--model clover` の場合だけ指定できます。
 
 ### 共通設定
 

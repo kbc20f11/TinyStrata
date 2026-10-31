@@ -335,10 +335,18 @@ def cache_bytes(info):
     return int(value)
 
 
+def validate_64k_context(info, output_limit):
+    capacity = info.get('max_context')
+    required = 65536 + output_limit
+    if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < required:
+        raise ValueError(f'--include-64k needs at least {required:,} context tokens '
+                         f'(65,536 input + {output_limit} output); engine reports {capacity!r}')
+
+
 def aggregate_model(runs):
     records = [x for run in runs if run.get('complete') for x in run['records']]
     out = {}
-    for category in ('generation', 'input_4k', 'input_16k'):
+    for category in ('generation', 'input_4k', 'input_16k', 'input_64k'):
         selected = [r for r in records if r['category'] == category]
         if not selected:
             continue
@@ -346,12 +354,19 @@ def aggregate_model(runs):
         ms = sum(r['native']['decode_ms' if category == 'generation' else 'prompt_ms'] for r in selected)
         out[category] = dict(tokens=tokens, milliseconds=ms, tok_s=tokens * 1000 / ms,
                              requests=len(selected))
+        if category == 'input_64k':
+            generated = sum(r['native']['engine_generated'] for r in selected)
+            decode_ms = sum(r['native']['decode_ms'] for r in selected)
+            out['decode_after_64k'] = dict(tokens=generated, milliseconds=decode_ms,
+                                           tok_s=generated * 1000 / decode_ms, requests=len(selected))
     images = [r for r in records if r['category'] == 'image']
     out['image'] = dict(requests=len(images), first_output_s=statistics.median(r['response']['first_output_s'] for r in images),
                         elapsed_s=statistics.median(r['response']['elapsed_s'] for r in images)) if images else None
     complete = [r for r in runs if r.get('complete')]
     out['expert_cache'] = {key: [cache_bytes(r[key]) for r in complete]
                            for key in ('startup_engine', 'after_16k_engine')}
+    if any('after_64k_engine' in r for r in complete):
+        out['expert_cache']['after_64k_engine'] = [cache_bytes(r['after_64k_engine']) for r in complete]
     out['complete_runs'] = len(complete)
     return out
 
@@ -536,6 +551,11 @@ def render_report(report):
              f'Runs per model: {report["runs"]} ({"standard" if report["standard"] else "variant/diagnostic"}).',
              '', '| Model | Generation tok/s | 4K input tok/s | 16K input tok/s | Image first output / complete, s | Expert cache GiB: startup → after16K |',
              '|---|---:|---:|---:|---:|---|']
+    if report.get('include_64k'):
+        lines[5] = ('| Model | Generation tok/s | 4K input tok/s | 16K input tok/s | 64K input tok/s | '
+                    'Generation after64K tok/s | Image first output / complete, s | '
+                    'Expert cache GiB: startup → after16K → after64K |')
+        lines[6] = '|---|---:|---:|---:|---:|---:|---:|---|'
     profile = report.get('clover_profile')
     if profile:
         details = (f'Clover profile: {profile["mode"]}, KV {profile["kv"]}, '
@@ -561,8 +581,14 @@ def render_report(report):
             low, high = f'{min(values):.2f}', f'{max(values):.2f}'
             return low if low == high else f'{low}–{high}'
         cache = result['expert_cache']
-        lines.append(f'| {MODELS[model][2]} | {rate("generation")} | {rate("input_4k")} | {rate("input_16k")} | '
-                     f'{image_text} | {span(cache["startup_engine"])} → {span(cache["after_16k_engine"])} |')
+        if report.get('include_64k'):
+            lines.append(f'| {MODELS[model][2]} | {rate("generation")} | {rate("input_4k")} | {rate("input_16k")} | '
+                         f'{rate("input_64k")} | {rate("decode_after_64k")} | {image_text} | '
+                         f'{span(cache["startup_engine"])} → {span(cache["after_16k_engine"])} → '
+                         f'{span(cache.get("after_64k_engine", []))} |')
+        else:
+            lines.append(f'| {MODELS[model][2]} | {rate("generation")} | {rate("input_4k")} | {rate("input_16k")} | '
+                         f'{image_text} | {span(cache["startup_engine"])} → {span(cache["after_16k_engine"])} |')
         if data.get('error'):
             lines.append(f'\n{model}: ERROR — {data["error"]}')
     if report.get('error'):
@@ -583,6 +609,8 @@ def main():
     parser.add_argument('--request-timeout', type=float, default=600)
     parser.add_argument('--startup-timeout', type=float, default=300)
     parser.add_argument('--label', default='', help='Optional GPU/system label for the report')
+    parser.add_argument('--include-64k', action='store_true',
+                        help='Clover-only nonstandard extension: add a fresh 65,536-token input after 16K')
     parser.add_argument('--clover-mode', choices=('causal', 'self-spec', 'diffusion'), default='causal',
                         help='causal retains protocol v1; self-spec/diffusion are separately labelled Clover-only variants')
     parser.add_argument('--clover-block-size', type=int, choices=(1, 2, 4, 8, 16, 32), default=32)
@@ -613,6 +641,8 @@ def main():
         parser.error('clover-threshold must be finite and in [0,1]')
     if options.clover_mode != 'causal' and options.model != 'clover':
         parser.error('--clover-mode self-spec/diffusion requires --model clover')
+    if options.include_64k and options.model != 'clover':
+        parser.error('--include-64k requires --model clover')
     spec_options = (options.clover_draft, options.clover_accept, options.clover_accept_ratio, options.clover_accept_delta)
     if any(value is not None for value in spec_options) and options.clover_mode != 'self-spec':
         parser.error('draft/acceptance overrides require --clover-mode self-spec')
@@ -641,6 +671,8 @@ def main():
     cases = json.loads((HERE / 'cases.json').read_text(encoding='utf-8'))
     if cases['protocol'] != 'tinystrata-bench-v1' or cases['seed'] != 1234 or len(cases['generation']) != 3:
         parser.error('Unexpected benchmark case manifest')
+    if options.include_64k and cases['prefill_max_tokens'] != 32:
+        parser.error('--include-64k requires the canonical 32-token long-input output limit')
     models = list(MODELS) if options.model == 'all' else [options.model]
     options.output.mkdir(parents=True, exist_ok=False)
     try:
@@ -650,9 +682,11 @@ def main():
         commit = None
     diffusion_variant = options.clover_mode == 'diffusion'
     self_spec_variant = options.clover_mode == 'self-spec'
-    variant = diffusion_variant or self_spec_variant or manual_variant
+    variant = diffusion_variant or self_spec_variant or manual_variant or options.include_64k
     variant_suffix = ('-clover-diffusion' if diffusion_variant else '-clover-self-spec' if self_spec_variant
                       else '-clover-causal-variant' if manual_variant else '')
+    if options.include_64k:
+        variant_suffix = (variant_suffix or '-clover-causal') + '-64k'
     clover_profile = dict(mode=options.clover_mode, kv=options.kv_type or 'int8',
                           block_size=options.clover_block_size, threshold=options.clover_threshold,
                           cpu_workers=options.cpu_workers if options.cpu_workers is not None else 'auto',
@@ -661,6 +695,8 @@ def main():
     if self_spec_variant:
         clover_profile.update(draft=options.clover_draft, accept=options.clover_accept,
                               accept_ratio=options.clover_accept_ratio, accept_delta=options.clover_accept_delta)
+    if options.include_64k:
+        clover_profile['include_64k'] = True
     report = dict(protocol=cases['protocol'] + variant_suffix,
                   base_protocol=cases['protocol'], standard=options.runs == cases['runs'] and not variant,
                   clover_mode=options.clover_mode, clover_block_size=options.clover_block_size,
@@ -670,6 +706,8 @@ def main():
                   cases_sha256=sha256(HERE / 'cases.json'), image_sha256=sha256(HERE / 'image.png'),
                   platform=platform.platform(), cpu=platform.processor(), ram_bytes=psutil.virtual_memory().total,
                   runs=options.runs, seed=cases['seed'], models={}, started=time.time())
+    if options.include_64k:
+        report['include_64k'] = True
     if self_spec_variant:
         report.update(clover_draft=options.clover_draft, clover_accept=options.clover_accept,
                       clover_accept_ratio=options.clover_accept_ratio, clover_accept_delta=options.clover_accept_delta)
@@ -721,6 +759,8 @@ def main():
                     run['startup_engine'] = service.engine()
                     info = run['startup_engine']
                     validate_engine_snapshot(info)
+                    if options.include_64k:
+                        validate_64k_context(info, cases['prefill_max_tokens'])
                     expected_kv = clover_profile['kv'] if model == 'clover' else 'int8'
                     if info.get('kv') != expected_kv or info.get('kv_grow') != 1 or info.get('mtp') != (0 if model in TEXT_ONLY_MODELS else 3):
                         raise ValueError(f'Engine does not match protocol settings: {info}')
@@ -783,6 +823,11 @@ def main():
                         text, _ = exact_length_text(count, cases['long_paragraph'], cases['long_question'], length)
                         measure(category, category, request_body(model, text, cases['prefill_max_tokens'], cases, thinking=thinking), length)
                     run['after_16k_engine'] = service.engine()
+                    if options.include_64k:
+                        text, _ = exact_length_text(count, cases['long_paragraph'], cases['long_question'], 65536)
+                        measure('input_64k', 'input_64k', request_body(model, text, cases['prefill_max_tokens'],
+                                cases, thinking=thinking), 65536)
+                        run['after_64k_engine'] = service.engine()
                     if model not in TEXT_ONLY_MODELS:
                         image = dict(type='image', source=dict(type='base64', media_type='image/png',
                                      data=base64.b64encode((HERE / 'image.png').read_bytes()).decode('ascii')))
