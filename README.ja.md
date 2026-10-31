@@ -30,7 +30,7 @@ TinyStrata は Strata を基盤に、限られた VRAM でも 30B 級の MoE モ
 
 **LFM2.5-24B-A2B Q4_K_M** は、公式の [LiquidAI GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF) を使います。ダウンロードは言語モデルの 1 ファイルで、**14.53 GB** です。
 
-**Clover-35B-A3B-Preview IQ3_XXS** は、[AtomicChat 配布の GGUF](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf) を既定で使います。エキスパートの **gate/up は IQ3_XXS、down は IQ3_S** です。ダウンロードは **15.515 GB** で、Clover 専用のトークナイザーと学習済みの双方向 GDN の追加重みを保持しています。最大コンテキストは **128K**、入力はテキストのみです。`run-api.bat --model-family clover` で選択でき、新規の単独プロファイルではポート **18083** を使い、設定は `config-clover.json` に保存します。新規の管理対象プロファイルは **INT8 KV と exact の自己投機**（`--clover-mode self-spec --clover-draft 3 --clover-accept exact`）を既定とします。同じモデルが仮生成し、因果検証で一致した先頭部分だけを採用する方式で、独立した MTP ヘッドは使いません。因果生成は `--clover-mode causal` で選択できます。LowConfidence 方式のブロック拡散と閾値による近似採用は、明示的に選ぶ実験的な機能です。[生成方式の設定](benchmark/README.md#日本語)を参照してください。いずれも空き VRAM に応じたエキスパートキャッシュ、システム RAM を使う CPU でのエキスパート計算、会話長に応じた KV の段階確保に対応します。
+**Clover-35B-A3B-Preview IQ3_XXS** は、[AtomicChat 配布の GGUF](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf) を既定で使います。エキスパートの **gate/up は IQ3_XXS、down は IQ3_S** です。ダウンロードは **15.515 GB** で、Clover 専用のトークナイザーと学習済みの双方向 GDN の追加重みを保持しています。最大コンテキストは **128K**、入力はテキストのみです。`run-api.bat --model-family clover` で選択でき、新規の単独プロファイルではポート **18083** を使い、設定は `config-clover.json` に保存します。新規の管理対象プロファイルは、因果生成（`--clover-mode causal`）と KV 自動選択を既定とします。明示的な高速設定として、`STRATA_IQ_MT_MIN=1` と `--clover-mode self-spec --clover-draft 3 --clover-accept exact --kv-type int8` を使えます。同じモデルが仮生成し、因果検証で一致した先頭部分だけを採用する方式で、独立した MTP ヘッドは使いません。MT1 は CPU Expert の演算方法を変更します。LowConfidence 方式のブロック拡散と閾値による近似採用は、明示的に選ぶ実験的な機能です。[生成方式の設定](benchmark/README.md#日本語)を参照してください。いずれも空き VRAM に応じたエキスパートキャッシュ、システム RAM を使う CPU でのエキスパート計算、会話長に応じた KV の段階確保に対応します。
 
 Qwen・Gemma・LFM はいずれも、空き VRAM に合わせたエキスパートキャッシュ、システム RAM を使った CPU でのエキスパート計算、入力時の重みのストリーミング、CUDA Graph に対応しています。共通の API と起動中のモデル切り替えを利用でき、設定はモデルごとに保存します。モデルが選んだエキスパートは省略しません。また、最大コンテキスト容量を変えずに、会話の長さに応じて KV の物理メモリを自動で増やせます。
 
@@ -172,24 +172,21 @@ Radeon カードでの速度を [tinystrata-bench-v1](benchmark/README.md#日本
 
 | GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS（因果） |
 | --- | ---: | ---: | ---: | ---: |
-| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 40.63 / 959.44 / 872.91 |
+| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 41.27 / 962.29 / 877.43 |
 | [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 | — |
 
-**Clover IQ3_XXS と Q4_0 の同日比較 — RX 9060 XT（2026-10-31）**
+**Clover IQ3_XXS — RX 9060 XT（2026-11-01）**
 
-5 条件ともコンテキスト 128K・思考有効で、ワーカー数と入力チャンクを自動選択（この PC では 15／2,048）し、API を独立に 4 回起動して測定しました。エキスパートキャッシュは起動時 → 16K 入力後の実容量（GiB）です。
+同じ規定入力を、128K コンテキスト・KV 段階確保・思考有効・CPU ワーカー数とチャンク自動で、各条件 4 回独立に API を起動して測りました。exact の行は別枠の variant、標準の因果生成 INT8 は固定 v1 の基準値です。Expert キャッシュは起動時 → 16K 入力後、単位は GiB です。
 
-| 生成条件 | KV | 生成 tok/s | 4K 入力 tok/s | 16K 入力 tok/s | エキスパートキャッシュ GiB |
-| --- | --- | ---: | ---: | ---: | --- |
-| Q4_0 因果（対照） | INT8 | 44.34 | 794.81 | 722.73 | 11.07 → 10.88 |
-| IQ3_XXS 因果 | INT8 | 40.63 | 959.44 | 872.91 | 9.98 → 9.83 |
-| IQ3_XXS 因果 | FP8 | 40.50 | 955.87 | 863.80 | 9.98 → 9.83 |
-| IQ3_XXS ブロック拡散 B4・>0.95 | INT8 | 31.27 | 954.24 | 874.74 | 9.98 → 9.83 |
-| IQ3_XXS ブロック拡散 B32・>0.95 | INT8 | 15.10 | 956.03 | 876.75 | 9.98 → 9.83 |
+| 条件 | KV | 短文生成 tok/s | 4K 入力 tok/s | 4K 入力後の生成 tok/s | 16K 入力 tok/s | 16K 入力後の生成 tok/s | Expert キャッシュ GiB |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 因果・標準（対照） | INT8 | 41.27 | 962.29 | 38.05 | 877.43 | 35.68 | 9.98 → 9.83 |
+| 因果・MT1（対照） | INT8 | 40.64 | 962.21 | 36.99 | 877.58 | 35.77 | 9.98 → 9.83 |
+| exact 自己投機 D3（高速設定・明示選択） | INT8 | 49.39 | 963.95 | 33.06 | 878.30 | 33.83 | 9.98 → 9.83 |
+| exact 自己投機 D3 | FP8（任意選択） | 46.11 | 959.49 | 28.94 | 872.02 | 18.00 | 9.98 → 9.83 |
 
-IQ3_XXS のダウンロードは 15.515 GB で、旧 Q4_0 の 19.587 GB から約 20.8% 小さくなります。モデルの省メモリ性と入力処理を優先して既定に採用し、生成速度は同日に測り直した Q4_0 と上表で比較しています。
-
-既定は因果デコードのままです。ブロック拡散は明示的に選択する機能で、回答品質に差が残るため、この速度比較は出力の同等性を示しません。 [設定・品質確認](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31) / [過去の Q4_0 計測](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31).
+アプリは因果生成・KV 自動選択・通常の CPU Expert 演算を既定のまま維持します。任意の exact D3 設定は、CPU Expert 演算を変更する MT1（`STRATA_IQ_MT_MIN=1`）を使います。ブロック拡散と閾値による近似採用は実験的な機能です。[詳細設定・品質確認](benchmark/results/rx-9060-xt.md#clover-exact-self-speculation-2026-11-01)／[過去の IQ3 比較](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31)／[過去の Q4_0 計測](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31)。
 
 ## どのプロジェクトを使うべきか
 

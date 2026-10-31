@@ -30,7 +30,7 @@ TinyStrata automatically selects inference and memory settings for your hardware
 
 **LFM2.5-24B-A2B Q4_K_M** uses the official [LiquidAI GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF). Its single language-model download is **14.53 GB**.
 
-**Clover-35B-A3B-Preview IQ3_XXS** defaults to [AtomicChat’s GGUF](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf) with **IQ3_XXS gate/up and IQ3_S down** Expert projections. The **15.515 GB** download retains Clover’s own tokenizer and learned bidirectional GDN parameters. It supports a maximum **128K** context and text input. Select it with `run-api.bat --model-family clover`; a new standalone profile uses port **18083**, with settings in `config-clover.json`. New managed profiles default to **INT8 KV and exact self-speculation** (`--clover-mode self-spec --clover-draft 3 --clover-accept exact`). The same model generates drafts and accepts only the prefix matching its causal verification, without a separate MTP head. Causal decoding remains available with `--clover-mode causal`. LowConfidence block diffusion and approximate threshold acceptance are experimental opt-ins; see the [decoding options](benchmark/README.md#english). All routes use an Expert cache sized to available VRAM, CPU Expert computation from system RAM and physical KV growth with sequence length.
+**Clover-35B-A3B-Preview IQ3_XXS** defaults to [AtomicChat’s GGUF](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf) with **IQ3_XXS gate/up and IQ3_S down** Expert projections. The **15.515 GB** download retains Clover’s own tokenizer and learned bidirectional GDN parameters. It supports a maximum **128K** context and text input. Select it with `run-api.bat --model-family clover`; a new standalone profile uses port **18083**, with settings in `config-clover.json`. New managed profiles retain causal decoding (`--clover-mode causal`) and automatic KV selection. An explicit speed profile uses `STRATA_IQ_MT_MIN=1` with `--clover-mode self-spec --clover-draft 3 --clover-accept exact --kv-type int8`: the same model drafts tokens and accepts only the prefix matching its causal verification, without a separate MTP head. MT1 changes CPU Expert arithmetic. LowConfidence block diffusion and approximate threshold acceptance remain experimental opt-ins; see the [decoding options](benchmark/README.md#english). All routes use an Expert cache sized to available VRAM, CPU Expert computation from system RAM and physical KV growth with sequence length.
 
 The Qwen, Gemma and LFM engines use an automatic VRAM Expert cache, CPU Expert computation from system RAM, prompt weight streaming and CUDA Graphs. They share the same API and support live model switching, with settings saved separately for each model. Selected Experts are not omitted. They also support automatic physical KV growth without changing the maximum context capacity.
 
@@ -172,24 +172,21 @@ Speed on Radeon cards, measured with [tinystrata-bench-v1](benchmark/README.md#e
 
 | GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS (causal) |
 | --- | ---: | ---: | ---: | ---: |
-| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 40.63 / 959.44 / 872.91 |
+| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 41.27 / 962.29 / 877.43 |
 | [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 | — |
 
-**Clover IQ3_XXS and Q4_0 control — RX 9060 XT (2026-10-31)**
+**Clover IQ3_XXS — RX 9060 XT (2026-11-01)**
 
-All five profiles use 128K context, thinking enabled, automatic workers/chunk (15 / 2,048 here) and four independent API starts. Expert cache is startup → after 16K, in GiB.
+The same canonical workloads were measured with 128K context, physical KV growth, thinking enabled, automatic CPU workers/chunks and four independent API starts per profile. Exact rows are separately labelled variants; standard causal INT8 remains the fixed v1 reference. Expert cache is startup → after 16K, in GiB.
 
-| Profile | KV | Generation tok/s | 4K input tok/s | 16K input tok/s | Expert cache GiB |
-| --- | --- | ---: | ---: | ---: | --- |
-| Q4_0 causal (control) | INT8 | 44.34 | 794.81 | 722.73 | 11.07 → 10.88 |
-| IQ3_XXS causal | INT8 | 40.63 | 959.44 | 872.91 | 9.98 → 9.83 |
-| IQ3_XXS causal | FP8 | 40.50 | 955.87 | 863.80 | 9.98 → 9.83 |
-| IQ3_XXS block diffusion B4, >0.95 | INT8 | 31.27 | 954.24 | 874.74 | 9.98 → 9.83 |
-| IQ3_XXS block diffusion B32, >0.95 | INT8 | 15.10 | 956.03 | 876.75 | 9.98 → 9.83 |
+| Profile | KV | Short-input generation tok/s | 4K input tok/s | Generation after 4K tok/s | 16K input tok/s | Generation after 16K tok/s | Expert cache GiB |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Causal, standard (control) | INT8 | 41.27 | 962.29 | 38.05 | 877.43 | 35.68 | 9.98 → 9.83 |
+| Causal, MT1 (control) | INT8 | 40.64 | 962.21 | 36.99 | 877.58 | 35.77 | 9.98 → 9.83 |
+| Exact self-spec D3 (fast opt-in) | INT8 | 49.39 | 963.95 | 33.06 | 878.30 | 33.83 | 9.98 → 9.83 |
+| Exact self-spec D3 | FP8 (optional) | 46.11 | 959.49 | 28.94 | 872.02 | 18.00 | 9.98 → 9.83 |
 
-The IQ3_XXS download is 15.515 GB versus the former Q4_0’s 19.587 GB, about 20.8% smaller. It is the default to prioritize model memory use and input processing; generation speed is compared above against a fresh Q4_0 control.
-
-Causal decoding remains the default. Block diffusion is opt-in and retains answer-quality differences; these throughput figures do not imply equivalent output. [Settings and quality checks](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31) / [Historical Q4_0 measurements](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31).
+App defaults remain causal decoding, automatic KV and normal CPU Expert arithmetic. The optional exact D3 profiles use MT1 (`STRATA_IQ_MT_MIN=1`), which changes CPU Expert arithmetic. Block diffusion and threshold acceptance remain experimental. [Settings and quality checks](benchmark/results/rx-9060-xt.md#clover-exact-self-speculation-2026-11-01) / [Historical IQ3 comparison](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31) / [Historical Q4_0 measurements](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31).
 
 ## Which project should I use?
 
