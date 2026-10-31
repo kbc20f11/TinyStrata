@@ -1,6 +1,7 @@
 """Validate the subset of upstream configuration supported by TinyStrata."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from serve import config
@@ -22,6 +23,15 @@ CLOVER_SAMPLING = {"temperature": 0.0, "top_p": 1.0, "top_k": 64, "min_p": 0.0,
                    "presence_penalty": 0.9, "frequency_penalty": 0.0, "repetition_penalty": 1.05}
 MODEL_NAMES = {"qwen35moe": "qwen3.6-35b-a3b", "lfm2moe": "lfm2.5-24b-a2b",
                "gemma4": "gemma-4-26b-a4b-it", "clover_moe": "clover-35b-a3b-preview"}
+
+
+def experimental_clover_vision(cfg: dict) -> bool:
+    """Permit the local Vision experiment only through an explicit process opt-in.
+
+    This does not change Clover's text-only profile or its default image mode.
+    Saved experimental settings cannot enable it without the environment flag.
+    """
+    return cfg.get("arch") == "clover_moe" and os.environ.get("TINYSTRATA_CLOVER_VISION") == "1"
 
 
 def migrate_generation_settings(cfg: dict) -> tuple[dict, bool]:
@@ -111,7 +121,7 @@ def check_vision_options(cfg: dict) -> str:
         tokens = cfg["vision_tokens"]
         if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
             raise ValueError("vision_tokens must be a positive whole number")
-    if text_only and (mode != "no" or cfg.get("vision")):
+    if text_only and not experimental_clover_vision(cfg) and (mode != "no" or cfg.get("vision")):
         raise ValueError(f"{MODEL_NAMES[cfg['arch']]} is text-only; use --vision no")
     return mode
 
@@ -254,8 +264,10 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
             raise ValueError("--clover-draft greater than zero requires --clover-mode self-spec")
         if mode == "self-spec" and draft == 0:
             raise ValueError("--clover-mode self-spec requires 1..31 draft tokens, or omit --clover-draft")
-        if "--vision" in seen:
+        if "--vision" in seen and not experimental_clover_vision(cfg):
             raise ValueError("Clover-35B-A3B-Preview is text-only; remove --vision")
+        if ("--vision" in seen or cfg.get("vision") or cfg.get("vision_mode", "no") != "no") and mode != "causal":
+            raise ValueError("experimental Clover Vision supports only --clover-mode causal")
         if config.value_of(cfg, "mtp") not in (None, 0):
             raise ValueError("Clover has no MTP head; use --clover-draft for self-speculative decoding")
         context = config.value_of(cfg, "max_context")

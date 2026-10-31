@@ -48,10 +48,25 @@ class TemplateRequestError(jinja2.exceptions.TemplateError, ValueError):
     client gets a 400 with the template's message instead of a dropped connection (#365)."""
 
 
+def _clover_vision_template(source: str) -> str:
+    """Restore image placeholders in the known Clover template, retaining its tokenizer and conversation rules.
+
+    An unknown/custom template fails closed rather than silently changing how it
+    renders thinking, tools or the generation prefix. No tokenizer file is edited.
+    """
+    text_branch = "{%- if item.type == 'text' and 'text' in item %}"
+    if source.count(text_branch) != 1 or "This model accepts text content only." not in source:
+        raise ValueError("the experimental Clover Vision adapter requires Clover's original text-only chat template")
+    image_branch = ("{%- if item.type == 'image' %}\n"
+                    "                {{- '<|vision_start|><|image_pad|><|vision_end|>' }}\n"
+                    "            {%- elif item.type == 'text' and 'text' in item %}")
+    return source.replace(text_branch, image_branch, 1)
+
+
 class ChatTemplate:
     """The model's chat template, rendered with the same Jinja settings as transformers' apply_chat_template."""
 
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, *, experimental_clover_vision: bool = False):
         def raise_exception(message):
             raise TemplateRequestError(message)
 
@@ -63,6 +78,9 @@ class ChatTemplate:
         env.filters["tojson"] = tojson
         env.globals["raise_exception"] = raise_exception
         self.source = Path(path).read_text(encoding="utf-8")
+        self.experimental_clover_vision = experimental_clover_vision
+        if experimental_clover_vision:
+            self.source = _clover_vision_template(self.source)
         self.call_format = ("lfm2" if "<|tool_call_start|>" in self.source else
                             "gemma" if "<|turn>" in self.source else "function")
         self.template = env.from_string(self.source)
@@ -70,6 +88,9 @@ class ChatTemplate:
 
     def render(self, messages: list[dict], tools: list[dict] | None = None, add_generation_prompt: bool = True,
                **kwargs) -> str:
+        if self.experimental_clover_vision and any(
+                m.get("role") in ("system", "developer") and _has_image(m.get("content")) for m in messages):
+            raise TemplateRequestError("System message cannot contain images.")
         # Do not use completed empty assistant turns as examples for the next reply. Keep the final message.
         # (#843.  STRATA_KEEP_EMPTY_TURNS=1 renders them as before.)
         messages = [m for i, m in enumerate(messages)

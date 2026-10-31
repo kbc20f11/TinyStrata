@@ -31,6 +31,7 @@
 #endif
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -50,6 +51,39 @@ constexpr const char* gpu_backend = "CUDA";
 
 void quiet_log(ggml_log_level level, const char* text, void*) {
     if (level >= GGML_LOG_LEVEL_WARN || std::strstr(text, "CLIP using ")) std::fputs(text, stderr);
+}
+
+bool clover_vision_opt_in() {
+    const char* value = std::getenv("TINYSTRATA_CLOVER_VISION");
+    return value && std::strcmp(value, "1") == 0;
+}
+
+// This experiment restores only the original Qwen3.6 input interface. Other
+// projector geometries and intermediate DeepStack features are unsupported.
+bool clover_projector_compatible(const std::string& path) {
+    gguf_init_params params{true, nullptr};
+    gguf_context* metadata = gguf_init_from_file(path.c_str(), params);
+    if (!metadata) return false;
+    const int64_t kind = gguf_find_key(metadata, "clip.projector_type");
+    const int64_t width = gguf_find_key(metadata, "clip.vision.projection_dim");
+    const int64_t merge = gguf_find_key(metadata, "clip.vision.spatial_merge_size");
+    bool valid = kind >= 0 && gguf_get_kv_type(metadata, kind) == GGUF_TYPE_STRING &&
+                 std::strcmp(gguf_get_val_str(metadata, kind), "qwen3vl_merger") == 0 &&
+                 width >= 0 && gguf_get_kv_type(metadata, width) == GGUF_TYPE_UINT32 &&
+                 gguf_get_val_u32(metadata, width) == 2048 &&
+                 merge >= 0 && gguf_get_kv_type(metadata, merge) == GGUF_TYPE_UINT32 &&
+                 gguf_get_val_u32(metadata, merge) == 2;
+    const int64_t deepstack = gguf_find_key(metadata, "clip.vision.is_deepstack_layers");
+    if (valid && deepstack >= 0) {
+        valid = gguf_get_kv_type(metadata, deepstack) == GGUF_TYPE_ARRAY &&
+                gguf_get_arr_type(metadata, deepstack) == GGUF_TYPE_BOOL;
+        if (valid) {
+            const auto* flags = static_cast<const uint8_t*>(gguf_get_arr_data(metadata, deepstack));
+            for (size_t i = 0; i < gguf_get_arr_n(metadata, deepstack); ++i) valid = valid && flags[i] == 0;
+        }
+    }
+    gguf_free(metadata);
+    return valid;
 }
 
 // "ENC <image> <out>": paths may contain spaces, so the image path ends at the last " " before the output path;
@@ -113,6 +147,32 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "--device requires --gpu\n");
         return 2;
     }
+    bool gemma = false, clover = false;
+    uint32_t clover_width = 0;
+    {
+        gguf_init_params params{true, nullptr};
+        gguf_context* metadata = gguf_init_from_file(model.c_str(), params);
+        const int64_t arch = metadata ? gguf_find_key(metadata, "general.architecture") : -1;
+        if (arch >= 0 && gguf_get_kv_type(metadata, arch) == GGUF_TYPE_STRING) {
+            const char* name = gguf_get_val_str(metadata, arch);
+            gemma = std::strcmp(name, "gemma4") == 0;
+            clover = std::strcmp(name, "clover_moe") == 0;
+        }
+        const int64_t width = clover ? gguf_find_key(metadata, "clover_moe.embedding_length") : -1;
+        if (width >= 0 && gguf_get_kv_type(metadata, width) == GGUF_TYPE_UINT32)
+            clover_width = gguf_get_val_u32(metadata, width);
+        if (metadata) gguf_free(metadata);
+    }
+    if (clover && !clover_vision_opt_in()) {
+        std::printf("ERR Clover is text-only; experimental vision requires TINYSTRATA_CLOVER_VISION=1\n");
+        std::fflush(stdout);
+        return 2;
+    }
+    if (clover && (clover_width != 2048 || !clover_projector_compatible(mmproj))) {
+        std::printf("ERR experimental Clover vision requires the Qwen3.6 2048-wide non-DeepStack projector\n");
+        std::fflush(stdout);
+        return 2;
+    }
     // On the CPU the GPU stays unseen: a CUDA build otherwise opens a context there (measured: 0.4-0.7 GB of VRAM,
     // 150-260 expert slots less for the engine beside it).  Before anything reaches the CUDA runtime.
     if (!gpu) {
@@ -164,16 +224,35 @@ int main(int argc, char** argv) {
 #endif
     llama_model_params mp = llama_model_default_params();
     mp.vocab_only = true;
+    llama_model_kv_override overrides[2]{};
+    if (clover) {
+        // Only architecture dispatch is overridden in memory, strictly for
+        // vocab_only loading. The actual Clover token IDs, token strings, BPE
+        // merges and pre-tokenizer remain those in its original GGUF. No Qwen
+        // model/carrier is copied and no text weights are opened or evaluated.
+        overrides[0].tag = LLAMA_KV_OVERRIDE_TYPE_STR;
+        std::strcpy(overrides[0].key, "general.architecture");
+        std::strcpy(overrides[0].val_str, "qwen35moe");
+        mp.kv_overrides = overrides;
+        std::fprintf(stderr, "tinystrata-vision: experimental Clover vocabulary compatibility (original tokenizer, no text weights)\n");
+    }
     llama_model* text = llama_model_load_from_file(model.c_str(), mp);
     if (!text) { std::printf("ERR cannot open the text model %s\n", model.c_str()); std::fflush(stdout); return 1; }
-    bool gemma = false;
-    {
-        gguf_init_params gp{true, nullptr};
-        gguf_context* gg = gguf_init_from_file(model.c_str(), gp);
-        const int64_t arch = gg ? gguf_find_key(gg, "general.architecture") : -1;
-        gemma = arch >= 0 && gguf_get_kv_type(gg, arch) == GGUF_TYPE_STRING &&
-                std::strcmp(gguf_get_val_str(gg, arch), "gemma4") == 0;
-        if (gg) gguf_free(gg);
+    if (clover) {
+        const llama_vocab* vocab = llama_model_get_vocab(text);
+        const auto token_is = [&](int32_t id, const char* expected) {
+            if (!vocab || id < 0 || id >= llama_vocab_n_tokens(vocab)) return false;
+            const char* value = llama_vocab_get_text(vocab, id);
+            return value && std::strcmp(value, expected) == 0;
+        };
+        if (!token_is(151669, "<|mask|>") || !token_is(248053, "<|vision_start|>") ||
+            !token_is(248054, "<|vision_end|>") || !token_is(248056, "<|image_pad|>")) {
+            std::printf("ERR experimental Clover vocabulary has incompatible mask or image token IDs\n");
+            std::fflush(stdout);
+            llama_model_free(text);
+            llama_backend_free();
+            return 1;
+        }
     }
 
     mtmd_context_params cp = mtmd_context_params_default();
