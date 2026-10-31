@@ -61,8 +61,8 @@ def vision_tokens(value: str) -> int:
 def prepare(a) -> tuple[dict, Path]:
     from serve import config
     from serve.backend import configure_backend, executable_backend, hardware_backend, hip_ordinal
-    from serve.tinyconfig import (CLOVER_DECODE_POLICY_VERSION, CLOVER_SAMPLING, MEMORY_POLICY_VERSION, automatic_experts,
-                                 check_files, clover_decode_defaults, migrate_settings, validate)
+    from serve.tinyconfig import (CLOVER_SAMPLING, MEMORY_POLICY_VERSION, automatic_experts,
+                                 check_files, migrate_settings, validate)
     from serve.model_setup import (configure_download, configure_vision, model_architecture, model_path, prepare_installed_model,
                                    resolve_executable, save_settings, shared_library_dirs)
 
@@ -83,8 +83,7 @@ def prepare(a) -> tuple[dict, Path]:
             {"lfm2moe": "config-lfm2.json", "gemma4": "config-gemma4.json", "clover_moe": "config-clover.json"}
             .get(requested_arch, "config.json")).expanduser().resolve()
     arch = requested_arch or "qwen35moe"
-    fresh = not path.exists()
-    cfg = config.load(path) if not fresh else {
+    cfg = config.load(path) if path.exists() else {
         "arch": arch, "model_name": {"lfm2moe": "lfm2.5-24b-a2b", "gemma4": "gemma-4-26b-a4b-it", "clover_moe": "clover-35b-a3b-preview"}
                                     .get(arch, "qwen3.6-35b-a3b"),
         "cwd": str(ROOT),
@@ -94,18 +93,8 @@ def prepare(a) -> tuple[dict, Path]:
         "memory_policy_version": MEMORY_POLICY_VERSION,
         "host": "127.0.0.1",
     }
-    if fresh and arch == "clover_moe" and not a.model and getattr(a, "vision", None) not in ("gpu", "cpu", "yes"):
-        cfg = clover_decode_defaults(cfg)
     if requested_arch is not None and cfg.get("arch", "qwen35moe") != requested_arch:
         raise ValueError("This config belongs to another model family; choose a separate --config path")
-    if cfg.get("arch") == "clover_moe":
-        # Protect explicit selections before the one-time managed-default
-        # migration sees the former stock configuration.
-        if a.model:
-            cfg["model_source"] = "local"
-        if any(getattr(a, key, None) is not None for key in config.CLOVER_REQUEST_KEYS) or \
-                getattr(a, "vision", None) in ("gpu", "cpu", "yes"):
-            cfg["clover_decode_policy_version"] = CLOVER_DECODE_POLICY_VERSION
     cfg, migrated = migrate_settings(cfg)
     requested_backend = getattr(a, "backend", None)
     if requested_backend in (None, "auto") and not cfg.get("backend"):
@@ -228,8 +217,8 @@ def main() -> int:
     ap.add_argument("--clover-draft", type=int, metavar="N",
                     help="legacy Clover self-speculative draft tokens, 0-31; 0 selects causal, positive values self-spec")
     ap.add_argument("--clover-mode", choices=("causal", "self-spec", "diffusion"),
-                    help="Clover generation mode (default: saved profile; new managed profiles use self-spec, "
-                         "explicit local models use causal); diffusion enables native LowConfidence blocks")
+                    help="Clover generation mode (default: saved profile; fresh profiles use causal); "
+                         "self-spec and native LowConfidence diffusion are explicit options")
     ap.add_argument("--clover-block-size", type=int, metavar="N",
                     help="Clover diffusion block size: 1, 2, 4, 8, 16 or 32 (default: 32)")
     ap.add_argument("--clover-threshold", type=float, metavar="P",

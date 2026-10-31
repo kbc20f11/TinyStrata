@@ -24,94 +24,44 @@ def stock(**changes):
             "sampling":dict(tinyconfig.CLOVER_SAMPLING),**changes}
 
 
-class DecodePolicy(unittest.TestCase):
-    def test_stock_managed_migrates_once(self):
-        self.assertEqual(tinyconfig.CLOVER_DECODE_DEFAULTS['clover_accept'],'exact')
-        original=stock();before=copy.deepcopy(original)
-        new,changed=tinyconfig.migrate_clover_decode_settings(original)
-        self.assertTrue(changed);self.assertEqual(original,before)
-        self.assertEqual(new['clover_decode_policy_version'],tinyconfig.CLOVER_DECODE_POLICY_VERSION)
-        for key,value in tinyconfig.CLOVER_DECODE_DEFAULTS.items():self.assertEqual(config.value_of(new,key),value)
-        self.assertEqual(config.value_of(new,'kv_type'),'int8')
-        self.assertEqual(new['env']['STRATA_IQ_MT_MIN'],'1')
-        again,changed=tinyconfig.migrate_clover_decode_settings(new)
-        self.assertFalse(changed);self.assertEqual(again,new)
-
-    def test_later_explicit_causal_stays_causal(self):
-        cfg,_=tinyconfig.migrate_clover_decode_settings(stock())
-        cfg,_=config.apply(cfg,dict(clover_mode='causal',clover_draft=0,clover_accept='exact'))
-        again,changed=tinyconfig.migrate_clover_decode_settings(cfg)
-        self.assertFalse(changed);self.assertEqual(again,cfg)
-
-    def test_custom_generation_is_retained(self):
-        variants=(dict(clover_mode='self-spec',clover_draft=7),dict(clover_mode='diffusion',clover_draft=0),
-                  dict(clover_accept='exact'),dict(clover_accept_ratio=.9),dict(clover_accept_delta=.6),
-                  dict(clover_block_size=4),dict(clover_threshold=.95))
-        for choices in variants:
-            cfg,_=config.apply(stock(),choices)
-            new,changed=tinyconfig.migrate_clover_decode_settings(cfg)
-            with self.subTest(choices=choices):
-                self.assertTrue(changed);self.assertEqual(new['args'],cfg['args'])
-                self.assertEqual(new['sampling'],cfg['sampling'])
-                self.assertEqual(new['clover_decode_policy_version'],tinyconfig.CLOVER_DECODE_POLICY_VERSION)
-        for field,value in (('temperature',.7),('presence_penalty',0),('repetition_penalty',1),('seed',7)):
-            cfg=stock(sampling={**tinyconfig.CLOVER_SAMPLING,field:value})
-            new,_=tinyconfig.migrate_clover_decode_settings(cfg)
-            self.assertEqual(new['args'],cfg['args']);self.assertEqual(new['sampling'],cfg['sampling'])
-
-    def test_local_unknown_and_vision_profiles_are_retained(self):
-        for extra in ({'model_source':'local'},{'model_source':None},{'vision_mode':'gpu'},
-                      {'vision':{'exe':'fixture'}},{'args':stock()['args']+['--vision']}):
-            cfg=stock(**extra);new,_=tinyconfig.migrate_clover_decode_settings(cfg)
-            self.assertEqual(new['args'],cfg['args'])
-            self.assertEqual(new['model_source'],cfg['model_source'])
-
-    def test_custom_kv_is_retained(self):
-        for kv in ('int8','fp8','fp8-mma'):
-            cfg,_=config.apply(stock(),{'kv_type':kv})
-            new,_=tinyconfig.migrate_clover_decode_settings(cfg)
-            self.assertEqual(config.value_of(new,'kv_type'),kv)
-            self.assertEqual(config.value_of(new,'clover_mode'),'self-spec')
-        cfg,_=config.apply(stock(),{'clover_accept':'exact'})
-        new,_=tinyconfig.migrate_clover_decode_settings(cfg)
-        self.assertEqual(config.value_of(new,'kv_type'),'auto')
-
-    def test_other_families_are_untouched(self):
-        for arch in ('qwen35moe','gemma4','lfm2moe'):
-            cfg={'arch':arch,'args':[],'env':{'USER_FIXTURE':'keep'}}
-            self.assertEqual(tinyconfig.migrate_clover_decode_settings(cfg),(cfg,False))
-            self.assertIs(tinyconfig.clover_decode_defaults(cfg),cfg)
-
-    def test_model_profiles_factory_uses_shared_defaults(self):
-        profiles=object.__new__(ModelProfiles);profiles._hardware={'backend':'hip'};profiles._engine=None
-        new=profiles._defaults('clover-35b-a3b-preview','clover_moe')
-        for key,value in tinyconfig.CLOVER_DECODE_DEFAULTS.items():self.assertEqual(config.value_of(new,key),value)
-        self.assertEqual(config.value_of(new,'kv_type'),'int8')
-        self.assertEqual(new['clover_decode_policy_version'],tinyconfig.CLOVER_DECODE_POLICY_VERSION)
-        self.assertEqual(new['env']['STRATA_IQ_MT_MIN'],'1')
-
-    def test_environment_defaults_copy_and_preserve_explicit_values(self):
-        for explicit in (None,'2','0'):
-            environment={'USER_FIXTURE':'keep'}
-            if explicit is not None:environment['STRATA_IQ_MT_MIN']=explicit
-            original=stock(env=environment);before=copy.deepcopy(original)
-            for new in (tinyconfig.clover_decode_defaults(original),tinyconfig.migrate_clover_decode_settings(original)[0]):
-                self.assertEqual(original,before)
-                self.assertEqual(new['env'],{'USER_FIXTURE':'keep','STRATA_IQ_MT_MIN':explicit if explicit is not None else '1'})
-                self.assertIsNot(new['env'],environment)
-                new['env']['USER_FIXTURE']='modified copy'
-                self.assertEqual(original,before)
-            migrated,_=tinyconfig.migrate_clover_decode_settings(original)
-            again,changed=tinyconfig.migrate_clover_decode_settings(migrated)
-            self.assertFalse(changed);self.assertEqual(again,migrated)
-
-    def test_custom_and_local_profiles_do_not_gain_environment_defaults(self):
-        local=stock(model_source='local',env={'USER_FIXTURE':'keep'})
-        custom,_=config.apply(stock(env={'USER_FIXTURE':'keep'}),{'clover_mode':'self-spec','clover_draft':7})
-        for original in (local,custom):
-            new,_=tinyconfig.migrate_clover_decode_settings(original)
+class DecodeCompatibility(unittest.TestCase):
+    def test_stock_saved_profiles_keep_original_defaults(self):
+        for origin in ('managed','local',None):
+            original=stock(model_source=origin,env={'USER_FIXTURE':'keep'})
+            before=copy.deepcopy(original)
+            new,_=tinyconfig.migrate_settings(original)
+            self.assertEqual(original,before)
+            self.assertEqual(config.value_of(new,'clover_mode'),'causal')
+            self.assertEqual(config.value_of(new,'clover_draft'),0)
+            self.assertEqual(config.value_of(new,'kv_type'),'auto')
             self.assertEqual(new['env'],original['env'])
-            self.assertNotIn('STRATA_IQ_MT_MIN',new['env'])
+            self.assertNotIn('--clover-accept',new['args'])
+            self.assertNotIn('clover_decode_policy_version',new)
+            again,changed=tinyconfig.migrate_settings(new)
+            self.assertFalse(changed);self.assertEqual(again,new)
+
+    def test_custom_settings_and_environment_are_retained(self):
+        for choices in (dict(clover_mode='self-spec',clover_draft=3,clover_accept='exact'),
+                        dict(clover_mode='self-spec',clover_draft=5,clover_accept='threshold',clover_accept_delta=.03),
+                        dict(clover_mode='diffusion',clover_draft=0,clover_block_size=4,clover_threshold=.95)):
+            original,_=config.apply(stock(env={'STRATA_IQ_MT_MIN':'1','USER_FIXTURE':'keep'}),choices)
+            new,_=tinyconfig.migrate_settings(original)
+            for key,value in choices.items():self.assertEqual(config.value_of(new,key),value)
+            self.assertEqual(config.value_of(new,'kv_type'),'auto')
+            self.assertEqual(new['env'],original['env'])
+
+    def test_factories_keep_causal_auto_kv_and_no_cpu_override(self):
+        profiles=object.__new__(ModelProfiles);profiles._hardware={'backend':'hip'};profiles._engine=None
+        for name,arch in (('clover-35b-a3b-preview','clover_moe'),('qwen3.6-35b-a3b','qwen35moe'),
+                          ('gemma-4-26b-a4b-it','gemma4'),('lfm2.5-24b-a2b','lfm2moe')):
+            new=profiles._defaults(name,arch)
+            self.assertEqual(config.value_of(new,'kv_type'),'auto')
+            self.assertNotIn('env',new)
+            self.assertNotIn('clover_decode_policy_version',new)
+            if arch=='clover_moe':
+                self.assertEqual(config.value_of(new,'clover_mode'),'causal')
+                self.assertEqual(config.value_of(new,'clover_draft'),0)
+            else:self.assertFalse(any(arg.startswith('--clover-') for arg in new['args']))
 
 
 class LauncherPolicy(unittest.TestCase):
@@ -155,9 +105,16 @@ class LauncherPolicy(unittest.TestCase):
 
     def test_fresh_managed_factory(self):
         cfg=self.prepare()
-        for key,value in tinyconfig.CLOVER_DECODE_DEFAULTS.items():self.assertEqual(config.value_of(cfg,key),value)
-        self.assertEqual(config.value_of(cfg,'kv_type'),'int8')
-        self.assertEqual(cfg['env']['STRATA_IQ_MT_MIN'],'1')
+        self.assertEqual(config.value_of(cfg,'clover_mode'),'causal')
+        self.assertEqual(config.value_of(cfg,'clover_draft'),0)
+        self.assertEqual(config.value_of(cfg,'kv_type'),'auto')
+        self.assertNotIn('env',cfg)
+        self.assertNotIn('clover_decode_policy_version',cfg)
+
+    def inherited_threshold(self):
+        cfg,_=config.apply(self.base,dict(clover_mode='self-spec',clover_draft=3,clover_accept='threshold',
+                                        clover_accept_ratio=.9,clover_accept_delta=.6))
+        return cfg
 
     def test_explicit_local_guard_precedes_migration(self):
         selected=self.root/'custom.gguf';selected.write_bytes(b'custom')
@@ -171,15 +128,14 @@ class LauncherPolicy(unittest.TestCase):
         cfg=self.prepare(self.base,clover_mode='self-spec',clover_draft=7,clover_accept='exact')
         self.assertEqual(config.value_of(cfg,'clover_draft'),7)
         self.assertEqual(config.value_of(cfg,'clover_accept'),'exact')
-        self.assertEqual(cfg['clover_decode_policy_version'],tinyconfig.CLOVER_DECODE_POLICY_VERSION)
-        again,changed=tinyconfig.migrate_clover_decode_settings(cfg)
+        self.assertNotIn('clover_decode_policy_version',cfg)
+        again,changed=tinyconfig.migrate_settings(cfg)
         self.assertFalse(changed);self.assertEqual(again,cfg)
         # A threshold-only request must not silently acquire self-spec mode.
         with self.assertRaises(ValueError):self.prepare(self.base,clover_accept='threshold')
 
     def test_inherited_threshold_falls_back_for_cli_mode(self):
-        inherited=tinyconfig.clover_decode_defaults(self.base)
-        inherited,_=config.apply(inherited,{'clover_accept':'threshold'})
+        inherited=self.inherited_threshold()
         for choice in ({'clover_mode':'causal'},{'clover_draft':0},{'clover_mode':'diffusion'}):
             cfg=self.prepare(inherited,**choice)
             self.assertEqual(config.value_of(cfg,'clover_accept'),'exact')
@@ -187,8 +143,7 @@ class LauncherPolicy(unittest.TestCase):
         with self.assertRaises(ValueError):self.prepare(inherited,clover_mode='causal',clover_accept='threshold')
 
     def test_inherited_threshold_falls_back_for_saved_positive_temperature(self):
-        inherited=tinyconfig.clover_decode_defaults(self.base)
-        inherited,_=config.apply(inherited,{'clover_accept':'threshold'})
+        inherited=self.inherited_threshold()
         inherited['sampling']={**tinyconfig.CLOVER_SAMPLING,'temperature':.7}
         cfg=self.prepare(inherited)
         self.assertEqual(config.value_of(cfg,'clover_accept'),'exact')
@@ -196,8 +151,7 @@ class LauncherPolicy(unittest.TestCase):
         with self.assertRaises(ValueError):self.prepare(inherited,clover_accept='threshold')
 
     def test_saved_null_temperature_uses_model_default(self):
-        inherited=tinyconfig.clover_decode_defaults(self.base)
-        inherited,_=config.apply(inherited,{'clover_accept':'threshold'})
+        inherited=self.inherited_threshold()
         inherited['sampling']={**tinyconfig.CLOVER_SAMPLING,'temperature':None}
         tinyconfig.validate(inherited,allow_uninstalled=True)
         for choices in ({},{'clover_accept':'threshold'}):
