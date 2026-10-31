@@ -172,10 +172,10 @@ Radeon カードでの速度を [tinystrata-bench-v1](benchmark/README.md#日本
 
 | GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS（因果） |
 | --- | ---: | ---: | ---: | ---: |
-| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 41.27 / 962.29 / 877.43 |
+| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 41.16 / 962.47 / 878.69 |
 | [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 | — |
 
-**Clover IQ3_XXS — RX 9060 XT（2026-11-01）**
+**Clover IQ3_XXS — RX 9060 XT（2026-11-01・Attention 共有前の記録）**
 
 同じ規定入力を、128K コンテキスト・KV 段階確保・思考有効・CPU ワーカー数とチャンク自動で、各条件 4 回独立に API を起動して測りました。exact の行は別枠の variant、標準の因果生成 INT8 は固定 v1 の基準値です。Expert キャッシュは起動時 → 16K 入力後、単位は GiB です。
 
@@ -188,15 +188,15 @@ Radeon カードでの速度を [tinystrata-bench-v1](benchmark/README.md#日本
 
 アプリは因果生成・KV 自動選択・通常の CPU Expert 演算を既定のまま維持します。任意の exact D3 設定は、CPU Expert 演算を変更する MT1（`STRATA_IQ_MT_MIN=1`）を使います。ブロック拡散と閾値による近似採用は実験的な機能です。[詳細設定・品質確認](benchmark/results/rx-9060-xt.md#clover-exact-self-speculation-2026-11-01)／[過去の IQ3 比較](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31)／[過去の Q4_0 計測](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31)。
 
-**Clover 64K 追測 — RX 9060 XT（2026-11-01）**
+**Clover HIP INT8 Attention 共有 — RX 9060 XT（2026-11-01）**
 
-64K 拡張規約による追加計測です。出力上限は 32 トークン、各条件で API を 4 回独立に起動し、条件を交互に測りました。4K・16K 列も今回の追測値で、MT1 因果と MT1 exact D3 が主な比較対象です。すべて実測値で、履歴長による外挿は行っていません。アプリの既定は因果生成のままです。[詳細条件と結果](benchmark/results/rx-9060-xt.md#clover-64k-follow-up-2026-11-01)。
+INT8 KV、各条件で API を 4 回独立に起動し、交互に計測しました。短文の出力上限は 128、4K・16K・64K 入力後は 32 トークンです。標準因果は通常の CPU Expert 演算（MT2）、旧・新 exact D3 は MT1 を使います。アプリの既定は因果生成のままです。[詳細条件・品質確認・結果](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01)。
 
-| 条件 | 4K 入力後の生成 tok/s | 16K 入力後の生成 tok/s | 64K 入力後の生成 tok/s | 64K 入力 tok/s | Expert キャッシュ GiB：起動時 → 64K |
-| --- | ---: | ---: | ---: | ---: | --- |
-| 因果 MT1 | 37.32 | 36.14 | 23.61 | 657.19 | 9.98 → 9.35 |
-| exact D3 MT1 | 33.93 | 34.49 | 17.63 | 658.86 | 9.98 → 9.35 |
-| 因果・標準 | 38.00 | 36.26 | 24.45 | 657.95 | 9.98 → 9.35 |
+| 条件 | 短文生成 tok/s | 4K 入力後の生成 tok/s | 16K 入力後の生成 tok/s | 64K 入力後の生成 tok/s | 64K 入力 tok/s | Expert キャッシュ GiB：起動時 → 64K |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 因果・標準 MT2 | 41.16 | 38.04 | 36.40 | 24.11 | 662.52 | 9.98 → 9.35 |
+| exact D3 MT1・旧経路 | 49.78 | 33.35 | 34.11 | 17.51 | 663.12 | 9.98 → 9.35 |
+| exact D3 MT1・Attention 共有 | 49.49 | 34.87 | 39.30 | 26.62 | 664.65 | 9.98 → 9.35 |
 
 ## どのプロジェクトを使うべきか
 

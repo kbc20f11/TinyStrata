@@ -160,10 +160,10 @@ Velocidad en tarjetas Radeon, medida con [tinystrata-bench-v1](benchmark/README.
 
 | GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS (causal) |
 | --- | ---: | ---: | ---: | ---: |
-| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 41.27 / 962.29 / 877.43 |
+| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 41.16 / 962.47 / 878.69 |
 | [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 | — |
 
-**Clover IQ3_XXS — RX 9060 XT (2026-11-01)**
+**Clover IQ3_XXS — RX 9060 XT (2026-11-01; historial anterior a la atención compartida)**
 
 Se midieron las mismas entradas fijas con contexto de 128K, crecimiento físico de KV, razonamiento activado, trabajadores CPU/bloques automáticos y cuatro inicios independientes de la API por perfil. Las filas exact se etiquetan como variantes; causal INT8 estándar sigue siendo la referencia v1 fija. Caché de expertos: inicio → después de 16K, en GiB.
 
@@ -176,15 +176,15 @@ Se midieron las mismas entradas fijas con contexto de 128K, crecimiento físico 
 
 La aplicación mantiene por defecto la decodificación causal, KV automático y la aritmética CPU habitual de los expertos. Los perfiles exact D3 opcionales usan MT1 (`STRATA_IQ_MT_MIN=1`), que modifica esa aritmética. La difusión por bloques y la aceptación por umbral siguen siendo experimentales. [Ajustes y comprobaciones de calidad](benchmark/results/rx-9060-xt.md#clover-exact-self-speculation-2026-11-01) / [Comparación IQ3 anterior](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31) / [Mediciones Q4_0 anteriores](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31).
 
-**Clover 64K medición adicional — RX 9060 XT (2026-11-01)**
+**Clover HIP INT8: consultas de atención compartidas — RX 9060 XT (2026-11-01)**
 
-Medición adicional de la extensión 64K, con límite de 32 tokens de salida y cuatro inicios independientes de la API por perfil en orden intercalado. Las columnas 4K/16K también se han vuelto a medir; la comparación principal es causal MT1 frente a exact D3 MT1. Todos los valores se midieron directamente, sin extrapolar por longitud del historial. La aplicación mantiene el modo causal predeterminado. [Condiciones y resultados](benchmark/results/rx-9060-xt.md#clover-64k-follow-up-2026-11-01).
+KV INT8; cuatro inicios independientes de la API por perfil, en orden intercalado. La generación corta tiene un límite de 128 tokens de salida y las pruebas 4K/16K/64K de 32. El causal estándar usa la aritmética CPU habitual de los expertos (MT2); exact D3 anterior y nuevo usan MT1. El modo causal sigue siendo el predeterminado. [Condiciones, calidad y resultados](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01).
 
-| Perfil | Generación tras 4K tok/s | Generación tras 16K tok/s | Generación tras 64K tok/s | Entrada 64K tok/s | Caché de expertos GiB: inicio → 64K |
-| --- | ---: | ---: | ---: | ---: | --- |
-| Causal MT1 | 37.32 | 36.14 | 23.61 | 657.19 | 9.98 → 9.35 |
-| Exact D3 MT1 | 33.93 | 34.49 | 17.63 | 658.86 | 9.98 → 9.35 |
-| Causal, estándar | 38.00 | 36.26 | 24.45 | 657.95 | 9.98 → 9.35 |
+| Perfil | Generación corta tok/s | Generación tras 4K tok/s | Generación tras 16K tok/s | Generación tras 64K tok/s | Entrada 64K tok/s | Caché de expertos GiB: inicio → 64K |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Causal, estándar MT2 | 41.16 | 38.04 | 36.40 | 24.11 | 662.52 | 9.98 → 9.35 |
+| Exact D3 MT1, ruta anterior | 49.78 | 33.35 | 34.11 | 17.51 | 663.12 | 9.98 → 9.35 |
+| Exact D3 MT1, atención compartida | 49.49 | 34.87 | 39.30 | 26.62 | 664.65 | 9.98 → 9.35 |
 
 ## ¿Qué proyecto debería usar?
 

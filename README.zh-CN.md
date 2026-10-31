@@ -160,10 +160,10 @@ Radeon 显卡上的速度，使用 [tinystrata-bench-v1](benchmark/README.md#eng
 
 | GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS（因果） |
 | --- | ---: | ---: | ---: | ---: |
-| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 41.27 / 962.29 / 877.43 |
+| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 41.16 / 962.47 / 878.69 |
 | [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 | — |
 
-**Clover IQ3_XXS — RX 9060 XT（2026-11-01）**
+**Clover IQ3_XXS — RX 9060 XT（2026-11-01，Attention 共享前的历史记录）**
 
 使用相同的固定输入，128K 上下文、KV 物理内存逐步分配、启用思考、自动 CPU 工作线程数与分块，每个配置独立启动 API 四次。exact 行单独标记为 variant；标准因果 INT8 仍是固定 v1 基准。专家缓存按启动时 → 16K 输入后列出，单位为 GiB。
 
@@ -176,15 +176,15 @@ Radeon 显卡上的速度，使用 [tinystrata-bench-v1](benchmark/README.md#eng
 
 应用默认保留因果解码、自动 KV 和正常的 CPU 专家运算。可选的 exact D3 配置使用 MT1（`STRATA_IQ_MT_MIN=1`），这会改变 CPU 专家的运算方式。块扩散与阈值接受仍为实验性功能。[设置与质量检查](benchmark/results/rx-9060-xt.md#clover-exact-self-speculation-2026-11-01)／[此前的 IQ3 对照](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31)／[此前的 Q4_0 测量](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31)。
 
-**Clover 64K 追加测量 — RX 9060 XT（2026-11-01）**
+**Clover HIP INT8 Attention 共享 — RX 9060 XT（2026-11-01）**
 
-本次按 64K 扩展规则追加测量，输出上限为 32 个 token，每个配置独立启动 API 四次，并交错测试各配置。4K/16K 列也是本次重测值，主要比较 MT1 因果与 MT1 exact D3。全部数值均直接实测，未按历史长度外推。应用仍默认使用因果解码。[详细条件与结果](benchmark/results/rx-9060-xt.md#clover-64k-follow-up-2026-11-01)。
+使用 INT8 KV，每个配置独立启动 API 四次，交错测量。短输入的输出上限为 128 个 token，4K/16K/64K 输入后为 32 个。标准因果使用通常的 CPU 专家运算（MT2），旧版和新版 exact D3 使用 MT1。应用仍默认采用因果解码。[详细条件、质量检查与结果](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01)。
 
-| 配置 | 4K 输入后生成 tok/s | 16K 输入后生成 tok/s | 64K 输入后生成 tok/s | 64K 输入 tok/s | 专家缓存 GiB：启动时 → 64K |
-| --- | ---: | ---: | ---: | ---: | --- |
-| 因果 MT1 | 37.32 | 36.14 | 23.61 | 657.19 | 9.98 → 9.35 |
-| exact D3 MT1 | 33.93 | 34.49 | 17.63 | 658.86 | 9.98 → 9.35 |
-| 因果・标准 | 38.00 | 36.26 | 24.45 | 657.95 | 9.98 → 9.35 |
+| 配置 | 短输入生成 tok/s | 4K 输入后生成 tok/s | 16K 输入后生成 tok/s | 64K 输入后生成 tok/s | 64K 输入 tok/s | 专家缓存 GiB：启动时 → 64K |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 因果・标准 MT2 | 41.16 | 38.04 | 36.40 | 24.11 | 662.52 | 9.98 → 9.35 |
+| exact D3 MT1・旧路径 | 49.78 | 33.35 | 34.11 | 17.51 | 663.12 | 9.98 → 9.35 |
+| exact D3 MT1・Attention 共享 | 49.49 | 34.87 | 39.30 | 26.62 | 664.65 | 9.98 → 9.35 |
 
 ## 我应该使用哪个项目？
 
