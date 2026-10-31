@@ -188,6 +188,16 @@ Radeon カードでの速度を [tinystrata-bench-v1](benchmark/README.md#日本
 
 アプリは因果生成・KV 自動選択・通常の CPU Expert 演算を既定のまま維持します。任意の exact D3 設定は、CPU Expert 演算を変更する MT1（`STRATA_IQ_MT_MIN=1`）を使います。ブロック拡散と閾値による近似採用は実験的な機能です。[詳細設定・品質確認](benchmark/results/rx-9060-xt.md#clover-exact-self-speculation-2026-11-01)／[過去の IQ3 比較](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31)／[過去の Q4_0 計測](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31)。
 
+**Clover 64K 追測 — RX 9060 XT（2026-11-01）**
+
+64K 拡張規約による追加計測です。出力上限は 32 トークン、各条件で API を 4 回独立に起動し、条件を交互に測りました。4K・16K 列も今回の追測値で、MT1 因果と MT1 exact D3 が主な比較対象です。すべて実測値で、履歴長による外挿は行っていません。アプリの既定は因果生成のままです。[詳細条件と結果](benchmark/results/rx-9060-xt.md#clover-64k-follow-up-2026-11-01)。
+
+| 条件 | 4K 入力後の生成 tok/s | 16K 入力後の生成 tok/s | 64K 入力後の生成 tok/s | 64K 入力 tok/s | Expert キャッシュ GiB：起動時 → 64K |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 因果 MT1 | 37.32 | 36.14 | 23.61 | 657.19 | 9.98 → 9.35 |
+| exact D3 MT1 | 33.93 | 34.49 | 17.63 | 658.86 | 9.98 → 9.35 |
+| 因果・標準 | 38.00 | 36.26 | 24.45 | 657.95 | 9.98 → 9.35 |
+
 ## どのプロジェクトを使うべきか
 
 | 目的とハードウェア | プロジェクト |

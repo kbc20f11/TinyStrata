@@ -176,6 +176,16 @@ Dieselben festgelegten Eingaben wurden mit 128K Kontext, wachsendem physischem K
 
 Die App behält kausale Dekodierung, automatische KV-Auswahl und normale CPU-Expertenarithmetik als Standard bei. Die optionalen exakten D3-Profile verwenden MT1 (`STRATA_IQ_MT_MIN=1`), das die CPU-Expertenarithmetik ändert. Blockdiffusion und Schwellenwertannahme bleiben experimentell. [Einstellungen und Qualitätsprüfungen](benchmark/results/rx-9060-xt.md#clover-exact-self-speculation-2026-11-01) / [Früherer IQ3-Vergleich](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31) / [Frühere Q4_0-Messungen](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31).
 
+**Clover 64K Nachmessung — RX 9060 XT (2026-11-01)**
+
+Zusätzliche Messung der 64K-Erweiterung mit maximal 32 Ausgabetokens und vier unabhängigen API-Starts je Profil in abwechselnder Reihenfolge. Auch die 4K-/16K-Spalten stammen aus dieser Nachmessung; der Hauptvergleich ist kausal MT1 gegen exact D3 MT1. Alle Werte sind direkt gemessen, ohne Extrapolation der Verlaufslänge. Der App-Standard bleibt kausal. [Bedingungen und Ergebnisse](benchmark/results/rx-9060-xt.md#clover-64k-follow-up-2026-11-01).
+
+| Profil | Generierung nach 4K tok/s | Generierung nach 16K tok/s | Generierung nach 64K tok/s | 64K-Eingabe tok/s | Expertencache GiB: Start → 64K |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Kausal MT1 | 37.32 | 36.14 | 23.61 | 657.19 | 9.98 → 9.35 |
+| Exact D3 MT1 | 33.93 | 34.49 | 17.63 | 658.86 | 9.98 → 9.35 |
+| Kausal, Standard | 38.00 | 36.26 | 24.45 | 657.95 | 9.98 → 9.35 |
+
 ## Welches Projekt sollte ich verwenden?
 
 | Ihr Ziel und Ihre Hardware | Projekt |

@@ -188,6 +188,16 @@ The same canonical workloads were measured with 128K context, physical KV growth
 
 App defaults remain causal decoding, automatic KV and normal CPU Expert arithmetic. The optional exact D3 profiles use MT1 (`STRATA_IQ_MT_MIN=1`), which changes CPU Expert arithmetic. Block diffusion and threshold acceptance remain experimental. [Settings and quality checks](benchmark/results/rx-9060-xt.md#clover-exact-self-speculation-2026-11-01) / [Historical IQ3 comparison](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31) / [Historical Q4_0 measurements](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31).
 
+**Clover 64K follow-up — RX 9060 XT (2026-11-01)**
+
+Additional 64K-extension measurements use a 32-token output limit and four independent API starts per profile in interleaved order. The 4K/16K columns are fresh reruns in this extension; compare MT1 causal with MT1 exact D3. All values are measured directly, without history-length extrapolation. The causal app default is unchanged. [Detailed conditions and results](benchmark/results/rx-9060-xt.md#clover-64k-follow-up-2026-11-01).
+
+| Profile | Generation after 4K tok/s | Generation after 16K tok/s | Generation after 64K tok/s | 64K input tok/s | Expert cache GiB: startup → 64K |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Causal MT1 | 37.32 | 36.14 | 23.61 | 657.19 | 9.98 → 9.35 |
+| Exact D3 MT1 | 33.93 | 34.49 | 17.63 | 658.86 | 9.98 → 9.35 |
+| Causal, standard | 38.00 | 36.26 | 24.45 | 657.95 | 9.98 → 9.35 |
+
 ## Which project should I use?
 
 | Your goal and hardware                                                                                                                       | Project                                                               |

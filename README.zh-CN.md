@@ -176,6 +176,16 @@ Radeon 显卡上的速度，使用 [tinystrata-bench-v1](benchmark/README.md#eng
 
 应用默认保留因果解码、自动 KV 和正常的 CPU 专家运算。可选的 exact D3 配置使用 MT1（`STRATA_IQ_MT_MIN=1`），这会改变 CPU 专家的运算方式。块扩散与阈值接受仍为实验性功能。[设置与质量检查](benchmark/results/rx-9060-xt.md#clover-exact-self-speculation-2026-11-01)／[此前的 IQ3 对照](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31)／[此前的 Q4_0 测量](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31)。
 
+**Clover 64K 追加测量 — RX 9060 XT（2026-11-01）**
+
+本次按 64K 扩展规则追加测量，输出上限为 32 个 token，每个配置独立启动 API 四次，并交错测试各配置。4K/16K 列也是本次重测值，主要比较 MT1 因果与 MT1 exact D3。全部数值均直接实测，未按历史长度外推。应用仍默认使用因果解码。[详细条件与结果](benchmark/results/rx-9060-xt.md#clover-64k-follow-up-2026-11-01)。
+
+| 配置 | 4K 输入后生成 tok/s | 16K 输入后生成 tok/s | 64K 输入后生成 tok/s | 64K 输入 tok/s | 专家缓存 GiB：启动时 → 64K |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 因果 MT1 | 37.32 | 36.14 | 23.61 | 657.19 | 9.98 → 9.35 |
+| exact D3 MT1 | 33.93 | 34.49 | 17.63 | 658.86 | 9.98 → 9.35 |
+| 因果・标准 | 38.00 | 36.26 | 24.45 | 657.95 | 9.98 → 9.35 |
+
 ## 我应该使用哪个项目？
 
 | 你的目标和硬件 | 项目 |
