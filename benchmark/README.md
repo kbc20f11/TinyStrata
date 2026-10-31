@@ -17,13 +17,36 @@ $python = "$env:LOCALAPPDATA\TinyStrata-work\runtime\.venv\Scripts\python.exe"
 
 From a source checkout, use `.\benchmark\run.py` instead. `--model qwen`, `--model gemma`, `--model lfm` and `--model clover` select one model. Clover uses `config-clover.json`. The runner uses the existing model/configuration files, starts its own loopback API, and does not change the saved configuration. Results go under `%LOCALAPPDATA%\TinyStrata-work\benchmarks\`; generated logs and results do not belong in Git.
 
+Fresh Clover profiles use causal decoding. Native LowConfidence block diffusion is available explicitly; measure the two modes separately:
+
+```powershell
+& $python .\benchmark\run.py --model clover --clover-mode causal
+& $python .\benchmark\run.py --model clover --clover-mode diffusion --clover-block-size 32 --clover-threshold 0.95
+```
+
+The first command retains the **`tinystrata-bench-v1` causal baseline**. The second uses the same inputs, repetitions, sampling and timing boundaries, but reports **`tinystrata-bench-v1-clover-diffusion`** with `standard: false`, so it cannot be mistaken for a causal v1 result. Its block size and confidence threshold are recorded with the result. The modes generate text differently; identical output token sequences are not a requirement. Count only final returned tokens, including thinking, once per token. Mask predictions and denoising iterations do not increase the output token count, and their execution time remains inside decode time.
+
+Both profiles keep Clover's model-specific sampling settings; this protocol uses greedy generation and does not characterize sampled generation.
+
+`--clover-block-size` accepts **1, 2, 4, 8, 16 or 32** (default **32**). `--clover-threshold` accepts **0–1** (default **0.95**); a pending masked position is filled when its confidence is strictly above the threshold, with at least one position filled per pass. These are diffusion settings. Legacy `--clover-draft 0` selects causal decoding; a positive draft count selects the separate self-speculative route, which uses causal verification.
+
+Clover-only optional overrides are `--kv-type int8|fp8-mma`, `--cpu-workers N` (0 = auto), `--chunk auto|N`, and repeatable `--engine-env STRATA_NAME=VALUE` / `TINYSTRATA_NAME=VALUE`. For example:
+
+```powershell
+& $python .\benchmark\run.py --model clover --clover-mode diffusion --kv-type fp8-mma --cpu-workers 9 --chunk 1024
+```
+
+Any such override makes the result a **variant** even when causal mode is selected. Saved profiles remain unchanged. The runner records the requested profile, checks the native mode/KV/block/threshold/explicit workers/chunk, and keeps the engine's reported worker count, total threads, block/pass counts and preview/replay times when available. Use the same overrides for the causal and diffusion comparison; the default command remains the INT8/automatic causal v1 baseline.
+
+For a separate Clover comparison without thinking, add `--thinking off`. The default is `--thinking on`; disabling it marks even a causal run as a **variant**, records `thinking: false`, and applies to warm-up, token counting and every text request. The canonical short texts, sampler and seed stay fixed; the different chat template changes short-input token counts. Long inputs are still counted to exactly 4K/16K. This option does not change the saved profile or the standard v1 workload.
+
 ### Common configuration
 
 Use the project's fixed model files: Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS, Google Gemma 4 26B-A4B-it QAT Q4_0 with its matching vision projector and QAT MTP assistant, LiquidAI LFM2.5-24B-A2B Q4_K_M, and DiffuSpace Clover-35B-A3B-Preview Q4_0. Record the actual model and binary hashes, TinyStrata version/commit, GPU/VRAM, CPU, system RAM, OS and driver version with a submission.
 
 - **INT8 KV** is the common comparison profile on NVIDIA and Radeon. FP8 or manually tuned settings belong in separately labelled results.
 - KV growth, automatic context capacity, automatic input chunk size, automatic Expert placement and automatic CPU worker selection. Graphs use their normal defaults. Do not add tuning environment variables or omit Experts/tokens.
-- MTP **3** and a **GPU-resident vision encoder** for Qwen/Gemma, including the three text benchmarks. LFM and Clover have neither MTP nor Vision. The standard Clover profile uses causal decoding (`--clover-draft 0`); self-speculative measurements need a separate label.
+- MTP **3** and a **GPU-resident vision encoder** for Qwen/Gemma, including the three text benchmarks. LFM and Clover have neither MTP nor Vision. The standard Clover profile explicitly uses causal decoding (`--clover-mode causal`, D0); block diffusion and self-speculative measurements need separate labels.
 - One request at a time; **seed 1234**. The following sampling values are fixed in `cases.json`, with the added Clover profile fixed in `run.py` so the existing v1 input hashes remain unchanged:
 
 | Model | Temperature | top_p | top_k | min_p | presence_penalty | repetition_penalty |
@@ -96,13 +119,36 @@ $python = "$env:LOCALAPPDATA\TinyStrata-work\runtime\.venv\Scripts\python.exe"
 
 ソースを取得したフォルダーでは、スクリプトのパスを `.\benchmark\run.py` に置き換えます。個別に測る場合は `--model qwen`、`--model gemma`、`--model lfm`、`--model clover` を使います。Clover の設定ファイルは `config-clover.json` です。既存のモデルと設定ファイルを使って計測専用 API を起動し、保存済みの設定は書き換えません。結果は `%LOCALAPPDATA%\TinyStrata-work\benchmarks\` に保存します。生成したログや結果は Git に含めません。
 
+Clover の新規プロファイルは因果デコードを既定とします。LowConfidence 方式のネイティブなブロック拡散は明示的に選択でき、因果生成とは別々に測定します。
+
+```powershell
+& $python .\benchmark\run.py --model clover --clover-mode causal
+& $python .\benchmark\run.py --model clover --clover-mode diffusion --clover-block-size 32 --clover-threshold 0.95
+```
+
+前者は **`tinystrata-bench-v1` の因果生成の基準値**です。後者は入力・反復数・サンプリング・計時範囲を同じにし、**`tinystrata-bench-v1-clover-diffusion`**・`standard: false` として保存します。因果生成の v1 結果とは混同せず、ブロックサイズと信頼度の閾値も結果へ記録します。生成方式が異なるため、出力トークン列の完全一致は求めません。思考を含む、最終的に返したトークンを一度ずつ数えます。マスク位置の予測回数や拡散の反復回数は出力数に加えず、その実行時間はデコード時間に含めます。
+
+両方式とも Clover のモデル別サンプリング設定を維持します。本規約は greedy 生成を測るため、確率的にサンプリングする場合の結果を示すものではありません。
+
+`--clover-block-size` は **1・2・4・8・16・32**（既定 **32**）、`--clover-threshold` は **0〜1**（既定 **0.95**）を指定できます。未確定のマスク位置のうち、信頼度が閾値を上回る位置を埋め、該当位置がなくても1回の反復で最低1位置は確定させます。どちらもブロック拡散の設定です。従来の `--clover-draft 0` は因果デコード、正のドラフト数は因果検証を使う別方式の自己投機デコードを選びます。
+
+Clover 専用の調整項目として、`--kv-type int8|fp8-mma`、`--cpu-workers N`（0 は自動）、`--chunk auto|N`、繰り返し指定できる `--engine-env STRATA_NAME=VALUE`／`TINYSTRATA_NAME=VALUE` も使えます。例：
+
+```powershell
+& $python .\benchmark\run.py --model clover --clover-mode diffusion --kv-type fp8-mma --cpu-workers 9 --chunk 1024
+```
+
+いずれかを指定すると、因果生成の場合も **variant（条件を明示した別枠の測定）** として保存します。保存済みのモデル設定は変更しません。指定条件を記録し、実際の生成方式・KV・ブロック・閾値・明示したワーカー数とチャンクが一致することを確認します。エンジンが返す実ワーカー数・総スレッド数・ブロック数・反復数・preview／replay 時間も記録します。因果生成とブロック拡散の比較では同じ調整値を指定してください。調整指定のない既定コマンドは、INT8・自動設定・因果生成の v1 基準値のままです。
+
+Clover で思考なしの比較を別途行う場合は、`--thinking off` を追加します。既定は `--thinking on` です。無効にすると因果生成でも **variant** とし、`thinking: false` を記録して、ウォームアップ・トークン数の確認・すべてのテキスト生成へ適用します。規定の短文本文・サンプラー・seed は同じですが、チャットテンプレートが変わるため短い入力のトークン数は変わります。長文入力は引き続き正確に 4K／16K に合わせます。保存済み設定や標準の v1 条件は変更しません。
+
 ### 共通設定
 
 モデルはプロジェクト指定の Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS、Google Gemma 4 26B-A4B-it QAT Q4_0 と対応する画像プロジェクタ・QAT MTP アシスタント、LiquidAI LFM2.5-24B-A2B Q4_K_M、DiffuSpace Clover-35B-A3B-Preview Q4_0 を使います。モデルとバイナリのハッシュ、TinyStrata のバージョン／コミット、GPU・搭載 VRAM、CPU、RAM、OS、ドライバーを結果に併記します。
 
 - NVIDIA・Radeon 共通の比較は **INT8 KV**。FP8 や手動調整を加えた結果は別枠です。
 - KV は段階確保。コンテキスト容量・入力チャンク・Expert 配置・CPU ワーカー数は自動選択、Graph は既定の動作です。高速化用の環境変数や Expert／トークンの省略は追加しません。
-- Qwen・Gemma は **MTP 3 と GPU 常駐 Vision** を使用します。テキストの計測でも画像エンコーダーを常駐させます。LFM・Clover は MTP・Vision ともに使用しません。標準の Clover は因果経路のみ（`--clover-draft 0`）で測り、自己投機の計測は別枠にします。
+- Qwen・Gemma は **MTP 3 と GPU 常駐 Vision** を使用します。テキストの計測でも画像エンコーダーを常駐させます。LFM・Clover は MTP・Vision ともに使用しません。標準の Clover は因果経路（`--clover-mode causal`、D0）を明示して測り、ブロック拡散・自己投機の計測は別枠にします。
 - 同時実行は 1 リクエスト、**seed は 1234**。サンプリングは下表で固定します。既存 v1 入力のハッシュを維持するため、追加した Clover の設定は `run.py` に、他のモデルは `cases.json` に定義します。
 
 | モデル | temperature | top_p | top_k | min_p | presence_penalty | repetition_penalty |

@@ -625,12 +625,21 @@ function projectionText(c) {
   const [mode, range, single] = String(c).split(":");
   return tr("about.projection", "{mode} control vector on layers {range}{single}. Configured per chat in Chat settings.", {mode: mode === "project" ? tr("about.projectionMode", "Projection") : tr("about.additiveMode", "Additive"), range, single: single ? " · " + single : ""});
 }
+function cloverGenerationText(eng) {
+  if (eng.model !== "clover-35b-a3b-preview" && !eng.clover_mode) return null;
+  const mode = eng.clover_mode || (eng.clover_draft ? "self-spec" : "causal");
+  if (mode === "diffusion") return tr("about.blockDiffusion", "Block diffusion: {n} tokens, confidence > {threshold}",
+    {n: fmt(eng.clover_block_size || 32), threshold: fmt(Number(eng.clover_threshold ?? .95), 2)});
+  return mode === "self-spec" ? tr("about.selfSpeculativeGeneration", "Self-speculative decoding")
+    : tr("about.causalGeneration", "Causal decoding");
+}
 function renderAbout(eng, hw, st) {
   const kv = {int8: "INT8", q4_0: "Q4_0", fp16: "FP16", fp8: "FP8"}[eng.kv] || eng.kv;
   facts($("facts-engine"), [
     [tr("about.model", "Model"), eng.model],
     [tr("about.engine", "Engine"), eng.version ? `v${eng.version}` : tr("about.fromSource", "built from source")],
     [tr("about.context", "Context"), eng.max_context ? tr("common.tokenCount", "{n} tokens", {n: fmt(eng.max_context)}) : null],
+    [tr("about.generationMode", "Generation mode"), cloverGenerationText(eng)],
     [tr("about.kvCache", "KV cache"), kv ? `${kv} · ${eng.kv_resident ? tr("about.streamedKv", "{n} positions per layer in VRAM; the rest in RAM", {n: fmt(eng.kv_resident)}) : tr("about.residentKv", "all in VRAM")}` : null],
     [tr("monitor.expertsVram", "Experts in VRAM"), eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)` : null],
     [tr("about.speculation", "Speculation"), eng.clover_draft ? tr("about.selfDraft", "Self-speculative drafts up to {n} tokens", {n: fmt(eng.clover_draft)})

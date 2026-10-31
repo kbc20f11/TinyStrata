@@ -14,6 +14,7 @@ import math
 import os
 from pathlib import Path
 import platform
+import re
 import socket
 import statistics
 import subprocess
@@ -38,10 +39,44 @@ TEXT_ONLY_MODELS = ('lfm', 'clover')
 # Adding a model must not change the existing v1 texts/image or their hashes.
 CLOVER_SAMPLING = {'temperature': 0.0, 'top_p': 1.0, 'top_k': 64, 'min_p': 0.0,
                    'presence_penalty': 0.9, 'repetition_penalty': 1.05, 'frequency_penalty': 0.0}
-ENGINE_KEYS = ('model', 'version', 'kv', 'kv_grow', 'mtp', 'clover_draft', 'vision', 'images',
+ENGINE_KEYS = ('model', 'version', 'kv', 'kv_grow', 'mtp', 'clover_draft', 'clover_mode',
+               'clover_block_size', 'clover_threshold', 'clover_blocks', 'clover_passes',
+               'clover_preview_ms', 'clover_replay_ms', 'clover_select_ms', 'clover_copy_bytes',
+               'clover_preview_cpu_entries', 'clover_preview_gpu_entries', 'clover_preview_cpu_ms',
+               'clover_preview_wmma_calls', 'clover_preview_simt_calls',
+               'clover_last_mode', 'clover_last_block_size', 'clover_last_threshold',
+               'cpu_workers', 'cpu_threads', 'vision', 'images',
                'max_context', 'context_auto', 'chunk', 'chunk_auto', 'expert_auto',
                'expert_slots', 'expert_cache_bytes', 'expert_cache_mib',
                'kv_logical_bytes', 'kv_mapped_bytes', 'kv_committed_rows', 'gpu_cc')
+CLOVER_INFO_FLOATS = ('clover_threshold', 'clover_last_threshold', 'clover_preview_ms',
+                      'clover_replay_ms', 'clover_select_ms', 'clover_preview_cpu_ms')
+
+
+def engine_snapshot(info):
+    """Keep public benchmark fields; native INFO's known decimal fields can be strings."""
+    result = {key: value for key, value in info.items() if key in ENGINE_KEYS}
+    for key in CLOVER_INFO_FLOATS:
+        value = result.get(key)
+        if isinstance(value, str):
+            try:
+                parsed = float(value)
+            except ValueError:
+                continue
+            if math.isfinite(parsed):
+                result[key] = parsed
+    return result
+
+
+def validate_engine_snapshot(info):
+    for key in CLOVER_INFO_FLOATS:
+        if key not in info:
+            continue
+        value = info[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+            raise ValueError(f'Invalid native Clover INFO number: {key}={value!r}')
+        if key in ('clover_threshold', 'clover_last_threshold') and value > 1:
+            raise ValueError(f'Invalid native Clover confidence threshold: {key}={value!r}')
 
 
 def save(path, value):
@@ -73,7 +108,28 @@ def model_sampling(model, cases):
     return dict(CLOVER_SAMPLING if model == 'clover' else cases['sampling'][model])
 
 
-def controlled_config(original, model, folder, port, cases):
+def chunk_option(value):
+    if value == 'auto':
+        return 'auto'
+    try:
+        number = int(value)
+        if 1 <= number <= 4096:
+            return number
+    except ValueError:
+        pass
+    raise argparse.ArgumentTypeError('expected auto or an input chunk from 1 to 4096')
+
+
+def engine_environment(value):
+    key, separator, text = value.partition('=')
+    if not separator or re.fullmatch(r'(?:STRATA_|TINYSTRATA_)[A-Z0-9_]+', key) is None or any(c in text for c in '\x00\r\n'):
+        raise argparse.ArgumentTypeError('expected STRATA_*/TINYSTRATA_*=VALUE without newlines')
+    return key, text
+
+
+def controlled_config(original, model, folder, port, cases, *, clover_mode='causal',
+                      clover_block_size=32, clover_threshold=0.95, clover_kv='int8',
+                      clover_workers=None, clover_chunk='auto', clover_env=None, clover_thinking=True):
     file, arch, name = MODELS[model]
     if original.get('arch', 'qwen35moe') != arch:
         raise ValueError(f'{file} does not select {arch}')
@@ -94,13 +150,25 @@ def controlled_config(original, model, folder, port, cases):
     if model not in TEXT_ONLY_MODELS:
         native += ['--mtp', '3', '--vision']
     elif model == 'clover':
-        native += ['--clover-draft', '0']
+        if clover_mode not in ('causal', 'diffusion'):
+            raise ValueError('Benchmark Clover modes are causal or diffusion')
+        native[native.index('--kv-type') + 1] = clover_kv
+        native[native.index('--chunk') + 1] = str(clover_chunk)
+        native += ['--clover-mode', clover_mode]
+        if clover_workers is not None:
+            native += ['--cpu-threads', str(clover_workers)]
+        if clover_mode == 'diffusion':
+            native += ['--clover-block-size', str(clover_block_size), '--clover-threshold', str(clover_threshold)]
+        else:
+            native += ['--clover-draft', '0']
     cfg = {key: copy.deepcopy(original[key]) for key in
            ('exe', 'tokenizer', 'backend', 'lib_dirs', 'gpu', 'hip_ordinal', 'cuda_device')
            if key in original}
     cfg.update(arch=arch, model_name=name, args=native, cwd=str(ROOT),
                host='127.0.0.1', port=port, log=str(Path(folder) / 'engine.log'),
-               env={}, parallel=1, enable_thinking=True, max_tokens=24576 if model == 'clover' else 32768,
+               env=dict(clover_env or {}) if model == 'clover' else {}, parallel=1,
+               enable_thinking=clover_thinking if model == 'clover' else True,
+               max_tokens=24576 if model == 'clover' else 32768,
                sampling=model_sampling(model, cases), vision_mode='no' if model in TEXT_ONLY_MODELS else 'gpu')
     for key in ('exe', 'tokenizer'):
         if key in cfg:
@@ -319,7 +387,7 @@ class Service:
 
     def engine(self):
         metrics = self.json('/metrics')
-        return {k: v for k, v in metrics['engine'].items() if k in ENGINE_KEYS}
+        return engine_snapshot(metrics['engine'])
 
     def vision_identity(self):
         if not self.cfg.get('vision'):
@@ -367,8 +435,10 @@ class Service:
         metrics = self.json('/metrics')
         if not metrics.get('requests'):
             raise RuntimeError('No native timing record after generation')
+        after = engine_snapshot(metrics['engine'])
+        validate_engine_snapshot(after)
         return dict(response=streamed, native=metrics['requests'][0], engine_before=before,
-                    engine_after={k: v for k, v in metrics['engine'].items() if k in ENGINE_KEYS})
+                    engine_after=after)
 
     def close(self):
         self.remember()
@@ -419,9 +489,18 @@ def assets(cfg):
 
 def render_report(report):
     lines = [f'# {report["protocol"]}', '', f'Status: {"complete" if report["complete"] else "incomplete"}.',
-             f'Runs per model: {report["runs"]} ({"standard" if report["standard"] else "diagnostic"}).',
+             f'Runs per model: {report["runs"]} ({"standard" if report["standard"] else "variant/diagnostic"}).',
              '', '| Model | Generation tok/s | 4K input tok/s | 16K input tok/s | Image first output / complete, s | Expert cache GiB: startup → after16K |',
              '|---|---:|---:|---:|---:|---|']
+    profile = report.get('clover_profile')
+    if profile:
+        details = (f'Clover profile: {profile["mode"]}, KV {profile["kv"]}, '
+                   f'workers {profile["cpu_workers"]}, chunk {profile["chunk"]}, '
+                   f'thinking {"on" if profile.get("thinking", True) else "off"}')
+        if profile['mode'] == 'diffusion':
+            details += f', block {profile["block_size"]}, confidence > {profile["threshold"]}'
+        details += ', environment ' + (', '.join(f'{key}={value}' for key, value in profile['env'].items()) or 'none') + '.'
+        lines[4:4] = [details, '']
     for model, data in report['models'].items():
         result = aggregate_model(data['runs'])
         def rate(key):
@@ -457,10 +536,38 @@ def main():
     parser.add_argument('--request-timeout', type=float, default=600)
     parser.add_argument('--startup-timeout', type=float, default=300)
     parser.add_argument('--label', default='', help='Optional GPU/system label for the report')
+    parser.add_argument('--clover-mode', choices=('causal', 'diffusion'), default='causal',
+                        help='causal retains protocol v1; diffusion is a separately labelled Clover-only variant')
+    parser.add_argument('--clover-block-size', type=int, choices=(1, 2, 4, 8, 16, 32), default=32)
+    parser.add_argument('--clover-threshold', type=float, default=0.95)
+    parser.add_argument('--thinking', choices=('on', 'off'), default='on',
+                        help='thinking on retains v1; off is a separately labelled Clover-only variant')
+    parser.add_argument('--kv-type', choices=('int8', 'fp8-mma'),
+                        help='Clover-only KV override; labels the result as a variant')
+    parser.add_argument('--cpu-workers', type=int, metavar='N',
+                        help='Clover-only Expert workers (0 = auto); the engine reports its total threads separately')
+    parser.add_argument('--chunk', type=chunk_option, metavar='auto|N',
+                        help='Clover-only chunk override; leaves the saved model configuration untouched')
+    parser.add_argument('--engine-env', type=engine_environment, action='append', default=[], metavar='NAME=VALUE',
+                        help='Clover-only STRATA_*/TINYSTRATA_* engine override (repeatable)')
     parser.add_argument('--prepare-only', action='store_true', help='Validate configs and write plans without starting an API')
     options = parser.parse_args()
     if not 1 <= options.runs <= 20 or options.request_timeout <= 0 or options.startup_timeout <= 0:
         parser.error('runs must be1..20 and timeouts must be positive')
+    if not math.isfinite(options.clover_threshold) or not 0 <= options.clover_threshold <= 1:
+        parser.error('clover-threshold must be finite and in [0,1]')
+    if options.clover_mode == 'diffusion' and options.model != 'clover':
+        parser.error('--clover-mode diffusion requires --model clover')
+    if options.thinking == 'off' and options.model != 'clover':
+        parser.error('--thinking off requires --model clover')
+    manual_variant = (any(value is not None for value in (options.kv_type, options.cpu_workers, options.chunk))
+                      or bool(options.engine_env) or options.thinking == 'off')
+    if manual_variant and options.model != 'clover':
+        parser.error('KV/worker/chunk/environment overrides require --model clover')
+    if options.cpu_workers is not None and not 0 <= options.cpu_workers <= 1024:
+        parser.error('cpu-workers must be in 0..1024')
+    if options.clover_mode == 'causal' and (options.clover_block_size != 32 or options.clover_threshold != 0.95):
+        parser.error('block size and threshold overrides require --clover-mode diffusion')
     options.config_dir, options.output = options.config_dir.resolve(), options.output.resolve()
     cases = json.loads((HERE / 'cases.json').read_text(encoding='utf-8'))
     if cases['protocol'] != 'tinystrata-bench-v1' or cases['seed'] != 1234 or len(cases['generation']) != 3:
@@ -472,7 +579,19 @@ def main():
                                         stderr=subprocess.DEVNULL).strip()
     except (OSError, subprocess.CalledProcessError):
         commit = None
-    report = dict(protocol=cases['protocol'], standard=options.runs == cases['runs'], complete=False,
+    diffusion_variant = options.clover_mode == 'diffusion'
+    variant = diffusion_variant or manual_variant
+    variant_suffix = '-clover-diffusion' if diffusion_variant else '-clover-causal-variant' if manual_variant else ''
+    clover_profile = dict(mode=options.clover_mode, kv=options.kv_type or 'int8',
+                          block_size=options.clover_block_size, threshold=options.clover_threshold,
+                          cpu_workers=options.cpu_workers if options.cpu_workers is not None else 'auto',
+                          chunk=options.chunk if options.chunk is not None else 'auto', env=dict(options.engine_env),
+                          thinking=options.thinking == 'on')
+    report = dict(protocol=cases['protocol'] + variant_suffix,
+                  base_protocol=cases['protocol'], standard=options.runs == cases['runs'] and not variant,
+                  clover_mode=options.clover_mode, clover_block_size=options.clover_block_size,
+                  clover_threshold=options.clover_threshold, clover_profile=clover_profile if options.model == 'clover' else None,
+                  complete=False,
                   label=options.label, source_commit=commit, benchmark_sha256=sha256(__file__),
                   cases_sha256=sha256(HERE / 'cases.json'), image_sha256=sha256(HERE / 'image.png'),
                   platform=platform.platform(), cpu=platform.processor(), ram_bytes=psutil.virtual_memory().total,
@@ -488,7 +607,11 @@ def main():
             data = dict(runs=[], sampling=model_sampling(model, cases), assets=[],
                         image_supported=model not in TEXT_ONLY_MODELS)
             report['models'][model] = data
-            prepared = controlled_config(original, model, options.output, free_port(), cases)
+            profile_options = dict(clover_mode=options.clover_mode, clover_block_size=options.clover_block_size,
+                                   clover_threshold=options.clover_threshold, clover_kv=options.kv_type or 'int8',
+                                   clover_workers=options.cpu_workers, clover_chunk=options.chunk if options.chunk is not None else 'auto',
+                                   clover_env=dict(options.engine_env), clover_thinking=options.thinking == 'on')
+            prepared = controlled_config(original, model, options.output, free_port(), cases, **profile_options)
             sys.path.insert(0, str(ROOT))
             from serve import tinyconfig
             tinyconfig.validate(prepared)
@@ -503,7 +626,7 @@ def main():
             for number in range(1, options.runs + 1):
                 folder = options.output / f'{model}-{number}'
                 folder.mkdir()
-                cfg = controlled_config(original, model, folder, free_port(), cases)
+                cfg = controlled_config(original, model, folder, free_port(), cases, **profile_options)
                 tinyconfig.validate(cfg)
                 save(folder / 'config.json', cfg)
                 if options.prepare_only:
@@ -517,12 +640,29 @@ def main():
                     run['vision_start'] = identity
                     run['startup_engine'] = service.engine()
                     info = run['startup_engine']
-                    if info.get('kv') != 'int8' or info.get('kv_grow') != 1 or info.get('mtp') != (0 if model in TEXT_ONLY_MODELS else 3):
+                    validate_engine_snapshot(info)
+                    expected_kv = clover_profile['kv'] if model == 'clover' else 'int8'
+                    if info.get('kv') != expected_kv or info.get('kv_grow') != 1 or info.get('mtp') != (0 if model in TEXT_ONLY_MODELS else 3):
                         raise ValueError(f'Engine does not match protocol settings: {info}')
                     if model == 'clover' and info.get('clover_draft') != 0:
-                        raise ValueError(f'The standard Clover profile uses causal decoding: {info}')
+                        raise ValueError(f'The causal/diffusion profiles do not use self-speculative drafts: {info}')
+                    if model == 'clover':
+                        if options.cpu_workers and info.get('cpu_workers') != options.cpu_workers:
+                            raise ValueError(f'Clover worker count differs from requested profile: {info}')
+                        if isinstance(options.chunk, int) and info.get('chunk') != options.chunk:
+                            raise ValueError(f'Clover chunk differs from requested profile: {info}')
+                        # Older causal-only binaries may not report a mode; an
+                        # explicit diffusion request must always be confirmed.
+                        actual_mode = info.get('clover_mode', 'causal')
+                        if actual_mode != options.clover_mode:
+                            raise ValueError(f'Clover generation mode differs from requested profile: {info}')
+                        if options.clover_mode == 'diffusion' and (
+                                info.get('clover_block_size') != options.clover_block_size or
+                                abs(float(info.get('clover_threshold', -1)) - options.clover_threshold) > 1e-6):
+                            raise ValueError(f'Clover diffusion settings differ from requested profile: {info}')
                     cache_bytes(info)
-                    warmup = request_body(model, cases['warmup_text'], cases['warmup_max_tokens'], cases)
+                    thinking = options.thinking == 'on' if model == 'clover' else True
+                    warmup = request_body(model, cases['warmup_text'], cases['warmup_max_tokens'], cases, thinking=thinking)
                     save(folder / 'warmup.json', service.generate(warmup))
                     def measure(category, name, body, target=None):
                         save(folder / f'{name}-request.json', body)
@@ -547,13 +687,13 @@ def main():
                     for repeat in (1, 2):
                         for prompt in cases['generation']:
                             measure('generation', f'{prompt["name"]}-{repeat}',
-                                    request_body(model, prompt['text'], cases['generation_max_tokens'], cases))
+                                    request_body(model, prompt['text'], cases['generation_max_tokens'], cases, thinking=thinking))
                     for length, category in ((4096, 'input_4k'), (16384, 'input_16k')):
                         def count(text):
-                            body = request_body(model, text, cases['prefill_max_tokens'], cases)
+                            body = request_body(model, text, cases['prefill_max_tokens'], cases, thinking=thinking)
                             return service.json('/v1/messages/count_tokens', body)['input_tokens']
                         text, _ = exact_length_text(count, cases['long_paragraph'], cases['long_question'], length)
-                        measure(category, category, request_body(model, text, cases['prefill_max_tokens'], cases), length)
+                        measure(category, category, request_body(model, text, cases['prefill_max_tokens'], cases, thinking=thinking), length)
                     run['after_16k_engine'] = service.engine()
                     if model not in TEXT_ONLY_MODELS:
                         image = dict(type='image', source=dict(type='base64', media_type='image/png',

@@ -4012,6 +4012,42 @@ class Service:
                     content[n] = {"type": "text", "text": f"[image omitted: {why}]"}
         return fetched
 
+    def clover_preview_block(self) -> int | None:
+        """The active diffusion canvas; explicit legacy Clover draft choices stay causal/self-spec."""
+        from serve import config
+        info = getattr(self.engine, "info", {}) or {}
+        spawn = getattr(self.engine, "spawn", ())
+        args = list(spawn[1]) if len(spawn) > 1 and isinstance(spawn[1], (tuple, list)) else []
+        mode = info.get("clover_mode")
+        if mode is None:
+            if self.model != "clover-35b-a3b-preview" and not any(arg.startswith("--clover-") for arg in args):
+                return None
+            mode = config.clover_mode({"args": args})
+        if mode != "diffusion":
+            return None
+        block = info.get("clover_block_size", config.value_of({"args": args}, "clover_block_size"))
+        return config.check("clover_block_size", 32 if block is None else block, {})
+
+    def fit_clover_preview(self, prompt_tokens: int, max_new: int, context: int, *, allow_clamp: bool) -> int:
+        """Keep the full final diffusion block inside the actual native context."""
+        block = self.clover_preview_block()
+        if block is None:
+            return max_new
+        preview = ((max_new + block - 1) // block) * block
+        if prompt_tokens + preview <= context:
+            return max_new
+        available = max(0, (context - prompt_tokens) // block) * block
+        if available < 1:
+            raise ValueError("request exceeds the context window: Clover block diffusion needs a complete "
+                             f"{block}-token preview block after the prompt ({prompt_tokens} tokens), "
+                             f"but the context is {context}; requests are never truncated")
+        if not allow_clamp:
+            raise ValueError("request exceeds the context window: Clover block diffusion rounds "
+                             f"max_tokens ({max_new}) to a full preview of {preview} tokens; prompt "
+                             f"({prompt_tokens}) + preview exceeds the context ({context}). "
+                             f"Send max_tokens at most {available}, or enable fit_max_tokens")
+        return available
+
     def prepare(self, messages, tools, kwargs, max_new=None, force=None, req=None, cancel=None):
         """-> (ids, thinking, max_new). An omitted limit uses the configured default, bounded by remaining context.
         An explicit non-positive max_new means the rest of the context. `force`: without thinking the reply starts with it, so it ends the
@@ -4022,6 +4058,8 @@ class Service:
         default_limit = max_new is None or bool((req or {}).get("_tinystrata_default_max_tokens"))
         if max_new is None:
             max_new = self.default_max_tokens
+        flexible_limit = default_limit or max_new <= 0 or self.fit_max_tokens
+        self.embeddings.clover_limit_flexible = False
         fetched = self._note_unreadable_tool_images(messages, cancel)
         ids = self.encode_prompt(messages, tools, kwargs)
         if force and kwargs.get("enable_thinking", True) is False:
@@ -4119,6 +4157,7 @@ class Service:
                                  f"max_tokens (at most {max(0, room)} here), or add \"fit_max_tokens\": true to the "
                                  "model's strata-<model>.json to shorten it to the room left (#545)")
             max_new = max(1, room)          # --fit-max-tokens: a shorter completion beats a 400
+        max_new = self.fit_clover_preview(len(ids), max_new, ctx, allow_clamp=flexible_limit)
         if images:
             # The request's images in one file for GENI (~10 MB a picture), written once nothing above refuses the
             # request: one refused after it (the engine starting, no room) left it in the vision directory for good,
@@ -4133,6 +4172,7 @@ class Service:
             write_temporary(combined, [p for p, _ in encoded])
         if req is not None and req.get("strata_prefix") is not None:
             req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(images))
+        self.embeddings.clover_limit_flexible = flexible_limit
         return ids, kwargs.get("enable_thinking", True) is not False, max_new
 
     PREFIX_END = "\u0001strata-prefix-end\u0001"          # marks where a message's shared part ends in the rendered prompt
@@ -4279,6 +4319,8 @@ class Service:
         sampling = {k: v for k, v in (sampling or {}).items() if k != "_tinystrata_turn_at"}
         turn_at = getattr(self.embeddings, "turn_at", None)
         self.embeddings.turn_at = None
+        flexible_clover_limit = self.fit_max_tokens or bool(getattr(self.embeddings, "clover_limit_flexible", False))
+        self.embeddings.clover_limit_flexible = False
         if isinstance(turn_at, int) and not isinstance(turn_at, bool) and 0 < turn_at < len(ids):
             sampling["_tinystrata_turn_at"] = turn_at
         # #123: read after the merge, so a budget shared through POST /settings is seen like the other keys
@@ -4399,11 +4441,13 @@ class Service:
                         if getattr(self.engine, "context_auto", False):
                             ctx = self.engine.max_context
                             room = ctx - CTX_SLACK - len(ids)
-                            if room < 1 or (max_new > room and not self.fit_max_tokens):
+                            can_fit = self.fit_max_tokens or (self.clover_preview_block() is not None and flexible_clover_limit)
+                            if room < 1 or (max_new > room and not can_fit):
                                 raise ValueError("request exceeds the context window after automatic environment "
                                                  f"selection: prompt ({len(ids)} tokens) + max tokens ({max_new}) "
                                                  f"exceeds the context ({ctx}); requests are never truncated")
                             max_new = min(max_new, room)
+                            max_new = self.fit_clover_preview(len(ids), max_new, ctx, allow_clamp=can_fit)
                             if budget:
                                 reserve = min(max(ANSWER_RESERVE_MIN, max_new // 4), max_new // 2)
                                 budget = min(budget, max(1, max_new - reserve))

@@ -105,7 +105,7 @@ __device__ __forceinline__ HalfFragment load_key_fragment(const int8_t* source, 
 
 __global__ void __launch_bounds__(THREADS) dense_int8_wmma_kernel(
     const float* __restrict__ q, Cache cache, const int32_t* __restrict__ pos0,
-    int queries, int kv_heads, int capacity, float scale_log2, float* __restrict__ output) {
+    int queries, int kv_heads, int capacity, float scale_log2, float* __restrict__ output, int visible_end) {
 #if TINY_WMMA_DEVICE
     __shared__ Shared s;
     const int q0 = (int) blockIdx.x * QUERIES, kv_head = (int) blockIdx.y;
@@ -113,7 +113,7 @@ __global__ void __launch_bounds__(THREADS) dense_int8_wmma_kernel(
     const int col = lane & 15, half = lane >> 4, dim0 = wave * GROUP;
     const int heads = kv_heads * GQA, base = __ldg(pos0);
     const int last_query = min(q0 + QUERIES, queries);
-    const int maximum_key = max(0, min(capacity, base + last_query));
+    const int maximum_key = max(0, min(capacity, visible_end > 0 ? visible_end : base + last_query));
     const int query = q0 + col / GQA, query_head = kv_head * GQA + col % GQA;
 
     // One row is one (query, head). The two half-waves own the two halves
@@ -209,10 +209,11 @@ __global__ void __launch_bounds__(THREADS) dense_int8_wmma_kernel(
         __syncthreads();
 
         // Four adjacent keys per thread, eight threads per query/head row.
-        // The two queries have distinct causal upper bounds within a tile.
+        // Causal rows have distinct upper bounds. Clover preview explicitly
+        // gives every active row the same complete noisy-block upper bound.
         {
             const int r = t >> 3, sub = t & 7, qi = q0 + r / GQA;
-            const int upper = qi < queries ? max(0, min(capacity, base + qi + 1)) : 0;
+            const int upper = qi < queries ? max(0, min(capacity, visible_end > 0 ? visible_end : base + qi + 1)) : 0;
             float x[4], tile_max = -INFINITY;
 #pragma unroll
             for (int j = 0; j < 4; ++j) {
@@ -320,7 +321,7 @@ __global__ void __launch_bounds__(THREADS) dense_int8_wmma_kernel(
     }
 #else
     (void) q; (void) cache; (void) pos0; (void) queries; (void) kv_heads;
-    (void) capacity; (void) scale_log2; (void) output;
+    (void) capacity; (void) scale_log2; (void) output; (void) visible_end;
 #endif
 }
 
@@ -387,6 +388,16 @@ void run(const float* q, Cache cache, const int32_t* pos0, int rows, int kv_head
         throw std::runtime_error("HIP dense INT8 WMMA attention is unavailable for this device/build");
     const float scale_log2 = 1.4426950408889634f / sqrtf((float) HD);
     dense_int8_wmma_kernel<<<dim3((rows + QUERIES - 1) / QUERIES, kv_heads), THREADS, 0, (hipStream_t) stream>>>(
-        q, cache, pos0, rows, kv_heads, context, scale_log2, output);
+        q, cache, pos0, rows, kv_heads, context, scale_log2, output, 0);
+}
+
+void run_preview(const float* q, Cache cache, const int32_t* pos0, int rows, int kv_heads, int context,
+                 int visible_end, float* output, void* stream) {
+    if (rows <= 0) return;
+    if (kv_heads <= 0 || context <= 0 || visible_end < 1 || visible_end > context || !usable_device())
+        throw std::runtime_error("Invalid or unavailable HIP INT8 WMMA preview attention");
+    const float scale_log2 = 1.4426950408889634f / sqrtf((float) HD);
+    dense_int8_wmma_kernel<<<dim3((rows + QUERIES - 1) / QUERIES, kv_heads), THREADS, 0, (hipStream_t) stream>>>(
+        q, cache, pos0, rows, kv_heads, context, scale_log2, output, visible_end);
 }
 } // namespace strata::qwen35::int8_attention

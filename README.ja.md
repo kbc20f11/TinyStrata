@@ -30,7 +30,7 @@ TinyStrata は Strata を基盤に、限られた VRAM でも 30B 級の MoE モ
 
 **LFM2.5-24B-A2B Q4_K_M** は、公式の [LiquidAI GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF) を使います。ダウンロードは言語モデルの 1 ファイルで、**14.53 GB** です。
 
-**Clover-35B-A3B-Preview Q4_0** は、[DiffuSpace 公式 GGUF](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview-GGUF) を使います。ダウンロードは **19.587 GB** で、Clover 専用のトークナイザーと双方向 GDN の追加重みを含みます。最大コンテキストは **128K**、入力はテキストのみです。自己投機デコードでは、別の MTP ヘッドではなく、同じモデルで仮生成と因果経路による検証を行います。`run-api.bat --model-family clover` で選択でき、新規の単独プロファイルではポート **18083** を使います。既定は因果経路のみの生成（`--clover-draft 0`）です。自己投機デコードは `--clover-draft 4` などで明示的に有効にできます。高速化の効果は入力や生成内容によって変わります。設定は `config-clover.json` に個別保存します。 空き VRAM に応じたエキスパートキャッシュ、システム RAM を使った CPU でのエキスパート計算、会話長に応じた KV の段階確保に対応します。
+**Clover-35B-A3B-Preview Q4_0** は、[DiffuSpace 公式 GGUF](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview-GGUF) を使います。ダウンロードは **19.587 GB** で、Clover 専用のトークナイザーと双方向 GDN の追加重みを含みます。最大コンテキストは **128K**、入力はテキストのみです。`run-api.bat --model-family clover` で選択でき、新規の単独プロファイルではポート **18083** を使い、設定は `config-clover.json` に保存します。既定は因果デコード（`--clover-mode causal`）です。`--clover-mode diffusion --kv-type int8 --clover-block-size 32 --clover-threshold 0.95` で、確定済みの KV・GDN 状態を保ちながら、双方向 GDN の仮計算でマスク位置を埋める LowConfidence 方式のブロック拡散を利用できます。自己投機デコード（`--clover-mode self-spec --clover-draft 4`）は、同じモデルで仮生成と因果検証を行う別の方式で、独立した MTP ヘッドは使いません。いずれも空き VRAM に応じたエキスパートキャッシュ、システム RAM を使う CPU でのエキスパート計算、会話長に応じた KV の段階確保に対応します。
 
 Qwen・Gemma・LFM はいずれも、空き VRAM に合わせたエキスパートキャッシュ、システム RAM を使った CPU でのエキスパート計算、入力時の重みのストリーミング、CUDA Graph に対応しています。共通の API と起動中のモデル切り替えを利用でき、設定はモデルごとに保存します。モデルが選んだエキスパートは省略しません。また、最大コンテキスト容量を変えずに、会話の長さに応じて KV の物理メモリを自動で増やせます。
 

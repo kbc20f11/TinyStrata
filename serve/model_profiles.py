@@ -119,7 +119,7 @@ class ModelProfiles:
         if arch in ("qwen35moe", "gemma4"):
             args += ["--mtp", "3"]
         if arch == "clover_moe":
-            args += ["--clover-draft", "0"]
+            args += ["--clover-mode", "causal", "--clover-draft", "0"]
         result = {"arch": arch, "model_name": name, "cwd": str(model_setup.ROOT),
                   "args": args, "memory_policy_version": tinyconfig.MEMORY_POLICY_VERSION,
                   **deepcopy(self._hardware)}

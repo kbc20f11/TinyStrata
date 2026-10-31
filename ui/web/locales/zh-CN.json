@@ -466,5 +466,9 @@
   "monitor.chipPower": "仅 GPU 芯片",
   "monitor.mixedPower": "各 GPU 的测量范围不同",
   "monitor.pcieMaxGen": "最高 Gen{n}",
-  "about.selfDraft": "自投机草稿最多{n}个词元"
+  "about.selfDraft": "自投机草稿最多{n}个词元",
+  "about.generationMode": "生成方式",
+  "about.causalGeneration": "因果生成",
+  "about.selfSpeculativeGeneration": "自投机解码",
+  "about.blockDiffusion": "块扩散：{n}个词元，置信度 > {threshold}"
 }

@@ -30,7 +30,7 @@ TinyStrata 会根据你的硬件自动选择推理和内存设置，因此无需
 
 **LFM2.5-24B-A2B Q4_K_M** 使用官方 [LiquidAI GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF)。仅需下载一个语言模型文件，大小为 **14.53 GB**。
 
-**Clover-35B-A3B-Preview Q4_0** 使用 [DiffuSpace 官方 GGUF](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview-GGUF)，下载大小为 **19.587 GB**，包含 Clover 自己的分词器和双向 GDN 附加参数。最大上下文为 **128K**，仅支持文本输入。自投机解码使用同一个模型进行草稿生成和因果验证，不使用独立的 MTP 头。通过 `run-api.bat --model-family clover` 选择；新建的独立配置默认使用端口 **18083**。默认仅使用因果解码（`--clover-draft 0`）。自投机解码为可选功能，可通过 `--clover-draft 4` 显式启用；加速效果取决于实际输入和生成内容。设置单独保存在 `config-clover.json`。 支持按空闲显存调整的专家缓存、利用系统 RAM 的 CPU 专家计算，以及随序列长度增长的 KV 分阶段分配。
+**Clover-35B-A3B-Preview Q4_0** 使用 [DiffuSpace 官方 GGUF](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview-GGUF)，下载大小为 **19.587 GB**，包含 Clover 自己的分词器和双向 GDN 附加参数。最大上下文为 **128K**，仅支持文本输入。通过 `run-api.bat --model-family clover` 选择；新建的独立配置使用端口 **18083**，设置保存在 `config-clover.json`。默认仍使用因果解码（`--clover-mode causal`）。通过 `--clover-mode diffusion --kv-type int8 --clover-block-size 32 --clover-threshold 0.95` 可使用原生块扩散：LowConfidence 通过双向 GDN 预览填充掩码位置，并将已提交的 KV/GDN 状态单独保留。可选的自投机路径（`--clover-mode self-spec --clover-draft 4`）则使用同一个模型生成草稿并进行因果验证，无需独立的 MTP 头。所有路径都支持按空闲显存调整的专家缓存、利用系统 RAM 的 CPU 专家计算，以及随序列长度增长的 KV 物理内存分阶段分配。
 
 Qwen、Gemma 和 LFM 引擎均支持根据空闲显存自动调整的专家缓存、利用系统 RAM 的 CPU 专家计算、输入阶段权重流式传输及 CUDA Graph。它们使用相同的 API，支持运行中切换模型，并分别保存各模型的设置。不省略模型选中的专家。还支持按实际序列长度自动扩展 KV 物理内存，最大上下文容量保持不变。
 

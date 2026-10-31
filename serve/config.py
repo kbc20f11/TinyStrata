@@ -16,6 +16,9 @@ ENGINE_OPTIONS = {
     "vram_reserve_mib": ("--vram-reserve-mib", 0, None, True),
     "mtp": ("--mtp", 0, 7, True),
     "clover_draft": ("--clover-draft", 0, 31, True),
+    "clover_mode": ("--clover-mode", ("causal", "self-spec", "diffusion")),
+    "clover_block_size": ("--clover-block-size", 1, 32, True),
+    "clover_threshold": ("--clover-threshold", 0, 1, False),
     "chunk": ("--chunk", 1, 4096, True),
 }
 
@@ -54,7 +57,20 @@ def check(key: str, value, cfg: dict):
             (whole and value != int(value)) or value < lo or (hi is not None and value > hi):
         bounds = f"at least {lo:g}" + (f" and at most {hi:g}" if hi is not None else "")
         raise ValueError(f"{key}: expected a {'whole ' if whole else ''}number, {bounds}, not {value!r}")
+    if key == "clover_block_size" and 32 % int(value):
+        raise ValueError("clover_block_size: expected one of 1, 2, 4, 8, 16, 32")
     return int(value) if whole else value
+
+
+def clover_mode(cfg: dict) -> str:
+    """Resolve fresh defaults while retaining the legacy explicit draft option."""
+    explicit = value_of(cfg, "clover_mode")
+    if explicit is not None:
+        return check("clover_mode", explicit, cfg)
+    draft = value_of(cfg, "clover_draft")
+    if draft is not None:
+        draft = check("clover_draft", draft, cfg)
+    return "self-spec" if draft is not None and draft > 0 else "causal"
 
 
 def apply(cfg: dict, changes: dict) -> tuple[dict, list[str]]:

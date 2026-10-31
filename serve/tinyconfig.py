@@ -194,7 +194,8 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
     if not isinstance(args, list) or not all(isinstance(x, str) for x in args):
         raise ValueError("args must be a list of engine argument strings")
     values = {"--model", "--draft-model", "--max-context", "--kv-type", "--chunk", "--mtp", "--expert-vram",
-              "--expert-slots", "--cpu-threads", "--hybrid-rows", "--vram-reserve-mib", "--clover-draft"}
+              "--expert-slots", "--cpu-threads", "--hybrid-rows", "--vram-reserve-mib", "--clover-draft",
+              "--clover-mode", "--clover-block-size", "--clover-threshold"}
     switches = {"--no-graph", "--no-warmup", "--hybrid-graph", "--no-hybrid-graph", "--vision",
                 "--kv-grow", "--kv-whole", "--no-kv-grow"}
     seen = set()
@@ -214,13 +215,15 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         raise ValueError("Choose a GGUF model with run.py --model PATH")
     if len(seen.intersection({"--kv-grow", "--kv-whole", "--no-kv-grow"})) > 1:
         raise ValueError("Choose only one KV allocation mode: --kv-grow or --kv-whole")
-    for key in ("kv_type", "max_context", "expert_vram", "vram_reserve_mib", "mtp", "chunk", "clover_draft"):
+    for key in ("kv_type", "max_context", "expert_vram", "vram_reserve_mib", "mtp", "chunk", "clover_draft",
+                "clover_mode", "clover_block_size", "clover_threshold"):
         value = config.value_of(cfg, key)
         if value is not None:
             config.check(key, value, cfg)
     kv = config.value_of(cfg, "kv_type")
-    if arch != "clover_moe" and "--clover-draft" in seen:
-        raise ValueError("--clover-draft is only supported by Clover")
+    clover_options = seen.intersection({"--clover-draft", "--clover-mode", "--clover-block-size", "--clover-threshold"})
+    if arch != "clover_moe" and clover_options:
+        raise ValueError("Clover-only engine options: " + ", ".join(sorted(clover_options)))
     if arch == "lfm2moe":
         qwen_only = seen.intersection({"--hybrid-graph", "--no-hybrid-graph", "--hybrid-rows",
                                        "--expert-slots", "--no-warmup"})
@@ -245,6 +248,12 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         if config.value_of(cfg, "mtp") not in (None, 0) and "--draft-model" not in seen and not allow_uninstalled:
             raise ValueError("Gemma 4 MTP requires its matching QAT assistant (--draft-model)")
     elif arch == "clover_moe":
+        mode = config.clover_mode(cfg)
+        draft = config.value_of(cfg, "clover_draft")
+        if mode != "self-spec" and draft not in (None, 0):
+            raise ValueError("--clover-draft greater than zero requires --clover-mode self-spec")
+        if mode == "self-spec" and draft == 0:
+            raise ValueError("--clover-mode self-spec requires 1..31 draft tokens, or omit --clover-draft")
         if "--vision" in seen:
             raise ValueError("Clover-35B-A3B-Preview is text-only; remove --vision")
         if config.value_of(cfg, "mtp") not in (None, 0):

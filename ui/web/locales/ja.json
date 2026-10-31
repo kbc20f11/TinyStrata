@@ -466,5 +466,9 @@
   "monitor.chipPower": "GPUチップのみ",
   "monitor.mixedPower": "GPUごとに計測範囲が異なります",
   "monitor.pcieMaxGen": "最大Gen{n}",
-  "about.selfDraft": "自己投機デコード（最大{n}トークン）"
+  "about.selfDraft": "自己投機デコード（最大{n}トークン）",
+  "about.generationMode": "生成方式",
+  "about.causalGeneration": "因果生成",
+  "about.selfSpeculativeGeneration": "自己投機デコード",
+  "about.blockDiffusion": "ブロック拡散：{n}トークン、信頼度 > {threshold}"
 }

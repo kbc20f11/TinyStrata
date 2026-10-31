@@ -471,5 +471,9 @@
   "monitor.chipPower": "Puce GPU uniquement",
   "monitor.mixedPower": "Le périmètre mesuré varie selon le GPU",
   "monitor.pcieMaxGen": "Gen{n} max.",
-  "about.selfDraft": "Brouillons auto-spéculatifs jusqu’à {n} jetons"
+  "about.selfDraft": "Brouillons auto-spéculatifs jusqu’à {n} jetons",
+  "about.generationMode": "Mode de génération",
+  "about.causalGeneration": "Génération causale",
+  "about.selfSpeculativeGeneration": "Décodage auto-spéculatif",
+  "about.blockDiffusion": "Diffusion par blocs : {n} jetons, confiance > {threshold}"
 }

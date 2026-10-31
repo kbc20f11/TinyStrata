@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <stdexcept>
 
 namespace strata::qwen35::int8_attention {
 namespace {
@@ -149,14 +150,16 @@ template <int KV_MODE>
 __global__ void __launch_bounds__(THREADS, 1) prompt_attn_dense_kernel(const float* __restrict__ q, Cache p,
                                                                        const int32_t* __restrict__ pos0, int n_q,
                                                                        int n_kv_heads, int page_size, float scale_log2,
-                                                                       float* __restrict__ attn) {
+                                                                       float* __restrict__ attn, int visible_end) {
     constexpr int GQ = 8, PIECES = SmemD<KV_MODE>::PIECES, ROWB = PIECES * 16;
     extern __shared__ __align__(16) unsigned char smem_raw[];
     SmemD<KV_MODE>& S = *reinterpret_cast<SmemD<KV_MODE>*>(smem_raw);
     const int q0 = blockIdx.x * DQ, kvh = blockIdx.y, n_head = n_kv_heads * GQ;
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5, gid = lane >> 2, tig = lane & 3;
     const int rbase = warp * 16;   // this warp's MMA rows: query q0 + 2w (rows 0-7), q0 + 2w + 1 (rows 8-15), by head
-    auto width = [&](int i) { return q0 + i < n_q ? (__ldg(pos0) + q0 + i + 1) : 0; };
+    auto width = [&](int i) {
+        return q0 + i < n_q ? (visible_end > 0 ? visible_end : __ldg(pos0) + q0 + i + 1) : 0;
+    };
     const int na = width(2 * warp), nb = width(2 * warp + 1);
     int n_max = 0;
 #pragma unroll
@@ -481,6 +484,16 @@ void run(const float* q, Cache cache, const int32_t* pos0, int rows, int kv_head
     const float scale_log2 = 1.4426950408889634f / sqrtf((float) HD);
     prompt_attn_dense_kernel<1><<<dim3((rows + DQ - 1) / DQ, kv_heads), THREADS, sizeof(SmemD<1>),
                                   (cudaStream_t) stream>>>(q, cache, pos0, rows, kv_heads, context,
-                                                          scale_log2, output);
+                                                          scale_log2, output, 0);
+}
+void run_preview(const float* q, Cache cache, const int32_t* pos0, int rows, int kv_heads, int context,
+                 int visible_end, float* output, void* stream) {
+    if (rows <= 0) return;
+    if (kv_heads <= 0 || context <= 0 || visible_end < 1 || visible_end > context)
+        throw std::runtime_error("Invalid CUDA INT8 preview attention bounds");
+    const float scale_log2 = 1.4426950408889634f / sqrtf((float) HD);
+    prompt_attn_dense_kernel<1><<<dim3((rows + DQ - 1) / DQ, kv_heads), THREADS, sizeof(SmemD<1>),
+                                  (cudaStream_t) stream>>>(q, cache, pos0, rows, kv_heads, context,
+                                                          scale_log2, output, visible_end);
 }
 } // namespace strata::qwen35::int8_attention

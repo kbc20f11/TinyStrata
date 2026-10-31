@@ -471,5 +471,9 @@
   "monitor.chipPower": "Nur GPU-Chip",
   "monitor.mixedPower": "Messumfang je nach GPU unterschiedlich",
   "monitor.pcieMaxGen": "max. Gen{n}",
-  "about.selfDraft": "Selbstspekulative Entwürfe mit bis zu {n} Tokens"
+  "about.selfDraft": "Selbstspekulative Entwürfe mit bis zu {n} Tokens",
+  "about.generationMode": "Generierungsmodus",
+  "about.causalGeneration": "Kausale Generierung",
+  "about.selfSpeculativeGeneration": "Selbstspekulative Dekodierung",
+  "about.blockDiffusion": "Blockdiffusion: {n} Tokens, Konfidenz > {threshold}"
 }

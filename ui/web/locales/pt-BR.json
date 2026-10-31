@@ -471,5 +471,9 @@
   "monitor.chipPower": "Somente o chip GPU",
   "monitor.mixedPower": "O escopo medido varia por GPU",
   "monitor.pcieMaxGen": "Gen{n} máx.",
-  "about.selfDraft": "Rascunhos autoespeculativos de até {n} tokens"
+  "about.selfDraft": "Rascunhos autoespeculativos de até {n} tokens",
+  "about.generationMode": "Modo de geração",
+  "about.causalGeneration": "Geração causal",
+  "about.selfSpeculativeGeneration": "Decodificação autoespeculativa",
+  "about.blockDiffusion": "Difusão em blocos: {n} tokens, confiança > {threshold}"
 }

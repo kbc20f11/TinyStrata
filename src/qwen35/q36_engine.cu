@@ -25,7 +25,9 @@
 #include "strata/qwen35/engine.hpp"
 #include "q36_kernels.cuh"
 #include "clover_kernels.cuh"
+#include "clover_diffusion.cuh"
 #include "strata/qwen35/clover_decode.hpp"
+#include "strata/qwen35/clover_diffusion.hpp"
 #include "strata/qwen35/attention.cuh"
 #include "strata/qwen35/int8_attention.hpp"
 #include "strata/qwen35/fp8_attention.hpp"
@@ -1233,6 +1235,30 @@ struct Engine {
     static constexpr int kVerify = 32;
     int verify_capacity = 8;
     int clover_draft = 0;
+    std::string clover_mode = "causal";
+    int clover_block_size = 32;
+    float clover_threshold = 0.95f;
+    long long clover_blocks = 0, clover_passes = 0;
+    double clover_preview_ms = 0, clover_replay_ms = 0;
+    double clover_select_ms = 0;
+    size_t clover_copy_bytes = 0;
+    long long clover_preview_cpu_entries = 0, clover_preview_gpu_entries = 0;
+    long long clover_preview_wmma_calls = 0, clover_preview_simt_calls = 0;
+    double clover_preview_cpu_ms = 0;
+    int64_t* clover_counts = nullptr;
+    int32_t* clover_predictions = nullptr;
+    float* clover_confidences = nullptr;
+    int* clover_bad = nullptr;
+    float* clover_route_mass = nullptr;
+    cudaEvent_t clover_select_begin = nullptr, clover_select_end = nullptr;
+    bool clover_block_preview = false;
+    bool clover_fast_kernels = std::getenv("TINYSTRATA_CLOVER_OLD_KERNELS") == nullptr;
+#if defined(__HIPCC__)
+    bool clover_wmma_preview = true;
+#else
+    bool clover_wmma_preview = false; // CUDA preview is available for explicit A/B testing.
+#endif
+    static constexpr int kCloverWmmaRows = 16;
     bool clover_preview = false;
     std::vector<float*> v_qkv, v_hc, v_alpha, v_beta;
     // the MTP block (when loaded)
@@ -1383,6 +1409,17 @@ struct Engine {
         eparts = dalloc(T * Kp * N); moe_out = dalloc(T * N);
         sg = dalloc(T * g.n_ff_shexp); su = dalloc(T * g.n_ff_shexp); shh = dalloc(T * g.n_ff_shexp); sy = dalloc(T * N);
         sgate = dalloc(T); ewts = dalloc(T * Kp); logits = dalloc((size_t) verify_capacity * g.n_vocab);
+        if (m->clover) {
+            if (const char* value = std::getenv("TINYSTRATA_CLOVER_WMMA_PREVIEW"))
+                clover_wmma_preview = std::strcmp(value, "0") != 0;
+            clover_counts = dalloc_t<int64_t>((size_t) g.n_vocab);
+            clover_route_mass = dalloc_t<float>((size_t) 32 * g.n_expert);
+            clover_predictions = dalloc_t<int32_t>(kVerify);
+            clover_confidences = dalloc(kVerify);
+            clover_bad = dalloc_t<int>(1);
+            CK(cudaEventCreate(&clover_select_begin));
+            CK(cudaEventCreate(&clover_select_end));
+        }
         const int max_in = (int) std::max<int64_t>({2 * g.n_embd, g.ssm_value_dim, g.n_head * g.head_dim, g.n_ff_shexp});
         CK(cudaMalloc(&q8, K::native_q8_1_bytes(max_in, 1) * T));
         CK(cudaMalloc(&xq, K::native_q8_1_bytes((int) N, 1) * T));
@@ -1715,7 +1752,9 @@ struct Engine {
     /// A batch above kGemmT tokens (a prompt chunk) runs its projections as GEMMs (prefill::Gemm::native: the GGUF
     /// blocks dequantized to FP16, the activations FP16); a decode batch on the native MMVQ (q8_1 activations).
     static constexpr int kGemmT = 8;
-    bool decode_rows(int T) const { return T <= kGemmT || (m->clover && rows_deferred && !clover_preview); }
+    bool decode_rows(int T) const {
+        return T <= kGemmT || (m->clover && rows_deferred && !clover_preview);
+    }
     void prep(const float* xin, int n, int T, void* q) {
         if (!decode_rows(T)) k_to_f16<<<grid1((int64_t) n * T), kThreads, 0, st>>>(xin, x16, (int64_t) n * T);
         else quant(xin, n, T, q);
@@ -2060,8 +2099,15 @@ struct Engine {
             if (clover_preview) {
                 strata::qwen35::clover::conv_preview<<<dim3(C / 128, T), 128, 0, st>>>(conv[li], qkv_b, L.conv,
                     L.conv_right, hc_b, C, HK, m->eps, T);
-                strata::qwen35::clover::gdn_preview<<<dim3(HV, T), 128, 0, st>>>(S[li], hc_b, al_b, L.bd_scale,
-                    L.bd_bias, L.bd_c, gdn_y, C, HK, HV, T);
+                if (clover_fast_kernels && T == 32)
+                    strata::qwen35::clover::gdn_preview_tiled<4><<<dim3(HV, (T + 3) / 4), 128, 0, st>>>(S[li], hc_b, al_b, L.bd_scale,
+                        L.bd_bias, L.bd_c, gdn_y, C, HK, HV, T);
+                else if (clover_fast_kernels && T == 16)
+                    strata::qwen35::clover::gdn_preview_tiled<2><<<dim3(HV, (T + 1) / 2), 128, 0, st>>>(S[li], hc_b, al_b, L.bd_scale,
+                        L.bd_bias, L.bd_c, gdn_y, C, HK, HV, T);
+                else
+                    strata::qwen35::clover::gdn_preview<<<dim3(HV, T), 128, 0, st>>>(S[li], hc_b, al_b, L.bd_scale,
+                        L.bd_bias, L.bd_c, gdn_y, C, HK, HV, T);
                 k_gdn_norm<<<dim3(HV, T), 128, 0, st>>>(gdn_y, z, L.ssm_norm, m->eps, gdn_y, HV);
             } else {
             k_conv_seq<<<dim3(C / 128, tiles), 128, 0, st>>>(conv[li], qkv_b, L.conv, hc_b, C, 2 * HK, m->eps, T, !verify);
@@ -2092,6 +2138,19 @@ struct Engine {
                     // committed prefix. KV suffix writes are temporary: verify
                     // overwrites them, and logical position never advances here.
                     const int end = (int) p0 + T, nc = (end + kChunkCells - 1) / kChunkCells;
+                    if constexpr (Format == 2) {
+                        if (clover_fast_kernels && clover_wmma_preview && int8_prompt && T >= kCloverWmmaRows) {
+                            const auto& c = kv[li];
+                            strata::qwen35::int8_attention::Cache view{(const int8_t*) c.key, (const int8_t*) c.value,
+                                c.key_scale16, c.value_scale16};
+                            strata::qwen35::int8_attention::run_preview(q, view, dpos, T, HKV, ctx, end, att, st);
+                            ++clover_preview_wmma_calls;
+                            CK(cudaGetLastError());
+                            k_gate_mul<<<grid1((int64_t) T * H * HD), kThreads, 0, st>>>(att, gate, (int64_t) T * H * HD);
+                            return;
+                        }
+                    }
+                    ++clover_preview_simt_calls;
                     const int rows_per = att_rows / H;
                     for (int t0 = 0; t0 < T; t0 += rows_per) {
                         const int nt = std::min(rows_per, T - t0);
@@ -2191,9 +2250,16 @@ struct Engine {
                                  T >= 1 && T <= kGemmT && g.n_expert == 256 && Kp == 8));
         if (ext) f32mm(L.router_ext, h, logits_r, N, (int) g.n_expert + 1, T);
         else f32mm(L.router, h, logits_r, N, (int) g.n_expert, T);
-        if (clover_preview && m->clover_coreset)
-            strata::qwen35::clover::router_coreset<<<1, 256, 0, st>>>(logits_r, T, (int) g.n_expert, Kp,
-                (int) g.n_expert, m->clover_top_p);
+        if (clover_preview && m->clover_coreset) {
+            if (clover_fast_kernels) {
+                strata::qwen35::clover::router_coreset_rows<<<T, 256, 0, st>>>(logits_r, clover_route_mass,
+                    T, (int) g.n_expert, Kp, (int) g.n_expert);
+                strata::qwen35::clover::router_coreset_finish<<<1, 256, 0, st>>>(logits_r, clover_route_mass,
+                    T, (int) g.n_expert, (int) g.n_expert, m->clover_top_p);
+            } else
+                strata::qwen35::clover::router_coreset<<<1, 256, 0, st>>>(logits_r, T, (int) g.n_expert, Kp,
+                    (int) g.n_expert, m->clover_top_p);
+        }
         // the hybrid rows path: a batch of up to hybrid_t rows; when only the MTP block is hybrid, its every batch
         // (its prompt pass too: no staging buffers then)
         const bool hy_rows = lhy(li) && ((m->clover && verify) || T <= hybrid_t || !main_hybrid || (stage_loan && !stage_loan_active));
@@ -2305,6 +2371,7 @@ struct Engine {
     void head_rows(const float* hn, int n, float* lg, int32_t* pk) {
         const auto& g = m->g;
         mm(m->head, hn, lg, n);
+        if (clover_block_preview) return; // LowConfidence applies penalties before its own selection.
         k_argmax<<<dim3(kArgBlocks, n), kThreads, 0, st>>>(lg, (int) g.n_vocab, pk, amv, ami, false);
         k_argmax<<<dim3(1, n), kThreads, 0, st>>>(lg, kArgBlocks, pk, amv, ami, true);
     }
@@ -3079,7 +3146,7 @@ struct Engine {
     /// The tokens at the current position: a prompt in chunks (eager), one token from the decode graph.  The last
     /// token's logits stay in `logits` (its greedy pick in `pick`), hlast its normed hidden.  With the MTP block the
     /// prompt also runs through it (its K / V for every position: row q reads h_{q-1} and token q).
-    template <class F> void process(const int32_t* toks, int64_t n, F on_chunk, bool sync_mtp = false) {
+    template <class F> void process(const int32_t* toks, int64_t n, F on_chunk, bool sync_mtp = false, bool need_head = true) {
         ensure_kv(std::min<int64_t>(ctx, pos + n + 64));
         const int N = (int) m->g.n_embd;
         const bool sampled_request = sync_mtp;
@@ -3109,7 +3176,10 @@ struct Engine {
             CK(cudaMemcpyAsync(tok, hpin, 4, cudaMemcpyHostToDevice, st));
             CK(cudaMemcpyAsync(pos0, hpin + 1, 4, cudaMemcpyHostToDevice, st));
             rows_deferred = true;
-            graph_run(g1, [&] { forward(1, pos, 1, use_graph, false); });
+            // Do not reuse the ordinary decode graph for a no-head prefill:
+            // the following causal request may need its vocabulary logits.
+            if (need_head) graph_run(g1, [&] { forward(1, pos, 1, use_graph, false); });
+            else forward(1, pos, 0, false, false);
             rows_deferred = false;
             if (sync_mtp && m->has_mtp && mtp_d > 0) {
                 // hlast still belongs to the previous position here. Filling
@@ -3146,7 +3216,7 @@ struct Engine {
             hpin[1] = (int32_t) pos;
             CK(cudaMemcpyAsync(tok, toks + i, (size_t) T * 4, cudaMemcpyHostToDevice, st));
             CK(cudaMemcpyAsync(pos0, hpin + 1, 4, cudaMemcpyHostToDevice, st));
-            forward(T, pos, i + T == n ? 1 : 0, false, false);
+            forward(T, pos, need_head && i + T == n ? 1 : 0, false, false);
             if (m->has_mtp && mtp_d > 0) {
                 // seeds: h_{q-1} for each row q: hlast, then this chunk's rows 0 .. T - 2 (in `y`, free here)
                 CK(cudaMemcpyAsync(mtp_seed(), hlast, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
@@ -3167,6 +3237,60 @@ struct Engine {
     int hybrid_swaps_after_prompt = 2048;
     /// the MTP seed rows of a prompt chunk: a buffer the block's own forward does not use (`moe_out`, [tmax][N])
     float* mtp_seed() { return moe_out; }
+
+    // A LowConfidence iteration reads the committed prefix but never advances
+    // conv/SSM or logical KV. Every row, including row zero, is a generated
+    // position. Full-attention suffix writes are scratch until causal replay.
+    void clover_preview_block(std::span<const int32_t> block) {
+        const int T = (int) block.size();
+        strata::qwen35::clover_diffusion::validate_block_size(T);
+        ensure_kv(pos + T);
+        CK(cudaStreamSynchronize(st));
+        hpin[1] = (int32_t) pos;
+        std::copy(block.begin(), block.end(), hpin + 16);
+        CK(cudaMemcpyAsync(tok, hpin + 16, block.size_bytes(), cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(pos0, hpin + 1, sizeof(int32_t), cudaMemcpyHostToDevice, st));
+        const auto cpu_before = hy_cpu, gpu_before = hy_gpu;
+        const double cpu_ms_before = hy_cpu_ms;
+        rows_deferred = clover_preview = clover_block_preview = true;
+        try { forward(T, pos, T, false, true); }
+        catch (...) { clover_preview = rows_deferred = clover_block_preview = false; throw; }
+        clover_preview = rows_deferred = clover_block_preview = false;
+        clover_preview_cpu_entries += hy_cpu - cpu_before;
+        clover_preview_gpu_entries += hy_gpu - gpu_before;
+        clover_preview_cpu_ms += hy_cpu_ms - cpu_ms_before;
+    }
+
+    // Replay RESOLVED tokens to update causal prefix state, without comparing
+    // them to AR predictions and without computing unused vocabulary logits.
+    // Rebalance once if this block crossed the ordinary 32-token boundary.
+    void clover_replay_block(std::span<const int32_t> block) {
+        const int T = (int) block.size();
+        if (T < 1 || T > verify_capacity) throw std::invalid_argument("Invalid Clover replay size");
+        ensure_kv(pos + T);
+        CK(cudaStreamSynchronize(st));
+        hpin[1] = (int32_t) pos;
+        std::copy(block.begin(), block.end(), hpin + 16);
+        CK(cudaMemcpyAsync(tok, hpin + 16, block.size_bytes(), cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(pos0, hpin + 1, sizeof(int32_t), cudaMemcpyHostToDevice, st));
+        rows_deferred = true;
+        try { forward(T, pos, 0, false, true); }
+        catch (...) { rows_deferred = false; throw; }
+        rows_deferred = false;
+        commit(T);
+        CK(cudaMemcpyAsync(hlast, hmain + (size_t) (T - 1) * m->g.n_embd,
+                           (size_t) m->g.n_embd * sizeof(float), cudaMemcpyDeviceToDevice, st));
+        const int64_t before = pos;
+        pos += T;
+        if (m->hybrid) {
+            count_rows(T);
+            if (pos / kRebalanceEvery != before / kRebalanceEvery) {
+                CK(cudaStreamSynchronize(st));
+                rebalance(8);
+            }
+        }
+        CK(cudaStreamSynchronize(st));
+    }
 
     // Clover drafts with the SAME model, without an MTP head. Preview has its
     // own read-only GDN path; only the causal accepted prefix is committed.
@@ -3329,6 +3453,10 @@ struct Engine {
                             std::span<const int32_t>(picks, (size_t) rows)).accepted;
                     });
             }
+        }
+        if (m->clover && clover_mode == "diffusion" && pos + clover_block_size <= ctx) {
+            const std::vector<int32_t> block((size_t) clover_block_size, m->mask_token);
+            clover_preview_block(block);
         }
         CK(cudaStreamSynchronize(st));
         warming = false;
@@ -3735,6 +3863,55 @@ int sample(std::vector<float>& lg, const Sampling& s, const std::vector<int32_t>
     return idx[keep - 1];
 }
 
+// HF LowConfidence sampling: penalties are ALREADY applied to the block
+// snapshot. Filters select a token; confidence is computed separately at T=1
+// from the unfiltered logits. The API's min_p is an optional extra filter.
+int diffusion_prediction(std::span<const float> logits, const Sampling& s, std::mt19937_64& rng) {
+    namespace D = strata::qwen35::clover_diffusion;
+    const int best = D::greedy(logits);
+    if (s.temperature <= 0.f) return best;
+    if (!std::isfinite(s.temperature) || !std::isfinite(s.top_p) || s.top_p <= 0 || s.top_p > 1 ||
+        !std::isfinite(s.min_p) || s.min_p < 0 || s.min_p > 1 || s.top_k < 0)
+        throw std::invalid_argument("Invalid Clover diffusion sampling settings");
+    std::vector<float> scaled(logits.size());
+    for (size_t i = 0; i < logits.size(); ++i) scaled[i] = logits[i] / s.temperature;
+    float cutoff = -std::numeric_limits<float>::infinity();
+    if (s.top_k > 0 && (size_t) s.top_k < scaled.size()) {
+        auto sorted = scaled;
+        std::nth_element(sorted.begin(), sorted.begin() + s.top_k - 1, sorted.end(), std::greater<float>());
+        cutoff = sorted[(size_t) s.top_k - 1];
+    }
+    const float maximum = scaled[(size_t) best];
+    if (s.min_p > 0) cutoff = std::max(cutoff, maximum + std::log(s.min_p));
+    std::vector<int32_t> order;
+    for (size_t i = 0; i < scaled.size(); ++i)
+        if (scaled[i] >= cutoff) order.push_back((int32_t) i);
+    std::sort(order.begin(), order.end(), [&](int a, int b) {
+        return scaled[(size_t) a] == scaled[(size_t) b] ? a < b : scaled[(size_t) a] > scaled[(size_t) b];
+    });
+    std::vector<double> weights(order.size());
+    double sum = 0;
+    for (size_t i = 0; i < order.size(); ++i)
+        sum += weights[i] = std::exp((double) (scaled[(size_t) order[i]] - maximum));
+    size_t keep = order.size();
+    if (s.top_p < 1) {
+        float cumulative = 0;
+        for (size_t i = 0; i < order.size(); ++i) {
+            // HF removes a position only if the probability BEFORE it is > p.
+            if (cumulative > s.top_p) { keep = i; break; }
+            cumulative += (float) (weights[i] / sum);
+        }
+    }
+    keep = std::max<size_t>(1, keep);
+    double total = 0;
+    for (size_t i = 0; i < keep; ++i) total += weights[i];
+    std::uniform_real_distribution<double> draw(0.0, total);
+    double value = draw(rng);
+    for (size_t i = 0; i < keep; ++i)
+        if ((value -= weights[i]) <= 0) return order[i];
+    return order[keep - 1];
+}
+
 std::vector<int32_t> parse_ids(const char* s) {
     std::vector<int32_t> v;
     while (*s) {
@@ -3768,11 +3945,13 @@ int serve(Engine& E) {
     std::printf("INFO version=0.1.0 kv=%s expert_slots=%d expert_cache_mib=%zu expert_cache_bytes=%zu "
                 "expert_arena_bytes=%zu expert_auto=%d vram_free_bytes=%zu vram_cuda_free_bytes=%zu "
                 "vram_physical_free_bytes=%zu vram_free_source=%s vram_reserve_mib=%zu mtp=%d "
-                "kv_auto=%d context_auto=%d gpu_cc=%d vision=%d chunk=%d clover_draft=%d\n",
+                "kv_auto=%d context_auto=%d gpu_cc=%d vision=%d chunk=%d clover_draft=%d "
+                "clover_mode=%s clover_block_size=%d clover_threshold=%.9g\n",
                 E.kv_name(), expert_slots, expert_bytes >> 20, expert_bytes, arena_bytes, E.expert_auto ? 1 : 0,
                 memory.free, memory.cuda_free, memory.physical ? memory.physical_free : memory.cuda_free,
                 memory.source(), E.vram_reserve >> 20, E.mtp_d,
-                E.kv_auto ? 1 : 0, E.context_auto ? 1 : 0, E.gpu_cc, E.vision_enabled ? 1 : 0, E.tmax, E.clover_draft);
+                E.kv_auto ? 1 : 0, E.context_auto ? 1 : 0, E.gpu_cc, E.vision_enabled ? 1 : 0, E.tmax, E.clover_draft,
+                E.clover_mode.c_str(), E.clover_block_size, (double) E.clover_threshold);
     E.print_kv_info();
 #if defined(STRATA_Q36_CPU_POOL)
     if (E.pool) std::printf("INFO cpu_workers=%d cpu_threads=%d\n", E.pool->workers(),
@@ -3823,10 +4002,20 @@ int serve(Engine& E) {
         const long long max_new = std::strtoll(line.c_str() + (image_request ? 5 : 4), &p, 10);
         Sampling smp;
         smp.clover = E.m->clover;
+        if (smp.clover) {
+            smp.temperature = 0.f;
+            smp.top_k = 64;
+            smp.present = .9f;
+            smp.repeat = 1.05f;
+        }
         // A request may select a smaller/larger self-draft window without
         // reloading weights or changing the configured default. The benchmark
         // harness uses this native-protocol key to compare the same cache.
         int request_clover_draft = E.clover_draft;
+        std::string request_clover_mode = E.clover_mode;
+        int request_clover_block = E.clover_block_size;
+        float request_clover_threshold = E.clover_threshold;
+        bool request_mode_explicit = false, request_draft_explicit = false;
         int64_t turn_at = 0;
         bool checkpoint = true;
         for (;;) {
@@ -3850,13 +4039,37 @@ int serve(Engine& E) {
             else if (key == "turn_at") turn_at = std::strtoll(v, nullptr, 10);
             else if (key == "ckpt") checkpoint = std::atoi(v) != 0;
             else if (key == "clover_draft" && E.m->clover) {
+                request_draft_explicit = true;
                 char* end = nullptr;
                 const long parsed = std::strtol(v, &end, 10);
                 request_clover_draft = end == v || *end || parsed < 0 || parsed > 31 ? -1 : (int) parsed;
             }
+            else if (key == "clover_mode" && E.m->clover) {
+                request_mode_explicit = true;
+                request_clover_mode = v;
+            }
+            else if (key == "clover_block_size" && E.m->clover) {
+                char* end = nullptr;
+                const long parsed = std::strtol(v, &end, 10);
+                request_clover_block = end == v || *end || parsed < 1 || parsed > 32 || 32 % parsed ? -1 : (int) parsed;
+            }
+            else if (key == "clover_threshold" && E.m->clover) {
+                char* end = nullptr;
+                const float parsed = std::strtof(v, &end);
+                request_clover_threshold = end == v || *end || !std::isfinite(parsed) || parsed < 0 || parsed > 1 ? -1.f : parsed;
+            }
         }
         if (request_clover_draft < 0) {
             std::printf("ERR clover_draft takes 0 .. 31\n"); std::fflush(stdout); continue;
+        }
+        if (request_draft_explicit && !request_mode_explicit)
+            request_clover_mode = request_clover_draft > 0 ? "self-spec" : "causal";
+        if (request_mode_explicit && !request_draft_explicit)
+            request_clover_draft = request_clover_mode == "self-spec" ? std::max(1, E.clover_draft ? E.clover_draft : 4) : 0;
+        if ((request_clover_mode != "causal" && request_clover_mode != "self-spec" && request_clover_mode != "diffusion") ||
+            (request_clover_mode == "self-spec") != (request_clover_draft > 0) ||
+            request_clover_block < 1 || request_clover_threshold < 0) {
+            std::printf("ERR invalid Clover generation mode, block size, threshold or drafts\n"); std::fflush(stdout); continue;
         }
         std::string embeddings_path;
         if (image_request) {
@@ -3875,6 +4088,13 @@ int serve(Engine& E) {
             std::printf("ERR prompt (%zu tokens) + max_new (%lld) exceeds the context (%d)\n", ids.size(), max_new, E.ctx);
             std::fflush(stdout);
             continue;
+        }
+        if (request_clover_mode == "diffusion") {
+            try {
+                strata::qwen35::clover_diffusion::validate_capacity(request_clover_block, (int64_t) ids.size(), max_new, E.ctx);
+            } catch (const std::exception& error) {
+                std::printf("ERR %s\n", error.what()); std::fflush(stdout); continue;
+            }
         }
         bool bad = false;
         for (int32_t t : ids) bad |= t < 0 || t >= (int32_t) E.m->g.n_vocab;
@@ -3940,7 +4160,7 @@ int serve(Engine& E) {
             const int64_t before = turn_at - (int64_t) reuse;
             // Even a one-token boundary must populate its MTP KV row before
             // saving, so a restored turn has no deferred draft repair to run.
-            E.process(ids.data() + reuse, before, progress, true);
+            E.process(ids.data() + reuse, before, progress, true, request_clover_mode != "diffusion");
             turn_ids.clear();
             try {
                 E.save_turn(turn_state);
@@ -3949,8 +4169,8 @@ int serve(Engine& E) {
                 std::fprintf(stderr, "tinystrata: skipping conversation checkpoint: insufficient host memory\n");
             }
             E.process(ids.data() + turn_at, (int64_t) ids.size() - turn_at,
-                      [&](int64_t done) { progress(before + done); }, smp.needs_logits());
-        } else E.process(ids.data() + reuse, fresh, progress, smp.needs_logits());
+                      [&](int64_t done) { progress(before + done); }, smp.needs_logits(), request_clover_mode != "diffusion");
+        } else E.process(ids.data() + reuse, fresh, progress, smp.needs_logits(), request_clover_mode != "diffusion");
         live.insert(live.end(), ids.begin() + (long) reuse, ids.end());
         const double prompt_ms = ms_since(t0);
         std::mt19937_64 rng(smp.seed);
@@ -3958,6 +4178,99 @@ int serve(Engine& E) {
         const auto d0 = Clock::now();
         long long produced = 0, offered = 0, accepted = 0;
         const char* finish = "length";
+        E.clover_blocks = E.clover_passes = 0;
+        E.clover_preview_ms = E.clover_replay_ms = 0;
+        E.clover_select_ms = 0;
+        E.clover_copy_bytes = 0;
+        E.clover_preview_cpu_entries = E.clover_preview_gpu_entries = 0;
+        E.clover_preview_cpu_ms = 0;
+        E.clover_preview_wmma_calls = E.clover_preview_simt_calls = 0;
+        if (request_clover_mode == "diffusion") {
+            namespace D = strata::qwen35::clover_diffusion;
+            D::PenaltyOptions options;
+            options.presence = smp.present;
+            options.frequency = smp.freq;
+            options.repetition = smp.repeat;
+            D::PenaltyState penalties((int) E.m->g.n_vocab, options);
+            std::vector<float> rows((size_t) request_clover_block * (size_t) E.m->g.n_vocab);
+            std::vector<int32_t> prediction((size_t) request_clover_block);
+            std::vector<float> confidence((size_t) request_clover_block);
+            const bool host_select = smp.temperature > 0 || std::getenv("TINYSTRATA_CLOVER_HOST_SELECT") != nullptr;
+            strata::qwen35::clover_diffusion_gpu::Controls controls;
+            controls.presence = options.presence; controls.frequency = options.frequency; controls.repetition = options.repetition;
+            controls.length_strength = options.length_strength; controls.length_start = options.length_start; controls.length_window = options.length_window;
+            controls.think_strength = options.think_strength; controls.think_start = options.think_start; controls.think_window = options.think_window;
+            controls.mask = E.m->mask_token;
+            while (produced < max_new && !stop.load()) {
+                std::vector<int32_t> block((size_t) request_clover_block, E.m->mask_token);
+                int pending = request_clover_block;
+                if (!host_select)
+                    CK(cudaMemcpyAsync(E.clover_counts, penalties.counts().data(), penalties.counts().size_bytes(), cudaMemcpyHostToDevice, E.st));
+                for (int iteration = 0; pending && iteration < request_clover_block && !stop.load(); ++iteration) {
+                    const auto before = Clock::now();
+                    E.clover_preview_block(block);
+                    auto selecting = Clock::now();
+                    if (host_select) {
+                        CK(cudaMemcpyAsync(rows.data(), E.logits, rows.size() * sizeof(float), cudaMemcpyDeviceToHost, E.st));
+                        CK(cudaStreamSynchronize(E.st));
+                        E.clover_copy_bytes += rows.size() * sizeof(float);
+                        selecting = Clock::now();
+                        penalties.apply(rows, request_clover_block, block, E.m->mask_token);
+                        for (int row = 0; row < request_clover_block; ++row) {
+                            // HF samples every row; filled positions remain frozen.
+                            const std::span<const float> values(rows.data() + (size_t) row * E.m->g.n_vocab, (size_t) E.m->g.n_vocab);
+                            prediction[(size_t) row] = diffusion_prediction(values, smp, rng);
+                            confidence[(size_t) row] = D::selected_probability(values, prediction[(size_t) row]);
+                        }
+                    } else {
+                        CK(cudaEventRecord(E.clover_select_begin, E.st));
+                        CK(strata::qwen35::clover_diffusion_gpu::launch_greedy(E.logits, E.clover_counts, E.tok,
+                            request_clover_block, (int) E.m->g.n_vocab, penalties.length(), controls,
+                            E.clover_predictions, E.clover_confidences, E.clover_bad, E.st));
+                        CK(cudaEventRecord(E.clover_select_end, E.st));
+                        int bad_prediction = 0;
+                        CK(cudaMemcpyAsync(prediction.data(), E.clover_predictions, prediction.size() * sizeof(int32_t), cudaMemcpyDeviceToHost, E.st));
+                        CK(cudaMemcpyAsync(confidence.data(), E.clover_confidences, confidence.size() * sizeof(float), cudaMemcpyDeviceToHost, E.st));
+                        CK(cudaMemcpyAsync(&bad_prediction, E.clover_bad, sizeof(int), cudaMemcpyDeviceToHost, E.st));
+                        CK(cudaStreamSynchronize(E.st));
+                        float selected_ms = 0;
+                        CK(cudaEventElapsedTime(&selected_ms, E.clover_select_begin, E.clover_select_end));
+                        E.clover_select_ms += selected_ms;
+                        selecting = Clock::now();
+                        E.clover_copy_bytes += prediction.size() * sizeof(int32_t) + confidence.size() * sizeof(float) + sizeof(int);
+                        if (bad_prediction) throw std::runtime_error("Nonfinite Clover preview logits or confidence");
+                    }
+                    const auto positions = D::transfer(block, prediction, confidence, request_clover_threshold,
+                                                       E.m->mask_token, (int) E.m->g.n_vocab);
+                    for (int row : positions) block[(size_t) row] = prediction[(size_t) row];
+                    pending -= (int) positions.size();
+                    E.clover_select_ms += ms_since(selecting);
+                    ++E.clover_passes;
+                    E.clover_preview_ms += ms_since(before);
+                }
+                if (stop.load()) { finish = "cancel"; break; }
+                if (pending) throw std::runtime_error("Clover block left unresolved masks");
+                ++E.clover_blocks;
+                int emitted = 0;
+                bool ending = false;
+                for (int32_t token : block) {
+                    if (produced >= max_new || stop.load()) { ending = true; break; }
+                    std::printf("T %d\n", token); std::fflush(stdout);
+                    ++produced; ++emitted;
+                    if (is_eos(token)) { finish = "stop"; ending = true; break; }
+                }
+                penalties.commit(std::span<const int32_t>(block.data(), (size_t) emitted));
+                if (stop.load()) { finish = "cancel"; ending = true; }
+                if (ending || produced >= max_new) break;
+                const auto before = Clock::now();
+                E.clover_replay_block(block);
+                live.insert(live.end(), block.begin(), block.end());
+                E.clover_replay_ms += ms_since(before);
+            }
+            // Like HF, the final block is not replayed just to compute unused
+            // state. Keep its causal PREFIX alive; a later request processes
+            // the uncommitted <= block_size response suffix before extending it.
+        } else {
         // Greedy and sampled requests verify the same MTP proposals against the
         // main model. Sampling visits only the matching prefix, never a row
         // whose proposed history has already been rejected.
@@ -4053,6 +4366,7 @@ int serve(Engine& E) {
                 nx = sample(lg, smp, hist, rng);
             } else nx = E.greedy();
         }
+        }
         if ((int64_t) live.size() != E.pos) {
             std::fprintf(stderr, "tinystrata: consumed history (%zu) differs from model position (%lld) after generation\n",
                          live.size(), (long long) E.pos);
@@ -4061,6 +4375,16 @@ int serve(Engine& E) {
             return 1;
         }
         const double decode_ms = ms_since(d0);
+        if (E.m->clover)
+            std::printf("INFO clover_last_mode=%s clover_last_block_size=%d clover_last_threshold=%.9g "
+                        "clover_blocks=%lld clover_passes=%lld clover_preview_ms=%.1f clover_replay_ms=%.1f "
+                        "clover_select_ms=%.1f clover_copy_bytes=%zu "
+                        "clover_preview_cpu_entries=%lld clover_preview_gpu_entries=%lld clover_preview_cpu_ms=%.1f "
+                        "clover_preview_wmma_calls=%lld clover_preview_simt_calls=%lld\n",
+                        request_clover_mode.c_str(), request_clover_block, (double) request_clover_threshold,
+                        E.clover_blocks, E.clover_passes, E.clover_preview_ms, E.clover_replay_ms, E.clover_select_ms, E.clover_copy_bytes,
+                        E.clover_preview_cpu_entries, E.clover_preview_gpu_entries, E.clover_preview_cpu_ms,
+                        E.clover_preview_wmma_calls, E.clover_preview_simt_calls);
         E.print_kv_info();
         std::printf("DONE %lld %zu %.1f %.1f %s %lld %lld %zu 0 0 0 0 0.0 %lld 0\n", produced, ids.size(), prompt_ms,
                     decode_ms, finish, accepted, offered, reuse, (long long) fresh);
@@ -4074,6 +4398,10 @@ int strata::qwen35::run(int argc, char** argv) {
     std::string model, tokens, force, dump_full;
     int ctx = 0, chunk = 0, n_gen = 64, bench_pp = 0, bench_tg = 0, mtp_d = 0, cpu_threads = 0, hybrid_rows = 128;
     int clover_draft = -1;
+    std::string clover_mode;
+    int clover_block_size = 32;
+    float clover_threshold = 0.95f;
+    bool clover_diffusion_option = false;
     double expert_vram = -1.0;
     size_t vram_reserve = (size_t) 768 << 20;
     bool reserve_explicit = false;
@@ -4106,7 +4434,10 @@ int strata::qwen35::run(int argc, char** argv) {
                         "  --kv-grow --kv-whole      Grow physical KV with sequence length (default: grow)\n"
                         "  --chunk auto|N           Prompt chunk size (default: auto)\n"
                         "  --mtp N                  MTP drafts, 0..7 (default: 0)\n"
-                        "  --clover-draft N         Clover self drafts, 0..31 (default: 0, exact verification)\n"
+                        "  --clover-mode MODE       Clover: causal (default), self-spec, diffusion\n"
+                        "  --clover-draft N         Legacy self drafts, 0..31 (0: causal, positive: self-spec)\n"
+                        "  --clover-block-size N    Diffusion width: 1,2,4,8,16,32 (default: 32)\n"
+                        "  --clover-threshold P     LowConfidence threshold in [0,1] (default: 0.95)\n"
                         "  --expert-vram auto|GiB   Routed expert budget (default: available VRAM)\n"
                         "  --expert-slots N         Resident expert slots per layer\n"
                         "  --vram-reserve-mib N     Override automatic VRAM reserve (default: 768, near-fit: 256)\n"
@@ -4170,6 +4501,32 @@ int strata::qwen35::run(int argc, char** argv) {
                 std::fprintf(stderr, "tinystrata: --clover-draft takes 0 .. 31\n"); return 2;
             }
             clover_draft = (int) parsed;
+        }
+        else if (a == "--clover-mode") {
+            clover_mode = next();
+            if (clover_mode != "causal" && clover_mode != "self-spec" && clover_mode != "diffusion") {
+                std::fprintf(stderr, "tinystrata: --clover-mode takes causal, self-spec or diffusion\n"); return 2;
+            }
+            clover_diffusion_option = true;
+        }
+        else if (a == "--clover-block-size") {
+            const std::string value = next();
+            char* end = nullptr;
+            const long parsed = std::strtol(value.c_str(), &end, 10);
+            if (end == value.c_str() || *end || parsed < 1 || parsed > 32 || 32 % parsed != 0) {
+                std::fprintf(stderr, "tinystrata: --clover-block-size must divide 32\n"); return 2;
+            }
+            clover_block_size = (int) parsed;
+            clover_diffusion_option = true;
+        }
+        else if (a == "--clover-threshold") {
+            const std::string value = next();
+            char* end = nullptr;
+            clover_threshold = std::strtof(value.c_str(), &end);
+            if (end == value.c_str() || *end || !std::isfinite(clover_threshold) || clover_threshold < 0 || clover_threshold > 1) {
+                std::fprintf(stderr, "tinystrata: --clover-threshold takes a finite value in [0,1]\n"); return 2;
+            }
+            clover_diffusion_option = true;
         }
         else if (a == "--expert-vram") {
             const std::string v = next();
@@ -4242,9 +4599,18 @@ int strata::qwen35::run(int argc, char** argv) {
         }
         if (context_auto) ctx = std::min(ctx, 131072);
         if (ctx > 131072) { std::fprintf(stderr, "tinystrata: Clover supports at most 131072 context tokens\n"); return 2; }
+        if (clover_mode.empty())
+            clover_mode = clover_draft > 0 ? "self-spec" : "causal";
+        if (clover_mode == "self-spec" && clover_draft < 0) clover_draft = 4;
         if (clover_draft < 0) clover_draft = 0;
-    } else if (clover_draft > 0) {
-        std::fprintf(stderr, "tinystrata: --clover-draft requires a Clover model\n"); return 2;
+        if ((clover_mode == "self-spec") != (clover_draft > 0)) {
+            std::fprintf(stderr, "tinystrata: self-spec requires positive --clover-draft; other modes require zero drafts\n"); return 2;
+        }
+        if (!serve_mode && clover_mode != "causal") {
+            std::fprintf(stderr, "tinystrata: Clover diffusion/self-spec use --serve or the API; numerical --tokens tools use --clover-mode causal\n"); return 2;
+        }
+    } else if (clover_draft > 0 || clover_diffusion_option) {
+        std::fprintf(stderr, "tinystrata: --clover-* options require a Clover model\n"); return 2;
     }
     if (context_auto)
         std::fprintf(stderr, "tinystrata: automatic context: %.2f GiB total GPU VRAM -> %d tokens "
@@ -4253,6 +4619,9 @@ int strata::qwen35::run(int argc, char** argv) {
                      context_memory.free / 1073741824.0, context_memory.source());
     Engine E;
     E.clover_draft = m.clover ? clover_draft : 0;
+    E.clover_mode = m.clover ? clover_mode : "causal";
+    E.clover_block_size = clover_block_size;
+    E.clover_threshold = clover_threshold;
     if (vision && (m.n_rot != 64 || !m.vision_rope || m.image_pad < 0 || m.image_pad >= m.g.n_vocab)) {
         std::fprintf(stderr, "tinystrata: vision requires Qwen3.6 interleaved M-RoPE with 64 rotary dimensions and sections 11/11/10\n");
         return 2;
