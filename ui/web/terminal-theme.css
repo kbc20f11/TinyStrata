@@ -562,7 +562,8 @@ html[data-theme="light"] body:has(.workspace) .tag.completed { color: var(--st-a
   animation: model-download-wait 1.6s ease-in-out infinite alternate;
 }
 @keyframes model-download-wait { from { background-position: left; } to { background-position: right; } }
-.model-download-progress__numbers { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; color: var(--st-ink-muted); font: 12px/1.5 var(--st-font-mono); font-variant-numeric: tabular-nums; }
+.model-download-progress__numbers { display: flex; justify-content: space-between; gap: 6px 16px; flex-wrap: wrap; color: var(--st-ink-muted); font: 12px/1.5 var(--st-font-mono); font-variant-numeric: tabular-nums; }
+.model-download-progress__note { color: var(--st-ink-muted); font-size: 12px; }
 #model-download-percent { color: var(--st-accent-text); }
 .model-download-error { padding: 12px 14px; border: 1px solid var(--st-danger); background: var(--st-danger-tint); color: var(--st-danger-text); font-size: 14px; }
 .model-download-dialog__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 12px; padding: 20px 28px; border-top: 1px solid var(--st-line-soft); }

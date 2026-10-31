@@ -965,21 +965,32 @@ function renderModelDownload() {
   if (!flow) return;
   const name = modelNames[flow.target] || flow.target;
   const state = flow.stage, job = flow.job || {};
-  $("model-download-title").textContent = tr("model.downloadTitle", "Download {model}", {model: name});
+  const title = {
+    downloading: ["model.downloadTitleActive", "Downloading {model}"],
+    verifying: ["model.downloadTitleVerifying", "Verifying {model} files"],
+    loading: ["model.downloadTitlePreparing", "Preparing {model}"],
+    switching: ["model.downloadTitleSwitching", "Switching to {model}"],
+    ready: ["model.downloadTitleComplete", "{model} download complete"],
+    waiting: ["model.downloadTitleComplete", "{model} download complete"],
+    done: ["model.downloadTitleComplete", "{model} download complete"]
+  }[state] || ["model.downloadTitle", "{model} download"];
+  $("model-download-title").textContent = tr(...title, {model: name});
   const description = state === "confirm" ? tr("model.downloadConfirm",
-    "Download the model files, then switch to {model}? The current model stays active during download.", {model: name})
+    "Download {model}? TinyStrata will switch to it when the download finishes.", {model: name})
     : downloadIsActive(flow) && !flow.cancelRequested ? tr("model.downloadBackground",
-      "The download continues if you close this window. You can keep using the current model.") : "";
+      "The download continues when you close this window. Check progress from the model selector.") : "";
   $("model-download-description").textContent = description +
-    (Number.isFinite(job.total_bytes) && job.total_bytes > 0 ? " " + tr("model.downloadSize", "Download size: {size}", {size: downloadSize(job.total_bytes)}) : "");
+    (state === "confirm" && Number.isFinite(job.total_bytes) && job.total_bytes > 0
+      ? " " + tr("model.downloadSize", "Download size: {size}", {size: downloadSize(job.total_bytes)}) : "");
+  $("model-download-description").hidden = !$("model-download-description").textContent;
   const status = {
-    confirm: ["model.downloadChecking", "Checking download status…"],
-    checking: ["model.downloadChecking", "Checking download status…"],
-    downloading: ["model.downloadDownloading", "Downloading model files…"],
-    verifying: ["model.downloadVerifying", "Verifying model files…"],
-    loading: ["model.downloadLoading", "Preparing the downloaded model…"],
+    confirm: ["model.downloadChecking", "Checking status"],
+    checking: ["model.downloadChecking", "Checking status"],
+    downloading: ["model.downloadDownloading", "Downloading"],
+    verifying: ["model.downloadVerifying", "Verifying files"],
+    loading: ["model.downloadLoading", "Preparing for use"],
     recovering: ["model.downloadReconnect", "Connection interrupted. Checking download status again…"],
-    cancelling: ["model.downloadCancelling", "Cancelling the download…"],
+    cancelling: ["model.downloadCancelling", "Cancelling"],
     waiting: ["model.downloadWaiting", "Download complete. Waiting for the current operation before switching…"],
     ready: ["model.downloadReady", "Model files are ready."],
     switching: ["model.switching", "Switching model…"],
@@ -987,7 +998,7 @@ function renderModelDownload() {
     error: ["model.downloadFailed", "The model download failed."],
     blocked: ["model.downloadBusy", "A model operation is running. Wait for it to finish."],
     cancelled: ["model.downloadCancelled", "Download cancelled. Downloaded files are kept so you can resume."]
-  }[state] || ["model.downloadChecking", "Checking download status…"];
+  }[state] || ["model.downloadChecking", "Checking status"];
   const statusText = state === "confirm" && flow.job && !flow.requestBusy ? "" : tr(...status);
   if ($("model-download-status").textContent !== statusText) $("model-download-status").textContent = statusText;
   $("model-download-error").hidden = !flow.error;
@@ -1000,12 +1011,17 @@ function renderModelDownload() {
   else progress.removeAttribute("value");
   $("model-download-percent").textContent = fraction == null ? "" : tr("model.downloadPercent", "{percent}%", {percent: fmt(fraction * 100, 1)});
   $("model-download-bytes").textContent = Number.isFinite(job.bytes_downloaded) && job.total_bytes > 0
-    ? tr("model.downloadBytes", "{received} / {total}", {received: downloadSize(job.bytes_downloaded), total: downloadSize(job.total_bytes)}) : "";
-  $("model-download-dismiss").textContent = state === "confirm" ? tr("cancel", "Cancel") : tr("close", "Close");
+    ? tr("model.downloadBytes", "Downloaded: {received} / Total: {total}", {received: downloadSize(job.bytes_downloaded), total: downloadSize(job.total_bytes)}) : "";
+  const canPause = job.can_cancel === true && !flow.cancelRequested;
+  $("model-download-note").hidden = !canPause;
+  $("model-download-note").textContent = tr("model.downloadResumeNote", "Downloaded data is kept if you cancel, so you can resume later.");
+  $("model-download-dismiss").textContent = state === "confirm" ? tr("cancel", "Cancel")
+    : downloadIsActive(flow) && !flow.cancelRequested ? tr("model.downloadContinue", "Continue in background") : tr("close", "Close");
   const action = $("model-download-action");
   action.hidden = state === "done" || state === "switching" || (downloadIsActive(flow) && flow.confirmed);
   action.disabled = flow.requestBusy || flow.pollBusy || (["ready", "waiting"].includes(state) && modelOperationBusy());
-  action.textContent = ["ready", "waiting"].includes(state) ? tr("model.downloadSwitch", "Switch model")
+  action.textContent = state === "cancelled" ? tr("model.downloadResume", "Resume download")
+    : ["ready", "waiting"].includes(state) ? tr("model.downloadSwitch", "Switch model")
     : ["error", "cancelled", "blocked"].includes(state) ? tr("model.downloadRetry", "Retry / resume")
     : tr("model.downloadStart", "Download and switch");
   const cancel = $("model-download-cancel");

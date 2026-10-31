@@ -67,7 +67,7 @@
     let next = null;
     if (code !== "en") {
       try {
-        const r = await root.fetch(`web/locales/${code}.json?v=20261031.3`, {cache: "no-store"});
+        const r = await root.fetch(`web/locales/${code}.json?v=20261031.5`, {cache: "no-store"});
         const j = r.ok ? await r.json() : null;
         if (j && typeof j === "object" && !Array.isArray(j)) next = j;
       } catch (e) { /* the English text stays */ }
