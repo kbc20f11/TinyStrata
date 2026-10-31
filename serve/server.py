@@ -1196,11 +1196,11 @@ class StrataEngine:
         pf_on = isinstance(pf, (int, float)) and float(pf) != 0.0
         pp = sampling.get("presence_penalty")
         pp_on = isinstance(pp, (int, float)) and float(pp) != 0.0
-        if rp_on:
+        if isinstance(rp, (int, float)):
             keys += f" penalty_repeat={float(rp)!r}"
         if pf_on:
             keys += f" penalty_freq={float(pf)!r}"
-        if pp_on:
+        if isinstance(pp, (int, float)):
             keys += f" penalty_present={float(pp)!r}"
         if rp_on or pf_on or pp_on:
             # a penalty without a window counts over nothing: the engine's default is the last 64 tokens
