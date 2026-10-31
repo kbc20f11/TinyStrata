@@ -158,24 +158,26 @@ Os mesmos três textos foram executados duas vezes por configuração FP8/INT8 c
 
 Velocidade em placas Radeon, medida com [tinystrata-bench-v1](benchmark/README.md#english). Cada placa tem sua própria página com o hardware, o driver, o commit do motor, as configurações e todas as colunas: [`benchmark/results/`](benchmark/results/). Valores: geração / entrada 4K / entrada 16K, em tok/s.
 
-| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover Q4_0 (causal) |
+| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS (causal) |
 | --- | ---: | ---: | ---: | ---: |
-| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 45.20 / 800.61 / 727.25 |
+| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 40.63 / 959.44 / 872.91 |
 | [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 | — |
 
-**Clover Q4_0: medições anteriores de geração causal e difusão por blocos — RX 9060 XT (2026-10-31)**
+**Clover IQ3_XXS e referência Q4_0 — RX 9060 XT (2026-10-31)**
 
-Os cinco perfis usam raciocínio ativado e quatro inicializações independentes da API; o formato KV aparece separadamente. O padrão seleciona workers/blocos de entrada automaticamente (aqui 15 / 2.048); os outros quatro usam 9 workers / bloco de entrada 1.024. O cache de especialistas mostra início → após 16K, em GiB.
+Os cinco perfis usam contexto 128K, raciocínio ativado, seleção automática de workers/blocos de entrada (aqui 15 / 2.048) e quatro inicializações independentes da API. O cache de especialistas mostra início → após 16K, em GiB.
 
 | Perfil | KV | Geração tok/s | Entrada 4K tok/s | Entrada 16K tok/s | Cache de especialistas GiB |
 | --- | --- | ---: | ---: | ---: | --- |
-| Causal, padrão (auto) | INT8 | 45.20 | 800.61 | 727.25 | 10.88 → 10.74 |
-| Causal, W9/C1024 | INT8 | 48.95 | 786.64 | 719.56 | 11.40 → 11.21 |
-| Causal, W9/C1024 | FP8 | 49.04 | 786.35 | 714.52 | 11.40 → 11.21 |
-| Difusão por blocos B4, >0.95 | INT8 | 34.63 | 787.19 | 720.48 | 11.40 → 11.21 |
-| Difusão por blocos B32, >0.95 | INT8 | 14.23 | 785.07 | 720.38 | 11.40 → 11.21 |
+| Q4_0 causal (referência) | INT8 | 44.34 | 794.81 | 722.73 | 11.07 → 10.88 |
+| IQ3_XXS causal | INT8 | 40.63 | 959.44 | 872.91 | 9.98 → 9.83 |
+| IQ3_XXS causal | FP8 | 40.50 | 955.87 | 863.80 | 9.98 → 9.83 |
+| IQ3_XXS difusão por blocos B4, >0.95 | INT8 | 31.27 | 954.24 | 874.74 | 9.98 → 9.83 |
+| IQ3_XXS difusão por blocos B32, >0.95 | INT8 | 15.10 | 956.03 | 876.75 | 9.98 → 9.83 |
 
-A decodificação causal continua sendo o padrão. A difusão por blocos exige seleção explícita e ainda apresenta diferenças na qualidade das respostas; essas taxas não indicam saídas equivalentes. [Configurações, verificações de qualidade e comparações anteriores](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31).
+O download IQ3_XXS tem 15.515 GB, cerca de 20.8% menos que os 19.587 GB do Q4_0 anterior. Ele é o padrão para priorizar o uso de memória e o processamento de entradas; a geração é comparada acima com uma nova medição Q4_0.
+
+A decodificação causal continua sendo o padrão. A difusão por blocos exige seleção explícita e ainda apresenta diferenças na qualidade das respostas; essas taxas não indicam saídas equivalentes. [Configurações e verificações de qualidade](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31) / [Medições históricas de Q4_0](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31).
 
 ## Qual projeto devo usar?
 
