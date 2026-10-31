@@ -35,6 +35,7 @@
 !/tests/model-artifact-migration.py
 !/tests/clover-self-spec.cpp
 !/tests/clover-self-spec-gpu.cu
+!/tests/clover-attention-gpu.cu
 !/tests/clover-decode-settings.py
 !/tests/benchmark-64k.py
 

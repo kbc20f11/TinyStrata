@@ -46,6 +46,7 @@ ENGINE_KEYS = ('model', 'version', 'kv', 'kv_grow', 'mtp', 'clover_draft', 'clov
                'clover_preview_ms', 'clover_replay_ms', 'clover_select_ms', 'clover_copy_bytes',
                'clover_preview_cpu_entries', 'clover_preview_gpu_entries', 'clover_preview_cpu_ms',
                'clover_preview_wmma_calls', 'clover_preview_simt_calls',
+               'clover_query_tile', 'clover_query_shared_calls',
                'clover_last_mode', 'clover_last_block_size', 'clover_last_threshold',
                'clover_last_accept', 'clover_last_accept_ratio', 'clover_last_accept_delta',
                'clover_last_draft_penalty_gpu', 'clover_last_gpu_exact_verify',

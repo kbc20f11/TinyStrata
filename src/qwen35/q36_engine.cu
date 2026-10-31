@@ -30,6 +30,7 @@
 #include "strata/qwen35/clover_decode.hpp"
 #include "strata/qwen35/clover_diffusion.hpp"
 #include "strata/qwen35/attention.cuh"
+#include "strata/qwen35/clover_attention.cuh"
 #include "strata/qwen35/int8_attention.hpp"
 #include "strata/qwen35/fp8_attention.hpp"
 #include "strata/qwen35/environment_policy.hpp"
@@ -1255,6 +1256,8 @@ struct Engine {
     size_t clover_copy_bytes = 0;
     long long clover_preview_cpu_entries = 0, clover_preview_gpu_entries = 0;
     long long clover_preview_wmma_calls = 0, clover_preview_simt_calls = 0;
+    int clover_query_tile = 0; // HIP INT8 only; zero retains independent-query attention.
+    long long clover_query_shared_calls = 0;
     double clover_preview_cpu_ms = 0;
     int64_t* clover_counts = nullptr;
     int32_t* clover_predictions = nullptr;
@@ -1400,6 +1403,17 @@ struct Engine {
 #endif
         tmax = std::max(tmax_, verify_capacity);
         const auto& g = m->g;
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
+        if (m->clover && kv_format == 2 && g.head_dim == 256 && g.n_head == 8 * g.n_head_kv) {
+            clover_query_tile = 4;
+            if (const char* value = std::getenv("TINYSTRATA_CLOVER_QUERY_TILE")) {
+                if (std::strcmp(value, "0") == 0) clover_query_tile = 0;
+                else if (std::strcmp(value, "2") == 0) clover_query_tile = 2;
+                else if (std::strcmp(value, "4") != 0)
+                    throw std::invalid_argument("TINYSTRATA_CLOVER_QUERY_TILE must be 0, 2 or 4");
+            }
+        }
+#endif
 #if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
         fair_rebalance = true;
         if (const char* value = std::getenv("TINYSTRATA_Q36_FAIR_REBALANCE"))
@@ -2177,6 +2191,25 @@ struct Engine {
             auto attention = [&]<int Format>() {
                 A::k_attn_prep<Format><<<dim3(H + HKV, T), kThreads, 0, st>>>(qg, kx, vx, L.q_norm, L.k_norm, q, gate, kv[li], H,
                                                                   HKV, HD, m->n_rot, dpos, ctx, m->rope_base, m->eps, mrope);
+                auto launch_part = [&](int nc, int nt, int t0, int visible_end = 0) {
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
+                    if constexpr (Format == 2) {
+                        // Short histories retain the old path: partial-chunk query sharing
+                        // costs more than it saves. Use the measured conservative 4K crossover.
+                        if (m->clover && clover_query_tile && nt >= 2 && nt <= 4 && HD == 256 && H == 8 * HKV &&
+                            p0 + t0 >= 4096) {
+                            // T2 uses the measured two-query tile; T3 pads the four-query tile.
+                            const int tile = std::min(clover_query_tile, nt == 2 ? 2 : 4);
+                            CK(strata::qwen35::clover_attention::launch(q, kv[li], dpos, t0, nt, H, HKV, ctx,
+                                1.f / sqrtf((float) HD), n_chunk, nc, pacc, pm, pl, st, visible_end, tile));
+                            ++clover_query_shared_calls;
+                            return;
+                        }
+                    }
+#endif
+                    A::k_attn_part<Format><<<dim3(nc, nt * H), kChunkCells, 0, st>>>(q, kv[li], dpos, t0,
+                        H, HKV, ctx, 1.f / sqrtf((float) HD), n_chunk, pacc, pm, pl, visible_end);
+                };
                 if (clover_preview) {
                     // Every preview query sees the entire noisy block and the
                     // committed prefix. KV suffix writes are temporary: verify
@@ -2198,8 +2231,7 @@ struct Engine {
                     const int rows_per = att_rows / H;
                     for (int t0 = 0; t0 < T; t0 += rows_per) {
                         const int nt = std::min(rows_per, T - t0);
-                        A::k_attn_part<Format><<<dim3(nc, nt * H), kChunkCells, 0, st>>>(q, kv[li], dpos, t0,
-                            H, HKV, ctx, 1.f / sqrtf((float) HD), n_chunk, pacc, pm, pl, end);
+                        launch_part(nc, nt, t0, end);
                         A::k_attn_merge<<<nt * H, HD, 0, st>>>(pacc, pm, pl, gate, dpos, t0, H, n_chunk, att, end);
                     }
                     return;
@@ -2273,8 +2305,7 @@ struct Engine {
                             strata::qwen35::fp8_attention::run_split(q, view, dpos, t0, nt, HKV, ctx, nc, n_chunk,
                                                                    pacc, pm, pl, st);
                         } else {
-                            A::k_attn_part<Format><<<dim3(nc, nt * H), kChunkCells, 0, st>>>(q, kv[li], dpos, t0, H, HKV, ctx,
-                                                                                 1.0f / sqrtf((float) HD), n_chunk, pacc, pm, pl);
+                            launch_part(nc, nt, t0);
                         }
                         A::k_attn_merge<<<nt * H, HD, 0, st>>>(pacc, pm, pl, gate, dpos, t0, H, n_chunk, att);
                     }
@@ -4005,14 +4036,14 @@ int serve(Engine& E) {
                 "vram_physical_free_bytes=%zu vram_free_source=%s vram_reserve_mib=%zu mtp=%d "
                 "kv_auto=%d context_auto=%d gpu_cc=%d vision=%d chunk=%d clover_draft=%d "
                 "clover_mode=%s clover_block_size=%d clover_threshold=%.9g "
-                "clover_accept=%s clover_accept_ratio=%.9g clover_accept_delta=%.9g clover_draft_penalty_gpu=%d clover_gpu_exact_verify=%d\n",
+                "clover_accept=%s clover_accept_ratio=%.9g clover_accept_delta=%.9g clover_draft_penalty_gpu=%d clover_gpu_exact_verify=%d clover_query_tile=%d\n",
                 E.kv_name(), expert_slots, expert_bytes >> 20, expert_bytes, arena_bytes, E.expert_auto ? 1 : 0,
                 memory.free, memory.cuda_free, memory.physical ? memory.physical_free : memory.cuda_free,
                 memory.source(), E.vram_reserve >> 20, E.mtp_d,
                 E.kv_auto ? 1 : 0, E.context_auto ? 1 : 0, E.gpu_cc, E.vision_enabled ? 1 : 0, E.tmax, E.clover_draft,
                 E.clover_mode.c_str(), E.clover_block_size, (double) E.clover_threshold,
                 E.clover_accept.c_str(), (double) E.clover_accept_ratio, (double) E.clover_accept_delta,
-                E.clover_draft_penalty_gpu ? 1 : 0, E.clover_gpu_exact_verify ? 1 : 0);
+                E.clover_draft_penalty_gpu ? 1 : 0, E.clover_gpu_exact_verify ? 1 : 0, E.clover_query_tile);
     E.print_kv_info();
 #if defined(STRATA_Q36_CPU_POOL)
     if (E.pool) std::printf("INFO cpu_workers=%d cpu_threads=%d\n", E.pool->workers(),
@@ -4273,6 +4304,7 @@ int serve(Engine& E) {
         E.clover_preview_cpu_entries = E.clover_preview_gpu_entries = 0;
         E.clover_preview_cpu_ms = 0;
         E.clover_preview_wmma_calls = E.clover_preview_simt_calls = 0;
+        E.clover_query_shared_calls = 0;
         if (request_clover_mode == "diffusion") {
             namespace D = strata::qwen35::clover_diffusion;
             D::PenaltyOptions options;
@@ -4534,14 +4566,16 @@ int serve(Engine& E) {
                         "clover_blocks=%lld clover_passes=%lld clover_preview_ms=%.1f clover_replay_ms=%.1f "
                         "clover_select_ms=%.1f clover_copy_bytes=%zu "
                         "clover_preview_cpu_entries=%lld clover_preview_gpu_entries=%lld clover_preview_cpu_ms=%.1f "
-                        "clover_preview_wmma_calls=%lld clover_preview_simt_calls=%lld\n",
+                        "clover_preview_wmma_calls=%lld clover_preview_simt_calls=%lld "
+                        "clover_query_tile=%d clover_query_shared_calls=%lld\n",
                         request_clover_mode.c_str(), request_clover_block, (double) request_clover_threshold,
                         request_clover_accept.c_str(), (double) request_clover_accept_ratio, (double) request_clover_accept_delta,
                          request_clover_mode == "self-spec" && (request_clover_accept == "threshold" || E.clover_draft_penalty_gpu) ? 1 : 0,
                          request_clover_mode == "self-spec" && request_clover_accept == "exact" && smp.temperature == 0.f && E.clover_gpu_exact_verify ? 1 : 0,
                         E.clover_blocks, E.clover_passes, E.clover_preview_ms, E.clover_replay_ms, E.clover_select_ms, E.clover_copy_bytes,
                         E.clover_preview_cpu_entries, E.clover_preview_gpu_entries, E.clover_preview_cpu_ms,
-                        E.clover_preview_wmma_calls, E.clover_preview_simt_calls);
+                        E.clover_preview_wmma_calls, E.clover_preview_simt_calls,
+                        E.clover_query_tile, E.clover_query_shared_calls);
         E.print_kv_info();
         std::printf("DONE %lld %zu %.1f %.1f %s %lld %lld %zu 0 0 0 0 0.0 %lld 0\n", produced, ids.size(), prompt_ms,
                     decode_ms, finish, accepted, offered, reuse, (long long) fresh);
