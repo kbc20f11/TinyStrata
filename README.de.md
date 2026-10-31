@@ -158,12 +158,24 @@ Dieselben drei Eingabetexte wurden je zweimal pro FP8-/INT8-Konfiguration mit de
 
 Geschwindigkeit auf Radeon-Karten, gemessen mit [tinystrata-bench-v1](benchmark/README.md#english). Jede Karte hat eine eigene Seite mit Hardware, Treiber, Engine-Commit, Einstellungen und allen Spalten: [`benchmark/results/`](benchmark/results/). Werte: Generierung / 4K-Eingabe / 16K-Eingabe in tok/s.
 
-| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover Q4_0 |
+| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover Q4_0 (kausal) |
 | --- | ---: | ---: | ---: | ---: |
-| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 46.96 / 793.74 / 723.24 |
+| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 45.20 / 800.61 / 727.25 |
 | [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 | — |
 
-Clover verwendet in dieser Tabelle das gemeinsame INT8-D0-Profil, getrennt von der [FP8-Anpassung dieses PCs und den früheren Einstellungsvergleichen desselben Tages](benchmark/results/rx-9060-xt.md#clover-tuning-comparison-2026-10-30).
+**Clover: kausale Dekodierung und Blockdiffusion — RX 9060 XT (2026-10-31)**
+
+Alle fünf Profile verwenden aktiviertes Denken und vier unabhängige API-Starts; das KV-Format steht separat in der Tabelle. Standard nutzt automatische Worker/Chunks (hier 15 / 2.048); die übrigen vier verwenden 9 Worker / Chunk 1.024. Der Expertencache zeigt Start → nach 16K in GiB.
+
+| Profil | KV | Generierung tok/s | 4K-Eingabe tok/s | 16K-Eingabe tok/s | Expertencache GiB |
+| --- | --- | ---: | ---: | ---: | --- |
+| Kausal, Standard (auto) | INT8 | 45.20 | 800.61 | 727.25 | 10.88 → 10.74 |
+| Kausal, W9/C1024 | INT8 | 48.95 | 786.64 | 719.56 | 11.40 → 11.21 |
+| Kausal, W9/C1024 | FP8 | 49.04 | 786.35 | 714.52 | 11.40 → 11.21 |
+| Blockdiffusion B4, >0.95 | INT8 | 34.63 | 787.19 | 720.48 | 11.40 → 11.21 |
+| Blockdiffusion B32, >0.95 | INT8 | 14.23 | 785.07 | 720.38 | 11.40 → 11.21 |
+
+Kausale Dekodierung bleibt der Standard. Blockdiffusion muss ausdrücklich gewählt werden; Unterschiede in der Antwortqualität bleiben bestehen. Die Geschwindigkeiten belegen keine gleichwertigen Ausgaben. [Einstellungen, Qualitätsprüfungen und frühere Vergleiche](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31).
 
 ## Welches Projekt sollte ich verwenden?
 

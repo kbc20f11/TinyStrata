@@ -170,12 +170,24 @@ Each of the same three input texts was run twice per FP8/INT8 configuration, gen
 
 Speed on Radeon cards, measured with [tinystrata-bench-v1](benchmark/README.md#english). Each card has its own page with the hardware, driver, engine commit, settings and every column: [`benchmark/results/`](benchmark/results/). Values are generation / 4K input / 16K input, in tok/s.
 
-| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover Q4_0 |
+| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover Q4_0 (causal) |
 | --- | ---: | ---: | ---: | ---: |
-| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 46.96 / 793.74 / 723.24 |
+| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 45.20 / 800.61 / 727.25 |
 | [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 | — |
 
-Clover uses the common INT8 D0 profile in this table, separate from this PC’s [FP8 tuning and earlier same-day setting comparisons](benchmark/results/rx-9060-xt.md#clover-tuning-comparison-2026-10-30).
+**Clover causal and block diffusion — RX 9060 XT (2026-10-31)**
+
+All five profiles use thinking enabled and four independent API starts; the KV format is shown separately. Standard uses automatic workers/chunk (15 / 2,048 here); the other four use 9 workers / chunk 1,024. Expert cache is startup → after 16K, in GiB.
+
+| Profile | KV | Generation tok/s | 4K input tok/s | 16K input tok/s | Expert cache GiB |
+| --- | --- | ---: | ---: | ---: | --- |
+| Causal, standard (auto) | INT8 | 45.20 | 800.61 | 727.25 | 10.88 → 10.74 |
+| Causal, W9/C1024 | INT8 | 48.95 | 786.64 | 719.56 | 11.40 → 11.21 |
+| Causal, W9/C1024 | FP8 | 49.04 | 786.35 | 714.52 | 11.40 → 11.21 |
+| Block diffusion B4, >0.95 | INT8 | 34.63 | 787.19 | 720.48 | 11.40 → 11.21 |
+| Block diffusion B32, >0.95 | INT8 | 14.23 | 785.07 | 720.38 | 11.40 → 11.21 |
+
+Causal decoding remains the default. Block diffusion is opt-in and retains answer-quality differences; these throughput figures do not imply equivalent output. [Settings, quality checks and historical comparisons](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31).
 
 ## Which project should I use?
 
