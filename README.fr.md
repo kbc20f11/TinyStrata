@@ -30,7 +30,7 @@ TinyStrata choisit automatiquement les paramètres d’inférence et de mémoire
 
 **LFM2.5-24B-A2B Q4_K_M** utilise le [GGUF officiel de LiquidAI](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF). Son unique fichier de modèle de langage pèse **14.53 GB**.
 
-**Clover-35B-A3B-Preview IQ3_XXS** utilise par défaut le [GGUF de AtomicChat](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf), avec **IQ3_XXS pour gate/up et IQ3_S pour down** des experts. Le téléchargement de **15.515 GB** conserve le tokenizer propre à Clover et ses paramètres GDN bidirectionnels appris. Le contexte maximal est de **128K**, avec des entrées uniquement textuelles. Sélectionnez-le avec `run-api.bat --model-family clover` ; un nouveau profil autonome utilise le port **18083** et conserve ses paramètres dans `config-clover.json`. Les nouveaux profils gérés conservent le décodage causal (`--clover-mode causal`) et la sélection KV automatique par défaut. Un profil rapide explicite utilise `STRATA_IQ_MT_MIN=1` avec `--clover-mode self-spec --clover-draft 3 --clover-accept exact --kv-type int8` : le même modèle produit des brouillons et n’accepte que le préfixe correspondant à sa vérification causale, sans tête MTP distincte. MT1 modifie l’arithmétique CPU des experts. La diffusion LowConfidence par blocs et l’acceptation approximative par seuil restent des options expérimentales à activer explicitement ; voir les [options de décodage](benchmark/README.md#english). Toutes les voies utilisent un cache d’experts adapté à la VRAM disponible, le calcul d’experts sur CPU depuis la RAM et une mémoire KV physique qui augmente avec la longueur de la séquence.
+**Clover-35B-A3B-Preview IQ3_XXS** utilise par défaut le [GGUF de AtomicChat](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf), avec **IQ3_XXS pour gate/up et IQ3_S pour down** des experts. Le téléchargement de **15.515 GB** conserve le tokenizer propre à Clover et ses paramètres GDN bidirectionnels appris. Le contexte maximal est de **128K**, avec des entrées uniquement textuelles. Sélectionnez-le avec `run-api.bat --model-family clover` ; un nouveau profil autonome utilise le port **18083** et conserve ses paramètres dans `config-clover.json`. Les profils Clover gérés utilisent désormais par défaut l’auto-spéculation exacte D3 avec KV INT8 (`--clover-mode self-spec --clover-draft 3 --clover-accept exact --kv-type int8`) et MT1 (`STRATA_IQ_MT_MIN=1`). Le même modèle produit les brouillons et n’accepte que le préfixe correspondant à la vérification causale, sans tête MTP distincte. MT1 change l’arithmétique CPU des experts par rapport à l’ancien défaut causal. LowConfidence par blocs et l’acceptation approximative par seuil restent des options expérimentales à activer explicitement ; voir les [options de décodage](benchmark/README.md#english). Toutes les voies utilisent un cache d’experts adapté à la VRAM disponible, le calcul d’experts sur CPU depuis la RAM et une mémoire KV physique qui augmente avec la longueur de la séquence.
 
 Les moteurs Qwen, Gemma et LFM utilisent un cache automatique d’experts en VRAM, le calcul d’experts sur CPU depuis la RAM, le streaming des poids à l’entrée et les CUDA Graphs. Ils partagent la même API et permettent de changer de modèle sans redémarrer, avec des paramètres enregistrés séparément pour chaque modèle. Aucun expert sélectionné n’est omis. Ils permettent aussi la croissance automatique de la mémoire KV physique, sans modifier la capacité maximale de contexte.
 
@@ -156,16 +156,16 @@ Les mêmes trois textes ont été exécutés deux fois par configuration FP8/INT
 
 ## Vitesse mesurée — AMD Radeon (HIP)
 
-Vitesse sur cartes Radeon, mesurée avec [tinystrata-bench-v1](benchmark/README.md#english). Chaque carte a sa propre page avec le matériel, le pilote, le commit du moteur, les réglages et toutes les colonnes : [`benchmark/results/`](benchmark/results/). Valeurs : génération / entrée 4K / entrée 16K, en tok/s.
+Vitesse sur cartes Radeon, mesurée avec [tinystrata-bench-v1](benchmark/README.md#english). Chaque carte a sa propre page avec le matériel, le pilote, le commit du moteur, les réglages et toutes les colonnes : [`benchmark/results/`](benchmark/results/). Valeurs : génération / entrée 4K / entrée 16K, en tok/s. Les valeurs Clover utilisent la variante exact D3.
 
-| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS (causal) |
+| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS (exact D3) |
 | --- | ---: | ---: | ---: | ---: |
-| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 41.16 / 962.47 / 878.69 |
+| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 49.49 / 965.27 / 877.79 |
 | [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 | — |
 
 **Clover IQ3_XXS — RX 9060 XT (2026-11-01 ; historique avant le partage d’attention)**
 
-Les mêmes entrées fixes ont été mesurées avec un contexte de 128K, une allocation KV physique progressive, le raisonnement activé, les workers CPU/blocs automatiques et quatre démarrages API indépendants par profil. Les lignes exact sont des variantes distinctes ; le causal INT8 standard reste la référence v1 fixe. Cache d’experts : démarrage → après 16K, en GiB.
+Les mêmes entrées fixes ont été mesurées avec un contexte de 128K, une allocation KV physique progressive, le raisonnement activé, les workers CPU/blocs automatiques et quatre démarrages API indépendants par profil. Les lignes exact historiques étaient des variantes distinctes ; le causal INT8 reste le contrôle v1 fixe, pas le défaut D3 actuel. Cache d’experts : démarrage → après 16K, en GiB.
 
 | Profil | KV | Génération, entrée courte tok/s | Entrée 4K tok/s | Génération après 4K tok/s | Entrée 16K tok/s | Génération après 16K tok/s | Cache d’experts GiB |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
@@ -174,17 +174,17 @@ Les mêmes entrées fixes ont été mesurées avec un contexte de 128K, une allo
 | Auto-spéculation exacte D3 (profil rapide optionnel) | INT8 | 49.39 | 963.95 | 33.06 | 878.30 | 33.83 | 9.98 → 9.83 |
 | Auto-spéculation exacte D3 | FP8 (optionnel) | 46.11 | 959.49 | 28.94 | 872.02 | 18.00 | 9.98 → 9.83 |
 
-L’application conserve par défaut le décodage causal, le KV automatique et l’arithmétique CPU habituelle des experts. Les profils exact D3 optionnels utilisent MT1 (`STRATA_IQ_MT_MIN=1`), qui modifie cette arithmétique. La diffusion par blocs et l’acceptation par seuil restent expérimentales. [Paramètres et contrôles de qualité](benchmark/results/rx-9060-xt.md#clover-exact-self-speculation-2026-11-01) / [Ancienne comparaison IQ3](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31) / [Anciennes mesures Q4_0](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31).
+Il s’agit de mesures de contrôle historiques, avant le partage d’attention. Clover utilise désormais exact D3, KV INT8 et MT1 par défaut. La diffusion par blocs et l’acceptation par seuil restent expérimentales. [Paramètres et contrôles de qualité](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01) / [Ancienne comparaison IQ3](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31) / [Anciennes mesures Q4_0](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31).
 
 **Clover HIP INT8 : requêtes d’attention partagées — RX 9060 XT (2026-11-01)**
 
-KV INT8 ; quatre démarrages API indépendants par profil, en ordre intercalé. La génération courte est limitée à 128 tokens de sortie, les essais 4K/16K/64K à 32. Le causal standard utilise l’arithmétique CPU habituelle des experts (MT2) ; les anciens et nouveaux exact D3 utilisent MT1. Le décodage causal reste le défaut de l’application. [Conditions, qualité et résultats](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01).
+KV INT8 ; quatre démarrages API indépendants par profil, en ordre intercalé. La génération courte est limitée à 128 tokens de sortie, les essais 4K/16K/64K à 32. Le contrôle de l’ancien défaut causal utilise l’arithmétique CPU habituelle (MT2) ; les deux lignes D3 utilisent MT1. La ligne exact D3 avec attention partagée est désormais le défaut de Clover. [Conditions, qualité et résultats](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01).
 
 | Profil | Génération courte tok/s | Génération après 4K tok/s | Génération après 16K tok/s | Génération après 64K tok/s | Entrée 64K tok/s | Cache d’experts GiB : démarrage → 64K |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Causal, standard MT2 | 41.16 | 38.04 | 36.40 | 24.11 | 662.52 | 9.98 → 9.35 |
-| Exact D3 MT1, ancien chemin | 49.78 | 33.35 | 34.11 | 17.51 | 663.12 | 9.98 → 9.35 |
-| Exact D3 MT1, attention partagée | 49.49 | 34.87 | 39.30 | 26.62 | 664.65 | 9.98 → 9.35 |
+| Causal MT2 (ancien défaut/contrôle) | 41.16 | 38.04 | 36.40 | 24.11 | 662.52 | 9.98 → 9.35 |
+| Exact D3 MT1 (sans partage d’attention/contrôle) | 49.78 | 33.35 | 34.11 | 17.51 | 663.12 | 9.98 → 9.35 |
+| Exact D3 MT1 (défaut) | 49.49 | 34.87 | 39.30 | 26.62 | 664.65 | 9.98 → 9.35 |
 
 ## Quel projet choisir ?
 

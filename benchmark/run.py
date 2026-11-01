@@ -199,7 +199,7 @@ def controlled_config(original, model, folder, port, cases, *, clover_mode='caus
         if clover_mode == 'diffusion':
             native += ['--clover-block-size', str(clover_block_size), '--clover-threshold', str(clover_threshold)]
         elif clover_mode == 'self-spec':
-            draft = 4 if clover_draft is None else clover_draft
+            draft = 3 if clover_draft is None else clover_draft
             if isinstance(draft, bool) or not isinstance(draft, int) or not 1 <= draft <= 31:
                 raise ValueError('Clover self-spec drafts must be an integer in 1..31')
             native += ['--clover-draft', str(draft), '--clover-accept', clover_accept,
@@ -617,7 +617,7 @@ def main():
     parser.add_argument('--clover-block-size', type=int, choices=(1, 2, 4, 8, 16, 32), default=32)
     parser.add_argument('--clover-threshold', type=float, default=0.95)
     parser.add_argument('--clover-draft', type=int, metavar='N',
-                        help='self-spec drafts, 1..31 (default:4 when self-spec is selected)')
+                        help='self-spec drafts, 1..31 (default:3 when self-spec is selected)')
     parser.add_argument('--clover-accept', choices=('exact', 'threshold'),
                         help='self-spec acceptance (default:exact); threshold is approximate and greedy-only')
     parser.add_argument('--clover-accept-ratio', type=float, metavar='P',
@@ -657,7 +657,7 @@ def main():
     options.clover_accept_ratio = .9 if options.clover_accept_ratio is None else options.clover_accept_ratio
     options.clover_accept_delta = .6 if options.clover_accept_delta is None else options.clover_accept_delta
     if options.clover_mode == 'self-spec' and options.clover_draft is None:
-        options.clover_draft = 4
+        options.clover_draft = 3
     if options.thinking == 'off' and options.model != 'clover':
         parser.error('--thinking off requires --model clover')
     manual_variant = (any(value is not None for value in (options.kv_type, options.cpu_workers, options.chunk))

@@ -118,11 +118,10 @@ class ModelProfiles:
         args = ["--max-context", "auto", "--kv-type", "auto", "--chunk", "auto"]
         if arch in ("qwen35moe", "gemma4"):
             args += ["--mtp", "3"]
-        if arch == "clover_moe":
-            args += ["--clover-mode", "causal", "--clover-draft", "0"]
         result = {"arch": arch, "model_name": name, "cwd": str(model_setup.ROOT),
                   "args": args, "memory_policy_version": tinyconfig.MEMORY_POLICY_VERSION,
                   **deepcopy(self._hardware)}
+        result = tinyconfig.clover_decode_defaults(result)
         if self._engine is not None:
             filename = {"lfm2moe": "tinystrata-lfm2", "gemma4": "tinystrata-gemma4"}.get(arch, "tinystrata")
             sibling = self._engine.with_name(filename + self._engine.suffix)
@@ -158,10 +157,10 @@ class ModelProfiles:
                 source["vision_exe"] = str(sibling.with_name("tinystrata-vision" + sibling.suffix))
         source.setdefault("arch", profile.arch)
         source.setdefault("model_name", profile.id)
+        # Resolve verified legacy managed provenance before decode-policy
+        # migration; explicit local model selections are never inferred as stock.
+        source = model_setup.migrate_managed_clover_model(source, profile.path)
         result, _ = tinyconfig.migrate_settings(source)
-        # Resolve retired managed defaults before collecting existing files, or
-        # the old artifact would win the lookup again simply because it exists.
-        result = model_setup.migrate_managed_clover_model(result, profile.path)
         selected = model_setup.model_path(result)
         managed = profile.path.parent / "model-files" / manifest_for_arch(profile.arch).filename
         local_clover = (profile.arch == "clover_moe" and selected is not None and

@@ -30,7 +30,7 @@ TinyStrata automatically selects inference and memory settings for your hardware
 
 **LFM2.5-24B-A2B Q4_K_M** uses the official [LiquidAI GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF). Its single language-model download is **14.53 GB**.
 
-**Clover-35B-A3B-Preview IQ3_XXS** defaults to [AtomicChat’s GGUF](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf) with **IQ3_XXS gate/up and IQ3_S down** Expert projections. The **15.515 GB** download retains Clover’s own tokenizer and learned bidirectional GDN parameters. It supports a maximum **128K** context and text input. Select it with `run-api.bat --model-family clover`; a new standalone profile uses port **18083**, with settings in `config-clover.json`. New managed profiles retain causal decoding (`--clover-mode causal`) and automatic KV selection. An explicit speed profile uses `STRATA_IQ_MT_MIN=1` with `--clover-mode self-spec --clover-draft 3 --clover-accept exact --kv-type int8`: the same model drafts tokens and accepts only the prefix matching its causal verification, without a separate MTP head. MT1 changes CPU Expert arithmetic. LowConfidence block diffusion and approximate threshold acceptance remain experimental opt-ins; see the [decoding options](benchmark/README.md#english). All routes use an Expert cache sized to available VRAM, CPU Expert computation from system RAM and physical KV growth with sequence length.
+**Clover-35B-A3B-Preview IQ3_XXS** defaults to [AtomicChat’s GGUF](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf) with **IQ3_XXS gate/up and IQ3_S down** Expert projections. The **15.515 GB** download retains Clover’s own tokenizer and learned bidirectional GDN parameters. It supports a maximum **128K** context and text input. Select it with `run-api.bat --model-family clover`; a new standalone profile uses port **18083**, with settings in `config-clover.json`. Managed Clover profiles now default to exact self-speculation D3 with INT8 KV (`--clover-mode self-spec --clover-draft 3 --clover-accept exact --kv-type int8`) and MT1 (`STRATA_IQ_MT_MIN=1`). The same model drafts tokens and accepts only the prefix matching causal verification; no separate MTP head is used. MT1 changes CPU Expert arithmetic from the former causal default. LowConfidence block diffusion and approximate threshold acceptance remain experimental opt-ins; see the [decoding options](benchmark/README.md#english). All routes use an Expert cache sized to available VRAM, CPU Expert computation from system RAM and physical KV growth with sequence length.
 
 The Qwen, Gemma and LFM engines use an automatic VRAM Expert cache, CPU Expert computation from system RAM, prompt weight streaming and CUDA Graphs. They share the same API and support live model switching, with settings saved separately for each model. Selected Experts are not omitted. They also support automatic physical KV growth without changing the maximum context capacity.
 
@@ -168,16 +168,16 @@ Each of the same three input texts was run twice per FP8/INT8 configuration, gen
 
 ## Measured speed — AMD Radeon (HIP)
 
-Speed on Radeon cards, measured with [tinystrata-bench-v1](benchmark/README.md#english). Each card has its own page with the hardware, driver, engine commit, settings and every column: [`benchmark/results/`](benchmark/results/). Values are generation / 4K input / 16K input, in tok/s.
+Speed on Radeon cards, measured with [tinystrata-bench-v1](benchmark/README.md#english). Each card has its own page with the hardware, driver, engine commit, settings and every column: [`benchmark/results/`](benchmark/results/). Values are generation / 4K input / 16K input, in tok/s. Clover uses the exact D3 variant.
 
-| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS (causal) |
+| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS (exact D3) |
 | --- | ---: | ---: | ---: | ---: |
-| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 41.16 / 962.47 / 878.69 |
+| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 49.49 / 965.27 / 877.79 |
 | [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 | — |
 
 **Clover IQ3_XXS — RX 9060 XT (2026-11-01; before query sharing, historical)**
 
-The same canonical workloads were measured with 128K context, physical KV growth, thinking enabled, automatic CPU workers/chunks and four independent API starts per profile. Exact rows are separately labelled variants; standard causal INT8 remains the fixed v1 reference. Expert cache is startup → after 16K, in GiB.
+The same canonical workloads were measured with 128K context, physical KV growth, thinking enabled, automatic CPU workers/chunks and four independent API starts per profile. These historical exact rows were separately labelled variants; the causal INT8 row is the fixed-v1 control, not the current D3 default. Expert cache is startup → after 16K, in GiB.
 
 | Profile | KV | Short-input generation tok/s | 4K input tok/s | Generation after 4K tok/s | 16K input tok/s | Generation after 16K tok/s | Expert cache GiB |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
@@ -186,17 +186,17 @@ The same canonical workloads were measured with 128K context, physical KV growth
 | Exact self-spec D3 (fast opt-in) | INT8 | 49.39 | 963.95 | 33.06 | 878.30 | 33.83 | 9.98 → 9.83 |
 | Exact self-spec D3 | FP8 (optional) | 46.11 | 959.49 | 28.94 | 872.02 | 18.00 | 9.98 → 9.83 |
 
-App defaults remain causal decoding, automatic KV and normal CPU Expert arithmetic. The optional exact D3 profiles use MT1 (`STRATA_IQ_MT_MIN=1`), which changes CPU Expert arithmetic. Block diffusion and threshold acceptance remain experimental. [Settings and quality checks](benchmark/results/rx-9060-xt.md#clover-exact-self-speculation-2026-11-01) / [Historical IQ3 comparison](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31) / [Historical Q4_0 measurements](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31).
+These are historical control measurements before query sharing. Clover now defaults to exact D3, INT8 KV and MT1. Block diffusion and threshold acceptance remain experimental. [Settings and quality checks](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01) / [Historical IQ3 comparison](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31) / [Historical Q4_0 measurements](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31).
 
 **Clover HIP INT8 query sharing — RX 9060 XT (2026-11-01)**
 
-INT8 KV; four independent API starts per profile in interleaved order. Short generation is capped at 128 output tokens; generation after 4K/16K/64K input is capped at 32. Standard causal uses normal CPU Expert arithmetic (MT2); old/new exact D3 use MT1. Causal decoding remains the app default. [Conditions, quality checks and results](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01).
+INT8 KV; four independent API starts per profile in interleaved order. Short generation is capped at 128 output tokens; generation after 4K/16K/64K input is capped at 32. The former causal-default control uses normal CPU Expert arithmetic (MT2); both D3 rows use MT1. The query-sharing exact D3 row is now the Clover default. [Conditions, quality checks and results](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01).
 
 | Profile | Short generation tok/s | Generation after 4K tok/s | Generation after 16K tok/s | Generation after 64K tok/s | 64K input tok/s | Expert cache GiB: startup → 64K |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Causal, standard MT2 | 41.16 | 38.04 | 36.40 | 24.11 | 662.52 | 9.98 → 9.35 |
-| Exact D3 MT1, old route | 49.78 | 33.35 | 34.11 | 17.51 | 663.12 | 9.98 → 9.35 |
-| Exact D3 MT1, query sharing | 49.49 | 34.87 | 39.30 | 26.62 | 664.65 | 9.98 → 9.35 |
+| Causal MT2 (former default/control) | 41.16 | 38.04 | 36.40 | 24.11 | 662.52 | 9.98 → 9.35 |
+| Exact D3 MT1 (query sharing off/control) | 49.78 | 33.35 | 34.11 | 17.51 | 663.12 | 9.98 → 9.35 |
+| Exact D3 MT1 (default) | 49.49 | 34.87 | 39.30 | 26.62 | 664.65 | 9.98 → 9.35 |
 
 ## Which project should I use?
 

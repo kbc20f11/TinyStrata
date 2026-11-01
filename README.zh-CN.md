@@ -30,7 +30,7 @@ TinyStrata 会根据你的硬件自动选择推理和内存设置，因此无需
 
 **LFM2.5-24B-A2B Q4_K_M** 使用官方 [LiquidAI GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF)。仅需下载一个语言模型文件，大小为 **14.53 GB**。
 
-**Clover-35B-A3B-Preview IQ3_XXS** 默认使用 [AtomicChat 提供的 GGUF](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf)，专家的 **gate/up 使用 IQ3_XXS，down 使用 IQ3_S**。下载大小为 **15.515 GB**，保留 Clover 自己的分词器和已学习的双向 GDN 参数。最大上下文为 **128K**，仅支持文本输入。通过 `run-api.bat --model-family clover` 选择；新建的独立配置使用端口 **18083**，设置保存在 `config-clover.json`。新建的托管配置默认保留因果解码（`--clover-mode causal`）和自动 KV 选择。可通过 `STRATA_IQ_MT_MIN=1` 与 `--clover-mode self-spec --clover-draft 3 --clover-accept exact --kv-type int8` 显式选择高速配置：同一模型生成草稿，并仅接受与因果验证一致的前缀，无需独立的 MTP 头。MT1 会改变 CPU 专家的运算方式。LowConfidence 块扩散和近似阈值接受仍为需显式启用的实验性选项，参见[解码设置](benchmark/README.md#english)。所有路径都支持按空闲显存调整的专家缓存、利用系统 RAM 的 CPU 专家计算，以及随序列长度增长的 KV 物理内存分阶段分配。
+**Clover-35B-A3B-Preview IQ3_XXS** 默认使用 [AtomicChat 提供的 GGUF](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf)，专家的 **gate/up 使用 IQ3_XXS，down 使用 IQ3_S**。下载大小为 **15.515 GB**，保留 Clover 自己的分词器和已学习的双向 GDN 参数。最大上下文为 **128K**，仅支持文本输入。通过 `run-api.bat --model-family clover` 选择；新建的独立配置使用端口 **18083**，设置保存在 `config-clover.json`。托管的 Clover 配置现在默认使用 exact 自投机 D3、INT8 KV（`--clover-mode self-spec --clover-draft 3 --clover-accept exact --kv-type int8`）和 MT1（`STRATA_IQ_MT_MIN=1`）。同一模型生成草稿，仅接受与因果验证一致的前缀，不需要独立的 MTP 头。MT1 会改变之前默认因果模式的 CPU 专家运算方式。LowConfidence 块扩散和近似阈值接受仍为需显式启用的实验性选项，参见[解码设置](benchmark/README.md#english)。所有路径都支持按空闲显存调整的专家缓存、利用系统 RAM 的 CPU 专家计算，以及随序列长度增长的 KV 物理内存分阶段分配。
 
 Qwen、Gemma 和 LFM 引擎均支持根据空闲显存自动调整的专家缓存、利用系统 RAM 的 CPU 专家计算、输入阶段权重流式传输及 CUDA Graph。它们使用相同的 API，支持运行中切换模型，并分别保存各模型的设置。不省略模型选中的专家。还支持按实际序列长度自动扩展 KV 物理内存，最大上下文容量保持不变。
 
@@ -156,16 +156,16 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 ## 实测速度 — AMD Radeon（HIP）
 
-Radeon 显卡上的速度，使用 [tinystrata-bench-v1](benchmark/README.md#english) 测得。每张卡都有单独的页面，包含硬件、驱动、引擎提交、设置和全部列：[`benchmark/results/`](benchmark/results/)。数值为 生成 / 4K 输入 / 16K 输入（tok/s）。
+Radeon 显卡上的速度，使用 [tinystrata-bench-v1](benchmark/README.md#english) 测得。每张卡都有单独的页面，包含硬件、驱动、引擎提交、设置和全部列：[`benchmark/results/`](benchmark/results/)。数值为 生成 / 4K 输入 / 16K 输入（tok/s）。 Clover 数据采用 exact D3 派生配置。
 
-| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS（因果） |
+| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS（exact D3） |
 | --- | ---: | ---: | ---: | ---: |
-| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 41.16 / 962.47 / 878.69 |
+| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 49.49 / 965.27 / 877.79 |
 | [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 | — |
 
 **Clover IQ3_XXS — RX 9060 XT（2026-11-01，Attention 共享前的历史记录）**
 
-使用相同的固定输入，128K 上下文、KV 物理内存逐步分配、启用思考、自动 CPU 工作线程数与分块，每个配置独立启动 API 四次。exact 行单独标记为 variant；标准因果 INT8 仍是固定 v1 基准。专家缓存按启动时 → 16K 输入后列出，单位为 GiB。
+使用相同的固定输入，128K 上下文、KV 物理内存逐步分配、启用思考、自动 CPU 工作线程数与分块，每个配置独立启动 API 四次。历史 exact 行单独标记为 variant；因果 INT8 行仍是固定 v1 对照，而不是目前默认的 D3。专家缓存按启动时 → 16K 输入后列出，单位为 GiB。
 
 | 配置 | KV | 短输入生成 tok/s | 4K 输入 tok/s | 4K 输入后生成 tok/s | 16K 输入 tok/s | 16K 输入后生成 tok/s | 专家缓存 GiB |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
@@ -174,17 +174,17 @@ Radeon 显卡上的速度，使用 [tinystrata-bench-v1](benchmark/README.md#eng
 | exact 自投机 D3（高速配置，显式启用） | INT8 | 49.39 | 963.95 | 33.06 | 878.30 | 33.83 | 9.98 → 9.83 |
 | exact 自投机 D3 | FP8（可选） | 46.11 | 959.49 | 28.94 | 872.02 | 18.00 | 9.98 → 9.83 |
 
-应用默认保留因果解码、自动 KV 和正常的 CPU 专家运算。可选的 exact D3 配置使用 MT1（`STRATA_IQ_MT_MIN=1`），这会改变 CPU 专家的运算方式。块扩散与阈值接受仍为实验性功能。[设置与质量检查](benchmark/results/rx-9060-xt.md#clover-exact-self-speculation-2026-11-01)／[此前的 IQ3 对照](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31)／[此前的 Q4_0 测量](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31)。
+以上是 Attention 共享之前的历史对照测量。目前 Clover 默认使用 exact D3、INT8 KV 和 MT1。块扩散与阈值接受仍为实验性功能。[设置与质量检查](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01)／[此前的 IQ3 对照](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31)／[此前的 Q4_0 测量](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31)。
 
 **Clover HIP INT8 Attention 共享 — RX 9060 XT（2026-11-01）**
 
-使用 INT8 KV，每个配置独立启动 API 四次，交错测量。短输入的输出上限为 128 个 token，4K/16K/64K 输入后为 32 个。标准因果使用通常的 CPU 专家运算（MT2），旧版和新版 exact D3 使用 MT1。应用仍默认采用因果解码。[详细条件、质量检查与结果](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01)。
+使用 INT8 KV，每个配置独立启动 API 四次，交错测量。短输入的输出上限为 128 个 token，4K/16K/64K 输入后为 32 个。此前默认因果模式的对照使用通常的 CPU 专家运算（MT2），两个 D3 行使用 MT1。采用 Attention 共享的 exact D3 行是 Clover 当前的默认配置。[详细条件、质量检查与结果](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01)。
 
 | 配置 | 短输入生成 tok/s | 4K 输入后生成 tok/s | 16K 输入后生成 tok/s | 64K 输入后生成 tok/s | 64K 输入 tok/s | 专家缓存 GiB：启动时 → 64K |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 因果・标准 MT2 | 41.16 | 38.04 | 36.40 | 24.11 | 662.52 | 9.98 → 9.35 |
-| exact D3 MT1・旧路径 | 49.78 | 33.35 | 34.11 | 17.51 | 663.12 | 9.98 → 9.35 |
-| exact D3 MT1・Attention 共享 | 49.49 | 34.87 | 39.30 | 26.62 | 664.65 | 9.98 → 9.35 |
+| 因果 MT2（此前默认・对照） | 41.16 | 38.04 | 36.40 | 24.11 | 662.52 | 9.98 → 9.35 |
+| exact D3 MT1（无 Attention 共享・对照） | 49.78 | 33.35 | 34.11 | 17.51 | 663.12 | 9.98 → 9.35 |
+| exact D3 MT1（默认） | 49.49 | 34.87 | 39.30 | 26.62 | 664.65 | 9.98 → 9.35 |
 
 ## 我应该使用哪个项目？
 

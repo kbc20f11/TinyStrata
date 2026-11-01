@@ -17,7 +17,7 @@ $python = "$env:LOCALAPPDATA\TinyStrata-work\runtime\.venv\Scripts\python.exe"
 
 From a source checkout, use `.\benchmark\run.py` instead. `--model qwen`, `--model gemma`, `--model lfm` and `--model clover` select one model. Clover uses `config-clover.json`. The runner uses the existing model/configuration files, starts its own loopback API, and does not change the saved configuration. Results go under `%LOCALAPPDATA%\TinyStrata-work\benchmarks\`; generated logs and results do not belong in Git.
 
-The app's selected Clover route and the fixed benchmark regulation are separate. The standard benchmark always uses **INT8 causal decoding, D0**, independently of the app profile. Native LowConfidence block diffusion is measured separately:
+The app defaults to exact D3 with INT8 KV and `STRATA_IQ_MT_MIN=1`; its selected route and the fixed benchmark regulation are separate. The standard benchmark always uses **INT8 causal decoding, D0**, independently of the app profile. Native LowConfidence block diffusion is measured separately:
 
 ```powershell
 & $python .\benchmark\run.py --model clover --clover-mode causal
@@ -37,7 +37,7 @@ Self-speculative generation is another separately labelled variant. Use exact ac
 & $python .\benchmark\run.py --model clover --clover-mode self-spec --clover-draft 3 --clover-accept threshold --clover-accept-ratio 0.9 --clover-accept-delta 0.6 --engine-env STRATA_IQ_MT_MIN=1
 ```
 
-The first command accepts only drafts that match the causal verifier's selected token; the second measures the experimental threshold policy. Both report **`tinystrata-bench-v1-clover-self-spec`**, `standard: false`, with the same v1 workloads, sampling, repetitions and timers. In this benchmark runner, `--clover-draft` accepts **1–31** and defaults to **4** in self-spec mode; `--clover-accept` defaults to **exact**. Ratio and delta accept finite values in **0–1**, defaulting to **0.9** and **0.6**, and require self-spec mode. Specify these options explicitly when comparing policies.
+The first command accepts only drafts that match the causal verifier's selected token; the second measures the experimental threshold policy. Both report **`tinystrata-bench-v1-clover-self-spec`**, `standard: false`, with the same v1 workloads, sampling, repetitions and timers. In this benchmark runner, `--clover-draft` accepts **1–31** and defaults to **3** in self-spec mode; `--clover-accept` defaults to **exact**. Ratio and delta accept finite values in **0–1**, defaulting to **0.9** and **0.6**, and require self-spec mode. Specify these options explicitly when comparing policies.
 
 The recommended exact profile sets `STRATA_IQ_MT_MIN=1` so single-row and grouped CPU IQ Expert work use the same accumulation path. For a matching causal control, add the same `--engine-env STRATA_IQ_MT_MIN=1` to the causal command; that control is also a variant. The standard causal v1 baseline keeps an empty tuning environment (`env: {}`), regardless of the saved app profile.
 
@@ -141,7 +141,7 @@ $python = "$env:LOCALAPPDATA\TinyStrata-work\runtime\.venv\Scripts\python.exe"
 
 ソースを取得したフォルダーでは、スクリプトのパスを `.\benchmark\run.py` に置き換えます。個別に測る場合は `--model qwen`、`--model gemma`、`--model lfm`、`--model clover` を使います。Clover の設定ファイルは `config-clover.json` です。既存のモデルと設定ファイルを使って計測専用 API を起動し、保存済みの設定は書き換えません。結果は `%LOCALAPPDATA%\TinyStrata-work\benchmarks\` に保存します。生成したログや結果は Git に含めません。
 
-Clover のアプリで選ぶ生成経路と、固定ベンチ規約は別です。標準ベンチはアプリのプロファイルにかかわらず、**INT8・因果生成・D0** を使います。LowConfidence 方式のネイティブなブロック拡散は別々に測定します。
+Clover のアプリの既定は exact D3・INT8 KV・`STRATA_IQ_MT_MIN=1` です。アプリで選ぶ生成経路と固定ベンチ規約は別で、標準ベンチはアプリのプロファイルにかかわらず、**INT8・因果生成・D0** を使います。LowConfidence 方式のネイティブなブロック拡散は別々に測定します。
 
 ```powershell
 & $python .\benchmark\run.py --model clover --clover-mode causal
@@ -161,7 +161,7 @@ Clover のアプリで選ぶ生成経路と、固定ベンチ規約は別です�
 & $python .\benchmark\run.py --model clover --clover-mode self-spec --clover-draft 3 --clover-accept threshold --clover-accept-ratio 0.9 --clover-accept-delta 0.6 --engine-env STRATA_IQ_MT_MIN=1
 ```
 
-前者は因果検証が選んだトークンと一致するドラフトだけを採用し、後者は実験的な閾値採用を測ります。どちらも **`tinystrata-bench-v1-clover-self-spec`**・`standard: false` とし、v1 の入力・サンプリング・反復数・計時範囲を維持します。このベンチスクリプトでは `--clover-draft` は **1〜31**、自己投機を選んだ場合の既定は **4**、`--clover-accept` の既定は **exact** です。ratio と delta は有限の **0〜1**、既定は **0.9** と **0.6** で、自己投機のときだけ指定できます。採用規則の比較では各値を明示してください。
+前者は因果検証が選んだトークンと一致するドラフトだけを採用し、後者は実験的な閾値採用を測ります。どちらも **`tinystrata-bench-v1-clover-self-spec`**・`standard: false` とし、v1 の入力・サンプリング・反復数・計時範囲を維持します。このベンチスクリプトでは `--clover-draft` は **1〜31**、自己投機を選んだ場合の既定は **3**、`--clover-accept` の既定は **exact** です。ratio と delta は有限の **0〜1**、既定は **0.9** と **0.6** で、自己投機のときだけ指定できます。採用規則の比較では各値を明示してください。
 
 推奨する exact プロファイルは `STRATA_IQ_MT_MIN=1` を使い、CPU の IQ エキスパートを1行で計算するときと複数行で計算するときの積和経路をそろえます。同じ演算条件の因果対照には、causal のコマンドにも `--engine-env STRATA_IQ_MT_MIN=1` を付けて別枠として測定してください。標準の因果生成 v1 は、アプリの保存済み設定にかかわらず、調整用環境変数なし（`env: {}`）を維持します。
 

@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT))
 spec = importlib.util.spec_from_file_location('tinystrata_benchmark', ROOT / 'benchmark/run.py')
 bench = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bench)
-from serve import tinyconfig
+from serve import config, tinyconfig
 
 
 class FakeService:
@@ -228,6 +228,54 @@ class Benchmark64K(unittest.TestCase):
         self.assertIn('Generation after64K tok/s', text)
         self.assertIn('startup → after16K → after64K', text)
         self.assertIn('10.00 → 9.00 → 6.00', text)
+
+    def test_10_saved_fast_app_profile_does_not_change_standard_benchmark(self):
+        # App defaults and the fixed public comparison protocol have different
+        # jobs. An installed fast profile must not leak its mode/CPU settings.
+        old_app = copy.deepcopy(self.original)
+        fast_app = {**copy.deepcopy(self.original), 'model_source': 'managed',
+                    'env': {'STRATA_IQ_MT_MIN': '1'},
+                    'sampling': dict(tinyconfig.CLOVER_SAMPLING),
+                    'enable_thinking': True, 'vision_mode': 'no',
+                    'clover_decode_policy_version': 1}
+        fast_app['args'] += ['--max-context', 'auto', '--chunk', 'auto', '--kv-type', 'int8',
+                             '--clover-mode', 'self-spec', '--clover-draft', '3', '--clover-accept', 'exact']
+        before = copy.deepcopy(fast_app)
+        expected = bench.controlled_config(old_app, 'clover', self.folder, 12345, self.cases)
+        controlled = bench.controlled_config(fast_app, 'clover', self.folder, 12345, self.cases)
+        self.assertEqual(controlled, expected)
+        self.assertEqual(fast_app, before)
+        # The real server's settings migration also must retain the explicit
+        # benchmark controls when app defaults change in tinyconfig.
+        migrated, _ = tinyconfig.migrate_settings(controlled)
+        self.assertEqual(config.clover_mode(migrated), 'causal')
+        self.assertEqual(config.value_of(migrated, 'clover_draft'), 0)
+        self.assertEqual(config.value_of(migrated, 'kv_type'), 'int8')
+        self.assertEqual(migrated['env'], {})
+        self.original = fast_app
+        self.saved.write_text(json.dumps(fast_app), encoding='utf-8')
+        report = self.invoke('--runs', '4')
+        self.assertTrue(report['standard'])
+        launched = FakeService.instances[0].cfg
+        self.assertEqual(config.clover_mode(launched), 'causal')
+        self.assertEqual(config.value_of(launched, 'clover_draft'), 0)
+        self.assertEqual(config.value_of(launched, 'kv_type'), 'int8')
+        self.assertEqual(launched['env'], {})
+        self.assertEqual(json.loads(self.saved.read_text(encoding='utf-8')), before)
+
+    def test_11_self_spec_omitted_draft_is_three_and_explicit_value_survives(self):
+        controlled = bench.controlled_config(self.original, 'clover', self.folder, 12345, self.cases,
+                                            clover_mode='self-spec')
+        self.assertEqual(config.value_of(controlled, 'clover_draft'), 3)
+        self.assertEqual(config.value_of(controlled, 'clover_accept'), 'exact')
+        explicit = bench.controlled_config(self.original, 'clover', self.folder, 12345, self.cases,
+                                          clover_mode='self-spec', clover_draft=7)
+        self.assertEqual(config.value_of(explicit, 'clover_draft'), 7)
+        report = self.invoke('--prepare-only', '--clover-mode', 'self-spec')
+        self.assertEqual(report['clover_draft'], 3)
+        self.assertEqual(report['clover_profile']['draft'], 3)
+        self.assertFalse(report['standard'])
+        self.assertEqual(FakeService.instances, [])
 
 
 if __name__ == '__main__':

@@ -136,7 +136,9 @@ def configure_backend(cfg: dict, requested: str | None = None, *, explicit_kv: s
         previous_kv = config.value_of(result, "kv_type")
         if explicit_kv is not None:
             chosen_kv = explicit_kv
-        elif saved == "hip" and previous_kv in ("auto", "int8", "fp8", "fp8-mma"):
+        elif previous_kv in ("auto", "int8", "fp8", "fp8-mma") and (
+                saved == "hip" or (previous_kv == "int8" and cfg.get("arch") == "clover_moe" and
+                                    "clover_decode_policy_version" in cfg)):
             chosen_kv = previous_kv
         else:
             chosen_kv = "auto"
