@@ -177,12 +177,11 @@ function startChat() {
   }
   releasePending();
   closePanel();
-  const prev = chatId, c = H.newChat();
+  const c = H.newChat();
   chats.push(c);
   showChat(c);
   $("input").focus();
-  toast("info", tr("chat.newToast", "New chat"), tr("chat.newToastText", "The one you were in is in the list on the left."), 6000,
-        {label: tr("undo", "Undo"), run: () => openChat(prev)});
+  toast("info", tr("chat.newToast", "New chat"), tr("chat.newToastText", "The one you were in is in the list on the left."));
 }
 function deleteChat(c) {
   if (busy && c.id === chatId) { stillWriting(); return; }
@@ -464,14 +463,12 @@ function branchHere(i) {
   const plan = H.rewind(messages, i);
   if (!plan) return false;
   closePanel();
-  const prev = chatId;
   const c = H.branch(chat, plan.keep, plan.keep.length, tr("branch.title", "Branch of {title}", {title: H.chatTitle(chat, untitled())}));
   chats.push(c);
   showChat(c);
   if (plan.draft) fillBox(plan.draft);
   $("input").focus();
-  toast("info", tr("branch.started", "Branch started"), tr("branch.startedText", "The chat you were in is unchanged, in the list on the left."), 8000,
-        {label: tr("branch.back", "Back to it"), run: () => openChat(prev)});
+  toast("info", tr("branch.started", "Branch started"), tr("branch.startedText", "The chat you were in is unchanged, in the list on the left."));
   return true;
 }
 
