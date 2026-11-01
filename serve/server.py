@@ -3723,8 +3723,13 @@ class Service:
             kwargs["enable_thinking"] = choice
         elif isinstance(req.get("thinking"), dict) and req["thinking"].get("type") in ("enabled", "disabled"):
             kwargs["enable_thinking"] = req["thinking"]["type"] == "enabled"
-        elif "enable_thinking" not in kwargs and "reasoning_effort" not in kwargs:
-            kwargs["enable_thinking"] = self.default_enable_thinking
+        elif "enable_thinking" not in kwargs:
+            # Gemma's template consumes the switch, not reasoning_effort, and
+            # otherwise defaults to an already-closed empty thought channel.
+            if self.call_format == "gemma" and kwargs.get("reasoning_effort") in ("low", "medium", "high", "xhigh"):
+                kwargs["enable_thinking"] = True
+            elif "reasoning_effort" not in kwargs:
+                kwargs["enable_thinking"] = self.default_enable_thinking
         if self.call_format == "lfm2" and kwargs.get("enable_thinking") is False:
             raise ValueError("LFM2.5-24B-A2B always uses thinking; disabling it is not supported")
         return kwargs

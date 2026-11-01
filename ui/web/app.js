@@ -2120,6 +2120,9 @@ async function generateReply() {
 
   const body = {model: health.model, messages: apiMessages(), stream: true, return_progress: true,
                 reasoning_effort: effortForModel()};
+  // Gemma's canonical template defaults this flag to false and does not map
+  // reasoning_effort itself. Send the mode explicitly, including to older APIs.
+  if (health.model === "gemma-4-26b-a4b-it") body.chat_template_kwargs = {enable_thinking: body.reasoning_effort !== "none"};
   if (!(settings.temperature > 0)) {
     body.temperature = 0;
   } else if (!samplingUntouched(settings)) {
