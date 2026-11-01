@@ -968,6 +968,8 @@ function effortForModel(s = settings) {
   return health.model === "lfm2.5-24b-a2b" && s.thinking === "none" ? "high" : s.thinking;
 }
 function syncComposerControls() {
+  $("composer").dataset.switching = String(modelSwitching);
+  $("composer").setAttribute("aria-busy", String(modelSwitching));
   const select = $("composer-model");
   const locked = modelOperationBusy();
   select.disabled = !modelSwitchAvailable || locked;

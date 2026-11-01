@@ -334,6 +334,24 @@ html[data-theme="light"] .chat-placement__cpu { background: #b2c2b4; }
 .st-composer:focus-within { border-color: #56b575; box-shadow: 0 0 0 1px #46ed9f13; }
 .st-composer textarea { padding: 5px 8px; font-size: 16px; line-height: 1.75; }
 .st-composer textarea::placeholder { color: #64836d; }
+html[data-theme] .st-composer[data-switching="true"] {
+  --composer-wait-bg: #171b19;
+  --composer-wait-border: #505a54;
+  --composer-wait-ink: #a9b1ab;
+  background: var(--composer-wait-bg);
+  border-color: var(--composer-wait-border);
+  box-shadow: none;
+  filter: grayscale(1);
+}
+html[data-theme] .st-composer[data-switching="true"]::before { background: var(--composer-wait-border); box-shadow: none; }
+html[data-theme] .st-composer[data-switching="true"] textarea {
+  color: var(--composer-wait-ink);
+  -webkit-text-fill-color: var(--composer-wait-ink);
+  opacity: 1;
+  cursor: wait;
+}
+html[data-theme] .st-composer[data-switching="true"] textarea::placeholder { color: var(--composer-wait-ink); opacity: 1; }
+html[data-theme] .st-composer[data-switching="true"] .st-composer__bar { border-color: var(--composer-wait-border); }
 .st-composer__bar { --composer-control-height: 40px; padding-top: 5px; border-top: 1px solid #173322; flex-wrap: wrap; align-items: center; }
 .st-composer__bar > .st-btn { height: var(--composer-control-height); min-height: var(--composer-control-height); flex-shrink: 0; }
 .st-composer__bar > .st-btn--icon, .st-composer__bar > .st-btn--send { width: var(--composer-control-height); }
@@ -588,6 +606,13 @@ html[data-theme="light"] .st-composer { background: #fbfdf8; border-color: #789d
 html[data-theme="light"] .st-composer::before { box-shadow: 0 0 5px #0e7b4925; }
 html[data-theme="light"] .st-composer:focus-within { border-color: #397b4c; box-shadow: 0 0 0 1px #0e7b4914; }
 html[data-theme="light"] .st-composer textarea::placeholder { color: #5a7960; }
+html[data-theme="light"] .st-composer[data-switching="true"] {
+  --composer-wait-bg: #e6eae6;
+  --composer-wait-border: #9fa9a1;
+  --composer-wait-ink: #556259;
+  border-color: var(--composer-wait-border);
+  box-shadow: none;
+}
 html[data-theme="light"] .st-composer__bar { border-color: #d0dfca; }
 html[data-theme="light"] .st-btn--primary { background: #1d7047; color: #ffffff; border-color: #1d7047; }
 html[data-theme="light"] .st-btn--primary:hover { background: #155737; color: #ffffff; }
