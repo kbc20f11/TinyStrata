@@ -939,13 +939,14 @@ function markdown(text) {
 // 0.7 / 0.8 / 20 with a presence penalty). Before 0.1.45 the page sent 0.6 itself; a stored 0.6 with the other two
 // values untouched counts as "not set" too.
 const DEFAULTS = {thinking: "high", temperature: 1.0, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true, math: true,
-                  chatList: true, chatEdit: false, whileBusy: "wait"};
+                  chatList: true, whileBusy: "wait"};
 const OLD_DEFAULT_TEMPERATURE = 0.6;
 function samplingUntouched(s) {
   const t = +s.temperature;
   return (t === DEFAULTS.temperature || t === OLD_DEFAULT_TEMPERATURE) && +s.top_p === DEFAULTS.top_p && +s.top_k === DEFAULTS.top_k;
 }
 let settings = {...DEFAULTS, ...store.get("sampling", {})};
+delete settings.chatEdit;                            // retired: message actions are always available
 if (samplingUntouched(settings)) settings.temperature = DEFAULTS.temperature;
 let messages = store.get("chat", []);   // the open chat's messages (chats-ui.js: with the saved-chats list on, also that chat's own)
 let attachments = [];                 // {name, url}
@@ -1619,8 +1620,7 @@ function msgEl(m, i) {
       `<button class="st-btn st-btn--icon" data-msg-copy aria-label="${esc(tr("chat.copyAnswer", "Copy the answer"))}" title="${esc(tr("chat.copy", "Copy"))}">${icon("copy")}</button></div>`;
     updateAssistant(el, m, !!busy && busy.msg === m);
   }
-  const actions = msgActions(m, i);                 // edit / regenerate / rewind (chats-ui.js), when switched on
-  if (actions) el.appendChild(actions);
+  mountMsgActions(el, m, i);
   return el;
 }
 // One MCP tool call in the answer: a compact block (name, state, a one-line preview) that opens to the arguments and
@@ -2001,8 +2001,8 @@ function setBusy(on) {
   $("composer-hint").textContent = panel ? tr("composer.finishOpen", "Save or cancel what is open above to continue")
                                          : modelSwitching ? tr("model.switching", "Switching model…")
                                          : on ? busyHint() : tr("composer.newline", "Shift+Enter: new line");
-  if (settings.chatEdit) syncActions();                 // the buttons follow the state: none under the answer being written
-  $("s-list").disabled = $("s-edit").disabled = !!busy || !!panel;      // they change the messages on the screen
+  syncActions();                                      // the answer being written has no history controls
+  $("s-list").disabled = !!busy || !!panel;             // the list changes the messages on the screen
   renderUndoBar();
   renderPending();
   syncComposerControls();
@@ -2370,7 +2370,6 @@ function loadDrawer(s = settings) {
   $("s-mcp").setAttribute("aria-checked", String(s.mcp !== false));
   $("s-share").setAttribute("aria-checked", String(sharedOn));
   $("s-list").setAttribute("aria-checked", String(!!s.chatList));
-  $("s-edit").setAttribute("aria-checked", String(!!s.chatEdit));
   for (const b of $("s-busy").children) b.setAttribute("aria-checked", String(b.dataset.v === (s.whileBusy || "wait")));
   outputs();
 }
@@ -2431,24 +2430,23 @@ function outputs() {
 for (const b of $("s-thinking").children) b.onclick = () => { for (const x of $("s-thinking").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
 for (const b of $("s-busy").children) b.onclick = () => { for (const x of $("s-busy").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
 for (const id of ["s-temp", "s-topp", "s-topk"]) $(id).oninput = outputs;
-for (const id of ["s-math", "s-show", "s-esp", "s-mcp", "s-share", "s-list", "s-edit"]) {
+for (const id of ["s-math", "s-show", "s-esp", "s-mcp", "s-share", "s-list"]) {
   $(id).onclick = () => $(id).setAttribute("aria-checked", String($(id).getAttribute("aria-checked") !== "true"));
 }
 $("s-reset").onclick = () => loadDrawer(DEFAULTS);
 $("s-apply").onclick = async () => {
   const prev = settings;
-  // the list and the edit controls change the messages on the screen: not while an answer is written or something is open
+  // Changing the list replaces the messages on the screen, so wait for an open operation.
   const locked = !!busy || !!panel;
   settings = {thinking: segValue("s-thinking") || "high", temperature: +$("s-temp").value, top_p: +$("s-topp").value,
               top_k: +$("s-topk").value, max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
               math: checked("s-math"), show: checked("s-show"), esp: checked("s-esp"), mcp: checked("s-mcp"),
-              chatList: locked ? !!prev.chatList : checked("s-list"), chatEdit: locked ? !!prev.chatEdit : checked("s-edit"),
+              chatList: locked ? !!prev.chatList : checked("s-list"),
               whileBusy: segValue("s-busy") || "wait"};
   store.set("sampling", settings);
   syncComposerControls();
   StrataMath.reset();                                  // math on or off: every answer is drawn again
   if (settings.chatList !== !!prev.chatList) await setChatList(settings.chatList, true);
-  if (settings.chatEdit !== !!prev.chatEdit) { clearUndo(); syncActions(); }
   if (settings.whileBusy === "wait" && pending) releasePending();    // "wait" parks nothing: a waiting message goes back to the box
   setBusy(!!busy);
   for (const el of $("chat").querySelectorAll(".st-msg--assistant")) {

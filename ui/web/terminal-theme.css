@@ -431,6 +431,67 @@ html[data-theme="light"] .chat-placement__cpu { background: #b2c2b4; }
 .chat-item.on .chat-item__title { color: #b5edc7; font-weight: 500; }
 .chat-parent, .history-panel, .history-editor, .pending { border-radius: 2px; background: #0a1c11; border-color: #2d5139; }
 .history-actions .st-btn { font-size: 11px; }
+/* Keep user controls in the layout so revealing them never shifts the chat. */
+.st-msg--user > .history-actions--user {
+  align-self: stretch;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  gap: 4px;
+  min-height: 32px;
+  margin-top: 0;
+  opacity: 0;
+  transition: opacity .12s ease;
+}
+.st-msg--user:hover > .history-actions--user,
+.st-msg--user:focus-within > .history-actions--user { opacity: 1; }
+.st-msg--assistant .history-actions--assistant {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 4px;
+  margin: 0;
+  opacity: 0;
+  transition: opacity .12s ease;
+}
+.st-msg--assistant:hover .history-actions--assistant,
+.st-msg--assistant:focus-within .history-actions--assistant { opacity: 1; }
+.st-msg--user > .history-actions--user .st-btn,
+.st-msg--assistant .history-actions--assistant .st-btn {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+  flex: none;
+}
+.st-msg--user > .history-actions--user .st-icon,
+.st-msg--assistant .history-actions--assistant .st-icon { width: 16px; height: 16px; }
+.st-msg--user[data-editing="true"] { width: min(640px, 100%); }
+.st-msg--user[data-editing="true"] > .history-actions--user { display: none; }
+.st-msg--user > .history-editor--user {
+  max-width: 100%;
+  padding: 14px;
+  gap: 12px;
+  border-color: #34704c;
+  background: #07180f;
+  color: var(--st-ink);
+}
+.st-msg--user > .history-editor--user textarea {
+  min-width: 0;
+  min-height: 120px;
+  line-height: 1.65;
+  color: var(--st-ink);
+  background: var(--st-bg);
+}
+.st-msg--user > .history-editor--user .history-editor__actions { justify-content: flex-end; }
+@media (hover: none) {
+  .st-msg--user > .history-actions--user,
+  .st-msg--assistant .history-actions--assistant { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .st-msg--user > .history-actions--user,
+  .st-msg--assistant .history-actions--assistant { transition: none; }
+}
 .tool-image img, .msg-images img, .img-results img { border-radius: 2px; border: 1px solid #2c543a; }
 
 /* The optional request inspector uses its own markup and inline base styles. */
@@ -594,6 +655,7 @@ html[data-theme="light"] .chat-parent,
 html[data-theme="light"] .history-panel,
 html[data-theme="light"] .history-editor,
 html[data-theme="light"] .pending { background: #edf5e7; border-color: #abc5aa; }
+html[data-theme="light"] .st-msg--user > .history-editor--user { background: #edf5e7; border-color: #789d7b; }
 html[data-theme="light"] .tool-image img,
 html[data-theme="light"] .msg-images img,
 html[data-theme="light"] .img-results img { border-color: #a2c0a4; }

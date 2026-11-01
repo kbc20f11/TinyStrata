@@ -2,7 +2,7 @@
 // One design for the proposals in PRs #1787 (list), #2615 (edit, regenerate, undo) and issue #3823 (rewind asks: here or a branch);
 // the pure part is serve/web/history.js, the browser store is serve/web/chatstore.js.
 //
-// The saved-chats list is on by default; editing is opt-in (Chat settings > Chats). With the list off, the page keeps one chat,
+// The saved-chats list is on by default; message actions are always available. With the list off, the page keeps one chat,
 // with "New chat" clearing it (and an Undo). Nothing here goes to the server.
 //
 // This file is loaded before app.js and uses its globals when its functions run: $, esc, icon, node, toast, store, settings,
@@ -256,11 +256,12 @@ function renderParent() {
 // ------------------------------------------------------------------ edit, regenerate, go back (#2615, #3823)
 // Every change keeps the messages it replaced for one Undo: a new question, another chat or a reload ends it. The controls
 // are off while an answer is written (stop it first), while something is open, and while a message waits to be sent.
-const historyLocked = () => modelSwitching || !!busy || !!panel || !!pending;
+const historyOperationBusy = () => modelSwitching || !!modelOp || pageBusy();
+const historyLocked = () => historyOperationBusy() || !!panel || !!pending;
 function clearUndo() { undoState = null; renderUndoBar(); }
 function renderUndoBar() {
   let el = $("history-undo");
-  if (!settings.chatEdit || !undoState) { if (el) el.remove(); return; }
+  if (!undoState) { if (el) el.remove(); return; }
   if (!el) {
     el = node("div", "history-undo");
     el.id = "history-undo";
@@ -282,7 +283,7 @@ function commit(next, text) {
   return undoState;
 }
 function undoHistory() {
-  if (!settings.chatEdit || !undoState || historyLocked()) return false;
+  if (!undoState || historyLocked()) return false;
   const u = undoState;
   setMessages(u.messages);
   if (u.inserted !== undefined && $("input").value === u.inserted && u.draftBefore) {   // the box still holds what the rewind put there
@@ -299,40 +300,62 @@ function undoHistory() {
 const hiddenText = (n) => tr("hist.hidden", {one: "{n} message hidden", other: "{n} messages hidden"}, {n});
 
 function msgActions(m, i) {
-  if (!settings.chatEdit) return null;
-  if (busy && busy.msg === m) return null;              // the answer being written has no buttons until it is done
-  const row = node("div", "history-actions");
+  if (m.role !== "user" && m.role !== "assistant") return null;
+  if (busy && busy.msg === m) return null;              // no actions on the answer still being written
+  const user = m.role === "user";
+  const row = node("div", `history-actions history-actions--${user ? "user" : "assistant"}`);
   const lock = historyLocked();
-  const add = (label, title, run) => {
-    const b = node("button", "st-btn st-btn--secondary", label);
-    b.type = "button"; b.title = title; b.disabled = lock; b.onclick = run;
+  const add = (symbol, label, title, run, disabled = lock, attr = "") => {
+    const b = node("button", "st-btn st-btn--icon");
+    b.type = "button"; b.title = title; b.disabled = disabled;
+    b.setAttribute("aria-label", label);
+    if (attr) b.setAttribute(attr, "");
+    b.innerHTML = icon(symbol);
+    b.onclick = () => run(b);
     row.appendChild(b);
   };
-  const last = i === messages.length - 1;
-  if (m.role === "assistant" || last) {
-    add(tr("hist.regenerate", "Regenerate"), tr("hist.regenerateTitle", "Ask for a new answer to this question. Tools may run again."), () => regenerateAt(i));
+  if (user) {
+    const copy = tr("hist.copyUser", "Copy message"), edit = tr("hist.editUser", "Edit message");
+    add("copy", copy, copy, (b) => copyText(m.text || "", b), !m.text, "data-msg-user-copy");
+    add("edit", edit, edit, () => editUserAt(i), lock, "data-msg-user-edit");
+  } else {
+    add("refresh", tr("hist.regenerate", "Regenerate"), tr("hist.regenerateTitle", "Ask for a new answer to this question. Tools may run again."), () => regenerateAt(i));
+    add("edit", tr("hist.editAnswer", "Edit answer"), tr("hist.editAnswerTitle", "Correct the answer's text. No request is sent."), () => editAnswerAt(i));
+    add("clock", tr("hist.rewind", "Rewind to here"), tr("hist.rewindTitle", "Go back to this point in the chat"), () => openRewind(i));
   }
-  if (m.role === "assistant") add(tr("hist.editAnswer", "Edit answer"), tr("hist.editAnswerTitle", "Correct the answer's text. No request is sent."), () => editAnswerAt(i));
-  add(tr("hist.rewind", "Rewind to here"), tr("hist.rewindTitle", "Go back to this point in the chat"), () => openRewind(i));
   return row;
+}
+// Reuse this mount point both when building a message and when its lock changes.
+function mountMsgActions(el, m, i) {
+  const old = el.querySelector(".history-actions");
+  if (old) old.remove();
+  // A language/theme repaint may replace the message element while an editor
+  // is open. Move its live fields, preserving unsent edits and caret state.
+  if (panel && panel.index === i && panel.el !== el) {
+    const open = panel.el.querySelector(".history-panel, .history-editor");
+    if (open) {
+      el.appendChild(open);
+      if (panel.kind === "edit" || panel.kind === "edit-user") el.dataset.editing = "true";
+      panel.el = el;
+    }
+  }
+  const row = msgActions(m, i);
+  if (row) (m.role === "assistant" ? el.querySelector(".st-msg__meta") || el : el).appendChild(row);
 }
 // true when a history change may start now (and says why not when it may not)
 function historyReady() {
-  if (!settings.chatEdit) return false;
   if (modelSwitching) { toast("warn", tr("model.switching", "Switching model…"), ""); return false; }
   if (busy) { stillWriting(); return false; }
+  if (modelOp || pageBusy()) { toast("warn", tr("model.switchBusy", "Wait for the current reply or operation to finish."), ""); return false; }
   if (panel) { toast("warn", tr("hist.finishFirst", "Finish what is open first"), tr("hist.finishFirstText", "Save it or press Cancel.")); return false; }
   if (pending) { toast("warn", tr("hist.pendingFirst", "A message is waiting"), tr("hist.pendingFirstText", "Send it or take it back first.")); return false; }
   return true;
 }
-// the action rows under the messages follow the switch, without replacing any message (an answer may be streaming into one)
+// Update the action locks without replacing message contents (an answer may be streaming into one).
 function syncActions() {
   for (const el of $("chat").querySelectorAll(".st-msg")) {
     const i = +el.dataset.i;
-    const old = el.querySelector(".history-actions");
-    if (old) old.remove();
-    const row = messages[i] ? msgActions(messages[i], i) : null;
-    if (row) el.appendChild(row);
+    if (messages[i]) mountMsgActions(el, messages[i], i);
   }
 }
 function closePanel() {
@@ -354,6 +377,63 @@ function regenerateAt(i) {
     return false;
   }
   commit(plan.keep, tr("hist.replaced", "The answer was replaced"));
+  return generateReply();
+}
+
+// Edit a user turn in place. Opening/cancelling never touches history or the
+// composer; Send replaces only text and retains the original attachment data.
+function editUserAt(i) {
+  if (!historyReady() || !messages[i] || messages[i].role !== "user") return false;
+  const m = messages[i], el = $("chat").querySelector(`[data-i="${i}"]`);
+  if (!el) return false;
+  const box = node("div", "history-editor history-editor--user");
+  box.innerHTML = "<label></label><textarea class=\"st-input\" rows=\"6\"></textarea><p class=\"muted small\"></p>" +
+    "<div class=\"history-editor__actions\"><button type=\"button\" class=\"st-btn st-btn--primary\" data-edit-send></button>" +
+    "<button type=\"button\" class=\"st-btn st-btn--secondary\" data-edit-cancel></button></div>";
+  const label = tr("hist.editUserLabel", "Edit your message");
+  box.querySelector("label").textContent = label;
+  const input = box.querySelector("textarea");
+  input.setAttribute("aria-label", label);
+  input.value = m.text || "";
+  box.querySelector("p").textContent = tr("hist.editUserNote", "Sending replaces this message and the replies after it. Undo restores them.");
+  const send = box.querySelector("[data-edit-send]");
+  send.textContent = tr("hist.sendUser", "Send");
+  send.onclick = () => sendUserEdit(i, input.value);
+  const cancel = () => { closePanel(); $("input").focus(); };
+  const cancelButton = box.querySelector("[data-edit-cancel]");
+  cancelButton.textContent = tr("cancel", "Cancel");
+  cancelButton.onclick = cancel;
+  input.onkeydown = (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); cancel(); }
+    else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); e.stopPropagation(); send.click(); }
+  };
+  el.dataset.editing = "true";
+  el.appendChild(box);
+  panel = {kind: "edit-user", index: i, el, message: m};
+  setBusy(!!busy);
+  input.focus();
+  input.scrollIntoView({block: "nearest"});
+  return true;
+}
+function sendUserEdit(i, text) {
+  if (historyOperationBusy() || pending || !panel || panel.kind !== "edit-user" || panel.index !== i ||
+      panel.message !== messages[i] || messages[i].role !== "user" || typeof text !== "string") return false;
+  const original = messages[i], plan = H.rewind(messages, i);
+  if (!plan) return false;
+  const edited = {...original, text}; // preserve time, images/files and other message metadata
+  if (!text.trim() && !(edited.images || []).length && !(edited.files || []).length) {
+    toast("warn", tr("hist.emptyUser", "The message is empty"), tr("hist.emptyUserText", "Write a message before sending."));
+    return false;
+  }
+  const next = [...plan.keep, edited];
+  if (next.some((m) => m.role === "user" && H.lostAttachments(m))) {
+    toast("warn", tr("hist.lostTitle", "Attachments need to be added again"), tr("hist.lostText", "This browser kept their names, not their contents. Start a new chat and attach them again."), 7000);
+    return false;
+  }
+  if (!canUseModelImages(next)) return false;
+  closePanel();
+  commit(next, tr("hist.userEdited", "Message edited and sent"));
   return generateReply();
 }
 
@@ -391,7 +471,7 @@ function editAnswerAt(i) {
   return true;
 }
 function saveAnswerEdit(i, text) {
-  if (busy || !panel || panel.kind !== "edit" || panel.index !== i) return false;
+  if (historyOperationBusy() || pending || !panel || panel.kind !== "edit" || panel.index !== i) return false;
   if (typeof text !== "string" || !text.trim()) { toast("warn", tr("hist.empty", "The answer is empty"), tr("hist.emptyText", "Write something before saving.")); return false; }
   const plan = H.editAnswer(messages, i, text, tr("hist.edited", "Edited"));
   if (!plan) return false;
@@ -448,7 +528,7 @@ function fillBox(draft) {
   if (draft.lost) toast("warn", tr("hist.lostTitle", "Attachments need to be added again"), tr("hist.lostText2", "This browser kept their names, not their contents. Attach them again."), 7000);
 }
 function rewindHere(i) {
-  if (!settings.chatEdit || busy || pending || !panel || panel.kind !== "rewind") return false;     // called from the open panel
+  if (historyOperationBusy() || pending || !panel || panel.kind !== "rewind") return false;     // called from the open panel
   const plan = H.rewind(messages, i);
   if (!plan) return false;
   const draftBefore = {text: $("input").value, attachments: attachments.slice()};
@@ -459,7 +539,7 @@ function rewindHere(i) {
   return true;
 }
 function branchHere(i) {
-  if (!listOn || busy || pending || !panel || panel.kind !== "rewind") return false;
+  if (!listOn || historyOperationBusy() || pending || !panel || panel.kind !== "rewind") return false;
   const plan = H.rewind(messages, i);
   if (!plan) return false;
   closePanel();
