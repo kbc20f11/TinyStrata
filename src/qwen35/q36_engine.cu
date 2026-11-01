@@ -4031,7 +4031,23 @@ std::vector<int32_t> parse_ids(const char* s) {
 bool is_eos(int t) { return t == 248044 || t == 248046; }
 
 // ------------------------------------------------------------------------------------------------ serve
+// Report the prefix actually retained by serving, never a preview/verify cursor
+// or merely emitted token. Important state transitions bypass decode throttling.
+struct KvUsageReporter {
+    int64_t last_tokens = -1;
+    Clock::time_point last_at{};
+    void publish(int64_t committed, bool force = false) {
+        const auto now = Clock::now();
+        if (!force && (committed == last_tokens || now - last_at < std::chrono::milliseconds(250))) return;
+        std::printf("INFO kv_used_tokens=%lld\n", (long long) committed);
+        std::fflush(stdout);
+        last_tokens = committed;
+        last_at = now;
+    }
+};
+
 int serve(Engine& E) {
+    KvUsageReporter kv_usage;
     E.report_memory = true;
     // Startup facts for the inherited HTTP server's Monitor/About views.
     size_t expert_bytes = 0, arena_bytes = 0;
@@ -4059,6 +4075,7 @@ int serve(Engine& E) {
                 E.clover_accept.c_str(), (double) E.clover_accept_ratio, (double) E.clover_accept_delta,
                 E.clover_draft_penalty_gpu ? 1 : 0, E.clover_gpu_exact_verify ? 1 : 0, E.clover_query_tile);
     E.print_kv_info();
+    kv_usage.publish(0, true);
 #if defined(STRATA_Q36_CPU_POOL)
     if (E.pool) std::printf("INFO cpu_workers=%d cpu_threads=%d\n", E.pool->workers(),
                            E.pool->workers() + (E.pool->host_works() ? 1 : 0));
@@ -4098,6 +4115,9 @@ int serve(Engine& E) {
             lines.pop_front();
         }
         if (line.empty()) continue;
+        // Invalid commands/requests leave this exact prefix intact, including
+        // unsupported session-file restores; do not infer usage from new IDs.
+        kv_usage.publish((int64_t) live.size(), true);
         const bool image_request = line.rfind("GENI ", 0) == 0;
         if (!image_request && line.rfind("GEN ", 0) != 0) {
             std::printf("ERR expected: GEN <max_new> [key=value ...] <ids> or GENI <max_new> [key=value ...] <file> <ids>\n");
@@ -4283,14 +4303,21 @@ int serve(Engine& E) {
             live.clear();
             turn_ids.clear();
             turn_state.bytes.clear();
+            kv_usage.publish(0, true);
             E.trim_kv_for_request((int64_t) ids.size() + 64);
         }
         if (image_request) E.set_images(std::move(image_input));
         else E.clear_images();
         const auto t0 = Clock::now();
         const int64_t fresh = (int64_t) (ids.size() - reuse);
-        if (reuse) { std::printf("RESUME %zu\n", reuse); std::fflush(stdout); }
+        if (reuse) {
+            kv_usage.publish((int64_t) live.size(), true); // includes a restored turn checkpoint
+            std::printf("RESUME %zu\n", reuse); std::fflush(stdout);
+        }
         const auto progress = [&](int64_t done) {
+            // process() calls back only after advancing a completed causal chunk.
+            // live is extended at the end of prefill; this is its committed reach.
+            kv_usage.publish((int64_t) reuse + done, true);
             std::printf("PP %lld %zu %.0f %.1f\n", (long long) reuse + done, ids.size(), ms_since(t0),
                         (double) done / std::max(1e-9, ms_since(t0) / 1000.0));
             std::fflush(stdout);
@@ -4311,6 +4338,7 @@ int serve(Engine& E) {
                       [&](int64_t done) { progress(before + done); }, smp.needs_logits(), request_clover_mode != "diffusion");
         } else E.process(ids.data() + reuse, fresh, progress, smp.needs_logits(), request_clover_mode != "diffusion");
         live.insert(live.end(), ids.begin() + (long) reuse, ids.end());
+        kv_usage.publish((int64_t) live.size(), true);
         const double prompt_ms = ms_since(t0);
         std::mt19937_64 rng(smp.seed);
         std::vector<int32_t> hist = E.m->clover ? std::vector<int32_t>{} : ids;
@@ -4405,6 +4433,7 @@ int serve(Engine& E) {
                 const auto before = Clock::now();
                 E.clover_replay_block(block);
                 live.insert(live.end(), block.begin(), block.end());
+                kv_usage.publish((int64_t) live.size()); // resolved tokens only after causal replay
                 E.clover_replay_ms += ms_since(before);
             }
             // Like HF, the final block is not replayed just to compute unused
@@ -4523,6 +4552,7 @@ int serve(Engine& E) {
                 offered += (long long) drafts.size(); accepted += a;
                 live.push_back(nx);
                 live.insert(live.end(), drafts.begin(), drafts.begin() + a);
+                kv_usage.publish((int64_t) live.size()); // all committed drafts, even if emission stops early
                 fix.clear();
                 for (int i = 0; i < a; ++i) if (!emit(drafts[(size_t) i])) { done = true; break; }
                 nx = picks[a];
@@ -4553,6 +4583,7 @@ int serve(Engine& E) {
                 // A later request may reuse only a matching processed prefix.
                 live.push_back(nx);
                 live.insert(live.end(), drafts.begin(), drafts.begin() + a);
+                kv_usage.publish((int64_t) live.size()); // all committed drafts, even if emission stops early
                 fix.assign(drafts.begin(), drafts.begin() + a);
                 for (int i = 0; i < a; ++i) {
                     if (!emit(drafts[(size_t) i])) { done = true; break; }
@@ -4564,6 +4595,7 @@ int serve(Engine& E) {
             const int32_t one = nx;
             E.process(&one, 1, [](int64_t) {});
             live.push_back(nx);
+            kv_usage.publish((int64_t) live.size());
             fix.clear();
             if (sampled) {
                 E.host_logits(lg);
@@ -4579,6 +4611,7 @@ int serve(Engine& E) {
             return 1;
         }
         const double decode_ms = ms_since(d0);
+        kv_usage.publish((int64_t) live.size(), true);
         if (E.m->clover)
             std::printf("INFO clover_last_mode=%s clover_last_block_size=%d clover_last_threshold=%.9g "
                          "clover_last_accept=%s clover_last_accept_ratio=%.9g clover_last_accept_delta=%.9g "
@@ -4830,8 +4863,8 @@ int strata::qwen35::run(int argc, char** argv) {
             std::fprintf(stderr, "tinystrata: Clover has no MTP head; use --clover-draft for self drafting\n");
             return 2;
         }
-        if (context_auto) ctx = std::min(ctx, 131072);
-        if (ctx > 131072) { std::fprintf(stderr, "tinystrata: Clover supports at most 131072 context tokens\n"); return 2; }
+        // Use the same native capacity policy as Qwen. Clover's published
+        // context limit is 128K; capacity above it is a TinyStrata extension.
         if (clover_mode.empty())
             clover_mode = clover_draft > 0 ? "self-spec" : "causal";
         if (clover_mode == "self-spec" && clover_draft < 0) clover_draft = 4;

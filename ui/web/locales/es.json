@@ -513,5 +513,10 @@
   "placement.unloaded": "Carga un modelo para ver la distribución de sus expertos.",
   "diagram.alt": "Diagrama Mermaid",
   "diagram.toggle": "Alternar entre diagrama y código",
-  "diagram.error": "No se pudo dibujar el diagrama. El código se muestra a continuación."
+  "diagram.error": "No se pudo dibujar el diagrama. El código se muestra a continuación.",
+  "context.label": "Uso de la caché KV",
+  "context.counts": "{used} / {total} tokens ({pct}%)",
+  "context.hint": "Posiciones KV conservadas respecto al límite del contexto, incluidos los tokens de sistema y razonamiento. No es la proporción de VRAM asignada a KV. Muestra el contexto actual del motor, no el historial de un chat inactivo.",
+  "context.unavailable": "No se puede obtener el uso de la caché KV.",
+  "context.unloaded": "Carga un modelo para ver el uso de la caché KV."
 }

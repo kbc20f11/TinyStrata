@@ -30,7 +30,7 @@ TinyStrata choisit automatiquement les paramètres d’inférence et de mémoire
 
 **LFM2.5-24B-A2B Q4_K_M** utilise le [GGUF officiel de LiquidAI](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF). Son unique fichier de modèle de langage pèse **14.53 GB**.
 
-**Clover-35B-A3B-Preview IQ3_XXS** utilise par défaut le [GGUF de AtomicChat](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf), avec **IQ3_XXS pour gate/up et IQ3_S pour down** des experts. Le modèle de langage de **15.515 GB** conserve le tokenizer propre à Clover et ses paramètres GDN bidirectionnels appris. Le contexte maximal est de **128K**. Clover officiel est textuel ; TinyStrata ajoute les images en réutilisant le projecteur Qwen3.6 (**0.899 GB**, **16.414 GB** au total). Un projecteur déjà téléchargé pour Qwen est réutilisé. Sélectionnez-le avec `run-api.bat --model-family clover` ; un nouveau profil autonome utilise le port **18083** et conserve ses paramètres dans `config-clover.json`.
+**Clover-35B-A3B-Preview IQ3_XXS** utilise par défaut le [GGUF de AtomicChat](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf), avec **IQ3_XXS pour gate/up et IQ3_S pour down** des experts. Le modèle de langage de **15.515 GB** conserve le tokenizer propre à Clover et ses paramètres GDN bidirectionnels appris. TinyStrata étend la capacité de contexte à **256K**. [Clover officiel indique 128K](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview/blob/main/config.json) ; la qualité générale des réponses au-delà de 128K n’a pas encore été évaluée. Clover officiel est textuel ; TinyStrata ajoute les images en réutilisant le projecteur Qwen3.6 (**0.899 GB**, **16.414 GB** au total). Un projecteur déjà téléchargé pour Qwen est réutilisé. Sélectionnez-le avec `run-api.bat --model-family clover` ; un nouveau profil autonome utilise le port **18083** et conserve ses paramètres dans `config-clover.json`.
 
 Les profils Clover gérés utilisent désormais par défaut l’auto-spéculation exacte D3 avec KV INT8 (`--clover-mode self-spec --clover-draft 3 --clover-accept exact --kv-type int8`) et MT1 (`STRATA_IQ_MT_MIN=1`). L’encodeur d’images reste sur le GPU par défaut ; `--vision cpu` choisit le CPU et `--vision no` le désactive. Vision prend en charge le causal ou l’auto-spéculation exacte ; diffusion et acceptation par seuil exigent `--vision no`. LowConfidence par blocs et l’acceptation approximative par seuil restent des options expérimentales à activer explicitement ; voir les [options de décodage](benchmark/README.md#english).
 
@@ -38,7 +38,7 @@ Les moteurs Qwen, Gemma et LFM utilisent un cache automatique d’experts en VRA
 
 | Fonction | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) |
 | --- | --- | --- | --- | --- |
-| Contexte maximal | 256K | 256K | 128K | 128K |
+| Contexte maximal | 256K | 256K | 128K | 256K (extension) |
 | Entrée d’images | Oui ; encodeur sur GPU par défaut | Oui ; encodeur sur GPU par défaut | Non | Oui (extension TinyStrata ; encodeur résident GPU par défaut) |
 | MTP | 3 | 3 | Non | Non (auto-spéculation exacte D3) |
 | Formats KV | FP32 / INT8 / FP8 natif | FP16 / INT8 / FP8 natif (expérimental) | FP16 / INT8 / FP8 natif | FP32 / INT8 / FP8 natif |
@@ -52,13 +52,13 @@ Gemma utilise INT8 par défaut. Le FP8 natif est expérimental et peut être sé
 
 La **capacité de contexte automatique** dépend de la VRAM totale du GPU, comme indiqué ci-dessous ; la VRAM libre détermine la taille du cache d’experts. Une valeur explicite de `--max-context N` est prioritaire.
 
-| VRAM totale (exemples) | Qwen3.6 / Gemma 4 | LFM2.5 / Clover |
+| VRAM totale (exemples) | Qwen3.6 / Gemma 4 / Clover | LFM2.5 |
 | --- | ---: | ---: |
 | 8 GB | 64K | 64K |
 | 12 GB | 128K | 128K |
 | 16 GB ou plus | 256K | 128K |
 
-Les classes de capacité tiennent compte des différences signalées par le pilote : une carte de 16 GB indiquant 15.x GiB sélectionne donc toujours 256K pour Qwen et Gemma.
+Les classes de capacité tiennent compte des différences signalées par le pilote : une carte de 16 GB indiquant 15.x GiB sélectionne donc toujours 256K pour Qwen, Gemma et Clover.
 
 Si l’exécutable d’un modèle supplémentaire manque, consultez les [instructions de compilation manuelle](README.md#model-focus).
 

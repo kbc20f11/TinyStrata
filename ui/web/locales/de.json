@@ -513,5 +513,10 @@
   "placement.unloaded": "Laden Sie ein Modell, um seine Expertenverteilung zu sehen.",
   "diagram.alt": "Mermaid-Diagramm",
   "diagram.toggle": "Zwischen Diagramm und Quelltext wechseln",
-  "diagram.error": "Das Diagramm konnte nicht gezeichnet werden. Der Quelltext wird unten angezeigt."
+  "diagram.error": "Das Diagramm konnte nicht gezeichnet werden. Der Quelltext wird unten angezeigt.",
+  "context.label": "KV-Cache-Belegung",
+  "context.counts": "{used} / {total} Token ({pct}%)",
+  "context.hint": "Gespeicherte KV-Positionen im Verhältnis zum Kontextlimit, einschließlich System- und Denk-Token. Dies ist nicht der für KV zugewiesene VRAM-Anteil. Angezeigt wird der aktuelle Kontext der Engine, nicht der Verlauf eines inaktiven Chats.",
+  "context.unavailable": "Die KV-Cache-Belegung ist nicht verfügbar.",
+  "context.unloaded": "Laden Sie ein Modell, um die KV-Cache-Belegung zu sehen."
 }

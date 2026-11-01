@@ -244,6 +244,7 @@ async function poll() {
     if (r.status === 401) {
       placementSampleValid = false;
       renderPlacement(null);
+      renderContext(null);
       setPill("error", tr("pill.keyNeeded", "API key needed"));
       if (!keyWarned) { keyWarned = true; toast("warn", tr("pill.keyNeeded", "API key needed"), tr("toast.keyAbout", "This server needs a key: add it under About > Settings."), 6000); }
     } else if (r.ok) {
@@ -265,6 +266,7 @@ async function poll() {
   } catch (e) {
     placementSampleValid = false;
     renderPlacement(null);
+    renderContext(null);
     if (modelSwitching) setPill("idle", tr("model.switching", "Switching model…"));
     else if (++metricsFailures === 3) setPill("error", tr("pill.unreachable", "Server not reachable"));
   }
@@ -440,6 +442,33 @@ function renderPlacement(m) {
   el.setAttribute("aria-label", sample ? `${label}: GPU ${fmt(sample.gpuPct, 1)}%, CPU ${fmt(sample.cpuPct, 1)}%. ${note}` : `${label}: ${detail}`);
 }
 
+// A committed prefix position, reported by the engine. Allocated KV pages and
+// request token totals include different amounts of spare/speculative space.
+function contextUsage(eng) {
+  const used = eng && eng.kv_used_tokens, total = eng && eng.max_context;
+  if (!Number.isSafeInteger(total) || total <= 0 || !Number.isSafeInteger(used) || used < 0 || used > total) return null;
+  return {used, total, fraction: used / total};
+}
+function renderContext(m) {
+  const el = $("chat-context"), unloaded = m && m.live && m.live.state === "unloaded";
+  const sample = placementSampleValid && !modelSwitching && !modelOp && !unloaded && m ? contextUsage(m.engine) : null;
+  const label = tr("context.label", "KV cache usage");
+  const detail = sample ? tr("context.counts", "{used} / {total} tokens ({pct}%)", {used: fmt(sample.used), total: fmt(sample.total), pct: fmt(sample.fraction * 100, 1)})
+    : modelSwitching ? tr("model.switching", "Switching model…")
+    : unloaded ? tr("context.unloaded", "Load a model to see its KV cache usage.")
+    : tr("context.unavailable", "KV cache usage is unavailable.");
+  el.dataset.state = sample ? "ready" : "unknown";
+  if (sample && sample.fraction >= .8) el.dataset.tone = sample.fraction >= .95 ? "danger" : "warn";
+  else delete el.dataset.tone;
+  $("context-value").textContent = sample ? `${kfmt(sample.used)} / ${ctxfmt(sample.total)}` : "–";
+  $("context-pct").textContent = sample ? `${fmt(sample.fraction * 100, 1)}%` : "–";
+  $("context-track").hidden = !sample;
+  $("context-bar").style.width = sample ? `${sample.fraction * 100}%` : "0%";
+  const hint = tr("context.hint", "Retained KV positions as a share of the logical context limit, including system and reasoning tokens. This is not the share of VRAM allocated to KV. It follows the engine's current prefix, not an inactive chat's saved history.");
+  el.title = `${detail}\n${hint}`;
+  el.setAttribute("aria-label", `${label}: ${detail}`);
+}
+
 function render(m) {
   const live = m.live || {}, hw = m.hardware || {}, st = m.hardware_static || {}, eng = m.engine || {}, h = m.history || {};
   const last = (m.requests || [])[0];
@@ -468,6 +497,7 @@ function render(m) {
   }
   modelButton(live);
   renderPlacement(m);
+  renderContext(m);
   if (!modelOp && !localLoad && live.queued > 0) setPill("queued", tr("pill.queued", "{n} queued", {n: live.queued}));
   if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
   if (tab === "monitor") renderConvCache(m.conversation_cache);
@@ -615,16 +645,12 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   }
   spark("sp-disk", h.disk_read_mb);
 
-  // context fill: the running request, else the last one
-  const ctx = eng.max_context || 0;
-  let used = 0;
-  if (live.state !== "idle") used = (live.prompt_tokens || 0) + (live.generated || 0);
-  else if (last) used = (last.prompt_tokens || 0) + (last.output_tokens || 0);
-  const frac = ctx ? Math.min(1, used / ctx) : 0;
+  const context = placementSampleValid && !modelSwitching && !modelOp && live.state !== "unloaded" ? contextUsage(eng) : null;
+  const frac = context ? context.fraction : 0;
   $("ctx-fill").setAttribute("stroke-dasharray", `${(235.6 * frac).toFixed(1)} 314.2`);
   $("ctx-fill").style.opacity = 235.6 * frac >= 3 ? "1" : "0";         // a near-zero arc would draw just its round cap
-  $("ctx-pct").textContent = `${Math.round(frac * 100)}%`;
-  $("ctx-sub").textContent = ctx ? `${kfmt(used)} / ${ctxfmt(ctx)}` : "–";
+  $("ctx-pct").textContent = context ? `${Math.round(frac * 100)}%` : "–";
+  $("ctx-sub").textContent = context ? `${kfmt(context.used)} / ${ctxfmt(context.total)}` : "–";
   const cacheBytes = (eng.expert_cache_mib || 0) * 1048576;
   $("slots-text").textContent = eng.expert_slots ? `${fmt(eng.expert_slots)} · ${gb(cacheBytes)} GB` : "–";
   $("slots-bar").style.width = hw.gpu_mem_total ? `${Math.min(100, (100 * cacheBytes) / hw.gpu_mem_total)}%` : "0%";

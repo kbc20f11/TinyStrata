@@ -30,7 +30,7 @@ TinyStrata automatically selects inference and memory settings for your hardware
 
 **LFM2.5-24B-A2B Q4_K_M** uses the official [LiquidAI GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF). Its single language-model download is **14.53 GB**.
 
-**Clover-35B-A3B-Preview IQ3_XXS** defaults to [AtomicChat’s GGUF](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf) with **IQ3_XXS gate/up and IQ3_S down** Expert projections. The **15.515 GB** language model retains Clover’s own tokenizer and learned bidirectional GDN parameters. The maximum context is **128K**. Official Clover is text-only; TinyStrata adds image input by reusing the Qwen3.6 projector (**0.899 GB**, **16.414 GB** in total, reused if already downloaded for Qwen). Select it with `run-api.bat --model-family clover`; a new standalone profile uses port **18083**, with settings in `config-clover.json`.
+**Clover-35B-A3B-Preview IQ3_XXS** defaults to [AtomicChat’s GGUF](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf) with **IQ3_XXS gate/up and IQ3_S down** Expert projections. The **15.515 GB** language model retains Clover’s own tokenizer and learned bidirectional GDN parameters. TinyStrata extends its context capacity to **256K**. [Official Clover specifies 128K](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview/blob/main/config.json); general answer quality beyond 128K has not been established. Official Clover is text-only; TinyStrata adds image input by reusing the Qwen3.6 projector (**0.899 GB**, **16.414 GB** in total, reused if already downloaded for Qwen). Select it with `run-api.bat --model-family clover`; a new standalone profile uses port **18083**, with settings in `config-clover.json`.
 
 Managed Clover profiles now default to exact self-speculation D3 with INT8 KV (`--clover-mode self-spec --clover-draft 3 --clover-accept exact --kv-type int8`) and MT1 (`STRATA_IQ_MT_MIN=1`). The image encoder stays on the GPU by default; `--vision cpu` and `--vision no` select CPU encoding or disable it. Vision supports causal or exact self-speculative decoding; diffusion and threshold acceptance require `--vision no`. LowConfidence block diffusion and approximate threshold acceptance remain experimental opt-ins; see the [decoding options](benchmark/README.md#english).
 
@@ -38,7 +38,7 @@ The Qwen, Gemma and LFM engines use an automatic VRAM Expert cache, CPU Expert c
 
 | Feature | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) |
 | --- | --- | --- | --- | --- |
-| Maximum context | 256K | 256K | 128K | 128K |
+| Maximum context | 256K | 256K | 128K | 256K (extension) |
 | Image input | Yes; GPU-resident encoder by default | Yes; GPU-resident encoder by default | No | Yes (TinyStrata extension; GPU-resident encoder by default) |
 | MTP | 3 | 3 | No | No (exact self-spec D3) |
 | KV formats | FP32 / INT8 / native FP8 | FP16 / INT8 / native FP8 (experimental) | FP16 / INT8 / native FP8 | FP32 / INT8 / native FP8 |
@@ -52,13 +52,13 @@ Gemma uses INT8 by default. Native FP8 is experimental and can be selected expli
 
 **Automatic context capacity** uses the GPU’s total VRAM as shown below; available free VRAM determines the Expert cache size. An explicit `--max-context N` takes priority.
 
-| Total VRAM (examples) | Qwen3.6 / Gemma 4 | LFM2.5 / Clover |
+| Total VRAM (examples) | Qwen3.6 / Gemma 4 / Clover | LFM2.5 |
 | --- | ---: | ---: |
 | 8 GB | 64K | 64K |
 | 12 GB | 128K | 128K |
 | 16 GB or more | 256K | 128K |
 
-Capacity classes allow for driver reporting differences, so a 16 GB card reported as 15.x GiB still selects 256K for Qwen and Gemma.
+Capacity classes allow for driver reporting differences, so a 16 GB card reported as 15.x GiB still selects 256K for Qwen, Gemma and Clover.
 
 <details>
 <summary>Build additional model engines manually if an executable is missing</summary>

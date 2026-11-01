@@ -30,7 +30,7 @@ TinyStrata wählt Inferenz- und Speichereinstellungen automatisch passend zu Ihr
 
 **LFM2.5-24B-A2B Q4_K_M** verwendet den offiziellen [LiquidAI-GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF). Der einzelne Sprachmodell-Download ist **14.53 GB** groß.
 
-**Clover-35B-A3B-Preview IQ3_XXS** verwendet standardmäßig den [GGUF von AtomicChat](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf) mit **IQ3_XXS für Gate/Up und IQ3_S für Down** der Experten. Das Sprachmodell mit **15.515 GB** behält Clovers eigenen Tokenizer und die gelernten bidirektionalen GDN-Parameter bei. Der maximale Kontext beträgt **128K**. Das offizielle Clover ist textbasiert; TinyStrata ergänzt Bildeingaben über den Qwen3.6-Projektor (**0.899 GB**, insgesamt **16.414 GB**). Ein bereits für Qwen geladener Projektor wird wiederverwendet. Die Auswahl erfolgt mit `run-api.bat --model-family clover`; ein neues eigenständiges Profil verwendet Port **18083** und speichert seine Einstellungen in `config-clover.json`.
+**Clover-35B-A3B-Preview IQ3_XXS** verwendet standardmäßig den [GGUF von AtomicChat](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf) mit **IQ3_XXS für Gate/Up und IQ3_S für Down** der Experten. Das Sprachmodell mit **15.515 GB** behält Clovers eigenen Tokenizer und die gelernten bidirektionalen GDN-Parameter bei. TinyStrata erweitert die Kontextkapazität auf **256K**. [Das offizielle Clover gibt 128K an](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview/blob/main/config.json); die allgemeine Antwortqualität oberhalb von 128K wurde noch nicht bewertet. Das offizielle Clover ist textbasiert; TinyStrata ergänzt Bildeingaben über den Qwen3.6-Projektor (**0.899 GB**, insgesamt **16.414 GB**). Ein bereits für Qwen geladener Projektor wird wiederverwendet. Die Auswahl erfolgt mit `run-api.bat --model-family clover`; ein neues eigenständiges Profil verwendet Port **18083** und speichert seine Einstellungen in `config-clover.json`.
 
 Verwaltete Clover-Profile verwenden jetzt standardmäßig exakte Selbstspekulation D3 mit INT8-KV (`--clover-mode self-spec --clover-draft 3 --clover-accept exact --kv-type int8`) und MT1 (`STRATA_IQ_MT_MIN=1`). Der Bildencoder bleibt standardmäßig auf der GPU; `--vision cpu` wählt die CPU und `--vision no` deaktiviert ihn. Vision unterstützt kausale oder exakte selbstspekulative Dekodierung; Blockdiffusion und Schwellenwertannahme erfordern `--vision no`. LowConfidence-Blockdiffusion und approximative Schwellenwertannahme bleiben ausdrücklich zu aktivierende experimentelle Optionen; siehe [Dekodierungsoptionen](benchmark/README.md#english).
 
@@ -38,7 +38,7 @@ Die Qwen-, Gemma- und LFM-Engines verwenden einen automatischen VRAM-Expertencac
 
 | Funktion | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) |
 | --- | --- | --- | --- | --- |
-| Maximaler Kontext | 256K | 256K | 128K | 128K |
+| Maximaler Kontext | 256K | 256K | 128K | 256K (Erweiterung) |
 | Bildeingabe | Ja; Bildencoder standardmäßig auf der GPU | Ja; Bildencoder standardmäßig auf der GPU | Nein | Ja (TinyStrata-Erweiterung; standardmäßig GPU-resident) |
 | MTP | 3 | 3 | Nein | Nein (exakte Selbstspekulation D3) |
 | KV-Formate | FP32 / INT8 / natives FP8 | FP16 / INT8 / natives FP8 (experimentell) | FP16 / INT8 / natives FP8 | FP32 / INT8 / natives FP8 |
@@ -52,13 +52,13 @@ Gemma verwendet standardmäßig INT8. Natives FP8 ist experimentell und kann mit
 
 Die **automatische Kontextkapazität** richtet sich wie unten gezeigt nach dem gesamten VRAM der GPU; der freie VRAM bestimmt die Größe des Expertencaches. Ein explizites `--max-context N` hat Vorrang.
 
-| Gesamter VRAM (Beispiele) | Qwen3.6 / Gemma 4 | LFM2.5 / Clover |
+| Gesamter VRAM (Beispiele) | Qwen3.6 / Gemma 4 / Clover | LFM2.5 |
 | --- | ---: | ---: |
 | 8 GB | 64K | 64K |
 | 12 GB | 128K | 128K |
 | 16 GB oder mehr | 256K | 128K |
 
-Die Kapazitätsklassen berücksichtigen Unterschiede bei den Treiberangaben, sodass eine 16-GB-Karte auch bei gemeldeten 15.x GiB für Qwen und Gemma 256K auswählt.
+Die Kapazitätsklassen berücksichtigen Unterschiede bei den Treiberangaben, sodass eine 16-GB-Karte auch bei gemeldeten 15.x GiB für Qwen, Gemma und Clover 256K auswählt.
 
 Fehlt die Programmdatei eines zusätzlichen Modells, siehe die [Anleitung zum manuellen Build](README.md#model-focus).
 

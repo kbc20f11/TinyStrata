@@ -218,30 +218,37 @@ std::string take_pictures(const std::string& path, int32_t pad, int n_embd, std:
 }
 
 
-// Observe host allocation metadata at existing serve progress boundaries. No
-// memory query or GPU synchronization is needed, and unchanged snapshots are silent.
-void memory_info(const Engine& e);
+// Observe host allocation metadata and committed positions at serve boundaries.
+// Ordinary updates are coalesced to 250 ms; forced boundaries need no GPU sync.
+void memory_info(const Engine& e, int64_t used = -1);
 struct MemoryReporter {
     const Engine& engine;
     int cached;
     int64_t rows;
     size_t mapped;
+    int64_t committed, reported_used;
+    Clock::time_point reported_at = Clock::now();
     bool progress_safe;
     explicit MemoryReporter(const Engine& e, bool single_card)
         : engine(e), cached(e.cached_experts()), rows(e.kv_committed_rows()), mapped(e.kv_mapped_bytes()),
-          progress_safe(single_card) {}
+          committed(e.pos()), reported_used(e.pos()), progress_safe(single_card) {}
     void progress() {
         // A split read may evaluate the next card on another thread. Observe its
         // recursive metadata only after read()/eval() has joined that work.
-        if (progress_safe) changed();
+        // Even on one card, read() may expose a temporary per-layer position.
+        if (progress_safe) changed(false, false);
     }
-    void changed() {
+    void changed(bool force = false, bool position_committed = true) {
+        if (position_committed) committed = engine.pos();
         const int now_cached = engine.cached_experts();
         const int64_t now_rows = engine.kv_committed_rows();
         const size_t now_mapped = engine.kv_mapped_bytes();
-        if (cached == now_cached && rows == now_rows && mapped == now_mapped) return;
+        if (!force && cached == now_cached && rows == now_rows && mapped == now_mapped && reported_used == committed) return;
+        const auto now = Clock::now();
+        if (!force && now - reported_at < std::chrono::milliseconds(250)) return;
         cached = now_cached; rows = now_rows; mapped = now_mapped;
-        memory_info(engine);
+        reported_used = committed; reported_at = now;
+        memory_info(engine, committed);
         std::fflush(stdout);
     }
 };
@@ -308,7 +315,7 @@ bool prompt(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop,
         // eval() alone does not return the stage loan. Do so before the final
         // logits token, including MTP 0, cancellation and failed prefix reads.
         e.end_read();
-        if (memory) memory->changed();
+        if (memory) memory->changed(false, false);
         if (trace_stage)
             std::fprintf(stderr, "gemma4-stage-read: prompt=%d stage_bytes_before=%zu stage_bytes_during=%zu "
                                  "stage_bytes_after=%zu cache_mib_before=%.3f cache_mib_during=%.3f "
@@ -320,7 +327,7 @@ bool prompt(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop,
         end_read();
         if (!complete || stop.load()) return false;
         e.eval(ids + n - 1, 1, true);
-        if (memory) memory->changed();
+        if (memory) memory->changed(true);
         if (report) {
             const double ms = elapsed(start);
             std::printf("PP %d %d %.1f %.1f\n", reused + n, reused + n, ms, n * 1000.0 / std::max(ms, 0.001));
@@ -354,23 +361,24 @@ void sampling_key(Sampling& s, const std::string& word) {
         throw std::invalid_argument("sampling value outside range");
 }
 
-void memory_info(const Engine& e) {
+void memory_info(const Engine& e, int64_t used) {
     std::printf("INFO expert_slots=%d expert_total=%d expert_cache_mib=%lld kv_grow=%d kv_committed_rows=%lld "
-                "kv_logical_bytes=%llu kv_mapped_bytes=%llu\n", e.cached_experts(), e.total_experts(),
+                "kv_logical_bytes=%llu kv_mapped_bytes=%llu kv_used_tokens=%lld\n", e.cached_experts(), e.total_experts(),
                 (long long) (e.cached_gib() * 1024), e.kv_growing(), (long long) e.kv_committed_rows(),
-                (unsigned long long) e.kv_logical_bytes(), (unsigned long long) e.kv_mapped_bytes());
+                (unsigned long long) e.kv_logical_bytes(), (unsigned long long) e.kv_mapped_bytes(),
+                (long long) (used < 0 ? e.pos() : used));
 }
 
 int serve(Engine& e, const Options& o) {
     std::printf("INFO version=0.1.0 family=gemma4 model=gemma-4-26b-a4b-it kv=%s mtp=%d vision=%d expert_slots=%d expert_total=%d "
                 "expert_cache_mib=%lld expert_auto=%d chunk=%d vram_reserve_mib=%d graph=%d prompt_logits_first=1 "
-                "kv_grow=%d kv_committed_rows=%lld kv_logical_bytes=%llu kv_mapped_bytes=%llu\n",
+                "kv_grow=%d kv_committed_rows=%lld kv_logical_bytes=%llu kv_mapped_bytes=%llu kv_used_tokens=%lld\n",
                 e.kv_format() == strata::gemma4::KvFmt::kFp8 ? "fp8-mma" :
                     e.kv_format() == strata::gemma4::KvFmt::kQ8_0 ? "int8" : "fp16",
                 e.drafts() ? e.max_window() - 1 : 0, e.sees(),
                 e.cached_experts(), e.total_experts(), (long long) (e.cached_gib() * 1024), o.expert_vram_gib < 0 && o.gpu_experts,
                 e.max_rows(), e.reserve_mib(), o.graphs, e.kv_growing(), (long long) e.kv_committed_rows(),
-                (unsigned long long) e.kv_logical_bytes(), (unsigned long long) e.kv_mapped_bytes());
+                (unsigned long long) e.kv_logical_bytes(), (unsigned long long) e.kv_mapped_bytes(), (long long) e.pos());
     std::printf("READY %d stop\n", e.max_context());
     std::fflush(stdout);
     struct Inbox {
@@ -430,6 +438,7 @@ int serve(Engine& e, const Options& o) {
         try {
             if (line == "RESET") {
                 e.reset(); live.clear(); checkpoint_ids.clear();
+                memory_info(e);
                 std::puts("OK RESET"); std::fflush(stdout);
                 continue;
             }
@@ -508,7 +517,7 @@ int serve(Engine& e, const Options& o) {
             MemoryReporter memory(e, o.layer_split.empty());
             e.trim_kv((int64_t) ids.size());
             e.mind_vram();
-            memory.changed();
+            memory.changed(true);
             const auto before = e.stats();
             const auto p0 = Clock::now();
             const int fresh = (int) (ids.size() - reuse);
@@ -573,7 +582,6 @@ int serve(Engine& e, const Options& o) {
                 }
                 if (box->stop.load()) { finish = "cancel"; break; }
                 e.window(w, width);
-                memory.changed();
                 int right = 0;
                 bool more = true;
                 token = pick(e.logits_of(0));
@@ -581,6 +589,7 @@ int serve(Engine& e, const Options& o) {
                     token = pick(e.logits_of(++right));
                 e.keep(right + 1);
                 live.insert(live.end(), w, w + right + 1); evaluated += right + 1;
+                memory.changed();
                 guessed += width - 1;
                 // A terminal accepted token was shown but deliberately not fed.
                 // Cancellation before show() emits it is not an accepted output.
@@ -608,6 +617,7 @@ int serve(Engine& e, const Options& o) {
             // A failed/cancelled read may leave only some recurrent layers advanced.
             // Reset before accepting another request, rather than reuse that state.
             e.reset(); e.images(nullptr, 0); live.clear(); checkpoint_ids.clear();
+            memory_info(e);
             std::printf("ERR %s\n", ex.what());
             std::fflush(stdout);
         }

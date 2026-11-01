@@ -363,9 +363,6 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
                 raise ValueError("Clover Vision supports causal or exact self-spec generation; use --vision no for diffusion or threshold acceptance")
         if config.value_of(cfg, "mtp") not in (None, 0):
             raise ValueError("Clover has no MTP head; use --clover-draft for self-speculative decoding")
-        context = config.value_of(cfg, "max_context")
-        if context not in (None, "auto") and context > 131072:
-            raise ValueError("Clover supports at most 131072 context tokens")
         if kv == "fp16":
             raise ValueError("Clover does not support --kv-type fp16")
     elif kv == "fp16":

@@ -30,7 +30,7 @@ TinyStrata 会根据你的硬件自动选择推理和内存设置，因此无需
 
 **LFM2.5-24B-A2B Q4_K_M** 使用官方 [LiquidAI GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF)。仅需下载一个语言模型文件，大小为 **14.53 GB**。
 
-**Clover-35B-A3B-Preview IQ3_XXS** 默认使用 [AtomicChat 提供的 GGUF](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf)，专家的 **gate/up 使用 IQ3_XXS，down 使用 IQ3_S**。语言模型大小为 **15.515 GB**，保留 Clover 自己的分词器和已学习的双向 GDN 参数。最大上下文为 **128K**。官方 Clover 仅支持文本；TinyStrata 通过复用 Qwen3.6 projector 添加图像输入。projector 为 **0.899 GB**，总计 **16.414 GB**，已为 Qwen 下载时会直接复用。通过 `run-api.bat --model-family clover` 选择；新建的独立配置使用端口 **18083**，设置保存在 `config-clover.json`。
+**Clover-35B-A3B-Preview IQ3_XXS** 默认使用 [AtomicChat 提供的 GGUF](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf)，专家的 **gate/up 使用 IQ3_XXS，down 使用 IQ3_S**。语言模型大小为 **15.515 GB**，保留 Clover 自己的分词器和已学习的双向 GDN 参数。TinyStrata 将上下文容量扩展至 **256K**。[官方 Clover 的标称上限为 128K](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview/blob/main/config.json)，超过 128K 时的整体回答质量尚未评估。官方 Clover 仅支持文本；TinyStrata 通过复用 Qwen3.6 projector 添加图像输入。projector 为 **0.899 GB**，总计 **16.414 GB**，已为 Qwen 下载时会直接复用。通过 `run-api.bat --model-family clover` 选择；新建的独立配置使用端口 **18083**，设置保存在 `config-clover.json`。
 
 托管的 Clover 配置现在默认使用 exact 自投机 D3、INT8 KV（`--clover-mode self-spec --clover-draft 3 --clover-accept exact --kv-type int8`）和 MT1（`STRATA_IQ_MT_MIN=1`）。图像编码器默认常驻 GPU；`--vision cpu` 使用 CPU，`--vision no` 关闭图像功能。Vision 支持因果生成或 exact 自投机；块扩散和阈值接受需要 `--vision no`。LowConfidence 块扩散和近似阈值接受仍为需显式启用的实验性选项，参见[解码设置](benchmark/README.md#english)。
 
@@ -38,7 +38,7 @@ Qwen、Gemma 和 LFM 引擎均支持根据空闲显存自动调整的专家缓�
 
 | 功能 | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) |
 | --- | --- | --- | --- | --- |
-| 最大上下文 | 256K | 256K | 128K | 128K |
+| 最大上下文 | 256K | 256K | 128K | 256K（扩展） |
 | 图像输入 | 支持；默认编码器常驻 GPU | 支持；默认编码器常驻 GPU | 不支持 | 支持（TinyStrata 扩展，默认常驻 GPU） |
 | MTP | 3 | 3 | 不支持 | 无（exact 自投机 D3） |
 | KV 格式 | FP32 / INT8 / 原生 FP8 | FP16 / INT8 / 原生 FP8（实验性） | FP16 / INT8 / 原生 FP8 | FP32 / INT8 / 原生 FP8 |
@@ -52,13 +52,13 @@ Gemma 默认使用 INT8。原生 FP8 为实验性功能，可通过 `run-api.bat
 
 **上下文容量自动选择**依据 GPU 总显存，如下表所示；可用显存决定专家缓存的大小。显式指定 `--max-context N` 时，以该值为准。
 
-| GPU 总显存（示例） | Qwen3.6 / Gemma 4 | LFM2.5 / Clover |
+| GPU 总显存（示例） | Qwen3.6 / Gemma 4 / Clover | LFM2.5 |
 | --- | ---: | ---: |
 | 8 GB | 64K | 64K |
 | 12 GB | 128K | 128K |
 | 16 GB 及以上 | 256K | 128K |
 
-容量档位容许驱动报告值的差异，因此 16 GB 显卡即使报告为 15.x GiB，Qwen 和 Gemma 仍会选择 256K。
+容量档位容许驱动报告值的差异，因此 16 GB 显卡即使报告为 15.x GiB，Qwen、Gemma 和 Clover 仍会选择 256K。
 
 额外模型的可执行文件缺失时，请参见[手动构建说明](README.md#model-focus)。
 

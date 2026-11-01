@@ -508,5 +508,10 @@
   "placement.unloaded": "モデルを読み込むと配置を表示します。",
   "diagram.alt": "Mermaidの図",
   "diagram.toggle": "図とコードを切り替え",
-  "diagram.error": "図を描画できなかったため、コードを表示しています。"
+  "diagram.error": "図を描画できなかったため、コードを表示しています。",
+  "context.label": "KVキャッシュ使用量",
+  "context.counts": "{used} / {total} トークン（{pct}%）",
+  "context.hint": "システム指示や思考を含む、保持済みのKV位置とコンテキスト上限の割合です。KV用に確保したVRAMの割合ではありません。閲覧中の過去セッションではなく、エンジンが現在保持しているコンテキストを示します。",
+  "context.unavailable": "KVキャッシュ使用量を取得できません。",
+  "context.unloaded": "モデルを読み込むとKVキャッシュ使用量を表示します。"
 }

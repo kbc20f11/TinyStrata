@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="web/tokens.css">
 <link rel="stylesheet" href="web/components.css">
 <link rel="stylesheet" href="web/app.css">
-<link rel="stylesheet" href="web/terminal-theme.css?v=20261101.5">
+<link rel="stylesheet" href="web/terminal-theme.css?v=20261101.6">
 <script>
   // Match the operating system before the first paint, including older installs.
   try {
@@ -111,6 +111,14 @@
               <svg class="st-icon"><use href="web/sprite.svg#i-send"/></svg></button>
           </div>
         </form>
+        <div class="chat-resources">
+        <a class="chat-context" id="chat-context" href="#monitor" data-state="unknown"
+           aria-label="KV cache usage" data-i18n-label="context.label">
+          <span class="chat-context__label">KV</span>
+          <span class="chat-context__value" id="context-value">–</span>
+          <span class="chat-context__track" id="context-track" aria-hidden="true" hidden><span id="context-bar"></span></span>
+          <span class="chat-context__pct" id="context-pct">–</span>
+        </a>
         <a class="chat-placement" id="chat-placement" href="#monitor" data-state="unknown"
            aria-label="Expert placement" data-i18n-label="placement.label">
           <span class="chat-placement__label" data-i18n="placement.label">Expert placement</span>
@@ -127,6 +135,7 @@
             <span>CPU <strong id="placement-cpu">–</strong></span>
           </span>
         </a>
+        </div>
       </div>
     </div>
   </section>
@@ -369,15 +378,15 @@
   </div>
 </dialog>
 <div class="st-toasts" id="toasts" aria-live="polite"></div>
-<script src="web/i18n.js?v=20261101.5"></script>
+<script src="web/i18n.js?v=20261101.6"></script>
 <script src="web/preview.js"></script>
-<script src="web/diagrams.js?v=20261101.5"></script>
-<script src="web/code-fences.js?v=20261101.5"></script>
-<script src="web/math.js?v=20261101.5"></script>
+<script src="web/diagrams.js?v=20261101.6"></script>
+<script src="web/code-fences.js?v=20261101.6"></script>
+<script src="web/math.js?v=20261101.6"></script>
 <script src="web/math-adapter.js"></script>
 <script src="web/history.js"></script>
 <script src="web/chatstore.js"></script>
 <script src="web/chats-ui.js?v=20261030.2"></script>
-<script src="web/app.js?v=20261101.5"></script>
+<script src="web/app.js?v=20261101.6"></script>
 </body>
 </html>

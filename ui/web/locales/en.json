@@ -513,5 +513,10 @@
   "placement.unloaded": "Load a model to see its expert placement.",
   "diagram.alt": "Mermaid diagram",
   "diagram.toggle": "Switch diagram and source",
-  "diagram.error": "Could not draw this diagram. The source is shown below."
+  "diagram.error": "Could not draw this diagram. The source is shown below.",
+  "context.label": "KV cache usage",
+  "context.counts": "{used} / {total} tokens ({pct}%)",
+  "context.hint": "Retained KV positions as a share of the logical context limit, including system and reasoning tokens. This is not the share of VRAM allocated to KV. It follows the engine's current prefix, not an inactive chat's saved history.",
+  "context.unavailable": "KV cache usage is unavailable.",
+  "context.unloaded": "Load a model to see its KV cache usage."
 }

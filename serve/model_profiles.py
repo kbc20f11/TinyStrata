@@ -20,8 +20,9 @@ _MODELS = {
     "gemma-4-26b-a4b-it": "gemma4",
     "clover-35b-a3b-preview": "clover_moe",
 }
-# Supported model/engine ceilings, not automatically allocated KV capacities.
-_CONTEXT_LIMITS = {"qwen35moe": 262144, "lfm2moe": 131072, "gemma4": 262144, "clover_moe": 131072}
+# TinyStrata engine ceilings, not automatically allocated KV capacities. Clover's
+# 256K capacity extends its official 128K limit; general long-context quality is unverified.
+_CONTEXT_LIMITS = {"qwen35moe": 262144, "lfm2moe": 131072, "gemma4": 262144, "clover_moe": 262144}
 _ALIASES = {
     "qwen36": "qwen3.6-35b-a3b", "qwen3.6": "qwen3.6-35b-a3b",
     "qwen35moe": "qwen3.6-35b-a3b",
