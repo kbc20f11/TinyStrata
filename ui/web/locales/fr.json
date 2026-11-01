@@ -524,5 +524,9 @@
   "context.counts": "{used} / {total} jetons ({pct}%)",
   "context.hint": "Positions KV conservées par rapport à la limite du contexte, y compris les jetons système et de réflexion. Ce n'est pas la part de VRAM allouée au KV. Le contexte actuel du moteur est affiché, et non l'historique d'une conversation inactive.",
   "context.unavailable": "L'utilisation du cache KV est indisponible.",
-  "context.unloaded": "Chargez un modèle pour voir l'utilisation du cache KV."
+  "context.unloaded": "Chargez un modèle pour voir l'utilisation du cache KV.",
+  "latex.toggle": "Basculer entre l’aperçu et le code source",
+  "latex.error": "Impossible d’afficher un aperçu de ce code LaTeX. Le code source est affiché ci-dessous.",
+  "latex.preview": "Aperçu LaTeX",
+  "latex.proof": "Démonstration"
 }

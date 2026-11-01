@@ -524,5 +524,9 @@
   "context.counts": "{used} / {total} tokens ({pct}%)",
   "context.hint": "Retained KV positions as a share of the logical context limit, including system and reasoning tokens. This is not the share of VRAM allocated to KV. It follows the engine's current prefix, not an inactive chat's saved history.",
   "context.unavailable": "KV cache usage is unavailable.",
-  "context.unloaded": "Load a model to see its KV cache usage."
+  "context.unloaded": "Load a model to see its KV cache usage.",
+  "latex.toggle": "Switch preview and source",
+  "latex.error": "Could not preview this LaTeX. The source is shown below.",
+  "latex.preview": "LaTeX preview",
+  "latex.proof": "Proof"
 }

@@ -519,5 +519,9 @@
   "context.counts": "{used} / {total} 个 token（{pct}%）",
   "context.hint": "已保留的 KV 位置占逻辑上下文上限的比例，包括系统指令和思考 token。此值不是为 KV 分配的显存比例，显示的是引擎当前保留的上下文，而非未使用会话的历史。",
   "context.unavailable": "无法获取 KV 缓存用量。",
-  "context.unloaded": "加载模型后可查看 KV 缓存用量。"
+  "context.unloaded": "加载模型后可查看 KV 缓存用量。",
+  "latex.toggle": "切换预览和源代码",
+  "latex.error": "无法预览此 LaTeX。下方显示源代码。",
+  "latex.preview": "LaTeX 预览",
+  "latex.proof": "证明"
 }

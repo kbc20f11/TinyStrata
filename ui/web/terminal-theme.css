@@ -437,6 +437,45 @@ html[data-theme] .st-composer[data-switching="true"] .st-composer__bar { border-
 .st-code[data-diagram-view="image"] > .st-diagram__image { display: block; }
 .st-code[data-diagram-view="image"] > pre { display: none; }
 .st-diagram__status { color: var(--st-ink-muted); padding: 12px 18px 0; font-size: 12px; }
+.st-latex__preview {
+  display: none;
+  max-width: 100%;
+  max-height: 640px;
+  overflow: auto;
+  padding: 20px;
+  color: var(--st-ink);
+  background: var(--st-bg);
+  font: 16px/1.8 var(--st-font);
+  overflow-wrap: anywhere;
+}
+.st-code[data-latex="true"][data-latex-view="document"]:not([data-latex-state="error"]) > .st-latex__preview { display: block; }
+.st-code[data-latex="true"][data-latex-view="document"]:not([data-latex-state="error"]) > pre { display: none; }
+.st-latex__preview p { margin: 0 0 1em; }
+.st-latex__preview .st-latex__title { margin: 0 0 .5em; color: var(--st-ink); font-size: 1.5em; line-height: 1.4; text-align: center; }
+.st-latex__author, .st-latex__date { margin-bottom: .5em; color: var(--st-ink-soft); text-align: center; }
+.st-code .st-latex__preview .st-latex__heading { margin: 1.25em 0 .5em; color: var(--st-accent-text); font-size: 1.15em; line-height: 1.5; }
+.st-latex__preview h4.st-latex__heading { font-size: 1.05em; }
+.st-latex__preview h5.st-latex__heading { font-size: 1em; }
+.st-latex__preview ul, .st-latex__preview ol { margin: 0 0 1em; padding-inline-start: 1.6em; }
+.st-latex__theorem, .st-latex__proof { margin: 1em 0; padding-inline-start: 14px; border-inline-start: 2px solid var(--st-line); }
+.st-latex__theorem-title, .st-latex__proof-title { color: var(--st-ink); }
+.st-latex__proof-title { font-style: italic; }
+.st-latex__qed { display: block; text-align: end; }
+.st-latex__preview code { font-family: var(--st-font-mono); font-size: .9em; white-space: pre-wrap; }
+.st-latex__preview .chat-math--display { max-width: 100%; overflow-x: auto; padding-inline: 4px; }
+/* Leave room for equation numbers when a narrow view needs horizontal scrolling. */
+.st-latex__preview .katex-display .katex-html:has(> .katex-tag) {
+  display: inline-block;
+  width: max-content;
+  min-width: 100%;
+  padding-inline: 3em;
+  box-sizing: border-box;
+}
+.st-latex__preview > :last-child { margin-bottom: 0; }
+.st-latex__status { padding: 12px 18px 0; color: var(--st-ink-muted); font-size: 12px; }
+@media (max-width: 620px) {
+  .st-latex__preview { max-height: min(640px, 65vh); padding: 16px; font-size: 15px; }
+}
 .st-code__preview iframe { min-height: 180px; }
 .tool-call__pre { border-radius: 2px; background: #030d07; }
 .chip { border-radius: 2px; background: #0b2014; border-color: #2a5139; color: #a5d1b5; }

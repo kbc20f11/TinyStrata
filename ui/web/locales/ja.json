@@ -519,5 +519,9 @@
   "context.counts": "{used} / {total} トークン（{pct}%）",
   "context.hint": "システム指示や思考を含む、保持済みのKV位置とコンテキスト上限の割合です。KV用に確保したVRAMの割合ではありません。閲覧中の過去セッションではなく、エンジンが現在保持しているコンテキストを示します。",
   "context.unavailable": "KVキャッシュ使用量を取得できません。",
-  "context.unloaded": "モデルを読み込むとKVキャッシュ使用量を表示します。"
+  "context.unloaded": "モデルを読み込むとKVキャッシュ使用量を表示します。",
+  "latex.toggle": "プレビューと原文を切り替え",
+  "latex.error": "このLaTeXをプレビューできないため、原文を表示しています。",
+  "latex.preview": "LaTeXプレビュー",
+  "latex.proof": "証明"
 }

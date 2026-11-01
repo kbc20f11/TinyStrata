@@ -524,5 +524,9 @@
   "context.counts": "{used} / {total} Token ({pct}%)",
   "context.hint": "Gespeicherte KV-Positionen im Verhältnis zum Kontextlimit, einschließlich System- und Denk-Token. Dies ist nicht der für KV zugewiesene VRAM-Anteil. Angezeigt wird der aktuelle Kontext der Engine, nicht der Verlauf eines inaktiven Chats.",
   "context.unavailable": "Die KV-Cache-Belegung ist nicht verfügbar.",
-  "context.unloaded": "Laden Sie ein Modell, um die KV-Cache-Belegung zu sehen."
+  "context.unloaded": "Laden Sie ein Modell, um die KV-Cache-Belegung zu sehen.",
+  "latex.toggle": "Zwischen Vorschau und Quelltext wechseln",
+  "latex.error": "Die LaTeX-Vorschau konnte nicht erstellt werden. Der Quelltext wird unten angezeigt.",
+  "latex.preview": "LaTeX-Vorschau",
+  "latex.proof": "Beweis"
 }

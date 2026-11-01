@@ -524,5 +524,9 @@
   "context.counts": "{used} / {total} tokens ({pct}%)",
   "context.hint": "Posições KV retidas em relação ao limite do contexto, incluindo tokens de sistema e raciocínio. Não é a parcela de VRAM alocada para KV. Exibe o contexto atual do mecanismo, não o histórico de uma conversa inativa.",
   "context.unavailable": "O uso do cache KV não está disponível.",
-  "context.unloaded": "Carregue um modelo para ver o uso do cache KV."
+  "context.unloaded": "Carregue um modelo para ver o uso do cache KV.",
+  "latex.toggle": "Alternar entre prévia e código-fonte",
+  "latex.error": "Não foi possível visualizar este LaTeX. O código-fonte é exibido abaixo.",
+  "latex.preview": "Prévia de LaTeX",
+  "latex.proof": "Demonstração"
 }

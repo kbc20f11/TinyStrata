@@ -524,5 +524,9 @@
   "context.counts": "{used} / {total} tokens ({pct}%)",
   "context.hint": "Posiciones KV conservadas respecto al límite del contexto, incluidos los tokens de sistema y razonamiento. No es la proporción de VRAM asignada a KV. Muestra el contexto actual del motor, no el historial de un chat inactivo.",
   "context.unavailable": "No se puede obtener el uso de la caché KV.",
-  "context.unloaded": "Carga un modelo para ver el uso de la caché KV."
+  "context.unloaded": "Carga un modelo para ver el uso de la caché KV.",
+  "latex.toggle": "Alternar entre la vista previa y el código fuente",
+  "latex.error": "No se pudo mostrar una vista previa de este LaTeX. El código fuente se muestra abajo.",
+  "latex.preview": "Vista previa de LaTeX",
+  "latex.proof": "Demostración"
 }

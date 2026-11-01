@@ -874,17 +874,20 @@ function fillPreview(fr, scripts, blank) {
 function refreshPreviews() { for (const fr of document.querySelectorAll("iframe[data-opened]")) fillPreview(fr, fr.dataset.scripts === "1"); }
 function codeBlock(lang, code, complete) {
   const diagram = complete && /^mermaid$/i.test(lang || "");
+  const latex = complete && settings.math && /^(?:latex|tex)$/i.test(lang || "");
   const ok = complete && StrataPreview.canPreview(lang || "", code);
   const kind = ok ? StrataPreview.kindOf(lang) : null;
   const label = kind === "svg" ? tr("preview.showSvg", "Preview the picture") : tr("preview.showPage", "Preview the page");
   const head = `<div class="st-code__head"><span>${esc(lang || tr("code.label", "code"))}</span><span class="st-code__btns">` +
     (diagram ? `<button class="st-btn st-btn--icon" data-diagram-toggle hidden aria-pressed="false" aria-label="${esc(tr("diagram.toggle", "Switch diagram and source"))}" title="${esc(tr("diagram.toggle", "Switch diagram and source"))}">${icon("image")}</button>` : "") +
+    (latex ? `<button class="st-btn st-btn--icon" data-latex-toggle hidden aria-pressed="false" aria-label="${esc(tr("latex.toggle", "Switch preview and source"))}" title="${esc(tr("latex.toggle", "Switch preview and source"))}">${icon("image")}</button>` : "") +
     (kind === "page" ? `<button class="st-btn st-btn--icon" data-preview-scripts aria-label="${esc(tr("preview.runScripts", "Run scripts"))}" aria-pressed="false" title="${esc(tr("preview.runScripts", "Run scripts"))}">${icon("warning")}</button>` : "") +
     (ok ? `<button class="st-btn st-btn--icon" data-preview-toggle data-preview-label="${esc(label)}" aria-label="${esc(label)}" title="${esc(label)}" aria-pressed="false">${icon("image")}</button>` : "") +
     `<button class="st-btn st-btn--icon" data-code-copy aria-label="${esc(tr("code.copy", "Copy code"))}">${icon("copy")}</button></span></div>`;
   const prev = ok ? `<div class="st-code__preview"><iframe sandbox="" title="${esc(kind === "svg" ? tr("preview.titleSvg", "Picture preview") : tr("preview.titlePage", "Page preview"))}" data-lang="${esc(lang)}"></iframe></div>` : "";
   const drawing = diagram ? `<div class="st-diagram__image"></div><div class="st-diagram__status" hidden>${esc(tr("diagram.error", "Could not draw this diagram. The source is shown below."))}</div>` : "";
-  return `<div class="st-code"${diagram ? ' data-diagram="mermaid"' : ""}>${head}${drawing}<pre><code>${esc(code)}</code></pre>${prev}</div>`;
+  const latexPreview = latex ? `<div class="st-latex__preview" role="document" aria-label="${esc(tr("latex.preview", "LaTeX preview"))}"></div><div class="st-latex__status" hidden>${esc(tr("latex.error", "Could not preview this LaTeX. The source is shown below."))}</div>` : "";
+  return `<div class="st-code"${diagram ? ' data-diagram="mermaid"' : latex ? ' data-latex="true"' : ""}>${head}${drawing}<pre><code>${esc(code)}</code></pre>${latexPreview}${prev}</div>`;
 }
 function blocks(text) {
   const out = [], lines = text.split("\n");
@@ -1826,6 +1829,7 @@ function updateAssistant(el, m, streaming) {
     hydrateToolImages(bubble);
     if (settings.math) StrataMath.hydrate(bubble);
     if (!streaming && typeof StrataDiagrams !== "undefined") StrataDiagrams.hydrate(bubble);
+    if (!streaming && settings.math && typeof StrataLatex !== "undefined") StrataLatex.hydrate(bubble, () => settings.math);
   }
   for (const button of bubble.querySelectorAll("[data-code-copy]")) button.disabled = !!streaming;
   if (activeStream && m.text) setTerminalCursor(bubble);
@@ -1889,6 +1893,15 @@ $("chat").addEventListener("click", (e) => {
     const image = box.dataset.diagramView !== "image";
     box.dataset.diagramView = image ? "image" : "code";
     diagram.setAttribute("aria-pressed", String(image));
+    return;
+  }
+  const latex = e.target.closest("[data-latex-toggle]");
+  if (latex) {
+    const box = latex.closest(".st-code");
+    if (!settings.math || latex.closest(".st-bubble")?.dataset.streaming === "true" || box.dataset.latexState !== "ready") return;
+    const preview = box.dataset.latexView !== "document";
+    box.dataset.latexView = preview ? "document" : "code";
+    latex.setAttribute("aria-pressed", String(preview));
     return;
   }
   // an svg/html block: flip between its code and its sandboxed preview. Closing the preview also turns scripts off.
