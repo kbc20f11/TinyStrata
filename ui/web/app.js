@@ -810,7 +810,15 @@ $("cfg-save").addEventListener("click", async () => {
 // ------------------------------------------------------------------ Markdown (escaped first, then formatted)
 function inline(s) {
   const codes = [];
-  s = s.replace(/`([^`\n]+)`/g, (_, c) => { codes.push(c); return `\u0000${codes.length - 1}\u0000`; });
+  if (typeof StrataCodeFences !== "undefined") {
+    let at = 0, prepared = "";
+    for (const span of StrataCodeFences.spans(s)) {
+      codes.push(span.code);
+      prepared += s.slice(at, span.start) + `\u0000${codes.length - 1}\u0000`;
+      at = span.end;
+    }
+    s = prepared + s.slice(at);
+  } else s = s.replace(/`([^`\n]+)`/g, (_, c) => { codes.push(c); return `\u0000${codes.length - 1}\u0000`; });
   s = esc(s)
     .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^*\w])\*([^*\n]+)\*(?![*\w])/g, "$1<em>$2</em>")
@@ -852,7 +860,7 @@ function blocks(text) {
   const out = [], lines = text.split("\n");
   let para = [], list = null;
   const flushPara = () => { if (para.length) out.push(`<p>${para.map(inline).join("<br>")}</p>`); para = []; };
-  const flushList = () => { if (list) out.push(`<${list.tag}>${list.items.map((i) => `<li>${inline(i)}</li>`).join("")}</${list.tag}>`); list = null; };
+  const flushList = () => { if (list) out.push(`<${list.tag}${list.tag === "ol" && list.start !== "1" ? ` start="${list.start}"` : ""}>${list.items.map((i) => `<li>${inline(i)}</li>`).join("")}</${list.tag}>`); list = null; };
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
     let m;
@@ -873,7 +881,7 @@ function blocks(text) {
     if ((m = l.match(/^\s*(?:[-*+]|(\d+)[.)])\s+(.*)$/))) {
       flushPara();
       const tag = m[1] ? "ol" : "ul";
-      if (!list || list.tag !== tag) { flushList(); list = {tag, items: []}; }
+      if (!list || list.tag !== tag) { flushList(); list = {tag, start: m[1], items: []}; }
       list.items.push(m[2]);
       continue;
     }
@@ -885,18 +893,14 @@ function blocks(text) {
   return out.join("");
 }
 function markdown(text) {
-  let html = "", rest = text;
-  for (;;) {
-    const m = rest.match(/(^|\n)```([^\n`]*)\n/);
-    if (!m) { html += blocks(rest); break; }
-    html += blocks(rest.slice(0, m.index));
-    rest = rest.slice(m.index + m[0].length);
-    const end = rest.match(/(^|\n)```[ \t]*(\n|$)/);
-    if (!end) { html += codeBlock(m[2].trim(), rest, false); break; }  // still streaming: no preview of a half-written block
-    html += codeBlock(m[2].trim(), rest.slice(0, end.index), true);
-    rest = rest.slice(end.index + end[0].length);
+  let html = "", at = 0;
+  const fences = typeof StrataCodeFences === "undefined" ? [] : StrataCodeFences.scan(text);
+  for (const f of fences) {
+    html += blocks(text.slice(at, f.start));
+    html += codeBlock(f.lang, f.code, f.complete);
+    at = f.end;
   }
-  return html;
+  return html + blocks(text.slice(at));
 }
 
 // ------------------------------------------------------------------ Chat

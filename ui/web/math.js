@@ -4,6 +4,7 @@
 // stays as its source text.
 "use strict";
 (function (root) {
+  const codeFences = root.StrataCodeFences || (typeof module !== "undefined" && module.exports ? require("./code-fences.js") : null);
   const escape = (s) => String(s).replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
   const escaped = (s, i) => { let n = 0; while (i > 0 && s[--i] === "\\") n++; return n % 2 === 1; };
 
@@ -12,10 +13,13 @@
   // $10) are not math. A formula that is still being written (no closing delimiter yet) stays plain text.
   function split(text) {
     const parts = []; let start = 0, i = 0;
+    const fences = codeFences ? codeFences.scan(text) : []; let f = 0;
     const push = (end, math) => { if (start < i) parts.push({raw: text.slice(start, i)}); parts.push(math); start = i = end; };
     while (i < text.length) {
       // Code takes precedence, including incomplete fences while streaming.
-      const fence = (i === 0 || text[i - 1] === "\n") && text.slice(i).match(/^ {0,3}(`{3,}|~{3,})[^\n]*\n/);
+      while (f < fences.length && fences[f].end <= i) f++;
+      if (f < fences.length && i >= fences[f].start) { i = fences[f++].end; continue; }
+      const fence = !codeFences && (i === 0 || text[i - 1] === "\n") && text.slice(i).match(/^ {0,3}(`{3,}|~{3,})[^\n]*\n/);
       if (fence) {
         const marker = fence[1][0], count = fence[1].length;
         const end = new RegExp("^ {0,3}" + marker + "{" + count + ",}[ \\t]*(?:\\n|$)", "m").exec(text.slice(i + fence[0].length));
@@ -40,11 +44,13 @@
       if (!open) { i++; continue; }
       let end = text.indexOf(close, i + open.length);
       while (end >= 0 && (escaped(text, end) || (close === "$" && (/\s/.test(text[end - 1]) || /[\d$]/.test(text[end + 1] || ""))))) end = text.indexOf(close, end + close.length);
-      const source = end >= 0 ? text.slice(i + open.length, end) : text.slice(i + open.length);
+      const limit = f < fences.length ? fences[f].start : text.length;
+      if (end >= limit) end = -1;
+      const source = text.slice(i + open.length, end >= 0 ? end : limit);
       // Numeric prices are text, even when separated by a second dollar amount.
       if (open === "$" && (/\n/.test(source) || /\$/.test(source) ||
           /^\d[\d,.]*(?:\s*[A-Za-z]|\s*$)/.test(source))) { i++; continue; }
-      if (end < 0) { push(text.length, {raw: text.slice(i), incomplete: true}); break; }
+      if (end < 0) { push(limit, {raw: text.slice(i, limit), incomplete: true}); continue; }
       push(end + close.length, {source, display, raw: text.slice(i, end + close.length)});
     }
     if (start < text.length) parts.push({raw: text.slice(start)});

@@ -49,6 +49,7 @@ body {
   background-size: 44px 44px;
   background-position: -1px -1px;
 }
+body:has(#view-chat:not([hidden])) { background-image: none; }
 ::selection { background: #36c77b55; color: #f2fff6; }
 * { scrollbar-width: thin; scrollbar-color: #2c6547 #07110c; }
 :focus-visible { outline: 1px solid var(--st-focus); outline-offset: 4px; }
@@ -150,7 +151,7 @@ button, input, textarea, select { -webkit-tap-highlight-color: transparent; }
 
 /* Chat is a readable transcript with framed user commands. */
 .chat { max-width: 1120px; padding: 42px 48px 32px; gap: 38px; }
-.chat-main { background: transparent; }
+.chat-main { background: var(--st-bg); }
 .st-msg { max-width: 100%; gap: 12px; }
 .st-msg--assistant { padding-block: 2px 8px; }
 .st-msg--assistant .st-bubble {
@@ -243,7 +244,7 @@ button, input, textarea, select { -webkit-tap-highlight-color: transparent; }
 .terminal-phase:empty { display: none; }
 .meta-text { font-family: var(--st-font-mono); }
 
-.composer-wrap { padding: 12px 40px 24px; }
+.composer-wrap { padding: 12px 40px calc(10px + env(safe-area-inset-bottom, 0px)); }
 .chat-placement {
   display: flex;
   align-items: center;
@@ -635,7 +636,7 @@ html[data-theme="light"] .model-download-dialog::backdrop { background: rgba(23,
   #pill-text { max-width: 130px; overflow: hidden; text-overflow: ellipsis; }
   #unload-btn { min-width: 0; width: auto; padding-inline: 8px; font-size: 10px; }
   .chat { padding: 28px 24px 24px; gap: 30px; }
-  .composer-wrap { padding: 8px 20px 16px; }
+  .composer-wrap { padding: 8px 20px calc(10px + env(safe-area-inset-bottom, 0px)); }
   .monitor, .about { padding: 20px; }
 }
 @media (max-width: 620px) {
@@ -655,7 +656,7 @@ html[data-theme="light"] .model-download-dialog::backdrop { background: rgba(23,
   .terminal-stat { font-size: 10px; padding: 4px 6px; gap: 6px; }
   .terminal-stat strong { font-size: 11px; }
   .terminal-stats { gap: 5px; }
-  .composer-wrap { padding: 8px 12px 12px; }
+  .composer-wrap { padding: 8px 12px calc(10px + env(safe-area-inset-bottom, 0px)); }
   .st-composer { padding: 9px; }
   .st-composer textarea { font-size: 15px; min-height: 50px; }
   .st-composer__bar { --composer-control-height: 44px; gap: 4px; }
