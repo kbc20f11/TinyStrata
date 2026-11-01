@@ -30,17 +30,21 @@ TinyStrata wählt Inferenz- und Speichereinstellungen automatisch passend zu Ihr
 
 **LFM2.5-24B-A2B Q4_K_M** verwendet den offiziellen [LiquidAI-GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF). Der einzelne Sprachmodell-Download ist **14.53 GB** groß.
 
-**Clover-35B-A3B-Preview IQ3_XXS** verwendet standardmäßig den [GGUF von AtomicChat](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf) mit **IQ3_XXS für Gate/Up und IQ3_S für Down** der Experten. Der Download von **15.515 GB** behält Clovers eigenen Tokenizer und die gelernten bidirektionalen GDN-Parameter bei. Der maximale Kontext beträgt **128K**; Eingaben sind nur als Text möglich. Die Auswahl erfolgt mit `run-api.bat --model-family clover`; ein neues eigenständiges Profil verwendet Port **18083** und speichert seine Einstellungen in `config-clover.json`. Verwaltete Clover-Profile verwenden jetzt standardmäßig exakte Selbstspekulation D3 mit INT8-KV (`--clover-mode self-spec --clover-draft 3 --clover-accept exact --kv-type int8`) und MT1 (`STRATA_IQ_MT_MIN=1`). Dasselbe Modell erstellt Entwürfe und übernimmt nur das mit der kausalen Verifikation übereinstimmende Präfix, ohne separaten MTP-Kopf. MT1 ändert die CPU-Expertenarithmetik gegenüber dem früheren kausalen Standard. LowConfidence-Blockdiffusion und approximative Schwellenwertannahme bleiben ausdrücklich zu aktivierende experimentelle Optionen; siehe [Dekodierungsoptionen](benchmark/README.md#english). Alle Routen nutzen einen an den freien VRAM angepassten Expertencache, Expertenberechnung auf der CPU aus dem Arbeitsspeicher und mit der Sequenzlänge wachsenden physischen KV-Speicher.
+**Clover-35B-A3B-Preview IQ3_XXS** verwendet standardmäßig den [GGUF von AtomicChat](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf) mit **IQ3_XXS für Gate/Up und IQ3_S für Down** der Experten. Das Sprachmodell mit **15.515 GB** behält Clovers eigenen Tokenizer und die gelernten bidirektionalen GDN-Parameter bei. Der maximale Kontext beträgt **128K**. Das offizielle Clover ist textbasiert; TinyStrata ergänzt Bildeingaben über den Qwen3.6-Projektor (**0.899 GB**, insgesamt **16.414 GB**). Ein bereits für Qwen geladener Projektor wird wiederverwendet. Die Auswahl erfolgt mit `run-api.bat --model-family clover`; ein neues eigenständiges Profil verwendet Port **18083** und speichert seine Einstellungen in `config-clover.json`.
+
+Verwaltete Clover-Profile verwenden jetzt standardmäßig exakte Selbstspekulation D3 mit INT8-KV (`--clover-mode self-spec --clover-draft 3 --clover-accept exact --kv-type int8`) und MT1 (`STRATA_IQ_MT_MIN=1`). Der Bildencoder bleibt standardmäßig auf der GPU; `--vision cpu` wählt die CPU und `--vision no` deaktiviert ihn. Vision unterstützt kausale oder exakte selbstspekulative Dekodierung; Blockdiffusion und Schwellenwertannahme erfordern `--vision no`. LowConfidence-Blockdiffusion und approximative Schwellenwertannahme bleiben ausdrücklich zu aktivierende experimentelle Optionen; siehe [Dekodierungsoptionen](benchmark/README.md#english).
 
 Die Qwen-, Gemma- und LFM-Engines verwenden einen automatischen VRAM-Expertencache, CPU-Expertenberechnung aus dem Arbeitsspeicher, Gewichtsstreaming bei der Eingabe und CUDA Graphs. Sie nutzen dieselbe API und unterstützen Modellwechsel im laufenden Betrieb; die Einstellungen werden pro Modell gespeichert. Ausgewählte Experten werden nicht ausgelassen. Sie unterstützen außerdem automatisches Wachstum des physischen KV-Speichers, ohne die maximale Kontextkapazität zu ändern.
 
-| Funktion | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) |
-| --- | --- | --- | --- |
-| Maximaler Kontext | 256K | 256K | 128K |
-| Bildeingabe | Ja; Bildencoder standardmäßig auf der GPU | Ja; Bildencoder standardmäßig auf der GPU | Nein |
-| MTP | 3 | 3 | Nein |
-| KV-Formate | FP32 / INT8 / natives FP8 | FP16 / INT8 / natives FP8 (experimentell) | FP16 / INT8 / natives FP8 |
-| Automatische KV-Auswahl (Standard) | FP8 → INT8 | INT8 | FP8 → INT8 |
+| Funktion | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) |
+| --- | --- | --- | --- | --- |
+| Maximaler Kontext | 256K | 256K | 128K | 128K |
+| Bildeingabe | Ja; Bildencoder standardmäßig auf der GPU | Ja; Bildencoder standardmäßig auf der GPU | Nein | Ja (TinyStrata-Erweiterung; standardmäßig GPU-resident) |
+| MTP | 3 | 3 | Nein | Nein (exakte Selbstspekulation D3) |
+| KV-Formate | FP32 / INT8 / natives FP8 | FP16 / INT8 / natives FP8 (experimentell) | FP16 / INT8 / natives FP8 | FP32 / INT8 / natives FP8 |
+| Automatische KV-Auswahl (Standard) | FP8 → INT8 | INT8 | FP8 → INT8 | INT8 |
+
+Clover-Bildeingaben sind eine TinyStrata-Erweiterung, keine offizielle Clover-Funktion.
 
 Die Spaltenüberschriften verlinken auf die offiziellen Modellkarten. **FP8 → INT8** bedeutet FP8-KV und native FP8-Attention (Tensor Cores bei NVIDIA, WMMA bei AMD RDNA 4), wenn GPU und kompilierte Kernel dies unterstützen, andernfalls INT8. KV-Präzision und GGUF-Gewichtsquantisierung sind unabhängig; niedriger präzises KV kann die Ausgabe gegenüber FP32 (Qwen) beziehungsweise FP16 (Gemma/LFM) verändern.
 
@@ -158,10 +162,12 @@ Dieselben drei Eingabetexte wurden je zweimal pro FP8-/INT8-Konfiguration mit de
 
 Geschwindigkeit auf Radeon-Karten, gemessen mit [tinystrata-bench-v1](benchmark/README.md#english). Jede Karte hat eine eigene Seite mit Hardware, Treiber, Engine-Commit, Einstellungen und allen Spalten: [`benchmark/results/`](benchmark/results/). Werte: Generierung / 4K-Eingabe / 16K-Eingabe in tok/s. Die Clover-Werte verwenden die Variante exact D3.
 
-| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS (exact D3) |
+| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS (exact D3, Vision GPU) |
 | --- | ---: | ---: | ---: | ---: |
-| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 49.49 / 965.27 / 877.79 |
+| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 41.67 / 942.27 / 892.94 |
 | [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 | — |
+
+Clover verwendet exact D3/INT8/MT1 mit GPU-residentem Bildencoder. Erstes Bild-Token / Antwortende: **2.43 / 4.54 s**; Expertencache: **7.32–8.10 → 7.18–7.95 GiB** (Start → nach 16K-Eingabe). [Bedingungen und Bildprüfungen](benchmark/results/rx-9060-xt.md#clover-vision-with-exact-d3-2026-11-01).
 
 **Clover IQ3_XXS — RX 9060 XT (2026-11-01; historische Werte vor gemeinsamer Attention)**
 
@@ -176,15 +182,15 @@ Dieselben festgelegten Eingaben wurden mit 128K Kontext, wachsendem physischem K
 
 Dies sind historische Kontrollmessungen vor der gemeinsamen Attention. Clover verwendet jetzt standardmäßig exact D3, INT8-KV und MT1. Blockdiffusion und Schwellenwertannahme bleiben experimentell. [Einstellungen und Qualitätsprüfungen](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01) / [Früherer IQ3-Vergleich](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31) / [Frühere Q4_0-Messungen](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31).
 
-**Clover HIP INT8: gemeinsame Attention-Abfragen — RX 9060 XT (2026-11-01)**
+**Clover HIP INT8: gemeinsame Attention-Abfragen — RX 9060 XT (2026-11-01; vor Vision, historisch)**
 
-INT8-KV; vier unabhängige API-Starts je Profil in abwechselnder Reihenfolge. Kurze Eingaben haben maximal 128 Ausgabetokens, die 4K-/16K-/64K-Proben maximal 32. Die Kontrolle des früheren kausalen Standards nutzt normale CPU-Expertenarithmetik (MT2), beide D3-Zeilen nutzen MT1. Die Zeile exact D3 mit gemeinsamer Attention ist jetzt der Clover-Standard. [Bedingungen, Qualitätsprüfungen und Ergebnisse](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01).
+INT8-KV; vier unabhängige API-Starts je Profil in abwechselnder Reihenfolge. Kurze Eingaben haben maximal 128 Ausgabetokens, die 4K-/16K-/64K-Proben maximal 32. Die Kontrolle des früheren kausalen Standards nutzt normale CPU-Expertenarithmetik (MT2), beide D3-Zeilen nutzen MT1. Diese Messungen stammen aus der Zeit vor Vision; der Bildencoder war nicht resident. Die Dekodierungseinstellungen sind weiterhin D3/INT8/MT1. [Bedingungen, Qualitätsprüfungen und Ergebnisse](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01).
 
 | Profil | Kurze Generierung tok/s | Generierung nach 4K tok/s | Generierung nach 16K tok/s | Generierung nach 64K tok/s | 64K-Eingabe tok/s | Expertencache GiB: Start → 64K |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Kausal MT2 (früherer Standard/Kontrolle) | 41.16 | 38.04 | 36.40 | 24.11 | 662.52 | 9.98 → 9.35 |
 | Exact D3 MT1 (ohne gemeinsame Attention/Kontrolle) | 49.78 | 33.35 | 34.11 | 17.51 | 663.12 | 9.98 → 9.35 |
-| Exact D3 MT1 (Standard) | 49.49 | 34.87 | 39.30 | 26.62 | 664.65 | 9.98 → 9.35 |
+| Exact D3 MT1 (vor Vision) | 49.49 | 34.87 | 39.30 | 26.62 | 664.65 | 9.98 → 9.35 |
 
 ## Welches Projekt sollte ich verwenden?
 
@@ -254,7 +260,7 @@ Neue Konfigurationen verwenden modellspezifische Sampling-Standardwerte. Werte p
 
 Die API lauscht standardmäßig unter `http://127.0.0.1:18080`. Um einen anderen Port zu verwenden, führen Sie `run-api.bat --port 18081` im installierten TinyStrata-Ordner aus.
 
-Bei Qwen verarbeitet `run-api.bat --vision gpu` Bilder auf der GPU (Standard für neue Konfigurationen); `--vision cpu` nutzt die CPU und `--vision no` deaktiviert Bilder. `--vision-tokens N` setzt die maximale Zahl der Bild-Token (Standard: 4096). Diese Auswahl wird gespeichert und bei späteren Starts ohne diese Optionen beibehalten.
+Bei Qwen und Clover verarbeitet `run-api.bat --vision gpu` Bilder auf der GPU (Standard für neue Konfigurationen); `--vision cpu` nutzt die CPU und `--vision no` deaktiviert Bilder. `--vision-tokens N` setzt die maximale Zahl der Bild-Token (Standard: 4096). Diese Auswahl wird gespeichert und bei späteren Starts ohne diese Optionen beibehalten.
 
 Die API kann starten, bevor die Modelldateien installiert sind. Wenn Qwen ausgewählt ist, lädt `POST /v1/model/download` mit einem leeren JSON-Body (`{}`) das festgelegte [Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS-Sprachmodell](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf) (14.1 GB, einschließlich MTP-Gewichten) und seinen [Vision-Projektor](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/mmproj-F16.gguf) (0.9 GB) herunter, insgesamt etwa **15.0 GB**. Die SHA-256-Prüfsummen beider Dateien werden geprüft, der Tokenizer wird extrahiert und die Dateien werden geladen. `GET /v1/model/download` meldet den Fortschritt; unterbrochene Downloads können fortgesetzt werden. Eine wiederholte Download-Anfrage verwendet den aktiven Auftrag weiter, und `POST /v1/model/download/cancel` kann die Übertragung oder Überprüfung abbrechen. Ein abgeschlossener Download bedeutet noch keine Inferenzbereitschaft: Warten Sie, bis der Download-Status `ready` lautet und `/health` `loaded: true` sowie bei aktivierten Bildern auch `images: true` meldet.
 

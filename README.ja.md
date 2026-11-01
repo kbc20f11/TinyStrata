@@ -30,17 +30,21 @@ TinyStrata は Strata を基盤に、限られた VRAM でも 30B 級の MoE モ
 
 **LFM2.5-24B-A2B Q4_K_M** は、公式の [LiquidAI GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF) を使います。ダウンロードは言語モデルの 1 ファイルで、**14.53 GB** です。
 
-**Clover-35B-A3B-Preview IQ3_XXS** は、[AtomicChat 配布の GGUF](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf) を既定で使います。エキスパートの **gate/up は IQ3_XXS、down は IQ3_S** です。ダウンロードは **15.515 GB** で、Clover 専用のトークナイザーと学習済みの双方向 GDN の追加重みを保持しています。最大コンテキストは **128K**、入力はテキストのみです。`run-api.bat --model-family clover` で選択でき、新規の単独プロファイルではポート **18083** を使い、設定は `config-clover.json` に保存します。管理対象の Clover プロファイルは、exact 自己投機 D3・INT8 KV（`--clover-mode self-spec --clover-draft 3 --clover-accept exact --kv-type int8`）と MT1（`STRATA_IQ_MT_MIN=1`）を既定とします。同じモデルが仮生成し、因果検証で一致した先頭部分だけを採用するため、独立した MTP ヘッドは使いません。MT1 は以前の因果生成の既定から CPU Expert の演算方法を変更します。LowConfidence 方式のブロック拡散と閾値による近似採用は、明示的に選ぶ実験的な機能です。[生成方式の設定](benchmark/README.md#日本語)を参照してください。いずれも空き VRAM に応じたエキスパートキャッシュ、システム RAM を使う CPU でのエキスパート計算、会話長に応じた KV の段階確保に対応します。
+**Clover-35B-A3B-Preview IQ3_XXS** は、[AtomicChat 配布の GGUF](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf) を既定で使います。エキスパートの **gate/up は IQ3_XXS、down は IQ3_S** です。本体は **15.515 GB** で、Clover 専用のトークナイザーと学習済みの双方向 GDN の追加重みを保持しています。最大コンテキストは **128K** です。公式 Clover はテキスト専用ですが、TinyStrata は Qwen3.6 の projector を流用して画像入力に対応します。projector は **0.899 GB**、合計 **16.414 GB** で、Qwen 用にダウンロード済みなら再利用します。`run-api.bat --model-family clover` で選択でき、新規の単独プロファイルではポート **18083** を使い、設定は `config-clover.json` に保存します。
+
+管理対象の Clover プロファイルは、exact 自己投機 D3・INT8 KV（`--clover-mode self-spec --clover-draft 3 --clover-accept exact --kv-type int8`）と MT1（`STRATA_IQ_MT_MIN=1`）を既定とします。画像エンコーダは既定で GPU に常駐し、`--vision cpu` で CPU、`--vision no` で無効にできます。画像入力は因果生成と exact 自己投機に対応し、ブロック拡散・閾値採用には `--vision no` が必要です。LowConfidence 方式のブロック拡散と閾値による近似採用は、明示的に選ぶ実験的な機能です。[生成方式の設定](benchmark/README.md#日本語)を参照してください。
 
 Qwen・Gemma・LFM はいずれも、空き VRAM に合わせたエキスパートキャッシュ、システム RAM を使った CPU でのエキスパート計算、入力時の重みのストリーミング、CUDA Graph に対応しています。共通の API と起動中のモデル切り替えを利用でき、設定はモデルごとに保存します。モデルが選んだエキスパートは省略しません。また、最大コンテキスト容量を変えずに、会話の長さに応じて KV の物理メモリを自動で増やせます。
 
-| 機能 | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) |
-| --- | --- | --- | --- |
-| 最大コンテキスト | 256K | 256K | 128K |
-| 画像入力 | 対応（画像エンコーダは既定で GPU 常駐） | 対応（画像エンコーダは既定で GPU 常駐） | なし |
-| MTP | 3 | 3 | なし |
-| KV 形式 | FP32 / INT8 / ネイティブ FP8 | FP16 / INT8 / ネイティブ FP8（実験的） | FP16 / INT8 / ネイティブ FP8 |
-| KV の自動選択（既定） | FP8 → INT8 | INT8 | FP8 → INT8 |
+| 機能 | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) |
+| --- | --- | --- | --- | --- |
+| 最大コンテキスト | 256K | 256K | 128K | 128K |
+| 画像入力 | 対応（画像エンコーダは既定で GPU 常駐） | 対応（画像エンコーダは既定で GPU 常駐） | なし | 対応（TinyStrata 拡張・既定で GPU 常駐） |
+| MTP | 3 | 3 | なし | なし（exact 自己投機 D3） |
+| KV 形式 | FP32 / INT8 / ネイティブ FP8 | FP16 / INT8 / ネイティブ FP8（実験的） | FP16 / INT8 / ネイティブ FP8 | FP32 / INT8 / ネイティブ FP8 |
+| KV の自動選択（既定） | FP8 → INT8 | INT8 | FP8 → INT8 | INT8 |
+
+Clover の画像入力は TinyStrata の拡張で、公式 Clover の機能ではありません。
 
 表のモデル名は公式モデルカードへのリンクです。**FP8 → INT8** は、GPU とコンパイル済みカーネルが対応していれば FP8 KV とネイティブ FP8 Attention（NVIDIA では Tensor Core、AMD RDNA 4 では WMMA）を使い、非対応なら INT8 を使うことを示します。KV の精度と GGUF の重みの量子化は別のものです。低精度の KV では、FP32（Qwen）や FP16（Gemma・LFM）と回答が変わる場合があります。
 
@@ -170,10 +174,12 @@ Clover を使う場合は、同じダウンロード・進捗確認・切り替�
 
 Radeon カードでの速度を [tinystrata-bench-v1](benchmark/README.md#日本語) で計測した結果です。ハードウェア、ドライバー、エンジンのコミット、設定、全項目はカードごとのページにあります: [`benchmark/results/`](benchmark/results/)。値は 生成／4K 入力／16K 入力（tok/s）です。 Clover は exact D3 の派生条件です。
 
-| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS（exact D3） |
+| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS (exact D3, Vision GPU) |
 | --- | ---: | ---: | ---: | ---: |
-| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 49.49 / 965.27 / 877.79 |
+| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 41.67 / 942.27 / 892.94 |
 | [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 | — |
+
+Clover は画像エンコーダ GPU 常駐の exact D3・INT8・MT1 です。画像の最初の出力／完了は **2.43／4.54 秒**、Expert キャッシュは **7.32–8.10 → 7.18–7.95 GiB**（起動直後 → 16K 入力後）です。[条件・画像検証](benchmark/results/rx-9060-xt.md#clover-vision-with-exact-d3-2026-11-01)。
 
 **Clover IQ3_XXS — RX 9060 XT（2026-11-01・Attention 共有前の記録）**
 
@@ -188,15 +194,15 @@ Radeon カードでの速度を [tinystrata-bench-v1](benchmark/README.md#日本
 
 ここまでは Attention 共有前の対照計測です。現在の Clover の既定は exact D3・INT8 KV・MT1 です。ブロック拡散と閾値による近似採用は実験的な機能です。[詳細設定・品質確認](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01)／[過去の IQ3 比較](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31)／[過去の Q4_0 計測](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31)。
 
-**Clover HIP INT8 Attention 共有 — RX 9060 XT（2026-11-01）**
+**Clover HIP INT8 Attention 共有 — RX 9060 XT（2026-11-01・Vision 追加前の記録）**
 
-INT8 KV、各条件で API を 4 回独立に起動し、交互に計測しました。短文の出力上限は 128、4K・16K・64K 入力後は 32 トークンです。以前の既定である因果生成の対照は通常の CPU Expert 演算（MT2）、D3 の両行は MT1 を使います。Attention 共有を使う exact D3 の行が現在の Clover の既定です。[詳細条件・品質確認・結果](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01)。
+INT8 KV、各条件で API を 4 回独立に起動し、交互に計測しました。短文の出力上限は 128、4K・16K・64K 入力後は 32 トークンです。以前の既定である因果生成の対照は通常の CPU Expert 演算（MT2）、D3 の両行は MT1 を使います。これは Vision 追加前で、画像エンコーダを常駐させていない計測です。生成設定は現在と同じ D3・INT8・MT1 です。[詳細条件・品質確認・結果](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01)。
 
 | 条件 | 短文生成 tok/s | 4K 入力後の生成 tok/s | 16K 入力後の生成 tok/s | 64K 入力後の生成 tok/s | 64K 入力 tok/s | Expert キャッシュ GiB：起動時 → 64K |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 因果 MT2（以前の既定・対照） | 41.16 | 38.04 | 36.40 | 24.11 | 662.52 | 9.98 → 9.35 |
 | exact D3 MT1（Attention 共有なし・対照） | 49.78 | 33.35 | 34.11 | 17.51 | 663.12 | 9.98 → 9.35 |
-| exact D3 MT1（既定） | 49.49 | 34.87 | 39.30 | 26.62 | 664.65 | 9.98 → 9.35 |
+| exact D3 MT1（Vision 追加前） | 49.49 | 34.87 | 39.30 | 26.62 | 664.65 | 9.98 → 9.35 |
 
 ## どのプロジェクトを使うべきか
 
@@ -266,7 +272,7 @@ TinyStrata は OpenAI 互換の Chat Completions（`/v1/chat/completions`）と 
 
 API は、デフォルトで `http://127.0.0.1:18080` で待ち受けます。別のポートを使うには、インストール先の TinyStrata フォルダで `run-api.bat --port 18081` を実行してください。
 
-Qwen では `run-api.bat --vision gpu` で GPU（新規構成の既定）、`--vision cpu` で CPU による画像処理を選べます。`--vision no` は画像を無効にし、`--vision-tokens N` は画像トークン数の上限（既定 4096）を指定します。選択は保存され、次回以降は省略しても維持されます。
+Qwen と Clover では `run-api.bat --vision gpu` で GPU（新規構成の既定）、`--vision cpu` で CPU による画像処理を選べます。`--vision no` は画像を無効にし、`--vision-tokens N` は画像トークン数の上限（既定 4096）を指定します。選択は保存され、次回以降は省略しても維持されます。
 
 API はモデルファイルをインストールする前でも起動できます。Qwen を選択している場合、`POST /v1/model/download` に空の JSON ボディ（`{}`）を指定すると、固定の [Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS 言語モデル](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf)（MTP の重みを含む 14.1 GB）と、その[ビジョンプロジェクタ](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/mmproj-F16.gguf)（0.9 GB）、合計約 **15.0 GB** をダウンロードします。両方のファイルの SHA-256 チェックサムを検証し、トークナイザーを抽出して読み込みます。`GET /v1/model/download` で進捗を確認でき、中断したダウンロードは再開できます。ダウンロードを繰り返し要求した場合は、実行中のジョブを再利用します。`POST /v1/model/download/cancel` で転送や検証をキャンセルできます。ダウンロード完了は推論の準備完了を意味しません。ダウンロード状態が `ready` になり、`/health` が `loaded: true`（画像が有効なら `images: true` も）を返すまで待ってください。
 

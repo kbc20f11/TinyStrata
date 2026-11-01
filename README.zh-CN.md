@@ -30,17 +30,21 @@ TinyStrata 会根据你的硬件自动选择推理和内存设置，因此无需
 
 **LFM2.5-24B-A2B Q4_K_M** 使用官方 [LiquidAI GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF)。仅需下载一个语言模型文件，大小为 **14.53 GB**。
 
-**Clover-35B-A3B-Preview IQ3_XXS** 默认使用 [AtomicChat 提供的 GGUF](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf)，专家的 **gate/up 使用 IQ3_XXS，down 使用 IQ3_S**。下载大小为 **15.515 GB**，保留 Clover 自己的分词器和已学习的双向 GDN 参数。最大上下文为 **128K**，仅支持文本输入。通过 `run-api.bat --model-family clover` 选择；新建的独立配置使用端口 **18083**，设置保存在 `config-clover.json`。托管的 Clover 配置现在默认使用 exact 自投机 D3、INT8 KV（`--clover-mode self-spec --clover-draft 3 --clover-accept exact --kv-type int8`）和 MT1（`STRATA_IQ_MT_MIN=1`）。同一模型生成草稿，仅接受与因果验证一致的前缀，不需要独立的 MTP 头。MT1 会改变之前默认因果模式的 CPU 专家运算方式。LowConfidence 块扩散和近似阈值接受仍为需显式启用的实验性选项，参见[解码设置](benchmark/README.md#english)。所有路径都支持按空闲显存调整的专家缓存、利用系统 RAM 的 CPU 专家计算，以及随序列长度增长的 KV 物理内存分阶段分配。
+**Clover-35B-A3B-Preview IQ3_XXS** 默认使用 [AtomicChat 提供的 GGUF](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf)，专家的 **gate/up 使用 IQ3_XXS，down 使用 IQ3_S**。语言模型大小为 **15.515 GB**，保留 Clover 自己的分词器和已学习的双向 GDN 参数。最大上下文为 **128K**。官方 Clover 仅支持文本；TinyStrata 通过复用 Qwen3.6 projector 添加图像输入。projector 为 **0.899 GB**，总计 **16.414 GB**，已为 Qwen 下载时会直接复用。通过 `run-api.bat --model-family clover` 选择；新建的独立配置使用端口 **18083**，设置保存在 `config-clover.json`。
+
+托管的 Clover 配置现在默认使用 exact 自投机 D3、INT8 KV（`--clover-mode self-spec --clover-draft 3 --clover-accept exact --kv-type int8`）和 MT1（`STRATA_IQ_MT_MIN=1`）。图像编码器默认常驻 GPU；`--vision cpu` 使用 CPU，`--vision no` 关闭图像功能。Vision 支持因果生成或 exact 自投机；块扩散和阈值接受需要 `--vision no`。LowConfidence 块扩散和近似阈值接受仍为需显式启用的实验性选项，参见[解码设置](benchmark/README.md#english)。
 
 Qwen、Gemma 和 LFM 引擎均支持根据空闲显存自动调整的专家缓存、利用系统 RAM 的 CPU 专家计算、输入阶段权重流式传输及 CUDA Graph。它们使用相同的 API，支持运行中切换模型，并分别保存各模型的设置。不省略模型选中的专家。还支持按实际序列长度自动扩展 KV 物理内存，最大上下文容量保持不变。
 
-| 功能 | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) |
-| --- | --- | --- | --- |
-| 最大上下文 | 256K | 256K | 128K |
-| 图像输入 | 支持；默认编码器常驻 GPU | 支持；默认编码器常驻 GPU | 不支持 |
-| MTP | 3 | 3 | 不支持 |
-| KV 格式 | FP32 / INT8 / 原生 FP8 | FP16 / INT8 / 原生 FP8（实验性） | FP16 / INT8 / 原生 FP8 |
-| KV 自动选择（默认） | FP8 → INT8 | INT8 | FP8 → INT8 |
+| 功能 | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) |
+| --- | --- | --- | --- | --- |
+| 最大上下文 | 256K | 256K | 128K | 128K |
+| 图像输入 | 支持；默认编码器常驻 GPU | 支持；默认编码器常驻 GPU | 不支持 | 支持（TinyStrata 扩展，默认常驻 GPU） |
+| MTP | 3 | 3 | 不支持 | 无（exact 自投机 D3） |
+| KV 格式 | FP32 / INT8 / 原生 FP8 | FP16 / INT8 / 原生 FP8（实验性） | FP16 / INT8 / 原生 FP8 | FP32 / INT8 / 原生 FP8 |
+| KV 自动选择（默认） | FP8 → INT8 | INT8 | FP8 → INT8 | INT8 |
+
+Clover 的图像输入是 TinyStrata 扩展，并非官方 Clover 功能。
 
 表头中的模型名称链接到官方模型卡。**FP8 → INT8** 表示 GPU 与已编译内核支持时使用 FP8 KV 和原生 FP8 Attention（NVIDIA 使用 Tensor Core，AMD RDNA 4 使用 WMMA），否则使用 INT8。KV 精度与 GGUF 权重量化相互独立；低精度 KV 可能产生与 FP32（Qwen）或 FP16（Gemma/LFM）不同的输出。
 
@@ -158,10 +162,12 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 Radeon 显卡上的速度，使用 [tinystrata-bench-v1](benchmark/README.md#english) 测得。每张卡都有单独的页面，包含硬件、驱动、引擎提交、设置和全部列：[`benchmark/results/`](benchmark/results/)。数值为 生成 / 4K 输入 / 16K 输入（tok/s）。 Clover 数据采用 exact D3 派生配置。
 
-| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS（exact D3） |
+| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS (exact D3, Vision GPU) |
 | --- | ---: | ---: | ---: | ---: |
-| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 49.49 / 965.27 / 877.79 |
+| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 41.67 / 942.27 / 892.94 |
 | [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 | — |
+
+Clover 使用 exact D3／INT8／MT1，图像编码器常驻 GPU。图像首次输出／完成时间为 **2.43／4.54 秒**；专家缓存为 **7.32–8.10 → 7.18–7.95 GiB**（启动时 → 16K 输入后）。[条件与图像验证](benchmark/results/rx-9060-xt.md#clover-vision-with-exact-d3-2026-11-01)。
 
 **Clover IQ3_XXS — RX 9060 XT（2026-11-01，Attention 共享前的历史记录）**
 
@@ -176,15 +182,15 @@ Radeon 显卡上的速度，使用 [tinystrata-bench-v1](benchmark/README.md#eng
 
 以上是 Attention 共享之前的历史对照测量。目前 Clover 默认使用 exact D3、INT8 KV 和 MT1。块扩散与阈值接受仍为实验性功能。[设置与质量检查](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01)／[此前的 IQ3 对照](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31)／[此前的 Q4_0 测量](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31)。
 
-**Clover HIP INT8 Attention 共享 — RX 9060 XT（2026-11-01）**
+**Clover HIP INT8 Attention 共享 — RX 9060 XT（2026-11-01，Vision 添加前的历史记录）**
 
-使用 INT8 KV，每个配置独立启动 API 四次，交错测量。短输入的输出上限为 128 个 token，4K/16K/64K 输入后为 32 个。此前默认因果模式的对照使用通常的 CPU 专家运算（MT2），两个 D3 行使用 MT1。采用 Attention 共享的 exact D3 行是 Clover 当前的默认配置。[详细条件、质量检查与结果](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01)。
+使用 INT8 KV，每个配置独立启动 API 四次，交错测量。短输入的输出上限为 128 个 token，4K/16K/64K 输入后为 32 个。此前默认因果模式的对照使用通常的 CPU 专家运算（MT2），两个 D3 行使用 MT1。这些数据测于添加 Vision 之前，图像编码器并未常驻；D3/INT8/MT1 解码设置与当前配置相同。[详细条件、质量检查与结果](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01)。
 
 | 配置 | 短输入生成 tok/s | 4K 输入后生成 tok/s | 16K 输入后生成 tok/s | 64K 输入后生成 tok/s | 64K 输入 tok/s | 专家缓存 GiB：启动时 → 64K |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 因果 MT2（此前默认・对照） | 41.16 | 38.04 | 36.40 | 24.11 | 662.52 | 9.98 → 9.35 |
 | exact D3 MT1（无 Attention 共享・对照） | 49.78 | 33.35 | 34.11 | 17.51 | 663.12 | 9.98 → 9.35 |
-| exact D3 MT1（默认） | 49.49 | 34.87 | 39.30 | 26.62 | 664.65 | 9.98 → 9.35 |
+| exact D3 MT1（Vision 添加前） | 49.49 | 34.87 | 39.30 | 26.62 | 664.65 | 9.98 → 9.35 |
 
 ## 我应该使用哪个项目？
 
@@ -254,7 +260,7 @@ TinyStrata 提供兼容 OpenAI 的 Chat Completions（`/v1/chat/completions`）�
 
 API 默认监听 `http://127.0.0.1:18080`。要使用其他端口，请在已安装的 TinyStrata 文件夹中运行 `run-api.bat --port 18081`。
 
-对于 Qwen，`run-api.bat --vision gpu` 使用 GPU 处理图像（新配置的默认值）；`--vision cpu` 使用 CPU，`--vision no` 禁用图像。`--vision-tokens N` 设置图像 token 上限（默认 4096）。这些选择会保存，后续启动时省略参数也会保留。
+对于 Qwen 和 Clover，`run-api.bat --vision gpu` 使用 GPU 处理图像（新配置的默认值）；`--vision cpu` 使用 CPU，`--vision no` 禁用图像。`--vision-tokens N` 设置图像 token 上限（默认 4096）。这些选择会保存，后续启动时省略参数也会保留。
 
 模型文件尚未安装时，API 也可以启动。选择 Qwen 时，调用 `POST /v1/model/download` 并使用空 JSON 请求体（`{}`），会下载固定的 [Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS 语言模型](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf)（14.1 GB，包含 MTP 权重）及其[视觉投影器](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/mmproj-F16.gguf)（0.9 GB），总计约 **15.0 GB**。它会验证两个文件的 SHA-256 校验和，提取分词器并加载模型文件。`GET /v1/model/download` 可报告进度；中断的下载可以续传。重复的下载请求会复用当前任务，`POST /v1/model/download/cancel` 可以取消传输或校验。下载完成并不意味着推理已就绪：请等待下载状态变为 `ready`，且 `/health` 报告 `loaded: true`（启用图像时还需 `images: true`）。
 

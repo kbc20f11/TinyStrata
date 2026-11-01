@@ -30,17 +30,21 @@ TinyStrata automatically selects inference and memory settings for your hardware
 
 **LFM2.5-24B-A2B Q4_K_M** uses the official [LiquidAI GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF). Its single language-model download is **14.53 GB**.
 
-**Clover-35B-A3B-Preview IQ3_XXS** defaults to [AtomicChat’s GGUF](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf) with **IQ3_XXS gate/up and IQ3_S down** Expert projections. The **15.515 GB** download retains Clover’s own tokenizer and learned bidirectional GDN parameters. It supports a maximum **128K** context and text input. Select it with `run-api.bat --model-family clover`; a new standalone profile uses port **18083**, with settings in `config-clover.json`. Managed Clover profiles now default to exact self-speculation D3 with INT8 KV (`--clover-mode self-spec --clover-draft 3 --clover-accept exact --kv-type int8`) and MT1 (`STRATA_IQ_MT_MIN=1`). The same model drafts tokens and accepts only the prefix matching causal verification; no separate MTP head is used. MT1 changes CPU Expert arithmetic from the former causal default. LowConfidence block diffusion and approximate threshold acceptance remain experimental opt-ins; see the [decoding options](benchmark/README.md#english). All routes use an Expert cache sized to available VRAM, CPU Expert computation from system RAM and physical KV growth with sequence length.
+**Clover-35B-A3B-Preview IQ3_XXS** defaults to [AtomicChat’s GGUF](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf) with **IQ3_XXS gate/up and IQ3_S down** Expert projections. The **15.515 GB** language model retains Clover’s own tokenizer and learned bidirectional GDN parameters. The maximum context is **128K**. Official Clover is text-only; TinyStrata adds image input by reusing the Qwen3.6 projector (**0.899 GB**, **16.414 GB** in total, reused if already downloaded for Qwen). Select it with `run-api.bat --model-family clover`; a new standalone profile uses port **18083**, with settings in `config-clover.json`.
+
+Managed Clover profiles now default to exact self-speculation D3 with INT8 KV (`--clover-mode self-spec --clover-draft 3 --clover-accept exact --kv-type int8`) and MT1 (`STRATA_IQ_MT_MIN=1`). The image encoder stays on the GPU by default; `--vision cpu` and `--vision no` select CPU encoding or disable it. Vision supports causal or exact self-speculative decoding; diffusion and threshold acceptance require `--vision no`. LowConfidence block diffusion and approximate threshold acceptance remain experimental opt-ins; see the [decoding options](benchmark/README.md#english).
 
 The Qwen, Gemma and LFM engines use an automatic VRAM Expert cache, CPU Expert computation from system RAM, prompt weight streaming and CUDA Graphs. They share the same API and support live model switching, with settings saved separately for each model. Selected Experts are not omitted. They also support automatic physical KV growth without changing the maximum context capacity.
 
-| Feature | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) |
-| --- | --- | --- | --- |
-| Maximum context | 256K | 256K | 128K |
-| Image input | Yes; GPU-resident encoder by default | Yes; GPU-resident encoder by default | No |
-| MTP | 3 | 3 | No |
-| KV formats | FP32 / INT8 / native FP8 | FP16 / INT8 / native FP8 (experimental) | FP16 / INT8 / native FP8 |
-| Automatic KV (default) | FP8 → INT8 | INT8 | FP8 → INT8 |
+| Feature | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) |
+| --- | --- | --- | --- | --- |
+| Maximum context | 256K | 256K | 128K | 128K |
+| Image input | Yes; GPU-resident encoder by default | Yes; GPU-resident encoder by default | No | Yes (TinyStrata extension; GPU-resident encoder by default) |
+| MTP | 3 | 3 | No | No (exact self-spec D3) |
+| KV formats | FP32 / INT8 / native FP8 | FP16 / INT8 / native FP8 (experimental) | FP16 / INT8 / native FP8 | FP32 / INT8 / native FP8 |
+| Automatic KV (default) | FP8 → INT8 | INT8 | FP8 → INT8 | INT8 |
+
+Image input for Clover is a TinyStrata extension, not an official Clover capability.
 
 The column headings link to the official model cards. **FP8 → INT8** means FP8 KV and native FP8 Attention (Tensor Cores on NVIDIA, WMMA on AMD RDNA 4) when the GPU and compiled kernels support it, otherwise INT8. KV precision is separate from GGUF weight quantization; lower-precision KV can change outputs relative to FP32 (Qwen) or FP16 (Gemma/LFM).
 
@@ -170,10 +174,12 @@ Each of the same three input texts was run twice per FP8/INT8 configuration, gen
 
 Speed on Radeon cards, measured with [tinystrata-bench-v1](benchmark/README.md#english). Each card has its own page with the hardware, driver, engine commit, settings and every column: [`benchmark/results/`](benchmark/results/). Values are generation / 4K input / 16K input, in tok/s. Clover uses the exact D3 variant.
 
-| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS (exact D3) |
+| GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS (exact D3, Vision GPU) |
 | --- | ---: | ---: | ---: | ---: |
-| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 49.49 / 965.27 / 877.79 |
+| [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 41.67 / 942.27 / 892.94 |
 | [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 | — |
+
+Clover uses exact D3/INT8/MT1 with a GPU-resident image encoder. Image first output / completion: **2.43 / 4.54 s**; Expert cache: **7.32–8.10 → 7.18–7.95 GiB** (startup → after 16K input). [Conditions and image checks](benchmark/results/rx-9060-xt.md#clover-vision-with-exact-d3-2026-11-01).
 
 **Clover IQ3_XXS — RX 9060 XT (2026-11-01; before query sharing, historical)**
 
@@ -188,15 +194,15 @@ The same canonical workloads were measured with 128K context, physical KV growth
 
 These are historical control measurements before query sharing. Clover now defaults to exact D3, INT8 KV and MT1. Block diffusion and threshold acceptance remain experimental. [Settings and quality checks](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01) / [Historical IQ3 comparison](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31) / [Historical Q4_0 measurements](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31).
 
-**Clover HIP INT8 query sharing — RX 9060 XT (2026-11-01)**
+**Clover HIP INT8 query sharing — RX 9060 XT (2026-11-01; before Vision, historical)**
 
-INT8 KV; four independent API starts per profile in interleaved order. Short generation is capped at 128 output tokens; generation after 4K/16K/64K input is capped at 32. The former causal-default control uses normal CPU Expert arithmetic (MT2); both D3 rows use MT1. The query-sharing exact D3 row is now the Clover default. [Conditions, quality checks and results](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01).
+INT8 KV; four independent API starts per profile in interleaved order. Short generation is capped at 128 output tokens; generation after 4K/16K/64K input is capped at 32. The former causal-default control uses normal CPU Expert arithmetic (MT2); both D3 rows use MT1. These measurements predate Vision: the image encoder was not resident. They retain the current D3/INT8/MT1 decoding settings. [Conditions, quality checks and results](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01).
 
 | Profile | Short generation tok/s | Generation after 4K tok/s | Generation after 16K tok/s | Generation after 64K tok/s | 64K input tok/s | Expert cache GiB: startup → 64K |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Causal MT2 (former default/control) | 41.16 | 38.04 | 36.40 | 24.11 | 662.52 | 9.98 → 9.35 |
 | Exact D3 MT1 (query sharing off/control) | 49.78 | 33.35 | 34.11 | 17.51 | 663.12 | 9.98 → 9.35 |
-| Exact D3 MT1 (default) | 49.49 | 34.87 | 39.30 | 26.62 | 664.65 | 9.98 → 9.35 |
+| Exact D3 MT1 (before Vision) | 49.49 | 34.87 | 39.30 | 26.62 | 664.65 | 9.98 → 9.35 |
 
 ## Which project should I use?
 
@@ -266,7 +272,7 @@ New configurations use model-specific sampling defaults. Per-request settings ta
 
 The API listens on `http://127.0.0.1:18080` by default. To use another port, run `run-api.bat --port 18081` from the installed TinyStrata folder.
 
-For Qwen, `run-api.bat --vision gpu` uses GPU image processing (the default for new setups); `--vision cpu` uses the CPU and `--vision no` disables images. `--vision-tokens N` sets the image-token limit (default: 4096). These choices are saved and reused when omitted on later starts.
+For Qwen and Clover, `run-api.bat --vision gpu` uses GPU image processing (the default for new setups); `--vision cpu` uses the CPU and `--vision no` disables images. `--vision-tokens N` sets the image-token limit (default: 4096). These choices are saved and reused when omitted on later starts.
 
 The API can start before the model files are installed. With Qwen selected, `POST /v1/model/download` with an empty JSON body (`{}`) downloads the fixed [Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS language model](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf) (14.1 GB, including MTP weights) and its [vision projector](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/mmproj-F16.gguf) (0.9 GB), about **15.0 GB in total**. It verifies both files' SHA-256 checksums, extracts the tokenizer and loads them. `GET /v1/model/download` reports progress; interrupted downloads can resume. A repeated download request reuses the active job, and `POST /v1/model/download/cancel` can cancel transfer or verification. Download completion is not inference readiness: wait for the download state to become `ready` and `/health` to report `loaded: true`, plus `images: true` when images are enabled.
 
