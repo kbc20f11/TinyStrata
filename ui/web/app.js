@@ -225,6 +225,7 @@ function setGpuMetric(key, value, unit, sub, hw, group) {
 }
 
 let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
+let placementSampleValid = false;
 let metricsEpoch = 0;
 // After Load or Unload returns, a poll that started earlier can still say the opposite. Hold the POST's state until a later
 // poll agrees, or until the first poll that started after the POST arrives. (PR #3550 by sakuumomo)
@@ -240,6 +241,8 @@ async function poll() {
   try {
     const r = await fetch(reqShowAll ? "metrics?requests=all" : "metrics", {headers: headers(), cache: "no-store"});
     if (r.status === 401) {
+      placementSampleValid = false;
+      renderPlacement(null);
       setPill("error", tr("pill.keyNeeded", "API key needed"));
       if (!keyWarned) { keyWarned = true; toast("warn", tr("pill.keyNeeded", "API key needed"), tr("toast.keyAbout", "This server needs a key: add it under About > Settings."), 6000); }
     } else if (r.ok) {
@@ -250,6 +253,7 @@ async function poll() {
       }
       if (metricsHold && (metricsAgree(m.live, metricsHold.state) || epoch > metricsHold.after)) metricsHold = null;
       lastMetrics = m;
+      placementSampleValid = true;
       metricsFailures = 0;
       if (busy && busy.msg.stats) terminalMetrics(busy.msg.stats, m);
       refreshTerminalStats();
@@ -258,6 +262,8 @@ async function poll() {
       throw new Error(`HTTP ${r.status}`);
     }
   } catch (e) {
+    placementSampleValid = false;
+    renderPlacement(null);
     if (modelSwitching) setPill("idle", tr("model.switching", "Switching model…"));
     else if (++metricsFailures === 3) setPill("error", tr("pill.unreachable", "Server not reachable"));
   }
@@ -403,6 +409,36 @@ $("unload-btn").onclick = async () => {
   }
 };
 
+// The variable model tier: experts resident in VRAM versus the remainder on the
+// RAM side. Shared weights, KV and the image encoder are deliberately outside
+// this denominator. Never infer placement from GPU load or total VRAM usage.
+function expertPlacement(eng) {
+  const total = eng && eng.expert_total, gpu = eng && eng.expert_slots;
+  if (!Number.isSafeInteger(total) || total <= 0 || !Number.isSafeInteger(gpu) || gpu < 0 || gpu > total) return null;
+  const gpuPct = Math.round(1000 * gpu / total) / 10;
+  return {total, gpu, cpu: total - gpu, gpuPct, cpuPct: Math.round((100 - gpuPct) * 10) / 10};
+}
+function renderPlacement(m) {
+  const el = $("chat-placement"), live = m && m.live || {};
+  const unloaded = live.state === "unloaded";
+  const sample = placementSampleValid && !modelSwitching && !modelOp && !unloaded && m ? expertPlacement(m.engine) : null;
+  const label = tr("placement.label", "Expert placement");
+  el.dataset.state = sample ? "ready" : "unknown";
+  $("placement-track").hidden = !sample;
+  $("placement-cpu").textContent = sample ? `${fmt(sample.cpuPct, 1)}%` : "–";
+  $("placement-gpu").textContent = sample ? `${fmt(sample.gpuPct, 1)}%` : "–";
+  $("placement-cpu-bar").style.width = sample ? `${100 * sample.cpu / sample.total}%` : "0%";
+  $("placement-gpu-bar").style.width = sample ? `${100 * sample.gpu / sample.total}%` : "0%";
+  const note = tr("placement.hint", "GPU shows the experts resident in VRAM; CPU shows the remainder on the RAM side. Shared weights, KV cache and the image encoder are excluded. This is placement, not hardware utilization.");
+  const detail = sample ? tr("placement.counts", "GPU {gpu} / {total} experts · CPU {cpu} / {total}",
+    {gpu: fmt(sample.gpu), cpu: fmt(sample.cpu), total: fmt(sample.total)})
+    : modelSwitching ? tr("model.switching", "Switching model…")
+    : unloaded ? tr("placement.unloaded", "Load a model to see its expert placement.")
+    : tr("placement.unavailable", "Placement data is unavailable.");
+  el.title = `${detail}\n${note}`;
+  el.setAttribute("aria-label", sample ? `${label}: GPU ${fmt(sample.gpuPct, 1)}%, CPU ${fmt(sample.cpuPct, 1)}%. ${note}` : `${label}: ${detail}`);
+}
+
 function render(m) {
   const live = m.live || {}, hw = m.hardware || {}, st = m.hardware_static || {}, eng = m.engine || {}, h = m.history || {};
   const last = (m.requests || [])[0];
@@ -430,6 +466,7 @@ function render(m) {
     setPill("idle", tr("pill.idle", "Idle"));
   }
   modelButton(live);
+  renderPlacement(m);
   if (!modelOp && !localLoad && live.queued > 0) setPill("queued", tr("pill.queued", "{n} queued", {n: live.queued}));
   if (tab === "monitor") renderMonitor(live, hw, st, eng, h, last, m.requests || [], m.totals, m.requests_kept);
   if (tab === "monitor") renderConvCache(m.conversation_cache);
@@ -867,7 +904,7 @@ function markdown(text) {
 // fields: the server picks the card's set for the request's thinking state (thinking 1.0 / 0.95 / 20, not thinking
 // 0.7 / 0.8 / 20 with a presence penalty). Before 0.1.45 the page sent 0.6 itself; a stored 0.6 with the other two
 // values untouched counts as "not set" too.
-const DEFAULTS = {thinking: "high", temperature: 1.0, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true, math: false,
+const DEFAULTS = {thinking: "high", temperature: 1.0, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true, math: true,
                   chatList: true, chatEdit: false, whileBusy: "wait"};
 const OLD_DEFAULT_TEMPERATURE = 0.6;
 function samplingUntouched(s) {

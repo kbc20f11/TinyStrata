@@ -505,5 +505,10 @@
   "model.downloadTitleComplete": "Descarga de {model} completada",
   "model.downloadContinue": "Continuar en segundo plano",
   "model.downloadResume": "Reanudar descarga",
-  "model.downloadResumeNote": "Si cancelas, los datos descargados se conservan para reanudar la descarga después."
+  "model.downloadResumeNote": "Si cancelas, los datos descargados se conservan para reanudar la descarga después.",
+  "placement.label": "Distribución de expertos",
+  "placement.hint": "GPU indica los expertos residentes en VRAM; CPU, el resto en el lado de la RAM. Se excluyen los pesos compartidos, la caché KV y el codificador de imágenes. Es su distribución, no el uso del hardware.",
+  "placement.counts": "GPU {gpu} / {total} expertos · CPU {cpu} / {total}",
+  "placement.unavailable": "No hay datos de distribución disponibles.",
+  "placement.unloaded": "Carga un modelo para ver la distribución de sus expertos."
 }

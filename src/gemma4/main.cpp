@@ -218,6 +218,34 @@ std::string take_pictures(const std::string& path, int32_t pad, int n_embd, std:
 }
 
 
+// Observe host allocation metadata at existing serve progress boundaries. No
+// memory query or GPU synchronization is needed, and unchanged snapshots are silent.
+void memory_info(const Engine& e);
+struct MemoryReporter {
+    const Engine& engine;
+    int cached;
+    int64_t rows;
+    size_t mapped;
+    bool progress_safe;
+    explicit MemoryReporter(const Engine& e, bool single_card)
+        : engine(e), cached(e.cached_experts()), rows(e.kv_committed_rows()), mapped(e.kv_mapped_bytes()),
+          progress_safe(single_card) {}
+    void progress() {
+        // A split read may evaluate the next card on another thread. Observe its
+        // recursive metadata only after read()/eval() has joined that work.
+        if (progress_safe) changed();
+    }
+    void changed() {
+        const int now_cached = engine.cached_experts();
+        const int64_t now_rows = engine.kv_committed_rows();
+        const size_t now_mapped = engine.kv_mapped_bytes();
+        if (cached == now_cached && rows == now_rows && mapped == now_mapped) return;
+        cached = now_cached; rows = now_rows; mapped = now_mapped;
+        memory_info(engine);
+        std::fflush(stdout);
+    }
+};
+
 struct PromptMark {
     int64_t at = -1;
     uint8_t* state = nullptr;
@@ -227,7 +255,7 @@ struct PromptMark {
 // The final token is evaluated with logits; preceding tokens can use the
 // layer-major read path, staging each missing Expert once for several chunks.
 bool read_prompt_prefix(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop, Clock::time_point start,
-                        bool report, bool pictures, int reused = 0, PromptMark* mark = nullptr) {
+                        bool report, bool pictures, int reused = 0, PromptMark* mark = nullptr, MemoryReporter* memory = nullptr) {
     int done = 0;
     while (done < n - 1) {
         if (stop.load()) return false;
@@ -239,6 +267,7 @@ bool read_prompt_prefix(Engine& e, const int32_t* ids, int n, const std::atomic<
         const int count = (int) e.whole(e.pos(), limit);
         if (count <= 0 || count > n - 1 - done) throw std::logic_error("invalid image span in prompt");
         const std::function<bool(int, int)> progress = [&](int layers, int total) {
+            if (memory) memory->progress();
             if (report) {
                 const int at = done + (int) ((int64_t) count * layers / std::max(total, 1));
                 const double ms = elapsed(start);
@@ -259,13 +288,15 @@ bool read_prompt_prefix(Engine& e, const int32_t* ids, int n, const std::atomic<
             e.save_state(mark->state);
             mark->saved = true;
         }
+        if (memory) memory->changed();
         done += count;
     }
     return !stop.load();
 }
 
 bool prompt(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop, Clock::time_point start,
-            bool report, bool pictures = false, bool trace_stage = false, int reused = 0, PromptMark* mark = nullptr) {
+            bool report, bool pictures = false, bool trace_stage = false, int reused = 0, PromptMark* mark = nullptr,
+            MemoryReporter* memory = nullptr) {
     const size_t before_stage = trace_stage ? e.staging_bytes() : 0;
     const double before_cache = trace_stage ? e.cached_gib() * 1024 : 0;
     bool ended = false;
@@ -277,6 +308,7 @@ bool prompt(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop,
         // eval() alone does not return the stage loan. Do so before the final
         // logits token, including MTP 0, cancellation and failed prefix reads.
         e.end_read();
+        if (memory) memory->changed();
         if (trace_stage)
             std::fprintf(stderr, "gemma4-stage-read: prompt=%d stage_bytes_before=%zu stage_bytes_during=%zu "
                                  "stage_bytes_after=%zu cache_mib_before=%.3f cache_mib_during=%.3f "
@@ -284,10 +316,11 @@ bool prompt(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop,
                          e.staging_bytes(), before_cache, during_cache, e.cached_gib() * 1024, elapsed(t0));
     };
     try {
-        const bool complete = read_prompt_prefix(e, ids, n, stop, start, report, pictures, reused, mark);
+        const bool complete = read_prompt_prefix(e, ids, n, stop, start, report, pictures, reused, mark, memory);
         end_read();
         if (!complete || stop.load()) return false;
         e.eval(ids + n - 1, 1, true);
+        if (memory) memory->changed();
         if (report) {
             const double ms = elapsed(start);
             std::printf("PP %d %d %.1f %.1f\n", reused + n, reused + n, ms, n * 1000.0 / std::max(ms, 0.001));
@@ -322,20 +355,20 @@ void sampling_key(Sampling& s, const std::string& word) {
 }
 
 void memory_info(const Engine& e) {
-    std::printf("INFO expert_slots=%d expert_cache_mib=%lld kv_grow=%d kv_committed_rows=%lld "
-                "kv_logical_bytes=%llu kv_mapped_bytes=%llu\n", e.cached_experts(),
+    std::printf("INFO expert_slots=%d expert_total=%d expert_cache_mib=%lld kv_grow=%d kv_committed_rows=%lld "
+                "kv_logical_bytes=%llu kv_mapped_bytes=%llu\n", e.cached_experts(), e.total_experts(),
                 (long long) (e.cached_gib() * 1024), e.kv_growing(), (long long) e.kv_committed_rows(),
                 (unsigned long long) e.kv_logical_bytes(), (unsigned long long) e.kv_mapped_bytes());
 }
 
 int serve(Engine& e, const Options& o) {
-    std::printf("INFO version=0.1.0 family=gemma4 model=gemma-4-26b-a4b-it kv=%s mtp=%d vision=%d expert_slots=%d "
+    std::printf("INFO version=0.1.0 family=gemma4 model=gemma-4-26b-a4b-it kv=%s mtp=%d vision=%d expert_slots=%d expert_total=%d "
                 "expert_cache_mib=%lld expert_auto=%d chunk=%d vram_reserve_mib=%d graph=%d prompt_logits_first=1 "
                 "kv_grow=%d kv_committed_rows=%lld kv_logical_bytes=%llu kv_mapped_bytes=%llu\n",
                 e.kv_format() == strata::gemma4::KvFmt::kFp8 ? "fp8-mma" :
                     e.kv_format() == strata::gemma4::KvFmt::kQ8_0 ? "int8" : "fp16",
                 e.drafts() ? e.max_window() - 1 : 0, e.sees(),
-                e.cached_experts(), (long long) (e.cached_gib() * 1024), o.expert_vram_gib < 0 && o.gpu_experts,
+                e.cached_experts(), e.total_experts(), (long long) (e.cached_gib() * 1024), o.expert_vram_gib < 0 && o.gpu_experts,
                 e.max_rows(), e.reserve_mib(), o.graphs, e.kv_growing(), (long long) e.kv_committed_rows(),
                 (unsigned long long) e.kv_logical_bytes(), (unsigned long long) e.kv_mapped_bytes());
     std::printf("READY %d stop\n", e.max_context());
@@ -472,8 +505,10 @@ int serve(Engine& e, const Options& o) {
             std::printf("RESUME %zu\n", reuse); std::fflush(stdout);
             // Between requests, unused KV pages can go back to the Expert cache.
             // trim_kv also keeps the preceding request's reach to avoid churn.
+            MemoryReporter memory(e, o.layer_split.empty());
             e.trim_kv((int64_t) ids.size());
             e.mind_vram();
+            memory.changed();
             const auto before = e.stats();
             const auto p0 = Clock::now();
             const int fresh = (int) (ids.size() - reuse);
@@ -493,7 +528,7 @@ int serve(Engine& e, const Options& o) {
             const bool fresh_pictures = std::any_of(pictures.at.begin(), pictures.at.end(),
                 [&](const auto& im) { return im.at + im.n > (int64_t) reuse; });
             if (!prompt(e, ids.data() + reuse, fresh, box->stop, p0, true, fresh_pictures, o.stage_read_mib > 0,
-                        (int) reuse, &mark)) {
+                        (int) reuse, &mark, &memory)) {
                 e.reset(); live.clear(); checkpoint_ids.clear();
                 memory_info(e);
                 std::printf("DONE 0 %zu %.1f 0 cancel 0 0 %zu 0 0 0 0 0.0 0 0\n", ids.size(), elapsed(p0), reuse);
@@ -527,6 +562,7 @@ int serve(Engine& e, const Options& o) {
                                                                  max_new - produced + 1}) : 1;
                 if (width <= 1) {
                     e.eval(&token, 1, true); ++evaluated; live.push_back(token);
+                    memory.changed();
                     token = pick(e.logits()); continue;
                 }
                 int32_t w[8]; w[0] = token;
@@ -537,6 +573,7 @@ int serve(Engine& e, const Options& o) {
                 }
                 if (box->stop.load()) { finish = "cancel"; break; }
                 e.window(w, width);
+                memory.changed();
                 int right = 0;
                 bool more = true;
                 token = pick(e.logits_of(0));

@@ -140,7 +140,34 @@ void check_ids(const std::vector<int32_t>& ids, const Engine& e) {
         if (id < 0 || id >= e.n_vocab()) throw std::invalid_argument("token ID outside vocabulary");
 }
 
-// The final token is evaluated with logits; preceding tokens can use the
+// Observe host allocation metadata at existing serve progress boundaries. No
+// memory query or GPU synchronization is needed, and unchanged snapshots are silent.
+void memory_info(const Engine& e);
+struct MemoryReporter {
+    const Engine& engine;
+    int cached;
+    int64_t rows;
+    size_t mapped;
+    bool progress_safe;
+    explicit MemoryReporter(const Engine& e, bool single_card)
+        : engine(e), cached(e.cached_experts()), rows(e.kv_committed_rows()), mapped(e.kv_mapped_bytes()),
+          progress_safe(single_card) {}
+    void progress() {
+        // A split read may evaluate the next card on another thread. Observe its
+        // recursive metadata only after read()/eval() has joined that work.
+        if (progress_safe) changed();
+    }
+    void changed() {
+        const int now_cached = engine.cached_experts();
+        const int64_t now_rows = engine.kv_committed_rows();
+        const size_t now_mapped = engine.kv_mapped_bytes();
+        if (cached == now_cached && rows == now_rows && mapped == now_mapped) return;
+        cached = now_cached; rows = now_rows; mapped = now_mapped;
+        memory_info(engine);
+        std::fflush(stdout);
+    }
+};
+
 struct PromptMark {
     int64_t at = -1;
     uint8_t* state = nullptr;
@@ -150,12 +177,13 @@ struct PromptMark {
 // The final token is evaluated with logits; preceding tokens can use the
 // layer-major read path, staging each missing Expert once for several chunks.
 bool read_prompt_prefix(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop, Clock::time_point start,
-                        bool report, int reused = 0, PromptMark* mark = nullptr) {
+                        bool report, int reused = 0, PromptMark* mark = nullptr, MemoryReporter* memory = nullptr) {
     int done = 0;
     while (done < n - 1) {
         if (stop.load()) return false;
         const int count = std::min(n - 1 - done, e.max_read());
         const std::function<bool(int, int)> progress = [&](int layers, int total) {
+            if (memory) memory->progress();
             if (report) {
                 const int at = done + (int) ((int64_t) count * layers / std::max(total, 1));
                 const double ms = elapsed(start);
@@ -173,6 +201,7 @@ bool read_prompt_prefix(Engine& e, const int32_t* ids, int n, const std::atomic<
             e.save_state(mark->state);
             mark->saved = true;
         }
+        if (memory) memory->changed();
         done += count;
     }
     return !stop.load();
@@ -181,7 +210,7 @@ bool read_prompt_prefix(Engine& e, const int32_t* ids, int n, const std::atomic<
 // Same phase ownership as the Gemma front end: the existing Engine stage loan
 // ends before final logits, including cancellation/exception and MTP-free runs.
 bool prompt(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop, Clock::time_point start,
-            bool report, bool trace_stage = false, int reused = 0, PromptMark* mark = nullptr) {
+            bool report, bool trace_stage = false, int reused = 0, PromptMark* mark = nullptr, MemoryReporter* memory = nullptr) {
     const size_t before_stage = trace_stage ? e.staging_bytes() : 0;
     const double before_cache = trace_stage ? e.cached_gib() * 1024 : 0;
     bool ended = false;
@@ -191,6 +220,7 @@ bool prompt(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop,
         const auto t0 = Clock::now();
         ended = true;
         e.end_read();
+        if (memory) memory->changed();
         if (trace_stage) {
             static bool announced = false;
             if (during_stage > before_stage && !announced) {
@@ -204,10 +234,11 @@ bool prompt(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop,
         }
     };
     try {
-        const bool complete = read_prompt_prefix(e, ids, n, stop, start, report, reused, mark);
+        const bool complete = read_prompt_prefix(e, ids, n, stop, start, report, reused, mark, memory);
         end_read();
         if (!complete || stop.load()) return false;
         e.eval(ids + n - 1, 1, true);
+        if (memory) memory->changed();
         if (report) {
             const double ms = elapsed(start);
             std::printf("PP %d %d %.1f %.1f\n", reused + n, reused + n, ms, n * 1000.0 / std::max(ms, 0.001));
@@ -242,8 +273,8 @@ void sampling_key(Sampling& s, const std::string& word) {
 }
 
 void memory_info(const Engine& e) {
-    std::printf("INFO expert_slots=%d expert_cache_mib=%lld kv_grow=%d kv_committed_rows=%lld "
-                "kv_logical_bytes=%llu kv_mapped_bytes=%llu\n", e.cached_experts(),
+    std::printf("INFO expert_slots=%d expert_total=%d expert_cache_mib=%lld kv_grow=%d kv_committed_rows=%lld "
+                "kv_logical_bytes=%llu kv_mapped_bytes=%llu\n", e.cached_experts(), e.total_experts(),
                 (long long) (e.cached_gib() * 1024), e.kv_growing(), (long long) e.kv_committed_rows(),
                 (unsigned long long) e.kv_logical_bytes(), (unsigned long long) e.kv_mapped_bytes());
 }
@@ -251,10 +282,10 @@ void memory_info(const Engine& e) {
 int serve(Engine& e, const Options& o) {
     const char* kv = e.kv_format() == strata::lfm2::KvFmt::kFp8 ? "fp8-mma"
         : e.kv_format() == strata::lfm2::KvFmt::kQ8_0 ? "int8" : "fp16";
-    std::printf("INFO version=0.1.0 family=lfm2moe kv=%s mtp=0 vision=0 expert_slots=%d "
+    std::printf("INFO version=0.1.0 family=lfm2moe kv=%s mtp=0 vision=0 expert_slots=%d expert_total=%d "
                 "expert_cache_mib=%lld expert_auto=%d chunk=%d vram_reserve_mib=%d graph=%d prompt_logits_first=1 "
                 "kv_grow=%d kv_committed_rows=%lld kv_logical_bytes=%llu kv_mapped_bytes=%llu\n",
-                kv, e.cached_experts(), (long long) (e.cached_gib() * 1024), o.expert_vram_gib < 0 && o.gpu_experts,
+                kv, e.cached_experts(), e.total_experts(), (long long) (e.cached_gib() * 1024), o.expert_vram_gib < 0 && o.gpu_experts,
                 e.max_rows(), e.reserve_mib(), o.graphs, e.kv_growing(), (long long) e.kv_committed_rows(),
                 (unsigned long long) e.kv_logical_bytes(), (unsigned long long) e.kv_mapped_bytes());
     std::printf("READY %d stop\n", e.max_context());
@@ -359,8 +390,10 @@ int serve(Engine& e, const Options& o) {
             std::printf("RESUME %zu\n", reuse); std::fflush(stdout);
             // Between requests, unused KV pages can go back to the Expert cache.
             // trim_kv also keeps the preceding request's reach to avoid churn.
+            MemoryReporter memory(e, o.layer_split.empty());
             e.trim_kv((int64_t) ids.size());
             e.mind_vram();
+            memory.changed();
             const auto before = e.stats();
             const auto p0 = Clock::now();
             const int fresh = (int) (ids.size() - reuse);
@@ -375,7 +408,7 @@ int serve(Engine& e, const Options& o) {
                 }
             }
             if (!prompt(e, ids.data() + reuse, fresh, box->stop, p0, true, o.stage_read_mib > 0,
-                        (int) reuse, &mark)) {
+                        (int) reuse, &mark, &memory)) {
                 e.reset(); live.clear(); checkpoint_ids.clear();
                 memory_info(e);
                 std::printf("DONE 0 %zu %.1f 0 cancel 0 0 %zu 0 0 0 0 0.0 0 0\n", ids.size(), elapsed(p0), reuse);
@@ -401,6 +434,7 @@ int serve(Engine& e, const Options& o) {
                 if (is_stop(token, eos)) { finish = "stop"; break; }
                 if (produced == max_new) break;
                 e.eval(&history.back(), 1, true);
+                memory.changed();
                 ++evaluated;
                 live.push_back(token);
             }

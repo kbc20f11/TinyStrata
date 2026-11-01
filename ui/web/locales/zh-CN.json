@@ -500,5 +500,10 @@
   "model.downloadTitleComplete": "{model} 下载完成",
   "model.downloadContinue": "关闭并继续",
   "model.downloadResume": "继续下载",
-  "model.downloadResumeNote": "取消后已下载的数据仍会保留，可稍后继续下载。"
+  "model.downloadResumeNote": "取消后已下载的数据仍会保留，可稍后继续下载。",
+  "placement.label": "专家分布",
+  "placement.hint": "GPU 表示常驻 VRAM 的专家，CPU 表示其余位于 RAM 侧的专家。不包含共享权重、KV 缓存和图像编码器。这是存放比例，不是硬件利用率。",
+  "placement.counts": "GPU {gpu} / {total} 个专家 · CPU {cpu} / {total}",
+  "placement.unavailable": "暂无专家分布数据。",
+  "placement.unloaded": "加载模型后可查看其专家分布。"
 }

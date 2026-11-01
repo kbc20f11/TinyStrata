@@ -500,5 +500,10 @@
   "model.downloadTitleComplete": "{model} のダウンロード完了",
   "model.downloadContinue": "閉じて続ける",
   "model.downloadResume": "ダウンロードを再開",
-  "model.downloadResumeNote": "中止しても取得済みのデータは残り、あとで再開できます。"
+  "model.downloadResumeNote": "中止しても取得済みのデータは残り、あとで再開できます。",
+  "placement.label": "エキスパート配置",
+  "placement.hint": "GPUはVRAMに常駐するエキスパート、CPUは残りのRAM側を示します。共有重み・KVキャッシュ・画像エンコーダは含みません。ハードウェアの使用率ではなく、配置の割合です。",
+  "placement.counts": "GPU {gpu} / {total} 個 · CPU {cpu} / {total} 個",
+  "placement.unavailable": "配置情報を表示できません。",
+  "placement.unloaded": "モデルを読み込むと配置を表示します。"
 }

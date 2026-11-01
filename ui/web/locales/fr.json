@@ -505,5 +505,10 @@
   "model.downloadTitleComplete": "Téléchargement de {model} terminé",
   "model.downloadContinue": "Continuer en arrière-plan",
   "model.downloadResume": "Reprendre le téléchargement",
-  "model.downloadResumeNote": "Les données téléchargées sont conservées en cas d’annulation, pour reprendre plus tard."
+  "model.downloadResumeNote": "Les données téléchargées sont conservées en cas d’annulation, pour reprendre plus tard.",
+  "placement.label": "Répartition des experts",
+  "placement.hint": "GPU indique les experts résidant en VRAM ; CPU indique le reste côté RAM. Les poids partagés, le cache KV et l’encodeur d’images sont exclus. Il s’agit de leur répartition, pas de l’utilisation du matériel.",
+  "placement.counts": "GPU {gpu} / {total} experts · CPU {cpu} / {total}",
+  "placement.unavailable": "Les données de répartition sont indisponibles.",
+  "placement.unloaded": "Chargez un modèle pour afficher la répartition de ses experts."
 }

@@ -1217,6 +1217,7 @@ struct Engine {
     int kv_format = 0; // 0 FP32, 1 FP8, 2 INT8, 3 native FP8 MMA
     bool kv_auto = false, context_auto = false;
     bool kv_grow = true, grow_hybrid = false;
+    bool report_memory = false; // INFO allocation events belong only to the serve protocol.
     int64_t kv_committed_rows = 0;
     size_t kv_logical_bytes = 0;
     // Declared before every attached Range: reverse member destruction releases
@@ -2766,6 +2767,7 @@ struct Engine {
         if (m->hybrid)
             std::fprintf(stderr, "tinystrata: KV grown to %lld/%d rows, %zu MiB physically committed\n",
                          (long long) rows, ctx, kv_mapped_bytes() >> 20);
+        if (report_memory) { print_kv_info(); std::fflush(stdout); }
     }
     size_t shrink_grow_cache(size_t bytes, const char* purpose = "KV growth") {
         if (!grow_hybrid) return 0;
@@ -3061,6 +3063,12 @@ struct Engine {
         CK(cudaStreamSynchronize(st));
         std::fprintf(stderr, "tinystrata: KV trimmed to %lld/%d rows, %zu MiB returned to Expert cache\n",
                      (long long) rows, ctx, (before - kv_mapped_bytes()) >> 20);
+        if (report_memory) { print_kv_info(); std::fflush(stdout); }
+    }
+    int total_experts() const {
+        // Count the same loaded layers as place_experts/cache slots, including
+        // the MTP block even when its experts are only partly resident on GPU.
+        return (int) m->g.n_expert * ((int) m->layers.size() + (m->has_mtp ? 1 : 0));
     }
     void print_kv_info() const {
         size_t bytes = 0, arena = 0;
@@ -3073,9 +3081,9 @@ struct Engine {
         for (const Layer& L : m->layers) add(L);
         if (m->has_mtp) add(m->mtp);
         std::printf("INFO kv_grow=%d kv_logical_bytes=%zu kv_mapped_bytes=%zu kv_committed_rows=%lld "
-                    "expert_slots=%d expert_cache_bytes=%zu expert_cache_mib=%zu expert_arena_bytes=%zu\n",
+                    "expert_slots=%d expert_total=%d expert_cache_bytes=%zu expert_cache_mib=%zu expert_arena_bytes=%zu\n",
                     kv_grow ? 1 : 0, kv_logical_bytes, kv_mapped_bytes(), (long long) kv_committed_rows,
-                    slots, bytes, bytes >> 20, arena);
+                    slots, total_experts(), bytes, bytes >> 20, arena);
         if (kv_page_pool) std::printf("INFO hip_vmm_spare_bytes=%zu\n", kv_page_pool->bytes());
     }
 
@@ -4024,6 +4032,7 @@ bool is_eos(int t) { return t == 248044 || t == 248046; }
 
 // ------------------------------------------------------------------------------------------------ serve
 int serve(Engine& E) {
+    E.report_memory = true;
     // Startup facts for the inherited HTTP server's Monitor/About views.
     size_t expert_bytes = 0, arena_bytes = 0;
     int expert_slots = 0;
@@ -4036,13 +4045,13 @@ int serve(Engine& E) {
     for (const Layer& L : E.m->layers) add_info(L);
     if (E.m->has_mtp) add_info(E.m->mtp);
     const auto memory = available_vram();
-    std::printf("INFO version=0.1.0 kv=%s expert_slots=%d expert_cache_mib=%zu expert_cache_bytes=%zu "
+    std::printf("INFO version=0.1.0 kv=%s expert_slots=%d expert_total=%d expert_cache_mib=%zu expert_cache_bytes=%zu "
                 "expert_arena_bytes=%zu expert_auto=%d vram_free_bytes=%zu vram_cuda_free_bytes=%zu "
                 "vram_physical_free_bytes=%zu vram_free_source=%s vram_reserve_mib=%zu mtp=%d "
                 "kv_auto=%d context_auto=%d gpu_cc=%d vision=%d chunk=%d clover_draft=%d "
                 "clover_mode=%s clover_block_size=%d clover_threshold=%.9g "
                 "clover_accept=%s clover_accept_ratio=%.9g clover_accept_delta=%.9g clover_draft_penalty_gpu=%d clover_gpu_exact_verify=%d clover_query_tile=%d\n",
-                E.kv_name(), expert_slots, expert_bytes >> 20, expert_bytes, arena_bytes, E.expert_auto ? 1 : 0,
+                E.kv_name(), expert_slots, E.total_experts(), expert_bytes >> 20, expert_bytes, arena_bytes, E.expert_auto ? 1 : 0,
                 memory.free, memory.cuda_free, memory.physical ? memory.physical_free : memory.cuda_free,
                 memory.source(), E.vram_reserve >> 20, E.mtp_d,
                 E.kv_auto ? 1 : 0, E.context_auto ? 1 : 0, E.gpu_cc, E.vision_enabled ? 1 : 0, E.tmax, E.clover_draft,
