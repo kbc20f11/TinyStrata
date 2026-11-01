@@ -1937,8 +1937,10 @@ $("chat").addEventListener("toggle", (e) => {
   }
 }, true);
 
+// UI-only guidance. Keep it out of saved chat messages and shared API defaults.
+const UI_SYSTEM_PROMPT = "明示的な言語指定がなければ、思考テキストと最終回答は、最新のユーザーメッセージと同じ言語で記述してください。コード・数式・固有名詞は原表記を維持してください。";
 function apiMessages() {
-  const out = [];
+  const out = [{role: "system", content: UI_SYSTEM_PROMPT}];
   for (const m of messages) {
     if (m.role === "user") {
       const imgs = (m.images || []).filter((i) => i.url);
