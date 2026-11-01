@@ -177,6 +177,22 @@ class LoaderAndCatalog(unittest.TestCase):
                 pending=model_setup.configure_vision(self.cfg,self.model)
                 self.assertTrue(pending['vision_download_required']);self.assertNotIn('vision',pending)
 
+    def test_saved_minimum_follows_a_lowered_explicit_image_cap(self):
+        artifact=SimpleNamespace(filename=self.projector.name,size=9,sha256=hashlib.sha256(b'projector').hexdigest())
+        with patch.object(downloads,'FIXED_MMPROJ',artifact),patch.object(model_setup,'resolve_vision_executable',return_value=self.exe):
+            for mode in ('gpu','cpu'):
+                saved=model_setup.configure_vision(self.cfg|{'vision_mode':mode},self.model)
+                original=copy.deepcopy(saved)
+                lowered=model_setup.configure_vision(saved|{'vision_tokens':128},self.model)
+                self.assertEqual((lowered['vision']['min_tokens'],lowered['vision']['max_tokens']),(128,128))
+                self.assertEqual(saved,original)
+                custom=copy.deepcopy(saved);custom['vision']['min_tokens']=32
+                lowered=model_setup.configure_vision(custom|{'vision_tokens':128},self.model)
+                self.assertEqual((lowered['vision']['min_tokens'],lowered['vision']['max_tokens']),(32,128))
+                raised=model_setup.configure_vision(saved|{'vision_tokens':8192},self.model)
+                self.assertEqual((raised['vision']['min_tokens'],raised['vision']['max_tokens']),(1024,8192))
+                tinyconfig.validate(lowered,allow_uninstalled=True)
+
     def test_catalog_and_projector_reuse_across_model_directories(self):
         qwen={'arch':'qwen35moe','backend':'hip','vision_mode':'no','args':['--model',str(self.root/'qwen.gguf')]}
         with patch.object(model_setup,'resolve_executable',return_value=None),patch.object(model_setup,'shared_library_dirs',side_effect=lambda cfg:cfg):

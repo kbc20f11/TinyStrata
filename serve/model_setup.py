@@ -233,6 +233,9 @@ def configure_vision(cfg: dict, model: Path, *, projector: Path | None = None,
         if cfg.get("arch") == "clover_moe":
             new["vision"].setdefault("max_tokens", 4096)
             new["vision"].setdefault("min_tokens", min(1024, new["vision"]["max_tokens"]))
+            if "vision_tokens" in cfg:
+                # An explicit image cap wins over a previously saved minimum.
+                new["vision"]["min_tokens"] = min(new["vision"]["min_tokens"], cfg["vision_tokens"])
         new["vision_policy_version"] = VISION_POLICY_VERSION
         new["args"].append("--vision")
         new.pop("vision_download_required", None)
