@@ -510,5 +510,8 @@
   "placement.hint": "GPU shows the experts resident in VRAM; CPU shows the remainder on the RAM side. Shared weights, KV cache and the image encoder are excluded. This is placement, not hardware utilization.",
   "placement.counts": "GPU {gpu} / {total} experts · CPU {cpu} / {total}",
   "placement.unavailable": "Placement data is unavailable.",
-  "placement.unloaded": "Load a model to see its expert placement."
+  "placement.unloaded": "Load a model to see its expert placement.",
+  "diagram.alt": "Mermaid diagram",
+  "diagram.toggle": "Switch diagram and source",
+  "diagram.error": "Could not draw this diagram. The source is shown below."
 }

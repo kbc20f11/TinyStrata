@@ -510,5 +510,8 @@
   "placement.hint": "GPU indica los expertos residentes en VRAM; CPU, el resto en el lado de la RAM. Se excluyen los pesos compartidos, la caché KV y el codificador de imágenes. Es su distribución, no el uso del hardware.",
   "placement.counts": "GPU {gpu} / {total} expertos · CPU {cpu} / {total}",
   "placement.unavailable": "No hay datos de distribución disponibles.",
-  "placement.unloaded": "Carga un modelo para ver la distribución de sus expertos."
+  "placement.unloaded": "Carga un modelo para ver la distribución de sus expertos.",
+  "diagram.alt": "Diagrama Mermaid",
+  "diagram.toggle": "Alternar entre diagrama y código",
+  "diagram.error": "No se pudo dibujar el diagrama. El código se muestra a continuación."
 }

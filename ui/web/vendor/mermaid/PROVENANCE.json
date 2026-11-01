@@ -1,0 +1,14 @@
+{
+  "package": "mermaid",
+  "version": "12.2.0",
+  "url": "https://registry.npmjs.org/mermaid/-/mermaid-12.2.0.tgz",
+  "integrity": "sha512-w7nr/SFrLO7BaVTs3dQTvYSV6nYSBj0Yy9DjBhsIJtAcHqRzXSq4Pg32ujHZ/AdWsAMNEvvhbm5dt9E2tOiHzw==",
+  "license": "MIT",
+  "verified": "the tarball's SHA512 was checked against the official npm integrity above when these files were copied (2026-11-01)",
+  "changes": "None. LICENSE and dist/mermaid.min.js are copied byte-for-byte from the npm package. The browser bundle contains its bundled third-party license notices; those notices remain intact. Source maps and other distribution files are not shipped.",
+  "loading": "Standalone browser bundle. No CDN or additional module chunks are required.",
+  "sha256": {
+    "LICENSE": "ec9fb67dcb25eccc416ed56e1aab819222c805a2a4bfe4cb19e7556bf2ffde80",
+    "dist/mermaid.min.js": "a8a6a6f805b074a8261a2825c86f99c8054acb3b35f50bb7e24a4f9f2c3c3b9f"
+  }
+}

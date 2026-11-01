@@ -510,5 +510,8 @@
   "placement.hint": "GPU indique les experts résidant en VRAM ; CPU indique le reste côté RAM. Les poids partagés, le cache KV et l’encodeur d’images sont exclus. Il s’agit de leur répartition, pas de l’utilisation du matériel.",
   "placement.counts": "GPU {gpu} / {total} experts · CPU {cpu} / {total}",
   "placement.unavailable": "Les données de répartition sont indisponibles.",
-  "placement.unloaded": "Chargez un modèle pour afficher la répartition de ses experts."
+  "placement.unloaded": "Chargez un modèle pour afficher la répartition de ses experts.",
+  "diagram.alt": "Diagramme Mermaid",
+  "diagram.toggle": "Basculer entre le diagramme et le code",
+  "diagram.error": "Impossible de tracer ce diagramme. Le code est affiché ci-dessous."
 }

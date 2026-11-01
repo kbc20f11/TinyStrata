@@ -101,6 +101,11 @@
 !/ui/web/locales/es.json
 !/ui/web/locales/pt-BR.json
 !/ui/web/vendor/
+!/ui/web/vendor/mermaid/
+!/ui/web/vendor/mermaid/LICENSE
+!/ui/web/vendor/mermaid/PROVENANCE.json
+!/ui/web/vendor/mermaid/dist/
+!/ui/web/vendor/mermaid/dist/mermaid.min.js
 !/ui/web/vendor/katex/
 !/ui/web/vendor/katex/LICENSE
 !/ui/web/vendor/katex/PROVENANCE.json

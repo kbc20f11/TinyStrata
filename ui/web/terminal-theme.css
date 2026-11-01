@@ -380,6 +380,12 @@ html[data-theme="light"] .chat-placement__cpu { background: #b2c2b4; }
 .st-code__head { color: #7aaa8d; background: #0a1b10; border-color: #1a3a27; font-family: var(--st-font-mono); }
 .st-code pre { color: #c3e6d0; padding: 18px; }
 .st-code .st-btn--icon { color: #85a78e; }
+.st-bubble[data-streaming="true"] [data-code-copy] { visibility: hidden; pointer-events: none; }
+.st-diagram__image { display: none; padding: 20px; overflow: auto; max-height: 640px; }
+.st-diagram__image img { display: block; max-width: 100%; height: auto; margin-inline: auto; }
+.st-code[data-diagram-view="image"] > .st-diagram__image { display: block; }
+.st-code[data-diagram-view="image"] > pre { display: none; }
+.st-diagram__status { color: var(--st-ink-muted); padding: 12px 18px 0; font-size: 12px; }
 .st-code__preview iframe { min-height: 180px; }
 .tool-call__pre { border-radius: 2px; background: #030d07; }
 .chip { border-radius: 2px; background: #0b2014; border-color: #2a5139; color: #a5d1b5; }

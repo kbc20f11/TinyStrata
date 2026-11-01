@@ -510,5 +510,8 @@
   "placement.hint": "GPU zeigt die im VRAM gespeicherten Experten; CPU die übrigen Experten auf der RAM-Seite. Gemeinsame Gewichte, KV-Cache und Bildencoder sind nicht enthalten. Dies zeigt die Verteilung, nicht die Hardwareauslastung.",
   "placement.counts": "GPU {gpu} / {total} Experten · CPU {cpu} / {total}",
   "placement.unavailable": "Daten zur Expertenverteilung sind nicht verfügbar.",
-  "placement.unloaded": "Laden Sie ein Modell, um seine Expertenverteilung zu sehen."
+  "placement.unloaded": "Laden Sie ein Modell, um seine Expertenverteilung zu sehen.",
+  "diagram.alt": "Mermaid-Diagramm",
+  "diagram.toggle": "Zwischen Diagramm und Quelltext wechseln",
+  "diagram.error": "Das Diagramm konnte nicht gezeichnet werden. Der Quelltext wird unten angezeigt."
 }

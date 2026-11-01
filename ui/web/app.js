@@ -66,6 +66,7 @@ function setTheme(t, save) {
   $("theme-mode").textContent = t === "dark" ? tr("theme.darkMode", "Dark") : tr("theme.lightMode", "Light");
   document.querySelector('meta[name="theme-color"]').content = t === "dark" ? "#040b08" : "#f4faf5";
   refreshPreviews();                                  // the preview frames carry the page's colours
+  if (typeof StrataDiagrams !== "undefined") StrataDiagrams.refresh();
 }
 setTheme(document.documentElement.dataset.theme || "light", false);
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
@@ -846,15 +847,18 @@ function fillPreview(fr, scripts, blank) {
 }
 function refreshPreviews() { for (const fr of document.querySelectorAll("iframe[data-opened]")) fillPreview(fr, fr.dataset.scripts === "1"); }
 function codeBlock(lang, code, complete) {
+  const diagram = complete && /^mermaid$/i.test(lang || "");
   const ok = complete && StrataPreview.canPreview(lang || "", code);
   const kind = ok ? StrataPreview.kindOf(lang) : null;
   const label = kind === "svg" ? tr("preview.showSvg", "Preview the picture") : tr("preview.showPage", "Preview the page");
   const head = `<div class="st-code__head"><span>${esc(lang || tr("code.label", "code"))}</span><span class="st-code__btns">` +
+    (diagram ? `<button class="st-btn st-btn--icon" data-diagram-toggle hidden aria-pressed="false" aria-label="${esc(tr("diagram.toggle", "Switch diagram and source"))}" title="${esc(tr("diagram.toggle", "Switch diagram and source"))}">${icon("image")}</button>` : "") +
     (kind === "page" ? `<button class="st-btn st-btn--icon" data-preview-scripts aria-label="${esc(tr("preview.runScripts", "Run scripts"))}" aria-pressed="false" title="${esc(tr("preview.runScripts", "Run scripts"))}">${icon("warning")}</button>` : "") +
     (ok ? `<button class="st-btn st-btn--icon" data-preview-toggle data-preview-label="${esc(label)}" aria-label="${esc(label)}" title="${esc(label)}" aria-pressed="false">${icon("image")}</button>` : "") +
     `<button class="st-btn st-btn--icon" data-code-copy aria-label="${esc(tr("code.copy", "Copy code"))}">${icon("copy")}</button></span></div>`;
   const prev = ok ? `<div class="st-code__preview"><iframe sandbox="" title="${esc(kind === "svg" ? tr("preview.titleSvg", "Picture preview") : tr("preview.titlePage", "Page preview"))}" data-lang="${esc(lang)}"></iframe></div>` : "";
-  return `<div class="st-code">${head}<pre><code>${esc(code)}</code></pre>${prev}</div>`;
+  const drawing = diagram ? `<div class="st-diagram__image"></div><div class="st-diagram__status" hidden>${esc(tr("diagram.error", "Could not draw this diagram. The source is shown below."))}</div>` : "";
+  return `<div class="st-code"${diagram ? ' data-diagram="mermaid"' : ""}>${head}${drawing}<pre><code>${esc(code)}</code></pre>${prev}</div>`;
 }
 function blocks(text) {
   const out = [], lines = text.split("\n");
@@ -1780,6 +1784,10 @@ function updateAssistant(el, m, streaming) {
   }
   const bubble = el.querySelector(".st-bubble");
   bubble.classList.remove("cursor");
+  // The whole answer must finish before code can be copied, even when a fence
+  // has already closed. Hide the reserved button slot while streaming: its
+  // SVG is rebuilt with each chunk and can otherwise flash as it reloads.
+  bubble.dataset.streaming = String(!!streaming);
   if (m.error) {
     bubble.innerHTML = `<div class="msg-error"></div>`;
     bubble.firstChild.textContent = m.error;
@@ -1789,7 +1797,9 @@ function updateAssistant(el, m, streaming) {
     bubble.innerHTML = answerHtml(m);
     hydrateToolImages(bubble);
     if (settings.math) StrataMath.hydrate(bubble);
+    if (!streaming && typeof StrataDiagrams !== "undefined") StrataDiagrams.hydrate(bubble);
   }
+  for (const button of bubble.querySelectorAll("[data-code-copy]")) button.disabled = !!streaming;
   if (activeStream && m.text) setTerminalCursor(bubble);
   else if (activeStream && m.reasoning && det.open) setTerminalCursor(el.querySelector(".thinking"));
   el.querySelector(".meta-text").textContent = m.stats ? "" : m.meta || (streaming ? "" : m.stopped ? tr("chat.stopped", "Stopped") : "");
@@ -1840,7 +1850,19 @@ function scrollDown(force) {
 
 $("chat").addEventListener("click", (e) => {
   const cc = e.target.closest("[data-code-copy]");
-  if (cc) { copyText(cc.closest(".st-code").querySelector("pre").textContent, cc); return; }
+  if (cc) {
+    if (!cc.disabled && cc.closest(".st-bubble")?.dataset.streaming !== "true") copyText(cc.closest(".st-code").querySelector("pre").textContent, cc);
+    return;
+  }
+  const diagram = e.target.closest("[data-diagram-toggle]");
+  if (diagram) {
+    const box = diagram.closest(".st-code");
+    if (box.dataset.diagramState !== "ready") return;
+    const image = box.dataset.diagramView !== "image";
+    box.dataset.diagramView = image ? "image" : "code";
+    diagram.setAttribute("aria-pressed", String(image));
+    return;
+  }
   // an svg/html block: flip between its code and its sandboxed preview. Closing the preview also turns scripts off.
   const pv = e.target.closest("[data-preview-toggle]");
   if (pv) {

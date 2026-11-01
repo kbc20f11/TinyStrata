@@ -505,5 +505,8 @@
   "placement.hint": "GPU 表示常驻 VRAM 的专家，CPU 表示其余位于 RAM 侧的专家。不包含共享权重、KV 缓存和图像编码器。这是存放比例，不是硬件利用率。",
   "placement.counts": "GPU {gpu} / {total} 个专家 · CPU {cpu} / {total}",
   "placement.unavailable": "暂无专家分布数据。",
-  "placement.unloaded": "加载模型后可查看其专家分布。"
+  "placement.unloaded": "加载模型后可查看其专家分布。",
+  "diagram.alt": "Mermaid 图表",
+  "diagram.toggle": "切换图表与代码",
+  "diagram.error": "无法绘制此图表，已显示源代码。"
 }
