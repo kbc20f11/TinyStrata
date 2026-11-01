@@ -41,6 +41,14 @@ The first command accepts only drafts that match the causal verifier's selected 
 
 The recommended exact profile sets `STRATA_IQ_MT_MIN=1` so single-row and grouped CPU IQ Expert work use the same accumulation path. For a matching causal control, add the same `--engine-env STRATA_IQ_MT_MIN=1` to the causal command; that control is also a variant. The standard causal v1 baseline keeps an empty tuning environment (`env: {}`), regardless of the saved app profile.
 
+To measure Clover's normal **GPU-resident Vision + exact D3** profile, use:
+
+```powershell
+& $python .\benchmark\run.py --model clover --clover-mode self-spec --clover-draft 3 --clover-accept exact --engine-env STRATA_IQ_MT_MIN=1 --clover-vision
+```
+
+`--clover-vision` reuses the installed Qwen3.6 projector, keeps the image encoder resident during every text test, and adds the same canonical image-description test as Qwen/Gemma. It uses 1,024 minimum / 4,096 maximum image tokens and records `vision: true`. The result is labelled **`tinystrata-bench-v1-clover-self-spec-vision`**, `standard: false`. Causal Vision is also available; diffusion and threshold acceptance cannot use this flag. The fixed causal v1 baseline still has Vision off. Switching the app's default does not rewrite that historical comparison protocol.
+
 `threshold` is approximate acceptance at temperature 0, not distribution-preserving speculative sampling. It uses target probabilities and entropy with the same response-count snapshot, including the already emitted anchor, for all preview and verification rows in a round; uncommitted drafts are excluded. It does not guarantee the causal/exact token sequence. A target EOS always stops, and an accepted draft EOS also remains a stopping boundary. Count final output tokens once and include preview, verification, transfers and acceptance work in decode time. The runner records the actual native settings, accepted/offered counts, transfers and kernel flags; report quality separately from throughput.
 
 Clover-only optional overrides are `--kv-type int8|fp8-mma`, `--cpu-workers N` (0 = auto), `--chunk auto|N`, and repeatable `--engine-env STRATA_NAME=VALUE` / `TINYSTRATA_NAME=VALUE`. For example:
@@ -68,7 +76,7 @@ Use the project's fixed model files: Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS, Goo
 
 - **INT8 KV** is the common comparison profile on NVIDIA and Radeon. FP8 or manually tuned settings belong in separately labelled results.
 - KV growth, automatic context capacity, automatic input chunk size, automatic Expert placement and automatic CPU worker selection. Graphs use their normal defaults. Do not add tuning environment variables or omit Experts/tokens.
-- MTP **3** and a **GPU-resident vision encoder** for Qwen/Gemma, including the three text benchmarks. LFM and Clover have neither MTP nor Vision. The standard Clover profile explicitly uses causal decoding (`--clover-mode causal`, D0); block diffusion and self-speculative measurements need separate labels.
+- MTP **3** and a **GPU-resident vision encoder** for Qwen/Gemma, including the three text benchmarks. LFM has neither. The fixed-v1 Clover control uses neither MTP nor Vision and explicitly uses causal decoding (`--clover-mode causal`, D0); the current exact D3/Vision profile uses the separately labelled variant above.
 - One request at a time; **seed 1234**. The following sampling values are fixed in `cases.json`, with the added Clover profile fixed in `run.py` so the existing v1 input hashes remain unchanged:
 
 | Model | Temperature | top_p | top_k | min_p | presence_penalty | repetition_penalty |
@@ -87,7 +95,7 @@ Frequency penalty is zero. Thinking is enabled for generation and the two input-
 | Generation | The three `generation` texts in `cases.json`, in order, twice each; maximum 128 output tokens per request, including thinking | Total generated tokens ÷ total native decode seconds, tok/s |
 | 4K input | The numbered document defined by `long_paragraph` and `long_question`, adjusted to exactly **4,096 input tokens including the chat template**; maximum 32 output tokens | Total input tokens actually read ÷ total native prompt-processing seconds, tok/s |
 | 16K input | The same construction at exactly **16,384 input tokens including the chat template**; maximum 32 output tokens | Same input-processing rate, tok/s |
-| Image description | Unmodified **1,024 × 768** `image.png` and `image_prompt`; maximum 128 output tokens; first real image request after each fresh API start | Median client first-output time and median completion time, seconds; LFM and Clover are **N/A** |
+| Image description | Unmodified **1,024 × 768** `image.png` and `image_prompt`; maximum 128 output tokens; first real image request after each fresh API start | Median client first-output time and median completion time, seconds; LFM and the fixed-v1 Clover control are **N/A**; `--clover-vision` includes Clover |
 
 The runner uses the normal Messages API, including MTP, rather than the native `--tokens` generation loop. It uses the same request with `/v1/messages/count_tokens` to construct the 4K/16K inputs, then checks the actual native counts. The published texts/image and their hashes identify the inputs; the native prompt counts identify their token lengths for each model.
 
@@ -165,6 +173,14 @@ Clover のアプリの既定は exact D3・INT8 KV・`STRATA_IQ_MT_MIN=1` です
 
 推奨する exact プロファイルは `STRATA_IQ_MT_MIN=1` を使い、CPU の IQ エキスパートを1行で計算するときと複数行で計算するときの積和経路をそろえます。同じ演算条件の因果対照には、causal のコマンドにも `--engine-env STRATA_IQ_MT_MIN=1` を付けて別枠として測定してください。標準の因果生成 v1 は、アプリの保存済み設定にかかわらず、調整用環境変数なし（`env: {}`）を維持します。
 
+Clover の通常設定である **GPU 常駐 Vision＋exact D3** は次で測ります。
+
+```powershell
+& $python .\benchmark\run.py --model clover --clover-mode self-spec --clover-draft 3 --clover-accept exact --engine-env STRATA_IQ_MT_MIN=1 --clover-vision
+```
+
+`--clover-vision` は既存の Qwen3.6 プロジェクタを再利用し、すべてのテキスト計測中も画像エンコーダーを常駐させ、Qwen・Gemma と同じ規定の画像説明を追加します。画像は最小 1,024／最大 4,096 トークン、結果には `vision: true` を記録します。プロトコル名は **`tinystrata-bench-v1-clover-self-spec-vision`**、`standard: false` とします。因果方式でも指定できますが、拡散・閾値採用との併用はできません。固定 v1 の因果対照は引き続き画像なしです。アプリの既定変更によって過去の比較規約を書き換えることはありません。
+
 `threshold` は temperature 0 で使う近似的な採用規則で、確率分布を保存する投機サンプリングではありません。1 ラウンドの preview・検証の全行で、出力済み anchor を含む応答トークン数の履歴を固定し、未確定ドラフトを追加せずに本体の確率とエントロピーから採否を決めます。因果生成や exact と同じトークン列は保証しません。本体が選んだ EOS と採用されたドラフトの EOS は、いずれも応答終了として扱います。最終出力は各トークンを一度だけ数え、preview・因果検証・転送・採用判定もデコード時間に含めます。実際のエンジン設定・採用数／提案数・転送量・カーネル設定を保存し、品質は速度と分けて報告してください。
 
 Clover 専用の調整項目として、`--kv-type int8|fp8-mma`、`--cpu-workers N`（0 は自動）、`--chunk auto|N`、繰り返し指定できる `--engine-env STRATA_NAME=VALUE`／`TINYSTRATA_NAME=VALUE` も使えます。例：
@@ -192,7 +208,7 @@ Clover の長文比較には **`--include-64k`** を追加できます。
 
 - NVIDIA・Radeon 共通の比較は **INT8 KV**。FP8 や手動調整を加えた結果は別枠です。
 - KV は段階確保。コンテキスト容量・入力チャンク・Expert 配置・CPU ワーカー数は自動選択、Graph は既定の動作です。高速化用の環境変数や Expert／トークンの省略は追加しません。
-- Qwen・Gemma は **MTP 3 と GPU 常駐 Vision** を使用します。テキストの計測でも画像エンコーダーを常駐させます。LFM・Clover は MTP・Vision ともに使用しません。標準の Clover は因果経路（`--clover-mode causal`、D0）を明示して測り、ブロック拡散・自己投機の計測は別枠にします。
+- Qwen・Gemma は **MTP 3 と GPU 常駐 Vision** を使用します。テキストの計測でも画像エンコーダーを常駐させます。LFM はどちらも使いません。固定 v1 の Clover 対照は MTP・Vision なし、因果経路（`--clover-mode causal`、D0）で測り、現在の exact D3＋Vision は上記の別枠で測定します。
 - 同時実行は 1 リクエスト、**seed は 1234**。サンプリングは下表で固定します。既存 v1 入力のハッシュを維持するため、追加した Clover の設定は `run.py` に、他のモデルは `cases.json` に定義します。
 
 | モデル | temperature | top_p | top_k | min_p | presence_penalty | repetition_penalty |
@@ -211,7 +227,7 @@ frequency_penalty は 0。生成・4K・16K は思考有効、画像説明は説
 | 生成速度 | `cases.json` の `generation` 3 入力を順に各 2 回。各リクエスト最大 128 トークン、思考を含む | 総生成トークン数 ÷ 総デコード秒数（tok/s） |
 | 4K 入力 | `long_paragraph` と `long_question` から作る文書を、**テンプレート込みで 4,096 入力トークン**に調整。出力上限 32 | 新しく読んだ総入力トークン数 ÷ 総入力処理秒数（tok/s） |
 | 16K 入力 | 同じ方法で **テンプレート込み 16,384 入力トークン**。出力上限 32 | 同じ入力処理速度（tok/s） |
-| 画像説明 | 無加工の **1,024 × 768** `image.png` と `image_prompt`。出力上限 128。API 起動後、最初の実画像リクエスト | 最初の出力まで／説明完了までの秒数の中央値。LFM・Clover は対象外 |
+| 画像説明 | 無加工の **1,024 × 768** `image.png` と `image_prompt`。出力上限 128。API 起動後、最初の実画像リクエスト | 最初の出力まで／説明完了までの秒数の中央値。LFM と固定 v1 の Clover 対照は対象外。`--clover-vision` で Clover を追加 |
 
 MTP を含む通常の Messages API を使い、native の `--tokens` 生成ループでは測りません。4K・16K は同じリクエストを `/v1/messages/count_tokens` で数えて作成し、実際のエンジンの入力数でも確認します。テキスト・画像のハッシュで入力を識別し、各モデルの実トークン数で長さを確認します。
 

@@ -62,7 +62,8 @@ def prepare(a) -> tuple[dict, Path]:
     from serve import config
     from serve.backend import configure_backend, executable_backend, hardware_backend, hip_ordinal
     from serve.tinyconfig import (CLOVER_SAMPLING, CLOVER_DECODE_POLICY_VERSION, MEMORY_POLICY_VERSION,
-                                 automatic_experts, check_files, clover_decode_defaults, migrate_settings, validate)
+                                 automatic_experts, check_files, clover_decode_defaults, clover_vision_defaults,
+                                 CLOVER_VISION_POLICY_VERSION, migrate_settings, validate)
     from serve.model_setup import (configure_download, configure_vision, model_architecture, model_path, prepare_installed_model,
                                    resolve_executable, save_settings, shared_library_dirs, migrate_managed_clover_model)
 
@@ -96,8 +97,10 @@ def prepare(a) -> tuple[dict, Path]:
     if requested_arch is not None and cfg.get("arch", "qwen35moe") != requested_arch:
         raise ValueError("This config belongs to another model family; choose a separate --config path")
     if fresh:
-        cfg = clover_decode_defaults(cfg)
+        cfg = clover_vision_defaults(clover_decode_defaults(cfg))
     if cfg.get("arch") == "clover_moe":
+        if getattr(a, "vision", None) is not None:
+            cfg["clover_vision_policy_version"] = CLOVER_VISION_POLICY_VERSION
         if a.model:
             cfg["model_source"] = "local"
         if a.model or any(getattr(a, key, None) is not None for key in (*config.CLOVER_REQUEST_KEYS, "kv_type")):
@@ -156,6 +159,12 @@ def prepare(a) -> tuple[dict, Path]:
         if getattr(a, "clover_accept", None) is None and config.value_of(cfg, "clover_accept") == "threshold" and (
                 config.clover_mode(cfg) != "self-spec" or temperature != 0):
             cfg, _ = config.apply(cfg, {"clover_accept": "exact"})
+    if cfg.get("arch") == "clover_moe" and getattr(a, "vision", None) is None and (
+            getattr(a, "clover_mode", None) == "diffusion" or getattr(a, "clover_accept", None) == "threshold"):
+        # Explicit text-only experimental modes remain usable without requiring
+        # a second flag to undo the fresh image default. Explicit GPU/CPU image
+        # choices still fail validation for these unsupported combinations.
+        cfg["vision_mode"] = "no"
     if getattr(a, "kv_grow", None) is not None:
         cfg["args"] = [x for x in cfg["args"] if x not in ("--kv-grow", "--kv-whole", "--no-kv-grow")]
         cfg["args"].append("--kv-grow" if a.kv_grow else "--kv-whole")

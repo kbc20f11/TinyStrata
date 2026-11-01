@@ -121,7 +121,7 @@ class ModelProfiles:
         result = {"arch": arch, "model_name": name, "cwd": str(model_setup.ROOT),
                   "args": args, "memory_policy_version": tinyconfig.MEMORY_POLICY_VERSION,
                   **deepcopy(self._hardware)}
-        result = tinyconfig.clover_decode_defaults(result)
+        result = tinyconfig.clover_vision_defaults(tinyconfig.clover_decode_defaults(result))
         if self._engine is not None:
             filename = {"lfm2moe": "tinystrata-lfm2", "gemma4": "tinystrata-gemma4"}.get(arch, "tinystrata")
             sibling = self._engine.with_name(filename + self._engine.suffix)
@@ -186,6 +186,12 @@ class ModelProfiles:
             result["args"][index] = str(existing.resolve())
         else:
             result["model_bootstrap"] = True
+        if profile.arch == "clover_moe" and result.get("vision_mode") != "no" and not result.get("vision_mmproj"):
+            from serve.model_download import FIXED_MMPROJ
+            folders = ((existing.parent,) if existing is not None else ()) + self._directories
+            found = next((folder / FIXED_MMPROJ.filename for folder in folders if (folder / FIXED_MMPROJ.filename).is_file()), None)
+            if found is not None:
+                result["vision_mmproj"] = str(found)
         if profile.arch == "gemma4":
             from serve.model_download import FIXED_GEMMA4_ASSISTANT, FIXED_GEMMA4_MMPROJ
             for field, artifact in (("draft_model", FIXED_GEMMA4_ASSISTANT), ("vision_mmproj", FIXED_GEMMA4_MMPROJ)):
@@ -224,7 +230,7 @@ class ModelProfiles:
                             "executable": str(exe) if exe is not None else None,
                             "config_path": str(profile.path), "shared_settings_path": str(profile.shared_path),
                             "context": self.context_info(profile.id),
-                            "vision": profile.arch in ("qwen35moe", "gemma4") and profile.config.get("vision_mode", "gpu") != "no"})
+                            "vision": profile.arch in ("qwen35moe", "gemma4", "clover_moe") and profile.config.get("vision_mode", "gpu") != "no"})
         return entries
 
     def update(self, name: str, cfg: dict, *, save: bool = False) -> ModelProfile:

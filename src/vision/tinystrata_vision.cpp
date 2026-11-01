@@ -53,12 +53,7 @@ void quiet_log(ggml_log_level level, const char* text, void*) {
     if (level >= GGML_LOG_LEVEL_WARN || std::strstr(text, "CLIP using ")) std::fputs(text, stderr);
 }
 
-bool clover_vision_opt_in() {
-    const char* value = std::getenv("TINYSTRATA_CLOVER_VISION");
-    return value && std::strcmp(value, "1") == 0;
-}
-
-// This experiment restores only the original Qwen3.6 input interface. Other
+// Clover uses the original Qwen3.6 input interface. Other
 // projector geometries and intermediate DeepStack features are unsupported.
 bool clover_projector_compatible(const std::string& path) {
     gguf_init_params params{true, nullptr};
@@ -163,13 +158,8 @@ int main(int argc, char** argv) {
             clover_width = gguf_get_val_u32(metadata, width);
         if (metadata) gguf_free(metadata);
     }
-    if (clover && !clover_vision_opt_in()) {
-        std::printf("ERR Clover is text-only; experimental vision requires TINYSTRATA_CLOVER_VISION=1\n");
-        std::fflush(stdout);
-        return 2;
-    }
     if (clover && (clover_width != 2048 || !clover_projector_compatible(mmproj))) {
-        std::printf("ERR experimental Clover vision requires the Qwen3.6 2048-wide non-DeepStack projector\n");
+        std::printf("ERR Clover vision requires the Qwen3.6 2048-wide non-DeepStack projector\n");
         std::fflush(stdout);
         return 2;
     }
@@ -234,7 +224,7 @@ int main(int argc, char** argv) {
         std::strcpy(overrides[0].key, "general.architecture");
         std::strcpy(overrides[0].val_str, "qwen35moe");
         mp.kv_overrides = overrides;
-        std::fprintf(stderr, "tinystrata-vision: experimental Clover vocabulary compatibility (original tokenizer, no text weights)\n");
+        std::fprintf(stderr, "tinystrata-vision: Clover vocabulary compatibility (original tokenizer, no text weights)\n");
     }
     llama_model* text = llama_model_load_from_file(model.c_str(), mp);
     if (!text) { std::printf("ERR cannot open the text model %s\n", model.c_str()); std::fflush(stdout); return 1; }
@@ -247,7 +237,7 @@ int main(int argc, char** argv) {
         };
         if (!token_is(151669, "<|mask|>") || !token_is(248053, "<|vision_start|>") ||
             !token_is(248054, "<|vision_end|>") || !token_is(248056, "<|image_pad|>")) {
-            std::printf("ERR experimental Clover vocabulary has incompatible mask or image token IDs\n");
+            std::printf("ERR Clover vocabulary has incompatible mask or image token IDs\n");
             std::fflush(stdout);
             llama_model_free(text);
             llama_backend_free();

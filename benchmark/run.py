@@ -158,10 +158,14 @@ def engine_environment(value):
 def controlled_config(original, model, folder, port, cases, *, clover_mode='causal',
                       clover_block_size=32, clover_threshold=0.95, clover_kv='int8',
                       clover_workers=None, clover_chunk='auto', clover_env=None, clover_thinking=True,
-                      clover_draft=None, clover_accept='exact', clover_accept_ratio=0.9, clover_accept_delta=0.6):
+                      clover_draft=None, clover_accept='exact', clover_accept_ratio=0.9, clover_accept_delta=0.6,
+                      clover_vision=False):
     file, arch, name = MODELS[model]
     if original.get('arch', 'qwen35moe') != arch:
         raise ValueError(f'{file} does not select {arch}')
+    if clover_vision and (model != 'clover' or clover_mode == 'diffusion' or clover_accept != 'exact'):
+        raise ValueError('Clover Vision requires causal or exact self-spec decoding')
+    has_vision = model not in TEXT_ONLY_MODELS or (model == 'clover' and clover_vision)
     # Rebuild the native arguments rather than retain manual tuning flags.
     args = original.get('args', [])
     base = Path(original.get('cwd') or ROOT).expanduser().resolve()
@@ -206,6 +210,8 @@ def controlled_config(original, model, folder, port, cases, *, clover_mode='caus
                        '--clover-accept-ratio', str(clover_accept_ratio), '--clover-accept-delta', str(clover_accept_delta)]
         else:
             native += ['--clover-draft', '0']
+        if clover_vision:
+            native += ['--vision']
     cfg = {key: copy.deepcopy(original[key]) for key in
            ('exe', 'tokenizer', 'backend', 'lib_dirs', 'gpu', 'hip_ordinal', 'cuda_device')
            if key in original}
@@ -214,18 +220,23 @@ def controlled_config(original, model, folder, port, cases, *, clover_mode='caus
                env=dict(clover_env or {}) if model == 'clover' else {}, parallel=1,
                enable_thinking=clover_thinking if model == 'clover' else True,
                max_tokens=24576 if model == 'clover' else 32768,
-               sampling=model_sampling(model, cases), vision_mode='no' if model in TEXT_ONLY_MODELS else 'gpu')
+               sampling=model_sampling(model, cases), vision_mode='gpu' if has_vision else 'no')
+    if model == 'clover':
+        # Both on and off are explicit protocol choices, never an old app default.
+        cfg['clover_vision_policy_version'] = 1
     for key in ('exe', 'tokenizer'):
         if key in cfg:
             cfg[key] = resolved(cfg[key])
     if cfg.get('lib_dirs'):
         cfg['lib_dirs'] = [resolved(path) for path in cfg['lib_dirs']]
-    if model not in TEXT_ONLY_MODELS:
+    if has_vision:
         vision = original.get('vision')
         if not isinstance(vision, dict) or not all(vision.get(k) for k in ('exe', 'mmproj', 'model')):
             raise ValueError(f'{file} needs its installed GPU Vision model')
         cfg['vision'] = {k: resolved(vision[k]) for k in ('exe', 'mmproj', 'model')}
         cfg['vision'].update(gpu=True, elastic=False)
+        if model == 'clover':
+            cfg['vision'].update(min_tokens=1024, max_tokens=4096)
         cfg['vision_exe'] = cfg['vision']['exe']
     return cfg
 
@@ -561,7 +572,8 @@ def render_report(report):
     if profile:
         details = (f'Clover profile: {profile["mode"]}, KV {profile["kv"]}, '
                    f'workers {profile["cpu_workers"]}, chunk {profile["chunk"]}, '
-                   f'thinking {"on" if profile.get("thinking", True) else "off"}')
+                   f'thinking {"on" if profile.get("thinking", True) else "off"}, '
+                   f'Vision {"GPU" if profile.get("vision") else "off"}')
         if profile['mode'] == 'diffusion':
             details += f', block {profile["block_size"]}, confidence > {profile["threshold"]}'
         elif profile['mode'] == 'self-spec':
@@ -618,6 +630,8 @@ def main():
     parser.add_argument('--clover-threshold', type=float, default=0.95)
     parser.add_argument('--clover-draft', type=int, metavar='N',
                         help='self-spec drafts, 1..31 (default:3 when self-spec is selected)')
+    parser.add_argument('--clover-vision', action='store_true',
+                        help='Clover-only variant: keep the GPU image encoder resident and run the image benchmark')
     parser.add_argument('--clover-accept', choices=('exact', 'threshold'),
                         help='self-spec acceptance (default:exact); threshold is approximate and greedy-only')
     parser.add_argument('--clover-accept-ratio', type=float, metavar='P',
@@ -658,6 +672,8 @@ def main():
     options.clover_accept_delta = .6 if options.clover_accept_delta is None else options.clover_accept_delta
     if options.clover_mode == 'self-spec' and options.clover_draft is None:
         options.clover_draft = 3
+    if options.clover_vision and (options.model != 'clover' or options.clover_mode == 'diffusion' or options.clover_accept != 'exact'):
+        parser.error('--clover-vision requires --model clover and causal or exact self-spec decoding')
     if options.thinking == 'off' and options.model != 'clover':
         parser.error('--thinking off requires --model clover')
     manual_variant = (any(value is not None for value in (options.kv_type, options.cpu_workers, options.chunk))
@@ -688,11 +704,14 @@ def main():
                       else '-clover-causal-variant' if manual_variant else '')
     if options.include_64k:
         variant_suffix = (variant_suffix or '-clover-causal') + '-64k'
+    if options.clover_vision:
+        variant = True
+        variant_suffix = (variant_suffix or '-clover-causal') + '-vision'
     clover_profile = dict(mode=options.clover_mode, kv=options.kv_type or 'int8',
                           block_size=options.clover_block_size, threshold=options.clover_threshold,
                           cpu_workers=options.cpu_workers if options.cpu_workers is not None else 'auto',
                           chunk=options.chunk if options.chunk is not None else 'auto', env=dict(options.engine_env),
-                          thinking=options.thinking == 'on')
+                          thinking=options.thinking == 'on', vision=options.clover_vision)
     if self_spec_variant:
         clover_profile.update(draft=options.clover_draft, accept=options.clover_accept,
                               accept_ratio=options.clover_accept_ratio, accept_delta=options.clover_accept_delta)
@@ -721,12 +740,13 @@ def main():
         for model in models:
             original = json.loads((options.config_dir / MODELS[model][0]).read_text(encoding='utf-8-sig'))
             data = dict(runs=[], sampling=model_sampling(model, cases), assets=[],
-                        image_supported=model not in TEXT_ONLY_MODELS)
+                        image_supported=model not in TEXT_ONLY_MODELS or (model == 'clover' and options.clover_vision))
             report['models'][model] = data
             profile_options = dict(clover_mode=options.clover_mode, clover_block_size=options.clover_block_size,
                                    clover_threshold=options.clover_threshold, clover_kv=options.kv_type or 'int8',
                                    clover_workers=options.cpu_workers, clover_chunk=options.chunk if options.chunk is not None else 'auto',
-                                   clover_env=dict(options.engine_env), clover_thinking=options.thinking == 'on')
+                                   clover_env=dict(options.engine_env), clover_thinking=options.thinking == 'on',
+                                   clover_vision=options.clover_vision)
             if self_spec_variant:
                 profile_options.update(clover_draft=options.clover_draft, clover_accept=options.clover_accept,
                                        clover_accept_ratio=options.clover_accept_ratio, clover_accept_delta=options.clover_accept_delta)
@@ -829,7 +849,7 @@ def main():
                         measure('input_64k', 'input_64k', request_body(model, text, cases['prefill_max_tokens'],
                                 cases, thinking=thinking), 65536)
                         run['after_64k_engine'] = service.engine()
-                    if model not in TEXT_ONLY_MODELS:
+                    if cfg.get('vision'):
                         image = dict(type='image', source=dict(type='base64', media_type='image/png',
                                      data=base64.b64encode((HERE / 'image.png').read_bytes()).decode('ascii')))
                         body = request_body(model, [image, dict(type='text', text=cases['image_prompt'])],

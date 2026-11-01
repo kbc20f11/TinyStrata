@@ -3376,6 +3376,11 @@ struct Engine {
                           int64_t response_length = 0) {
         namespace CD = strata::qwen35::clover_decode;
         const int64_t start = pos;
+        // `start` is a logical KV cell, including image-pad rows. Image
+        // prefill has already committed their convolution/SSM history; the
+        // full-context M-RoPE table also supplies the following generated
+        // positions. Preview and causal verify reuse that same table/start,
+        // without advancing positions or re-injecting earlier image rows.
         ensure_kv(start + plan.preview_rows);
         auto block = CD::masked_block(anchor, plan, m->mask_token);
         CK(cudaStreamSynchronize(st));
@@ -4175,9 +4180,6 @@ int serve(Engine& E) {
             request_clover_block < 1 || request_clover_threshold < 0) {
             std::printf("ERR invalid Clover generation mode, block size, threshold or drafts\n"); std::fflush(stdout); continue;
         }
-        if (E.m->clover && E.vision_enabled && request_clover_mode != "causal") {
-            std::printf("ERR experimental Clover vision supports causal generation only\n"); std::fflush(stdout); continue;
-        }
         // A client may override a managed greedy/self-spec default with a
         // temperature or a causal request. Inherit exact verification there;
         // an explicit, incompatible threshold request remains an error.
@@ -4188,6 +4190,15 @@ int serve(Engine& E) {
             request_clover_accept_ratio < 0 || request_clover_accept_delta < 0 ||
             (request_clover_accept == "threshold" && (request_clover_mode != "self-spec" || smp.temperature != 0.f))) {
             std::printf("ERR Clover threshold acceptance requires self-spec, temperature=0 and finite ratio/delta in [0,1]\n");
+            std::fflush(stdout); continue;
+        }
+        // Image prefill shares the committed KV/GDN prefix with ordinary
+        // Clover exact verification. LowConfidence and threshold acceptance
+        // remain outside the validated multimodal decoding contract.
+        if (E.m->clover && E.vision_enabled &&
+            (request_clover_mode == "diffusion" ||
+             (request_clover_mode == "self-spec" && request_clover_accept != "exact"))) {
+            std::printf("ERR Clover vision supports causal or exact self-speculative generation\n");
             std::fflush(stdout); continue;
         }
         std::string embeddings_path;
@@ -4810,11 +4821,6 @@ int strata::qwen35::run(int argc, char** argv) {
             std::fprintf(stderr, "tinystrata: Clover has no MTP head; use --clover-draft for self drafting\n");
             return 2;
         }
-        const char* experiment = std::getenv("TINYSTRATA_CLOVER_VISION");
-        if (vision && (!experiment || std::strcmp(experiment, "1") != 0)) {
-            std::fprintf(stderr, "tinystrata: Clover is text-only; experimental --vision requires TINYSTRATA_CLOVER_VISION=1\n");
-            return 2;
-        }
         if (context_auto) ctx = std::min(ctx, 131072);
         if (ctx > 131072) { std::fprintf(stderr, "tinystrata: Clover supports at most 131072 context tokens\n"); return 2; }
         if (clover_mode.empty())
@@ -4828,19 +4834,19 @@ int strata::qwen35::run(int argc, char** argv) {
             std::fprintf(stderr, "tinystrata: threshold acceptance requires --clover-mode self-spec\n"); return 2;
         }
         if (vision) {
-            if (clover_mode != "causal" || clover_draft != 0) {
-                std::fprintf(stderr, "tinystrata: experimental Clover vision supports --clover-mode causal only\n"); return 2;
+            if (clover_mode == "diffusion" || (clover_mode == "self-spec" && clover_accept != "exact")) {
+                std::fprintf(stderr, "tinystrata: Clover vision supports causal or exact self-speculative generation\n"); return 2;
             }
             if (m.g.n_embd != 2048 || m.n_rot != 64 || m.g.n_vocab <= V::kImagePad) {
-                std::fprintf(stderr, "tinystrata: experimental Clover vision requires Qwen3.6-compatible 2048-wide input and 64 rotary dimensions\n"); return 2;
+                std::fprintf(stderr, "tinystrata: Clover vision requires Qwen3.6-compatible 2048-wide input and 64 rotary dimensions\n"); return 2;
             }
             // The original Qwen projector supplies 2048-wide image rows. Restore
-            // the Qwen interleaved t/h/w positions only for this explicit test;
-            // ordinary Clover runs keep their published one-dimensional RoPE.
+            // the Qwen interleaved t/h/w positions whenever Vision is enabled;
+            // text-only Clover runs keep their published one-dimensional RoPE.
             // The existing attention kernel implements sections {11,11,10}.
             m.vision_rope = true;
             m.image_pad = V::kImagePad;
-            std::fprintf(stderr, "tinystrata: experimental Clover vision enabled (Qwen3.6 projector, interleaved M-RoPE, causal only)\n");
+            std::fprintf(stderr, "tinystrata: Clover vision enabled (Qwen3.6 projector, interleaved M-RoPE, causal/exact self-spec)\n");
         }
         if (!serve_mode && clover_mode != "causal") {
             std::fprintf(stderr, "tinystrata: Clover diffusion/self-spec use --serve or the API; numerical --tokens tools use --clover-mode causal\n"); return 2;

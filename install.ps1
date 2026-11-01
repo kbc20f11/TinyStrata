@@ -876,7 +876,7 @@ function Invoke-TinyStrataApi {
 
 function Test-TinyStrataInferenceReady {
     param($Health, $Configuration)
-    $requireImages = -not ($Configuration -and ($Configuration.vision_mode -eq 'no' -or $Configuration.arch -in @('lfm2moe', 'clover_moe')))
+    $requireImages = -not ($Configuration -and ($Configuration.vision_mode -eq 'no' -or $Configuration.arch -eq 'lfm2moe'))
     return [bool]($Health.loaded -and (-not $requireImages -or $Health.images))
 }
 

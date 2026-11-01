@@ -277,6 +277,53 @@ class Benchmark64K(unittest.TestCase):
         self.assertFalse(report['standard'])
         self.assertEqual(FakeService.instances, [])
 
+    def vision_app(self):
+        projector = self.folder / 'projector.gguf'
+        projector.write_bytes(b'fixture projector')
+        app = copy.deepcopy(self.original)
+        app['vision_mode'] = 'gpu'
+        app['vision'] = dict(exe=str(self.folder / 'engine.exe'),
+                             model=str(self.folder / 'model.gguf'), mmproj=str(projector))
+        return app
+
+    def test_12_vision_app_does_not_change_fixed_causal_baseline(self):
+        app = self.vision_app()
+        before = copy.deepcopy(app)
+        controlled = bench.controlled_config(app, 'clover', self.folder, 12345, self.cases)
+        self.assertNotIn('vision', controlled)
+        self.assertEqual(controlled['vision_mode'], 'no')
+        self.assertNotIn('--vision', controlled['args'])
+        self.assertEqual(app, before)
+
+    def test_13_explicit_vision_d3_variant_records_resident_encoder_and_assets(self):
+        app = self.vision_app()
+        controlled = bench.controlled_config(app, 'clover', self.folder, 12345, self.cases,
+                                            clover_mode='self-spec', clover_vision=True)
+        self.assertEqual(config.value_of(controlled, 'clover_draft'), 3)
+        self.assertEqual(controlled['vision_mode'], 'gpu')
+        self.assertIn('--vision', controlled['args'])
+        self.assertNotIn('--mtp', controlled['args'])
+        self.assertTrue(controlled['vision']['gpu'])
+        self.assertEqual(controlled['vision']['min_tokens'], 1024)
+        self.assertEqual(controlled['vision']['max_tokens'], 4096)
+        self.assertIn(Path(app['vision']['mmproj']), bench.assets(controlled))
+        self.saved.write_text(json.dumps(app), encoding='utf-8')
+        report = self.invoke('--prepare-only', '--clover-mode', 'self-spec', '--clover-vision')
+        self.assertEqual(report['protocol'], 'tinystrata-bench-v1-clover-self-spec-vision')
+        self.assertTrue(report['clover_profile']['vision'])
+        self.assertTrue(report['models']['clover']['image_supported'])
+        self.assertFalse(report['standard'])
+        self.assertEqual(FakeService.instances, [])
+        self.assertEqual(json.loads(self.saved.read_text(encoding='utf-8')), app)
+
+    def test_14_vision_does_not_enable_unverified_decoders(self):
+        app = self.vision_app()
+        for options in ({'clover_mode': 'diffusion'},
+                        {'clover_mode': 'self-spec', 'clover_accept': 'threshold'}):
+            with self.assertRaisesRegex(ValueError, 'Vision requires'):
+                bench.controlled_config(app, 'clover', self.folder, 12345, self.cases,
+                                        clover_vision=True, **options)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -37,6 +37,7 @@
 !/tests/clover-self-spec-gpu.cu
 !/tests/clover-attention-gpu.cu
 !/tests/clover-decode-settings.py
+!/tests/clover-vision.py
 !/tests/benchmark-64k.py
 
 # Only build/runtime sources and the fixed public benchmark inputs belong here.

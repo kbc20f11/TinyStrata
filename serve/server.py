@@ -61,7 +61,7 @@ from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthro
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import config  # noqa: E402
-from serve.tinyconfig import experimental_clover_vision  # noqa: E402
+from serve.tinyconfig import clover_vision_enabled  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
@@ -4034,11 +4034,11 @@ class Service:
         cfg = {"args": args}
         mode = options.get("clover_mode", info.get("clover_mode", config.clover_mode(cfg)))
         draft = options.get("clover_draft", info.get("clover_draft", config.value_of(cfg, "clover_draft")))
-        draft = (4 if mode == "self-spec" else 0) if draft is None else config.check("clover_draft", draft, {})
+        draft = (3 if mode == "self-spec" else 0) if draft is None else config.check("clover_draft", draft, {})
         if "clover_draft" in options and "clover_mode" not in options:
             mode = "self-spec" if draft > 0 else "causal"
         elif "clover_mode" in options and "clover_draft" not in options:
-            draft = max(1, draft or 4) if mode == "self-spec" else 0
+            draft = max(1, draft or 3) if mode == "self-spec" else 0
         if (mode == "self-spec") != (draft > 0):
             raise ValueError("clover_mode: self-spec requires positive clover_draft; other modes require zero drafts")
         settings = {"clover_mode": mode, "clover_draft": draft}
@@ -4052,8 +4052,6 @@ class Service:
                 except ValueError:
                     pass
             settings[key] = config.check(key, default if value is None else value, {})
-        if (self.vision is not None or info.get("vision") == 1) and mode != "causal":
-            raise ValueError("clover_mode: experimental Clover Vision supports causal generation only")
         if settings["clover_accept"] == "threshold":
             temperature = (req or {}).get("temperature")
             if temperature is None:
@@ -4069,6 +4067,9 @@ class Service:
                 # Explicit threshold requests retain strict validation.
                 settings["clover_accept"] = "exact"
                 settings["_accept_fallback"] = True
+        if self.vision is not None or info.get("vision") == 1:
+            if mode not in ("causal", "self-spec") or (mode == "self-spec" and settings["clover_accept"] != "exact"):
+                raise ValueError("clover_mode: Clover Vision supports causal or exact self-spec generation")
         return settings
 
     def clover_request_sampling(self, sampling: dict | None = None) -> dict:
@@ -6850,7 +6851,7 @@ def default_model_name(cfg: dict) -> str:
 def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
     """Install the fixed GGUF and image projector before publishing inference readiness."""
     from serve.model_download import (FixedModelBundleDownloader, FixedModelDownloader,
-                                      FixedGemma4BundleDownloader, manifest_for_arch)
+                                      FixedGemma4BundleDownloader, manifest_for_arch, FIXED_MMPROJ)
     from serve.model_setup import model_path, prepare_installed_model, resolve_executable, save_settings
 
     existing = model_path(cfg)
@@ -6898,13 +6899,13 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
         if exe is None or not Path(exe).is_file():
             raise ValueError("the model is downloaded, but the native executable is missing; build TinyStrata "
                              "and configure it with run.py --exe PATH, then retry")
-        want_vision = updated.get("arch") not in ("lfm2moe", "clover_moe") and updated.get("vision_mode") != "no"
+        want_vision = updated.get("arch") != "lfm2moe" and updated.get("vision_mode") != "no"
         if want_vision and not updated.get("vision"):
             raise ValueError("the model and projector are verified, but tinystrata-vision is missing; "
                              "reinstall or build the image encoder, then retry")
         tpath = Path(updated["tokenizer"])
         tokenizer = model_tokenizer(tpath)
-        template = ChatTemplate(tpath / "chat_template.jinja")
+        template = ChatTemplate(tpath / "chat_template.jinja", clover_vision=want_vision and clover_vision_enabled(updated))
         effort = effort_end_args(updated, str(exe), tokenizer)
         literals = literal_tags(getattr(tokenizer, "control_tokens", ()))
         stop_ids = tokenizer_stop_ids(tokenizer)
@@ -6975,6 +6976,12 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
                     existing_paths=(existing,) if existing is not None else (),
                     projector_paths=(Path(projector),) if projector else (),
                     assistant_paths=(Path(assistant),) if assistant else ())
+    elif cfg.get("arch") == "clover_moe" and cfg.get("vision_mode") != "no":
+        projector = (cfg.get("vision") or {}).get("mmproj") or cfg.get("vision_mmproj")
+        svc.downloads = FixedModelBundleDownloader(directory, on_ready=activate,
+                    existing_paths=(existing,) if existing is not None else (),
+                    projector_paths=(Path(projector),) if projector else (),
+                    _manifests=(manifest_for_arch("clover_moe"), FIXED_MMPROJ))
     elif cfg.get("arch") in ("lfm2moe", "clover_moe"):
         svc.downloads = FixedModelDownloader(directory, on_ready=activate,
                                              existing_paths=(existing,) if existing is not None else (),
@@ -7151,7 +7158,7 @@ def main() -> int:
         engine.close()
         ap.error("The model chat template is missing; run run.py --model MODEL.gguf again")
     svc = Service(engine, tok, ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja",
-                                          experimental_clover_vision=bool(vision) and experimental_clover_vision(cfg)),
+                                          clover_vision=bool(vision) and clover_vision_enabled(cfg)),
                   model_name=default_model_name(cfg), vision=vision,
                   sampling_defaults=sampling_defaults,
                   fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True,

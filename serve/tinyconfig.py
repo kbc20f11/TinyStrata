@@ -10,6 +10,7 @@ MEMORY_POLICY_VERSION = 1
 VISION_POLICY_VERSION = 1
 GENERATION_POLICY_VERSION = 1
 CLOVER_DECODE_POLICY_VERSION = 1
+CLOVER_VISION_POLICY_VERSION = 1
 CHUNK_POLICY_VERSION = config.CHUNK_POLICY_VERSION
 DEFAULT_MAX_TOKENS = 32768
 DEFAULT_SAMPLING = {
@@ -70,13 +71,45 @@ def migrate_clover_decode_settings(cfg: dict) -> tuple[dict, bool]:
     return new, new != cfg
 
 
-def experimental_clover_vision(cfg: dict) -> bool:
-    """Permit the local Vision experiment only through an explicit process opt-in.
+def clover_vision_defaults(cfg: dict) -> dict:
+    """Enable the pinned Qwen image encoder for a fresh Clover profile."""
+    if cfg.get("arch") != "clover_moe":
+        return cfg
+    return {**cfg, "vision_mode": "gpu", "clover_vision_policy_version": CLOVER_VISION_POLICY_VERSION}
 
-    This does not change Clover's text-only profile or its default image mode.
-    Saved experimental settings cannot enable it without the environment flag.
+
+def migrate_clover_vision_settings(cfg: dict) -> tuple[dict, bool]:
+    """Upgrade the former managed D3 text-only default once; keep image choices.
+
+    Historical automatic 'no' and an identical manual 'no' have no provenance.
+    Only the complete unmarked stock tuple migrates. CLI image choices receive
+    the marker before migration, so even a later explicit 'no' is retained.
     """
-    return cfg.get("arch") == "clover_moe" and os.environ.get("TINYSTRATA_CLOVER_VISION") == "1"
+    if cfg.get("arch") != "clover_moe" or "clover_vision_policy_version" in cfg:
+        return cfg, False
+    expected = {"--model": None, "--max-context": "auto", "--kv-type": "int8", "--chunk": "auto",
+                "--clover-mode": "self-spec", "--clover-draft": "3", "--clover-accept": "exact"}
+    args = cfg.get("args")
+    stock = (cfg.get("model_source") == "managed" and cfg.get("vision_mode", "no") == "no" and
+             not cfg.get("vision") and "vision_policy_version" not in cfg and
+             cfg.get("env") == {"STRATA_IQ_MT_MIN": "1"} and cfg.get("sampling") == CLOVER_SAMPLING and
+             cfg.get("enable_thinking", True) is True and isinstance(args, list) and len(args) % 2 == 0)
+    seen = set()
+    if stock:
+        for flag, value in zip(args[::2], args[1::2]):
+            if flag not in expected or flag in seen or (expected[flag] is not None and value != expected[flag]):
+                stock = False
+                break
+            seen.add(flag)
+        stock = stock and {"--model", "--clover-mode", "--clover-draft", "--clover-accept"}.issubset(seen)
+    new = clover_vision_defaults(cfg) if stock else {**cfg, "vision_mode": cfg.get("vision_mode", "no"),
+                                                  "clover_vision_policy_version": CLOVER_VISION_POLICY_VERSION}
+    return new, new != cfg
+
+
+def clover_vision_enabled(cfg: dict) -> bool:
+    """Select the Clover image-template adapter without replacing its tokenizer."""
+    return cfg.get("arch") == "clover_moe" and cfg.get("vision_mode", "gpu") != "no"
 
 
 
@@ -159,7 +192,7 @@ def migrate_chunk_settings(cfg: dict) -> tuple[dict, bool]:
 
 def check_vision_options(cfg: dict) -> str:
     """Validate launcher preferences independently of installed image assets."""
-    text_only = cfg.get("arch") in ("lfm2moe", "clover_moe")
+    text_only = cfg.get("arch") == "lfm2moe"
     mode = cfg.get("vision_mode", "no" if text_only else "gpu")
     if mode not in ("gpu", "cpu", "no"):
         raise ValueError("vision_mode must be gpu, cpu or no")
@@ -167,7 +200,7 @@ def check_vision_options(cfg: dict) -> str:
         tokens = cfg["vision_tokens"]
         if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
             raise ValueError("vision_tokens must be a positive whole number")
-    if text_only and not experimental_clover_vision(cfg) and (mode != "no" or cfg.get("vision")):
+    if text_only and (mode != "no" or cfg.get("vision")):
         raise ValueError(f"{MODEL_NAMES[cfg['arch']]} is text-only; use --vision no")
     return mode
 
@@ -201,6 +234,8 @@ def migrate_settings(cfg: dict) -> tuple[dict, bool]:
     changed = changed or generation_changed
     new, decode_changed = migrate_clover_decode_settings(new)
     changed = changed or decode_changed
+    new, clover_vision_changed = migrate_clover_vision_settings(new)
+    changed = changed or clover_vision_changed
     # Old configs default to GPU encoding; explicit CPU/off preferences survive
     # both migration and model preparation on every subsequent launch.
     mode = check_vision_options(new)
@@ -323,10 +358,9 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
                 temperature = CLOVER_SAMPLING["temperature"]
             if isinstance(temperature, bool) or not isinstance(temperature, (int, float)) or temperature != 0:
                 raise ValueError("--clover-accept threshold requires sampling.temperature 0")
-        if "--vision" in seen and not experimental_clover_vision(cfg):
-            raise ValueError("Clover-35B-A3B-Preview is text-only; remove --vision")
-        if ("--vision" in seen or cfg.get("vision") or cfg.get("vision_mode", "no") != "no") and mode != "causal":
-            raise ValueError("experimental Clover Vision supports only --clover-mode causal")
+        if "--vision" in seen or cfg.get("vision") or check_vision_options(cfg) != "no":
+            if mode not in ("causal", "self-spec") or (mode == "self-spec" and config.value_of(cfg, "clover_accept") == "threshold"):
+                raise ValueError("Clover Vision supports causal or exact self-spec generation; use --vision no for diffusion or threshold acceptance")
         if config.value_of(cfg, "mtp") not in (None, 0):
             raise ValueError("Clover has no MTP head; use --clover-draft for self-speculative decoding")
         context = config.value_of(cfg, "max_context")

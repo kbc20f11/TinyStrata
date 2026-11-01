@@ -195,7 +195,7 @@ class ModelSwitcher:
         exe = resolve_executable(cfg)
         if exe is None:
             raise ValueError('the selected model engine has not been built')
-        want_vision = profile.arch in ('qwen35moe', 'gemma4') and cfg.get('vision_mode', 'gpu') != 'no'
+        want_vision = profile.arch in ('qwen35moe', 'gemma4', 'clover_moe') and cfg.get('vision_mode', 'gpu') != 'no'
         if cfg.get('vision_download_required') or (want_vision and not cfg.get('vision')):
             raise ValueError('the image projector or vision executable is missing; download or build image support first')
         if cfg.get('assistant_download_required'):
@@ -203,7 +203,8 @@ class ModelSwitcher:
         if (api.gpu_list(cfg) or [0]) != (getattr(svc, 'gpu_indices', None) or [0]):
             raise ValueError('live switching requires both model profiles to use this server GPU')
         tok = api.model_tokenizer(Path(cfg['tokenizer']))
-        template = api.ChatTemplate(Path(cfg['tokenizer']) / 'chat_template.jinja')
+        template = api.ChatTemplate(Path(cfg['tokenizer']) / 'chat_template.jinja',
+                                    clover_vision=want_vision and profile.arch == 'clover_moe')
         effort = api.effort_end_args(cfg, str(exe), tok)
         engine = api.StrataEngine(str(exe), api.engine_args(cfg) + (effort or []),
                                   cwd=cfg.get('cwd'), log=cfg.get('log'), env=api.child_env(cfg), lazy=True)
@@ -366,7 +367,7 @@ class ModelSwitcher:
     def _downloader(self, model):
         if model in self._downloads:
             return self._downloads[model]
-        from serve.model_download import FixedGemma4BundleDownloader, FixedModelBundleDownloader, FixedModelDownloader, manifest_for_arch
+        from serve.model_download import FixedGemma4BundleDownloader, FixedModelBundleDownloader, FixedModelDownloader, manifest_for_arch, FIXED_MMPROJ
         from serve.model_setup import model_path
         profile = self.profiles.get(model)
         cfg = profile.config
@@ -379,7 +380,13 @@ class ModelSwitcher:
             extra = {'assistant': assistant, 'assistant_verified': True} if profile.arch == 'gemma4' else {}
             self.profiles.prepare(model, model_path=path, projector=projector, projector_verified=True, **extra)
 
-        if profile.arch in ('lfm2moe', 'clover_moe'):
+        if profile.arch == 'clover_moe' and cfg.get('vision_mode') != 'no':
+            projector = (cfg.get('vision') or {}).get('mmproj') or cfg.get('vision_mmproj')
+            manager = FixedModelBundleDownloader(directory, on_ready=prepared,
+                                                 existing_paths=(existing,) if existing is not None else (),
+                                                 projector_paths=(Path(projector),) if projector else (),
+                                                 _manifests=(manifest_for_arch('clover_moe'), FIXED_MMPROJ))
+        elif profile.arch in ('lfm2moe', 'clover_moe'):
             manager = FixedModelDownloader(directory, on_ready=prepared,
                                            existing_paths=(existing,) if existing is not None else (),
                                            _manifest=manifest_for_arch(profile.arch))

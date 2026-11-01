@@ -136,6 +136,23 @@ $result = Invoke-MockedUiBootstrap -UiText $entrypointUiText -CoreHeader $entryp
 Assert-Entrypoint ($result.Forwarded.WithUI -and $result.Forwarded.CheckOnly -and $result.Forwarded.Port -eq 8080 -and $result.Forwarded.UiPort -eq 3001) 'UI forwards CheckOnly and requested ports'
 Assert-Entrypoint ($result.Forwarded.Backend -eq 'hip' -and $result.Forwarded.ModelFamily -eq 'gemma4' -and $result.Forwarded.HipArchitectures -eq 'gfx1200;gfx1201') 'UI forwards backend family and multiple architectures'
 
+# Evaluate only the pure readiness predicate, never the installer body.
+$readinessTokens = $null
+$readinessErrors = $null
+$readinessAst = [System.Management.Automation.Language.Parser]::ParseFile($entrypointCorePath, [ref]$readinessTokens, [ref]$readinessErrors)
+$readinessFunction = $readinessAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Test-TinyStrataInferenceReady' }, $true)
+if (-not $readinessFunction) { throw 'Installer readiness helper is missing.' }
+Invoke-Expression $readinessFunction.Extent.Text
+foreach ($mode in @('gpu', 'cpu')) {
+    $configuration = [pscustomobject]@{ arch = 'clover_moe'; vision_mode = $mode }
+    Assert-Entrypoint (-not (Test-TinyStrataInferenceReady ([pscustomobject]@{ loaded = $true; images = $false }) $configuration)) 'Clover image mode requires image readiness'
+    Assert-Entrypoint (Test-TinyStrataInferenceReady ([pscustomobject]@{ loaded = $true; images = $true }) $configuration) 'Clover image mode becomes ready with encoder'
+}
+foreach ($arch in @('clover_moe', 'lfm2moe')) {
+    Assert-Entrypoint (Test-TinyStrataInferenceReady ([pscustomobject]@{ loaded = $true; images = $false }) ([pscustomobject]@{ arch = $arch; vision_mode = 'no' })) 'explicit text-only mode remains ready without encoder'
+}
+Assert-Entrypoint (-not (Test-TinyStrataInferenceReady ([pscustomobject]@{ loaded = $false; images = $true }) ([pscustomobject]@{ arch = 'clover_moe'; vision_mode = 'gpu' }))) 'Clover readiness still requires loaded language engine'
+
 [pscustomobject]@{
     Result = 'passed'
     PowerShell = $PSVersionTable.PSVersion.ToString()

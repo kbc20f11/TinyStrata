@@ -235,6 +235,16 @@ class LauncherPolicy(unittest.TestCase):
         self.assertEqual(config.value_of(cfg,'clover_draft'),7)
         self.assertEqual(config.value_of(cfg,'kv_type'),'fp8-mma')
 
+    def test_explicit_vision_off_and_cpu_survive_stock_migration(self):
+        for mode in ('no','cpu'):
+            cfg=self.prepare(self.base,vision=mode)
+            self.assertEqual(cfg['vision_mode'],mode)
+            self.assertEqual(cfg['clover_vision_policy_version'],tinyconfig.CLOVER_VISION_POLICY_VERSION)
+            self.path.unlink(missing_ok=True)
+            cfg=self.prepare(vision=mode)
+            self.assertEqual(cfg['vision_mode'],mode)
+            self.assertEqual(config.value_of(cfg,'clover_draft'),3)
+
     def inherited_threshold(self):
         cfg,_=config.apply(self.base,dict(clover_mode='self-spec',clover_draft=3,clover_accept='threshold',
                                         clover_accept_ratio=.9,clover_accept_delta=.6))
