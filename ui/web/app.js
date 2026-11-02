@@ -887,7 +887,8 @@ function codeBlock(lang, code, complete) {
   const prev = ok ? `<div class="st-code__preview"><iframe sandbox="" title="${esc(kind === "svg" ? tr("preview.titleSvg", "Picture preview") : tr("preview.titlePage", "Page preview"))}" data-lang="${esc(lang)}"></iframe></div>` : "";
   const drawing = diagram ? `<div class="st-diagram__image"></div><div class="st-diagram__status" hidden>${esc(tr("diagram.error", "Could not draw this diagram. The source is shown below."))}</div>` : "";
   const latexPreview = latex ? `<div class="st-latex__preview" role="document" aria-label="${esc(tr("latex.preview", "LaTeX preview"))}"></div><div class="st-latex__status" hidden>${esc(tr("latex.error", "Could not preview this LaTeX. The source is shown below."))}</div>` : "";
-  return `<div class="st-code"${diagram ? ' data-diagram="mermaid"' : latex ? ' data-latex="true"' : ""}>${head}${drawing}<pre><code>${esc(code)}</code></pre>${latexPreview}${prev}</div>`;
+  const source = !complete || typeof StrataSyntax === "undefined" ? esc(code) : StrataSyntax.html(lang, code);
+  return `<div class="st-code"${diagram ? ' data-diagram="mermaid"' : latex ? ' data-latex="true"' : ""}>${head}${drawing}<pre><code data-syntax-lang="${esc(lang || "")}" data-syntax-complete="${complete}">${source}</code></pre>${latexPreview}${prev}</div>`;
 }
 function blocks(text) {
   const out = [], lines = text.split("\n");
@@ -1456,7 +1457,8 @@ const terminalWords = {
   "output": "Output",
   "tokens": "Tokens",
   "input": "Input",
-  "cache": "Cached",
+  "cache": "Cache hit rate",
+  "cacheHint": "Share of all input tokens reused from the prompt cache; parentheses show reused tokens. A dash means the rate is unavailable.",
   "elapsed": "Elapsed",
   "total": "Total",
   "preparing": "Preparing the reply",
@@ -1538,7 +1540,21 @@ function renderTerminalStats(el, m, streaming) {
   const readTokens = terminalNumber(s.readTokens) ? s.readTokens : terminalNumber(s.inputTokens)
     ? Math.max(0, s.inputTokens - (s.cachedTokens || 0)) : null;
   if (!active && terminalNumber(readTokens)) values.push([terminalWord("input"), `${fmt(readTokens)} tok${terminalNumber(s.promptRate) ? ` · ${fmt(s.promptRate, 1)} tok/s` : ""}`, terminalWord("native")]);
-  if (!active && terminalNumber(s.cachedTokens)) values.push([terminalWord("cache"), `${fmt(s.cachedTokens)} tok`, terminalWord("native")]);
+  if (!active && terminalNumber(s.cachedTokens)) {
+    // OpenAI prompt_tokens includes cached tokens. Older saved stats may only
+    // have the engine's newly read count, which excludes cached tokens.
+    const total = terminalNumber(s.inputTokens) ? s.inputTokens : terminalNumber(s.readTokens)
+      ? s.readTokens + s.cachedTokens : null;
+    const rate = terminalNumber(total) && total > 0 && s.cachedTokens <= total
+      ? 100 * (s.cachedTokens / total) : null;
+    const rounded = rate == null ? null : Math.round(rate * 10) / 10;
+    const pct = rate == null ? null : rate > 0 && rate < 0.1 ? `<${fmt(0.1, 1)}`
+      : fmt(rounded, Number.isInteger(rounded) ? 0 : 1);
+    const value = pct == null
+      ? tr("terminal.cacheUnknown", "— ({n} tok)", {n: fmt(s.cachedTokens)})
+      : tr("terminal.cacheValue", "{pct}% ({n} tok)", {pct, n: fmt(s.cachedTokens)});
+    values.push([terminalWord("cache"), value, terminalWord("cacheHint")]);
+  }
   values.push([terminalWord(active ? "elapsed" : "total"), `${fmt((s.elapsedMs || 0) / 1000, 1)} s`, terminalWord("client")]);
   // Only rebuild the small telemetry row; the token stream owns the prose DOM.
   const key = JSON.stringify(values);
@@ -1826,6 +1842,7 @@ function updateAssistant(el, m, streaming) {
     bubble.replaceChildren();
   } else {
     bubble.innerHTML = answerHtml(m);
+    if (typeof StrataSyntax !== "undefined") StrataSyntax.hydrate(bubble, !!streaming);
     hydrateToolImages(bubble);
     if (settings.math) StrataMath.hydrate(bubble);
     if (!streaming && typeof StrataDiagrams !== "undefined") StrataDiagrams.hydrate(bubble);

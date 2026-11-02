@@ -1,0 +1,35 @@
+/* Scoped token colors retain the terminal surfaces. Both palettes provide
+   readable contrast on --st-code-bg and switch immediately with the OS theme. */
+:root, html[data-theme="dark"] {
+  --syntax-comment: #91ae9a;
+  --syntax-keyword: #c6a4ff;
+  --syntax-string: #a4dfae;
+  --syntax-number: #f3c182;
+  --syntax-title: #82cfff;
+  --syntax-literal: #f5a4c9;
+  --syntax-attr: #c0d78b;
+}
+html[data-theme="light"] {
+  --syntax-comment: #4e6756;
+  --syntax-keyword: #6639a6;
+  --syntax-string: #27653a;
+  --syntax-number: #905719;
+  --syntax-title: #075f87;
+  --syntax-literal: #90365d;
+  --syntax-attr: #74600c;
+}
+.st-code code .hljs-comment, .st-code code .hljs-quote { color: var(--syntax-comment); }
+.st-code code .hljs-keyword, .st-code code .hljs-selector-tag,
+.st-code code .hljs-meta .hljs-keyword, .st-code code .hljs-doctag { color: var(--syntax-keyword); }
+.st-code code .hljs-string, .st-code code .hljs-regexp, .st-code code .hljs-symbol,
+.st-code code .hljs-addition, .st-code code .hljs-meta .hljs-string { color: var(--syntax-string); }
+.st-code code .hljs-number, .st-code code .hljs-type,
+.st-code code .hljs-built_in { color: var(--syntax-number); }
+.st-code code .hljs-title, .st-code code .hljs-section,
+.st-code code .hljs-selector-id, .st-code code .hljs-selector-class { color: var(--syntax-title); }
+.st-code code .hljs-literal, .st-code code .hljs-variable,
+.st-code code .hljs-template-variable, .st-code code .hljs-deletion { color: var(--syntax-literal); }
+.st-code code .hljs-attr, .st-code code .hljs-attribute,
+.st-code code .hljs-name, .st-code code .hljs-meta { color: var(--syntax-attr); }
+.st-code code .hljs-emphasis { font-style: italic; }
+.st-code code .hljs-strong { font-weight: 600; }

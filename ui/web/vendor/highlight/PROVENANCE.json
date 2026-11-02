@@ -1,0 +1,18 @@
+{
+  "package": "@highlightjs/cdn-assets",
+  "version": "11.12.0",
+  "url": "https://registry.npmjs.org/@highlightjs/cdn-assets/-/cdn-assets-11.12.0.tgz",
+  "integrity": "sha512-KvOKXODaiFmId9xaq3xc5xCL66wVLUuOngDbO9B/kewbFTqdGbn2nJxNhN3H5R1cgDTVj6R8vH0zgiNDEGjpDw==",
+  "license": "BSD-3-Clause",
+  "verified": "The tarball's SHA512 was checked against the official npm dist.integrity before copying.",
+  "changes": "None. LICENSE, highlight.min.js (the prebuilt common-languages browser bundle), and the four languages/*.min.js files are copied byte-for-byte from the npm package. Source maps, themes, other languages and development files are not shipped.",
+  "loading": "Local assets intended for importScripts in the syntax worker only. The bundle and these language plugins need no network CDN or additional module chunks.",
+  "sha256": {
+    "LICENSE": "6c081431591d9df696c82dc598fe1423765b8a299b200ed00b281afd0f64c490",
+    "highlight.min.js": "8ab71eb09c51f501e5e25157d9cff100e46cc29bcbfc744d0b746d451fca7f53",
+    "languages/cmake.min.js": "0cd6dc22b0b99dc53a4288ae30f760dab4da12ddde570f617be30a396b5b97ec",
+    "languages/dockerfile.min.js": "d96f73b077d654d776795097cf49afae5dce3ce453106af022eae013ad2ec8b1",
+    "languages/latex.min.js": "12c8743607535b327bcebd954b0228cf39b7844704123319a7fb594a7db94ce7",
+    "languages/powershell.min.js": "fc298b3e0db362e531e6d58988b7a78f83da19df6b5d74db75bc961b2bfbfd3d"
+  }
+}

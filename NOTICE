@@ -91,6 +91,8 @@ The upstream MIT copyright and license are preserved in LICENSE.
 Outfit fonts are distributed under the SIL Open Font License 1.1; see
 ui/web/fonts/OFL.txt. The offline KaTeX dependency is MIT licensed; see
 ui/web/vendor/katex/LICENSE and ui/web/vendor/katex/PROVENANCE.json.
+The offline Highlight.js syntax highlighter is BSD-3-Clause licensed; see
+ui/web/vendor/highlight/LICENSE and ui/web/vendor/highlight/PROVENANCE.json.
 
 Clover-35B-A3B-Preview support independently implements its published
 bidirectional GDN, block coreset, and generation-control equations. References:

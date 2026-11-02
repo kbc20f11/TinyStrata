@@ -14,7 +14,7 @@ function ok(value,label){assert(value,label);checks++;}
 function fixture(saved=[]){
  const elements=new Map(),calls=[],toasts=[],timers=new Map(),storage={'model-downloads':saved};let tid=0;
  function element(id){
-  if(!elements.has(id))elements.set(id,{id,hidden:false,disabled:false,textContent:'',value:'',open:false,attributes:{},
+  if(!elements.has(id))elements.set(id,{id,hidden:false,disabled:false,textContent:'',value:'',open:false,attributes:{},dataset:{},
     options:[],children:[],setAttribute(k,v){this.attributes[k]=v;},removeAttribute(k){delete this.attributes[k];if(k==='value')this.value=undefined;},
     querySelector(){return {disabled:false,title:''};},showModal(){this.open=true;},close(){this.open=false;}});
   return elements.get(id);

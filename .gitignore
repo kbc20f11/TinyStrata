@@ -117,6 +117,15 @@
 !/ui/web/vendor/katex/dist/*.js
 !/ui/web/vendor/katex/dist/fonts/
 !/ui/web/vendor/katex/dist/fonts/*.woff2
+!/ui/web/vendor/highlight/
+!/ui/web/vendor/highlight/LICENSE
+!/ui/web/vendor/highlight/PROVENANCE.json
+!/ui/web/vendor/highlight/highlight.min.js
+!/ui/web/vendor/highlight/languages/
+!/ui/web/vendor/highlight/languages/powershell.min.js
+!/ui/web/vendor/highlight/languages/cmake.min.js
+!/ui/web/vendor/highlight/languages/dockerfile.min.js
+!/ui/web/vendor/highlight/languages/latex.min.js
 
 # Local environments, generated artifacts and development-only files.
 /serve/test_*.py
