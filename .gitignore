@@ -39,6 +39,8 @@
 !/tests/clover-decode-settings.py
 !/tests/clover-vision.py
 !/tests/benchmark-64k.py
+!/tests/test_tool_parser_markdown.py
+!/tests/test_tool_parser_values.py
 
 # Only build/runtime sources and the fixed public benchmark inputs belong here.
 /benchmark/**

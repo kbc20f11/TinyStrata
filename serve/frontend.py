@@ -844,17 +844,29 @@ FUNC_START = "<function="
 FUNC_END = "</function>"
 
 
-def param_end(text: str, final: bool = False) -> int:
-    """Where a parameter value in `text` ends: the first `</parameter>` followed (after whitespace) by the next
-    `<parameter=` or `</function>` - the same text inside a value (a file that documents the call format, #210) is
-    part of the value.  -1: none yet; -2: a candidate whose follower has not arrived (streaming; `final` accepts it)."""
+# A quoted call needs a complete opener and its first parameter or close. A bare FUNC_START is ordinary text.
+_QUOTED_OPEN = re.compile(r"<function=[^<>\s]+>\s*(?:<parameter=|</function>)")
+
+
+def param_end(text: str, final: bool = False, name: str | None = None) -> int:
+    """Where a parameter value in `text` ends: the first PARAM_END followed (after whitespace) by the next
+    PARAM_START or FUNC_END. A close inside a call quoted by the value, or followed by the same parameter name
+    again, is part of the value (#4078). `text` starts at the value, including when streaming.
+    -1: none yet; -2: a candidate whose follower has not arrived (`final` accepts it)."""
     at = text.find(PARAM_END)
     while at >= 0:
-        after = text[at + len(PARAM_END):].lstrip()
-        if after.startswith(("<parameter=", FUNC_END)):
-            return at
-        if not after or "<parameter=".startswith(after) or FUNC_END.startswith(after):
-            return at if final else -2
+        if len(_QUOTED_OPEN.findall(text, 0, at)) <= text.count(FUNC_END, 0, at):
+            after = text[at + len(PARAM_END):].lstrip()
+            if after.startswith(PARAM_START):
+                gt = after.find(">")
+                if gt < 0:
+                    return at if final else -2
+                if name is None or after[len(PARAM_START):gt].strip() != name:
+                    return at
+            elif after.startswith(FUNC_END):
+                return at
+            elif not after or PARAM_START.startswith(after) or FUNC_END.startswith(after):
+                return at if final else -2
         at = text.find(PARAM_END, at + 1)
     return -1
 
@@ -879,7 +891,7 @@ def call_end(text: str) -> int:
             gt = text.find(">", pos)
             if gt < 0:
                 return -1
-            end = param_end(text[gt + 1:])
+            end = param_end(text[gt + 1:], name=text[pos:gt].split("=", 1)[1].strip())
             if end < 0:
                 return -1
             pos = gt + 1 + end + len(PARAM_END)
@@ -969,7 +981,7 @@ def function_end(text: str) -> int:
             gt = text.find(">", pos)
             if gt < 0:
                 return -1
-            end = param_end(text[gt + 1:])
+            end = param_end(text[gt + 1:], name=text[pos:gt].split("=", 1)[1].strip())
             if end < 0:
                 return -1
             pos = gt + 1 + end + len(PARAM_END)
@@ -1022,7 +1034,7 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
         rest = rest[rest.index("<parameter=") + len("<parameter="):]
         pname = rest[:rest.index(">")]
         rest = rest[rest.index(">") + 1:]
-        end = param_end(rest, final=True)
+        end = param_end(rest, final=True, name=pname.strip())
         value = rest[:end] if end >= 0 else rest
         rest = rest[end + len(PARAM_END):] if end >= 0 else ""
         if value.startswith("\n"):
@@ -1147,6 +1159,7 @@ class OutputParser:
         self.rescued = 0             # calls delivered from the reasoning
         self.refused = 0             # declared calls kept as reasoning text (quoted, or the turn was cut)
         self.fence, self.line, self.ticks = "", "", 0
+        self._prev_blank = self._indented = False   # the preceding line was blank / inside an indented code block
         # recover (opt-in, the config's "tool_call_recovery"): a declared tool's call written next to the template's
         # form is the call - `<parameter=NAME>` as the opener, JSON inside <tool_call>, a bare <function=NAME> at the
         # start of a line outside code, or a second call in the same <tool_call> (which otherwise merges into one).
@@ -1157,10 +1170,10 @@ class OutputParser:
 
     def _ok_at(self, p: int) -> bool:
         """self.buf[p] would open a call: at the start of a line, outside a code fence and inline code."""
-        snap = (self.fence, self.line, self.ticks)
+        snap = self._snap()
         self._track(self.buf[:p])
         ok = self._opener_ok()
-        self.fence, self.line, self.ticks = snap
+        self._restore(snap)
         return ok
 
     def _follower(self, after: str) -> str:
@@ -1242,15 +1255,29 @@ class OutputParser:
                 self._line_parts.clear()
                 self._line_blocks = None
                 s = line.lstrip()
+                run = len(s) - len(s.lstrip(s[0])) if s else 0
+                was_fenced = bool(self.fence)
                 if self.fence:
-                    if s.startswith(self.fence * 3):
+                    # #4702: an inner ``` block cannot close an outer ```` fence.
+                    if s.startswith(self.fence[0]) and run >= len(self.fence) and not s[run:].strip():
                         self.fence = ""
-                elif s[:3] in ("```", "~~~") and (s[0] * 3) not in s[3:]:
-                    self.fence = s[0]
+                elif run >= 3 and s[0] in ("`", "~") and s[0] * 3 not in s[run:]:
+                    # Count the whole opener, including runs of six or more characters. Keep one-line examples inline.
+                    self.fence = s[0] * run
                 elif not s:
                     self.ticks = 0
                 else:
                     self.ticks += line.count("`")
+                # #4703: indentation starts code after a blank line and continues an existing code block.
+                if was_fenced or self.fence:
+                    self._prev_blank = self._indented = False
+                elif not s:
+                    self._prev_blank = True
+                elif line.startswith(("    ", "\t")):
+                    self._indented = self._prev_blank or self._indented
+                    self._prev_blank = False
+                else:
+                    self._prev_blank = self._indented = False
             else:
                 if part:
                     self._line_parts.append(part)
@@ -1259,11 +1286,25 @@ class OutputParser:
     def _opener_ok(self) -> bool:
         """The reasoning text so far puts a `<tool_call>` at the start of a line, outside a code fence and outside
         inline code."""
-        return not self.fence and not self.line.strip() and self.ticks % 2 == 0
+        return not self.fence and not self.line.strip() and self.ticks % 2 == 0 and not self._in_indented_block()
+
+    def _in_indented_block(self) -> bool:
+        """Four spaces or a tab after a blank line, or another indented code line."""
+        return (self._prev_blank or self._indented) and self.line.startswith(("    ", "\t"))
+
+    def _snap(self) -> tuple:
+        return (self.fence, self.line, self.ticks, self._prev_blank, self._indented)
+
+    def _restore(self, snap: tuple) -> None:
+        self.fence, self.line, self.ticks, self._prev_blank, self._indented = snap
+
+    def _reset_track(self) -> None:
+        self.fence, self.line, self.ticks = "", "", 0
+        self._prev_blank = self._indented = False
 
     def _in_code(self) -> bool:
-        """The text so far leaves the next character inside a code fence or inline code."""
-        return bool(self.fence) or (self.ticks + self.line.count("`")) % 2 == 1
+        """The next character is inside a code fence, inline code or an indented code block."""
+        return bool(self.fence) or (self.ticks + self.line.count("`")) % 2 == 1 or self._in_indented_block()
 
     def _quoted_think_end(self, i: int) -> bool | None:
         """#537: the `</think>` at self.buf[i] is the model quoting the tag while it thinks, not the end of the
@@ -1294,12 +1335,27 @@ class OutputParser:
         return out
 
     def _reset_scan(self):
+        self._call_end_checked = 0   # search progress for the current wrapped call's closing tag
         self.sp = 0                  # how much of self.buf (the call body) the scanner has consumed
         self.ss = "name"             # name -> between -> str|raw -> ... -> done
         self.scall = None            # the ToolCall being streamed (its id is reused by the final event)
         self.sfirst = True
         self.sval_started = False
         self.sdeclared = {}
+        self.spname = None
+        self.svstart = 0
+
+    def _wrapped_call_end(self) -> int:
+        # A structural walk cannot finish before the closing tag arrives. Search only new bytes plus overlap
+        # for a split tag. After any candidate, retain the full walk to disambiguate tags quoted by a value.
+        # Recovery can rewrite the buffer, so it always uses the full walk.
+        if not self.recover and self._call_end_checked >= 0:
+            start = max(0, self._call_end_checked - len(CALL_END) + 1)
+            if self.buf.find(CALL_END, start) < 0:
+                self._call_end_checked = len(self.buf)
+                return -1
+            self._call_end_checked = -1
+        return call_end(self.buf)
 
     def _scan(self) -> list[Event]:
         """Advance the streaming view of the call body in self.buf (see stream_tools)."""
@@ -1334,6 +1390,7 @@ class OutputParser:
                     args(("" if self.sfirst else ",") + json.dumps(pname) + ":")
                     self.sfirst = False
                     self.sp += b + 1
+                    self.spname = pname.strip()
                     if self.sdeclared.get(pname) == "string":
                         args('"')
                         self.ss, self.sval_started = "str", False
@@ -1353,7 +1410,10 @@ class OutputParser:
                         self.sp += 1
                         rest = rest[1:]
                     self.sval_started = True
-                end = param_end(rest)
+                    self.svstart = self.sp
+                # Keep the value's quoted openers in view even after their bytes have streamed out.
+                end = param_end(self.buf[self.svstart:], name=self.spname) if PARAM_END in rest else -1
+                end = end - (self.sp - self.svstart) if end >= 0 else end
                 if end >= 0:
                     value = rest[:end]
                     if value.endswith("\n"):
@@ -1371,7 +1431,7 @@ class OutputParser:
                     self.sp += safe
                 return out
             elif self.ss == "raw":
-                end = param_end(rest)
+                end = param_end(rest, name=self.spname)
                 if end < 0:
                     return out
                 value = rest[:end]
@@ -1669,7 +1729,7 @@ class OutputParser:
                     out.append(Event("reasoning", self._track(self.buf[:i])))
                 self.buf = self.buf[i + len(THINK_END):]
                 self.state, self.lead = "content", True
-                self.fence, self.line, self.ticks = "", "", 0     # the answer's own text starts here
+                self._reset_track()                               # the answer's own text starts here
             elif self.state == "content":
                 if self.lead:                                   # newlines right after </think> or a call
                     stripped = self.buf.lstrip("\n")
@@ -1710,10 +1770,10 @@ class OutputParser:
                     return out
                 # #1058: an opener inside a code fence or inline code is text (a quoted example), never a call.  The
                 # text before it decides, so streamed and whole outputs agree.  Mid-sentence openers still count.
-                snap = (self.fence, self.line, self.ticks)
+                snap = self._snap()
                 self._track(self.buf[:i])
                 in_code = self._in_code()
-                self.fence, self.line, self.ticks = snap
+                self._restore(snap)
                 if in_code:
                     out.append(Event("content", self._track(self.buf[:i + len(CALL_START)])))
                     self.buf = self.buf[i + len(CALL_START):]
@@ -1775,7 +1835,7 @@ class OutputParser:
                         elif after and not CALL_END.startswith(after):
                             drop = 0
                 else:
-                    i = call_end(self.buf)
+                    i = self._wrapped_call_end()
                     if i >= 0:
                         drop = len(CALL_END)
                     if self.recover:                # a batch in one wrapper: the next call follows this one's
