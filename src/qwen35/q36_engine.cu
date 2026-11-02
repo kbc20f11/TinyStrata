@@ -1206,6 +1206,11 @@ struct Engine {
     float* hmain = nullptr;   // [tmax][N] the main model's final normed hidden of each row (the MTP seeds)
     float* hlast = nullptr;   // [N] that of the last processed position (zeros before the first)
     void *q8, *xq, *escr;
+    struct IlScratchDeleter {
+        void operator()(void* p) const { if (p) (void) cudaFree(p); }
+    };
+    std::unique_ptr<void, IlScratchDeleter> mmvq_il_scratch;
+    bool mmvq_il_enabled = false; // CUDA experiment; the existing dispatch remains the default.
     int32_t *ids, *grp_start, *n_groups, *ent_dst, *ent_tok, *tok, *pos0, *pick;
     int32_t* hpin = nullptr;   // pinned staging: [0] decode token, [1] position, [2..9] picks, [10] max rows, [16..] tokens
     unsigned long long* grp_ptr;
@@ -1453,6 +1458,17 @@ struct Engine {
         const int max_in = (int) std::max<int64_t>({2 * g.n_embd, g.ssm_value_dim, g.n_head * g.head_dim, g.n_ff_shexp});
         CK(cudaMalloc(&q8, K::native_q8_1_bytes(max_in, 1) * T));
         CK(cudaMalloc(&xq, K::native_q8_1_bytes((int) N, 1) * T));
+#if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
+        if (const char* value = std::getenv("TINYSTRATA_Q36_MMVQ_IL"))
+            mmvq_il_enabled = std::strcmp(value, "1") == 0;
+        if (mmvq_il_enabled) {
+            // Allocate before any graph capture. Each projection rewrites this scratch from its own current input.
+            void* scratch = nullptr;
+            CK(cudaMalloc(&scratch, K::native_q8_1_il_bytes(max_in, 4)));
+            mmvq_il_scratch.reset(scratch);
+            std::fprintf(stderr, "tinystrata: opt-in interleaved dense MMVQ enabled (up to 4 rows)\n");
+        }
+#endif
         x16 = dalloc_t<__half>(T * (size_t) max_in);
         if (cublasCreate(&blas) != CUBLAS_STATUS_SUCCESS || cublasSetStream(blas, st) != CUBLAS_STATUS_SUCCESS) {
             std::fprintf(stderr, "tinystrata: cuBLAS handle failed\n");
@@ -2118,8 +2134,21 @@ struct Engine {
         const size_t qb = K::native_q8_1_bytes(w.n_in, 1);
         for (int c0 = 0; c0 < T; c0 += 8) {
             const int nc = std::min(8, T - c0);
-            K::native_mmvq(w.type, w.d, (const char*) q + (size_t) c0 * qb, out + (size_t) c0 * w.n_out, w.n_in,
-                           w.n_out, nc, st);
+            const void* input = (const char*) q + (size_t) c0 * qb;
+            float* output = out + (size_t) c0 * w.n_out;
+            if (mmvq_il_enabled && K::native_mmvq_il_supported(w.type, nc, w.n_out)) {
+                // One column reads the plain blocks. Never reuse an interleaved image across q8_1 producers.
+                if (nc > 1) K::native_q8_1_interleave(input, mmvq_il_scratch.get(), w.n_in, nc, st);
+                K::native_mmvq_il(w.type, w.d, input, mmvq_il_scratch.get(), output, w.n_in, w.n_out, nc, st);
+                if (verify_k) {
+                    if (!vbuf) CK(cudaMalloc((void**) &vbuf, (size_t) 8 * std::max<int64_t>(16384, std::max(m->g.n_vocab, m->g.n_ff_shexp)) * 4));
+                    K::native_mmvq(w.type, w.d, input, vbuf, w.n_in, w.n_out, nc, st);
+                    verify_cmp("mmvq_il", output, vbuf, (size_t) nc * w.n_out,
+                               " type " + std::to_string(w.type) + " T " + std::to_string(nc));
+                }
+            } else {
+                K::native_mmvq(w.type, w.d, input, output, w.n_in, w.n_out, nc, st);
+            }
         }
     }
 
