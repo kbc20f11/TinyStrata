@@ -153,6 +153,27 @@ foreach ($arch in @('clover_moe', 'lfm2moe')) {
 }
 Assert-Entrypoint (-not (Test-TinyStrataInferenceReady ([pscustomobject]@{ loaded = $false; images = $true }) ([pscustomobject]@{ arch = 'clover_moe'; vision_mode = 'gpu' }))) 'Clover readiness still requires loaded language engine'
 
+# Parse only the compiler-version predicates; never execute nvcc or install.
+foreach ($name in @('Get-TinyStrataCudaCompilerVersion', 'Test-TinyStrataCudaCompilerVersion')) {
+    $versionFunction = $readinessAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
+    if (-not $versionFunction) { throw "Installer CUDA version helper is missing: $name" }
+    Invoke-Expression $versionFunction.Extent.Text
+}
+foreach ($fixture in @(
+    @{ Text = 'Cuda compilation tools, release 13.2, V13.2.51'; Safe = $false },
+    @{ Text = 'Cuda compilation tools, release 13.2, V13.2.78'; Safe = $false },
+    @{ Text = 'Cuda compilation tools, release 13.2, V13.2.85'; Safe = $false },
+    @{ Text = 'Cuda compilation tools, release 13.2, V13.2.86'; Safe = $true },
+    @{ Text = 'Cuda compilation tools, release 13.3, V13.3.0'; Safe = $true },
+    @{ Text = 'Cuda compilation tools, release 14.0, V14.0.0'; Safe = $true },
+    @{ Text = 'Cuda compilation tools, release 13.1, V13.1.115'; Safe = $false },
+    @{ Text = 'Cuda compilation tools, release 13.2'; Safe = $false },
+    @{ Text = ''; Safe = $false }
+)) {
+    $compilerVersion = Get-TinyStrataCudaCompilerVersion -Text $fixture.Text
+    Assert-Entrypoint ((Test-TinyStrataCudaCompilerVersion -Version $compilerVersion) -eq $fixture.Safe) ('CUDA compiler patch-level validation: ' + $fixture.Text)
+}
+
 [pscustomobject]@{
     Result = 'passed'
     PowerShell = $PSVersionTable.PSVersion.ToString()

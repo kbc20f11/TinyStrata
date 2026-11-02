@@ -46,6 +46,17 @@ elseif(TINYSTRATA_BACKEND STREQUAL "CUDA")
     set(_tinystrata_default_cuda_archs ON)
   endif()
   enable_language(CUDA)
+  # nvcc 13.2.0/13.2.1 drops byte-index masks in IQ*_S kernels on sm_120.
+  # Reject the affected compiler instead of silently building corrupt kernels.
+  # https://github.com/ggml-org/llama.cpp/issues/28581
+  if(CMAKE_CUDA_COMPILER_ID STREQUAL "NVIDIA" AND
+     CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 13.2 AND
+     CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 13.2.86)
+    message(FATAL_ERROR
+      "nvcc ${CMAKE_CUDA_COMPILER_VERSION} has a known IQ1_S/IQ2_S/IQ3_S miscompilation on Blackwell (sm_120). "
+      "Use CUDA 13.2.2 (nvcc 13.2.86) or newer, or CUDA 13.1. "
+      "See https://github.com/ggml-org/llama.cpp/issues/28581")
+  endif()
   find_package(CUDAToolkit REQUIRED)
   if(_tinystrata_default_cuda_archs)
     set(_tinystrata_cuda_archs 86)

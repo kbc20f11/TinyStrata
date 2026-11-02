@@ -44,7 +44,7 @@ function Get-VerifiedDownload {
 
 # Local source-build fallback, used only when no native engine is available.
 # Reference: https://github.com/microsoft/vswhere/wiki/Find-VC
-# Reference: https://docs.nvidia.com/cuda/archive/13.2.0/cuda-installation-guide-microsoft-windows/index.html
+# Reference: https://docs.nvidia.com/cuda/archive/13.2.2/cuda-installation-guide-microsoft-windows/index.html
 
 function Get-TinyStrataOfficialFile {
     [CmdletBinding()]
@@ -181,13 +181,29 @@ function Ensure-TinyStrataBuildTools {
     return Find-TinyStrataBuildTools
 }
 
+function Get-TinyStrataCudaCompilerVersion {
+    param([string]$Text)
+    if ($Text -match '\bV(\d+\.\d+\.\d+)\b') { return [version]$Matches[1] }
+    return $null
+}
+
+function Test-TinyStrataCudaCompilerVersion {
+    param([version]$Version)
+    # CUDA 13.2.0/13.2.1 (nvcc .51/.78) miscompile IQ*_S byte extraction
+    # on Blackwell. Check nvcc's patch version, not just "release 13.2".
+    # https://github.com/ggml-org/llama.cpp/issues/28581
+    return $null -ne $Version -and $Version -ge [version]'13.2.86'
+}
+
 function Test-TinyStrataCudaToolkit {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string]$Directory)
     $compiler = Join-Path $Directory 'bin\nvcc.exe'
     if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) { return $false }
     $text = (& $compiler --version 2>$null) -join [Environment]::NewLine
-    if ($LASTEXITCODE -ne 0 -or $text -notmatch 'release\s+(\d+\.\d+)' -or [version]$Matches[1] -lt [version]'13.2') { return $false }
+    if ($LASTEXITCODE -ne 0) { return $false }
+    $compilerVersion = Get-TinyStrataCudaCompilerVersion -Text $text
+    if (-not (Test-TinyStrataCudaCompilerVersion -Version $compilerVersion)) { return $false }
     foreach ($relative in @('include\cuda.h', 'include\cublas_v2.h', 'lib\x64\cudart.lib', 'lib\x64\cublas.lib')) {
         if (-not (Test-Path -LiteralPath (Join-Path $Directory $relative) -PathType Leaf)) { return $false }
     }
@@ -213,18 +229,19 @@ function Ensure-TinyStrataCudaToolkit {
         if (Test-TinyStrataCudaToolkit -Directory $candidate) { return [IO.Path]::GetFullPath($candidate) }
     }
 
-    Write-Host 'Downloading the CUDA compiler and libraries from NVIDIA (no driver or system CUDA installation is changed).'
+    Write-Host 'Preparing CUDA 13.2.2 or newer from NVIDIA; earlier CUDA 13.2 compilers can corrupt IQ model output on Blackwell. No driver or system CUDA installation is changed.'
     $baseUri = 'https://developer.download.nvidia.com/compute/cuda/redist/'
-    $manifestPath = Join-Path $CacheDirectory 'redistrib_13.2.0.json'
-    Get-TinyStrataOfficialFile -Uri ($baseUri + 'redistrib_13.2.0.json') -Destination $manifestPath
+    $manifestPath = Join-Path $CacheDirectory 'redistrib_13.2.2.json'
+    Get-TinyStrataOfficialFile -Uri ($baseUri + 'redistrib_13.2.2.json') -Destination $manifestPath
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    if ($manifest.release_label -ne '13.2.2') { throw 'NVIDIA CUDA manifest has an unexpected release.' }
     $destinationRoot = [IO.Path]::GetFullPath($DestinationDirectory)
     New-Item -ItemType Directory -Path $destinationRoot -Force | Out-Null
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     foreach ($name in @('cuda_nvcc', 'cuda_cudart', 'cuda_cccl', 'cuda_crt', 'libnvvm', 'libcublas')) {
         $package = $manifest.$name.'windows-x86_64'
         if (-not $package -or $package.relative_path -notmatch '^[A-Za-z0-9_./-]+\.zip$' -or $package.relative_path -match '(?:^|/)\.\.(?:/|$)' -or $package.sha256 -notmatch '^[a-fA-F0-9]{64}$') { throw "NVIDIA CUDA manifest has an invalid package: $name" }
-        $archive = Join-Path $CacheDirectory ($name + '-13.2.zip')
+        $archive = Join-Path $CacheDirectory ($name + '-13.2.2.zip')
         $verified = (Test-Path -LiteralPath $archive -PathType Leaf) -and ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -eq $package.sha256)
         if (-not $verified) {
             $partial = $archive + '.part'
@@ -502,8 +519,12 @@ function Invoke-TinyStrataPortableBuild {
         $nvcc = Join-Path $cudaRoot 'bin\nvcc.exe'
         if (-not (Test-Path -LiteralPath $nvcc -PathType Leaf)) { throw "CUDA compiler not found: $nvcc" }
         $versionText = (& $nvcc --version) -join [Environment]::NewLine
-        if ($LASTEXITCODE -ne 0 -or $versionText -notmatch 'release\s+(\d+\.\d+)') { throw 'Cannot determine the CUDA toolkit version.' }
-        if ([version]$Matches[1] -lt [version]'13.2') { throw 'This portable build helper requires CUDA 13.2 or newer.' }
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot determine the CUDA toolkit version.' }
+        $compilerVersion = Get-TinyStrataCudaCompilerVersion -Text $versionText
+        if (-not $compilerVersion) { throw 'Cannot determine the CUDA compiler patch version from nvcc --version.' }
+        if (-not (Test-TinyStrataCudaCompilerVersion -Version $compilerVersion)) {
+            throw 'This portable build helper requires CUDA 13.2.2 (nvcc 13.2.86) or newer. CUDA 13.2.0/13.2.1 miscompile IQ model kernels on Blackwell.'
+        }
     }
     if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot 'CMakeLists.txt') -PathType Leaf)) { throw 'Source directory is not a TinyStrata checkout.' }
 
@@ -768,19 +789,19 @@ function Initialize-TinyStrataRuntime {
             $haveVc = $false; break
         }
     }
-    # Pinned official CUDA 13.2 redistributables. Only runtime DLLs are
+    # Pinned official CUDA 13.2.2 redistributables. Only runtime DLLs are
     # extracted; this does not install the full toolkit or NVIDIA driver.
     $packages = @(
         @{
-            Name = 'cuda_cudart-13.2.zip'
-            Uri = 'https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-13.2.51-archive.zip'
-            Sha256 = '906b430b53e6396f7cbaa6874fbe7f9307a184e830b119a4ad3f58dc6e0165c6'
+            Name = 'cuda_cudart-13.2.2.zip'
+            Uri = 'https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-13.2.86-archive.zip'
+            Sha256 = '024e0c1055343d9d2a7d35c90fb7695db14cc2f05bb962198eb18b92c73b32be'
             Pattern = '/bin/(x64/)?[^/]+\.dll$'
         },
         @{
-            Name = 'libcublas-13.2.zip'
-            Uri = 'https://developer.download.nvidia.com/compute/cuda/redist/libcublas/windows-x86_64/libcublas-windows-x86_64-13.3.0.5-archive.zip'
-            Sha256 = '438a88f07af3721eda15ed1f4d2b957ea810e29061b2a6292837f35520dbd212'
+            Name = 'libcublas-13.2.2.zip'
+            Uri = 'https://developer.download.nvidia.com/compute/cuda/redist/libcublas/windows-x86_64/libcublas-windows-x86_64-13.4.1.3-archive.zip'
+            Sha256 = 'bc6f590490134f4dbe29672b72e536c44362cc5f738a0f7e48c8c3c141e9b24a'
             Pattern = '/bin/(x64/)?[^/]+\.dll$'
         },
         @{
