@@ -158,6 +158,21 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 每个 FP8/INT8 配置均使用相同的三段文本各运行两次，采用模型默认采样设置，每次生成包含思考的 128 个 token。速度为总生成 token 数除以总解码时间，不含加载与输入处理；上下文值表示缓存容量。内存受限行是在同一块 24 GB GPU 上另行预留 8、12 或 16 GiB，并设置相应显存档位的上下文容量，并非使用实际的 16/12/8 GB GPU。
 
+## 实测速度 — Clover
+
+于 **2026-11-02** 在 Windows、RTX PRO 4000 Blackwell SFF Edition（24 GB）、Ryzen 9 7945HX3D 和 64 GB 系统内存上，使用 Clover Preview IQ3_XXS 测量。启用因果 D0、思考和常驻 GPU 的图像编码器。CPU 工作线程数、输入分块及专家分配为自动设置；环境变量为 `STRATA_IQ_MT_MIN=1` 和 `STRATA_EXP_MODE=8`。
+
+| 可用显存 | 上下文容量 | INT8 生成 | 原生 FP8 生成 | 备注 |
+| --- | ---: | ---: | ---: | --- |
+| 24 GB | 256K | 91.61 tok/s | 94.67 tok/s | 专家 GiB — INT8: 12.34 → 12.34; FP8: 12.34 → 12.34 |
+| 约 16 GB | 256K | 58.16 tok/s | 58.17 tok/s | 专家 GiB — INT8: 6.55–6.60 → 6.07–6.22; FP8: 6.55–6.60 → 6.11–6.19 |
+| 约 12 GB | 128K | 51.31 tok/s | 50.89 tok/s | 专家 GiB — INT8: 3.08–3.18 → 2.80–3.04; FP8: 2.94–3.18 → 2.80–3.04 |
+| 约 8 GB | 64K | 不稳定（成功 3/4） | 39.75 tok/s | 专家 GiB — INT8: 0.00 → 0.00 (3/4); FP8: 0.00 → 0.00; INT8/FP8: 解码专家在 CPU，稠密计算及输入流式处理在 GPU |
+
+每个 KV／显存条件均尝试四次独立启动，采用 v1 的输入、采样和计时方式。数值仅用于四次均成功的条件；启动失败或成功失败混合的情况会明确标记。这是单独标记的受控比较，不属于标准 v1，也不改变应用默认的 D3／INT8。专家缓存显示成功启动时的实际分配范围，顺序为启动时 → 16K 输入后。[完整结果与条件](benchmark/results/rtx-pro-4000-blackwell-sff.md)。
+
+显存受限行在同一块 24 GB GPU 上另行分配并写入 8、12 或 16 GiB，上下文容量为 256K／256K／128K／64K。它们不是实际 16／12／8 GB GPU 的性能测试。这里使用自动分块，与此前固定 2,048-token 分块的本机调优条件不同。
+
 ## 实测速度 — AMD Radeon（HIP）
 
 Radeon 显卡上的速度，使用 [tinystrata-bench-v1](benchmark/README.md#english) 测得。每张卡都有单独的页面，包含硬件、驱动、引擎提交、设置和全部列：[`benchmark/results/`](benchmark/results/)。数值为 生成 / 4K 输入 / 16K 输入（tok/s）。 Clover 数据采用 exact D3 派生配置。

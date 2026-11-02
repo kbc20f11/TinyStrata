@@ -170,6 +170,21 @@ Native FP8 and INT8 were measured on **2026-10-27**.
 
 Each of the same three input texts was run twice per FP8/INT8 configuration, generating 128 tokens including thinking; sampling settings were left at their model defaults. Speed is total generated tokens divided by total decode time, excluding loading and prompt processing; context values are cache capacities. The reduced-memory rows reserve 8, 12 or 16 GiB on the same 24 GB GPU and use the context capacity for that VRAM class; they are not physical 16/12/8 GB GPU benchmarks.
 
+## Measured speed — Clover
+
+Measured on **2026-11-02** on Windows with an RTX PRO 4000 Blackwell SFF Edition (24 GB), Ryzen 9 7945HX3D and 64 GB of system RAM, using Clover Preview IQ3_XXS. Causal D0, thinking and the GPU-resident image encoder were enabled. CPU workers, input chunks and Expert placement were automatic; the tuning environment was `STRATA_IQ_MT_MIN=1` and `STRATA_EXP_MODE=8`.
+
+| Available VRAM | Context capacity | INT8 generation | Native FP8 generation | Notes |
+| --- | ---: | ---: | ---: | --- |
+| 24 GB | 256K | 91.61 tok/s | 94.67 tok/s | Expert GiB — INT8: 12.34 → 12.34; FP8: 12.34 → 12.34 |
+| Approximately 16 GB | 256K | 58.16 tok/s | 58.17 tok/s | Expert GiB — INT8: 6.55–6.60 → 6.07–6.22; FP8: 6.55–6.60 → 6.11–6.19 |
+| Approximately 12 GB | 128K | 51.31 tok/s | 50.89 tok/s | Expert GiB — INT8: 3.08–3.18 → 2.80–3.04; FP8: 2.94–3.18 → 2.80–3.04 |
+| Approximately 8 GB | 64K | Unstable (3/4 starts) | 39.75 tok/s | Expert GiB — INT8: 0.00 → 0.00 (3/4); FP8: 0.00 → 0.00; INT8/FP8: CPU decode Experts; GPU dense/prompt streaming |
+
+Four fresh starts were attempted for each KV/VRAM condition with the v1 inputs, sampler and timers. Numerical cells require four successful starts; startup failures or mixed outcomes are shown explicitly. This controlled variant is separate from standard v1 and the managed D3/INT8 default. Expert cache shows actual startup → after-16K allocation ranges for successful starts. [Full results and conditions](benchmark/results/rtx-pro-4000-blackwell-sff.md).
+
+The reduced-memory rows reserve and touch 8, 12 or 16 GiB on the same 24 GB GPU, with 256K / 256K / 128K / 64K context capacities. They are not benchmarks of physical 16/12/8 GB GPUs. These automatic-chunk results are separate from the earlier local tuning with a fixed 2,048-token chunk.
+
 ## Measured speed — AMD Radeon (HIP)
 
 Speed on Radeon cards, measured with [tinystrata-bench-v1](benchmark/README.md#english). Each card has its own page with the hardware, driver, engine commit, settings and every column: [`benchmark/results/`](benchmark/results/). Values are generation / 4K input / 16K input, in tok/s. Clover uses the exact D3 variant.

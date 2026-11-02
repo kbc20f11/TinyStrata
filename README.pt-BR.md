@@ -158,6 +158,21 @@ FP8 nativo e INT8 foram medidos em **2026-10-27**.
 
 Os mesmos três textos foram executados duas vezes por configuração FP8/INT8 com os padrões de amostragem do modelo, gerando 128 tokens por solicitação, incluindo o raciocínio. A velocidade é o total de tokens dividido pelo tempo total de decodificação, sem carregamento nem processamento da entrada; o contexto indica capacidade de cache. As linhas com menos memória reservam 8, 12 ou 16 GiB na mesma GPU de 24 GB e usam o contexto dessa classe de VRAM; não são testes de GPUs físicas de 16/12/8 GB.
 
+## Velocidade medida — Clover
+
+Medido em **2026-11-02** no Windows com uma RTX PRO 4000 Blackwell SFF Edition (24 GB), Ryzen 9 7945HX3D e 64 GB de RAM, usando Clover Preview IQ3_XXS. O modo causal D0, o raciocínio e o codificador de imagens residente na GPU estavam ativos. Workers CPU, blocos de entrada e posicionamento de especialistas foram automáticos; o ambiente definiu `STRATA_IQ_MT_MIN=1` e `STRATA_EXP_MODE=8`.
+
+| VRAM disponível | Capacidade de contexto | Geração INT8 | Geração FP8 nativo | Observações |
+| --- | ---: | ---: | ---: | --- |
+| 24 GB | 256K | 91.61 tok/s | 94.67 tok/s | Especialistas GiB — INT8: 12.34 → 12.34; FP8: 12.34 → 12.34 |
+| Aprox. 16 GB | 256K | 58.16 tok/s | 58.17 tok/s | Especialistas GiB — INT8: 6.55–6.60 → 6.07–6.22; FP8: 6.55–6.60 → 6.11–6.19 |
+| Aprox. 12 GB | 128K | 51.31 tok/s | 50.89 tok/s | Especialistas GiB — INT8: 3.08–3.18 → 2.80–3.04; FP8: 2.94–3.18 → 2.80–3.04 |
+| Aprox. 8 GB | 64K | Instável (3/4 inicializações) | 39.75 tok/s | Especialistas GiB — INT8: 0.00 → 0.00 (3/4); FP8: 0.00 → 0.00; INT8/FP8: especialistas de decodificação na CPU; cálculo denso/entrada em streaming na GPU |
+
+Foram tentadas quatro inicializações independentes por condição KV/VRAM, com as entradas, amostragem e medição de tempo de v1. Os valores numéricos exigem quatro inicializações bem-sucedidas; falhas e resultados mistos são indicados. É uma variante controlada, separada do v1 padrão e do padrão D3/INT8 dos perfis gerenciados. O cache mostra as alocações reais das inicializações bem-sucedidas: início → após a entrada de 16K. [Resultados completos e condições](benchmark/results/rtx-pro-4000-blackwell-sff.md).
+
+As linhas de memória reduzida reservam e escrevem 8, 12 ou 16 GiB na mesma GPU de 24 GB, com capacidades de contexto de 256K / 256K / 128K / 64K. Não são testes de GPUs físicas de 16/12/8 GB. A seleção automática dos blocos distingue estes resultados do ajuste local anterior com bloco fixo de 2.048 tokens.
+
 ## Velocidade medida — AMD Radeon (HIP)
 
 Velocidade em placas Radeon, medida com [tinystrata-bench-v1](benchmark/README.md#english). Cada placa tem sua própria página com o hardware, o driver, o commit do motor, as configurações e todas as colunas: [`benchmark/results/`](benchmark/results/). Valores: geração / entrada 4K / entrada 16K, em tok/s. Os valores do Clover usam a variante exact D3.
