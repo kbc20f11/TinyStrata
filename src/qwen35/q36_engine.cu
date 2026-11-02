@@ -3533,14 +3533,18 @@ struct Engine {
         const auto t0 = Clock::now();
         warming = true;
         const int32_t filler = 198;   // a newline: any token works
-        std::vector<int32_t> toks((size_t) tmax, filler);
+        // The prompt chunk may fill the context. Warm only valid KV cells,
+        // then start the small probes in a fresh sequence (upstream #4708).
+        std::vector<int32_t> toks((size_t) std::max(1, std::min(tmax, ctx)), filler);
         process(toks.data(), (int64_t) toks.size(), [](int64_t) {});
-        if (tmax > kGemmT + 1) process(toks.data(), kGemmT + 1, [](int64_t) {});   // the smallest GEMM chunk too
+        reset();
+        if (tmax > kGemmT + 1 && ctx > kGemmT + 1) process(toks.data(), kGemmT + 1, [](int64_t) {});   // the smallest GEMM chunk too
         process(&filler, 1, [](int64_t) {});
-        if (mtp_d > 0) {
+        const int warm_drafts = (int) std::min<int64_t>(mtp_d, ctx - pos - 1);
+        if (warm_drafts > 0) {
             std::vector<int32_t> fix, drafts;
             int32_t picks[16];
-            spec_step(filler, fix, mtp_d, drafts, picks);
+            spec_step(filler, fix, warm_drafts, drafts, picks);
         }
         if (clover_draft > 0) {
             const auto plan = strata::qwen35::clover_decode::plan(clover_draft, pos, ctx);
