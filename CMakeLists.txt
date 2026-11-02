@@ -206,3 +206,7 @@ endif()
 install(FILES LICENSE NOTICE DESTINATION share/licenses/TinyStrata)
 install(FILES third_party/ggml/LICENSE DESTINATION share/licenses/TinyStrata/ggml)
 install(FILES third_party/licenses/FlashInfer-BSD-3-Clause.txt DESTINATION share/licenses/TinyStrata/FlashInfer)
+
+# CPU-only accounting regression, outside the default user build.
+add_executable(q36_chunk_policy_test EXCLUDE_FROM_ALL tests/q36-chunk-policy.cpp)
+target_include_directories(q36_chunk_policy_test PRIVATE include)

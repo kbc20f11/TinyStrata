@@ -265,6 +265,8 @@ New launcher configurations use MTP 3, which proposes several tokens ahead and v
 
 MTP supports both greedy generation and temperature-based sampling, including repetition, frequency and presence penalties. For sampled requests, the main model samples each verification row, and only the matching draft prefix is accepted.
 
+CUDA Qwen automatically uses the interleaved dense matvec fast path with MTP 1–3 when the main Experts stay on the GPU and CUDA Graphs are enabled. `TINYSTRATA_Q36_MMVQ_IL=0` restores the previous matvec dispatch while MTP remains enabled. Main-model prompt MMQ can also be selected independently of unsupported MTP weight formats, from 128 input rows. This automatic choice is made after Expert placement and requires enough extra workspace and headroom; hybrid main-model execution uses native CPU/GPU kernels. `TINYSTRATA_Q36_MAIN_MMQ=0` restores the previous MMQ selection. [Controlled CUDA comparisons and validation](benchmark/results/qwen-cuda-20261103.md).
+
 Explicit settings override automatic choices, and existing manually selected settings remain in effect. For example, `run-api.bat --kv-type int8` fixes INT8; `run-api.bat --kv-type auto --max-context auto --expert-vram auto` restores automatic KV, context and Expert placement.
 
 ## API server

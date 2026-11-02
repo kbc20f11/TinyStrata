@@ -281,7 +281,7 @@ bool dequant_wide_on() {
     static const int env = [] { const char* v = std::getenv("STRATA_DEQUANT_WIDE"); return v != nullptr && v[0] != '\0' ? (std::atoi(v) != 0 ? 1 : 0) : -1; }();
     if (g_dequant_wide >= 0) return g_dequant_wide != 0;
     if (env >= 0) return env != 0;
-    // Upstream 5f843a92: the same wide kernels are bit-identical on sm_86 (RTX 3060 / A4000), too.
+    // Upstream 5f843a92 enables sm_86 (RTX 3060 / A4000). Local sm_120 parity and prompt measurements also passed.
     // Keep the existing HIP and other-architecture defaults; STRATA_DEQUANT_WIDE=0/1 still wins above.
     static int per_dev[64];   // 0 unknown, 1 no, 2 yes
     int dev = 0;
@@ -292,7 +292,7 @@ bool dequant_wide_on() {
             cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev) != cudaSuccess) { (void) cudaGetLastError(); return false; }
         bool wide_default = major == 6 && minor == 1;
 #if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
-        wide_default = wide_default || (major == 8 && minor == 6);
+        wide_default = wide_default || (major == 8 && minor == 6) || (major == 12 && minor == 0);
 #endif
         per_dev[dev] = wide_default ? 2 : 1;
     }

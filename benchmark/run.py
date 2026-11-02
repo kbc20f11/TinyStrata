@@ -53,7 +53,10 @@ ENGINE_KEYS = ('model', 'version', 'kv', 'kv_grow', 'mtp', 'clover_draft', 'clov
                'cpu_workers', 'cpu_threads', 'vision', 'images',
                'max_context', 'context_auto', 'chunk', 'chunk_auto', 'expert_auto',
                'expert_slots', 'expert_cache_bytes', 'expert_cache_mib',
-               'kv_logical_bytes', 'kv_mapped_bytes', 'kv_committed_rows', 'gpu_cc')
+               'kv_logical_bytes', 'kv_mapped_bytes', 'kv_committed_rows', 'gpu_cc',
+               'q36_mmvq_il', 'q36_mmvq_il_auto',
+               'q36_main_mmq', 'q36_main_mmq_auto', 'q36_mtp_mmq',
+               'q36_mmq_min_rows', 'q36_mmq_auto_workspace_bytes')
 CLOVER_INFO_FLOATS = ('clover_threshold', 'clover_last_threshold', 'clover_preview_ms',
                       'clover_replay_ms', 'clover_select_ms', 'clover_preview_cpu_ms',
                       'clover_accept_ratio', 'clover_accept_delta', 'clover_last_accept_ratio', 'clover_last_accept_delta')

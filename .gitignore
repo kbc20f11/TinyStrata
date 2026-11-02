@@ -41,6 +41,7 @@
 !/tests/benchmark-64k.py
 !/tests/test_tool_parser_markdown.py
 !/tests/test_tool_parser_values.py
+!/tests/q36-chunk-policy.cpp
 
 # Only build/runtime sources and the fixed public benchmark inputs belong here.
 /benchmark/**

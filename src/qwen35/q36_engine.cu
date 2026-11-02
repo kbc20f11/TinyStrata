@@ -34,6 +34,7 @@
 #include "strata/qwen35/int8_attention.hpp"
 #include "strata/qwen35/fp8_attention.hpp"
 #include "strata/qwen35/environment_policy.hpp"
+#include "strata/qwen35/chunk_policy.hpp"
 #include "strata/qwen35/cache_policy.hpp"
 #include "strata/qwen35/speculative_sampling.hpp"
 #include "strata/qwen35/vision.hpp"
@@ -74,6 +75,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <random>
 #include <string>
 #include <thread>
@@ -1210,7 +1212,9 @@ struct Engine {
         void operator()(void* p) const { if (p) (void) cudaFree(p); }
     };
     std::unique_ptr<void, IlScratchDeleter> mmvq_il_scratch;
-    bool mmvq_il_enabled = false; // CUDA experiment; the existing dispatch remains the default.
+    bool mmvq_il_enabled = false, mmvq_il_auto = false;
+    int mmvq_il_override = -1; // unset: choose after placement; an explicit value retains the opt-in behavior.
+    size_t mmvq_il_scratch_bytes = 0;
     int32_t *ids, *grp_start, *n_groups, *ent_dst, *ent_tok, *tok, *pos0, *pick;
     int32_t* hpin = nullptr;   // pinned staging: [0] decode token, [1] position, [2..9] picks, [10] max rows, [16..] tokens
     unsigned long long* grp_ptr;
@@ -1297,6 +1301,10 @@ struct Engine {
     size_t kAttScoreFloats = (size_t) 64 << 20;   // 256 MB (16 M floats when the experts' fit is close)
     // the prompt's MMQ experts
     bool use_mmq = false;
+    bool main_only_mmq = false, mtp_mmq = false;
+    bool auto_main_mmq_pending = false, auto_main_mmq_selected = false, auto_main_mmq_mtp = false;
+    size_t auto_main_mmq_workspace = 0;
+    int mmq_min_t = 9; // Legacy/Clover keep T>kGemmT; new main-only Qwen mode protects short prompts.
     bool native_stream = false;       // stream full Expert layers, retaining native grouped arithmetic
     bool native_stream_auto = false;  // CUDA default: temporary staging only when hybrid VMM is available
     bool stage_loan_requested = false, stage_loan = false, stage_loan_active = false, stage_loan_failed = false;
@@ -1459,12 +1467,15 @@ struct Engine {
         CK(cudaMalloc(&q8, K::native_q8_1_bytes(max_in, 1) * T));
         CK(cudaMalloc(&xq, K::native_q8_1_bytes((int) N, 1) * T));
 #if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
-        if (const char* value = std::getenv("TINYSTRATA_Q36_MMVQ_IL"))
-            mmvq_il_enabled = std::strcmp(value, "1") == 0;
+        mmvq_il_scratch_bytes = K::native_q8_1_il_bytes(max_in, 4);
+        if (const char* value = std::getenv("TINYSTRATA_Q36_MMVQ_IL")) {
+            mmvq_il_override = std::strcmp(value, "1") == 0 ? 1 : 0;
+            mmvq_il_enabled = mmvq_il_override == 1;
+        }
         if (mmvq_il_enabled) {
             // Allocate before any graph capture. Each projection rewrites this scratch from its own current input.
             void* scratch = nullptr;
-            CK(cudaMalloc(&scratch, K::native_q8_1_il_bytes(max_in, 4)));
+            CK(cudaMalloc(&scratch, mmvq_il_scratch_bytes));
             mmvq_il_scratch.reset(scratch);
             std::fprintf(stderr, "tinystrata: opt-in interleaved dense MMVQ enabled (up to 4 rows)\n");
         }
@@ -1516,6 +1527,19 @@ struct Engine {
 #endif
         // Native streaming changes Expert residency, not the quantizer/product kernels.
         use_mmq = !native_stream && MMQ::built() && std::getenv("STRATA_Q36_NO_MMQ") == nullptr;
+#if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
+        const char* main_mmq_setting = std::getenv("TINYSTRATA_Q36_MAIN_MMQ");
+        const bool main_mmq_auto = !main_mmq_setting || std::strcmp(main_mmq_setting, "auto") == 0;
+        main_only_mmq = main_mmq_setting && std::strcmp(main_mmq_setting, "1") == 0;
+        if (main_only_mmq && !m->clover) {
+            mmq_min_t = 128;
+            if (const char* value = std::getenv("TINYSTRATA_Q36_MMQ_MIN_T")) {
+                if (std::strcmp(value, "64") == 0) mmq_min_t = 64;
+                else if (std::strcmp(value, "128") != 0)
+                    throw std::invalid_argument("TINYSTRATA_Q36_MMQ_MIN_T must be 64 or 128");
+            }
+        }
+#endif
         auto mmq_ok = [&](const Layer& L) {
             // The integrated MMQ prompt path is not validated for IQ3_XXS down
             // projections: repeated Unsloth UD-IQ3_XXS prompts differed on CUDA.
@@ -1526,7 +1550,31 @@ struct Engine {
                    MMQ::fits(L.L.d_type, g.n_embd);
         };
         for (const Layer& L : m->layers) use_mmq = use_mmq && mmq_ok(L);
-        if (m->has_mtp) use_mmq = use_mmq && mmq_ok(m->mtp);
+        const bool main_mmq_supported = use_mmq;
+        if (m->has_mtp) {
+            mtp_mmq = use_mmq && mmq_ok(m->mtp);
+            if (!main_only_mmq) use_mmq = mtp_mmq;
+        }
+#if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
+        // Legacy all-layer MMQ and explicit overrides keep their allocation
+        // order. A new automatic mixed route waits until actual placement is
+        // known, so its workspace cannot reduce the hybrid Expert cache.
+        auto_main_mmq_pending = main_mmq_auto && !m->clover && main_mmq_supported && !use_mmq;
+        auto_main_mmq_mtp = mtp_mmq;
+        if (auto_main_mmq_pending) {
+            mmq_min_t = 128;
+            if (const char* value = std::getenv("TINYSTRATA_Q36_MMQ_MIN_T")) {
+                if (std::strcmp(value, "64") == 0) mmq_min_t = 64;
+                else if (std::strcmp(value, "128") != 0)
+                    throw std::invalid_argument("TINYSTRATA_Q36_MMQ_MIN_T must be 64 or 128");
+            }
+        }
+#else
+        (void) main_mmq_supported;
+#endif
+        if (main_only_mmq)
+            std::fprintf(stderr, "tinystrata: experimental per-layer MMQ: main %s (minimum %d rows); MTP %s (unsupported MTP formats retain native kernels)\n",
+                         use_mmq ? "MMQ" : "native", mmq_min_t, mtp_mmq ? "MMQ" : "native");
 #if defined(STRATA_USE_HIP) || defined(__HIPCC__)
         if (use_mmq && m->clover && !m->layers.empty() &&
             std::all_of(m->layers.begin(), m->layers.end(), [](const Layer& L) {
@@ -2368,8 +2416,13 @@ struct Engine {
         // the hybrid rows path: a batch of up to hybrid_t rows; when only the MTP block is hybrid, its every batch
         // (its prompt pass too: no staging buffers then)
         const bool hy_rows = lhy(li) && ((m->clover && verify) || T <= hybrid_t || !main_hybrid || (stage_loan && !stage_loan_active));
-        const bool mmq_rows = !hy_rows && T > kGemmT && use_mmq;
-        const bool native_stream_rows = native_stream_ready() && !hy_rows && lhy(li);
+        const bool mmq_for_layer = use_mmq && (li < m->layers.size() || mtp_mmq);
+        const bool mmq_rows = !hy_rows && T >= mmq_min_t && mmq_for_layer;
+        // A non-MMQ MTP layer shares the already allocated stream/staging pair in mixed mode.
+        // Its native grouping must read that complete staged layer, never the partial Expert cache.
+        const bool native_stream_rows = !hy_rows && lhy(li) &&
+            (native_stream_ready() || (use_mmq && (!mmq_for_layer ||
+                (main_only_mmq && !m->clover && T < mmq_min_t))));
         if (clover_preview || mmq_rows || native_stream_rows || !route_group(L, hy_rows ? hy[li].slot_of_d : nullptr, T,
                                                           ext ? (int) g.n_expert + 1 : (int) g.n_expert))
             K::native_router_topk(logits_r, ids, ewts, (int) g.n_expert, Kp, T, st);
@@ -2377,7 +2430,7 @@ struct Engine {
         const int32_t* prow = nullptr;
         if (hy_rows) {
             moe_hybrid_gpu(L, li, T);
-        } else if (T > kGemmT && use_mmq) {
+        } else if (mmq_rows) {
             // a prompt chunk: the experts on llama.cpp's MMQ (int8, the weights read once per expert): the entries
             // sorted by expert on the device, gate+up as one [2 FF] product per expert, SwiGLU, down into rows the
             // combine reads through entry -> sorted row
@@ -2990,9 +3043,11 @@ struct Engine {
     bool begin_stage_loan() {
         if (!stage_loan || stage_loan_failed || stage_loan_active) return stage_loan_active;
         CK(cudaDeviceSynchronize());
-        stage_loan_snapshot.clear();
+        std::vector<StageLoanLayer> snapshot;
+        snapshot.reserve(hy.size());
         for (size_t li = 0; li < hy.size(); ++li)
-            stage_loan_snapshot.push_back({layer_at((int) li).n_slots, hy[li].slot_of, hy[li].exp_in_slot});
+            snapshot.push_back({layer_at((int) li).n_slots, hy[li].slot_of, hy[li].exp_in_slot});
+        stage_loan_snapshot.swap(snapshot);
         stage_loan_mapped_before = expert_mapped_bytes();
         stage_loan_fingerprint_before = expert_slot_fingerprint();
         const int slots_before = expert_slot_count();
@@ -3312,7 +3367,15 @@ struct Engine {
             bool tried = false;
             ~ScopedStageLoan() { engine.finish_stage_loan(); }
             void prepare(int rows) {
-                if (rows <= engine.hybrid_t) {
+                bool small_auto_native = false;
+#if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
+                // A complete layer transfer is not amortized by a short prompt.
+                // Only the automatic CUDA Qwen route uses this threshold;
+                // explicit streaming/Expert budgets retain their chosen path.
+                small_auto_native = rows < 512 && engine.native_stream_auto && engine.native_stream &&
+                    engine.expert_auto && engine.stage_loan && !engine.use_mmq && !engine.m->clover;
+#endif
+                if (rows <= engine.hybrid_t || small_auto_native) {
                     if (engine.stage_loan_active)
                         std::fprintf(stderr, "tinystrata: returning stage loan before %d-row tail at position %lld\n",
                                      rows, (long long) engine.pos);
@@ -3553,6 +3616,143 @@ struct Engine {
         return a;
     }
 
+    void configure_auto_mmvq_il() {
+#if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
+        // Placement decides whether the main model stays on the GPU and can use graphs. An explicit setting,
+        // Clover, wider verification windows and eager/hybrid execution retain their existing dispatch.
+        if (mmvq_il_override >= 0 || m->clover || !m->has_mtp || mtp_d < 1 || mtp_d > 3 ||
+            main_hybrid || !use_graph || !K::native_mmvq_il_supported(m->head.type, mtp_d + 1, (int) m->head.n_out))
+            return;
+        void* scratch = nullptr;
+        const auto result = cudaMalloc(&scratch, mmvq_il_scratch_bytes);
+        if (result == cudaErrorMemoryAllocation) {
+            (void) cudaGetLastError();
+            std::fprintf(stderr, "tinystrata: automatic interleaved dense MMVQ kept off: no room for scratch\n");
+            return;
+        }
+        CK(result);
+        mmvq_il_scratch.reset(scratch);
+        mmvq_il_enabled = mmvq_il_auto = true;
+        std::fprintf(stderr, "tinystrata: automatic interleaved dense MMVQ enabled (MTP %d, GPU main model with graphs)\n", mtp_d);
+#endif
+    }
+
+    void configure_auto_main_mmq() {
+#if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
+        if (!auto_main_mmq_pending || use_mmq) return;
+        auto_main_mmq_pending = false;
+        const auto keep_native = [](const char* reason) {
+            std::fprintf(stderr, "tinystrata: automatic per-layer MMQ kept off: %s; native prompt kernels retained\n", reason);
+        };
+        // Placement has already allocated the Experts and, for an all-GPU
+        // context, committed future KV. Never shrink/re-plan those resources
+        // merely to enable this optional prompt route.
+        if (main_hybrid || grow_hybrid || m->clover || native_stream ||
+            std::getenv("STRATA_Q36_NO_MMQ") != nullptr) {
+            keep_native("main Experts are hybrid or the route is explicitly disabled");
+            return;
+        }
+        namespace CP = strata::qwen35::chunk_policy;
+        const auto& g = m->g;
+        CP::Bytes entries = 0, sizes[10] = {}, total_bytes = 0, values = 0;
+        const auto size_for_q8 = [](CP::Bytes rows, int64_t cols, CP::Bytes& bytes) {
+            // Query the pinned MMQ layout rather than duplicating its block
+            // size. One row is bounded by the already validated int32 shape.
+            const CP::Bytes tail = MMQ::q8_bytes(0, cols), one = MMQ::q8_bytes(1, cols);
+            return one >= tail && CP::mul(rows, one - tail, bytes) && CP::add(bytes, tail, bytes);
+        };
+        const bool valid = tmax > 0 && m->top_k > 0 && g.n_expert > 0 && g.n_expert <= INT_MAX &&
+            g.n_embd > 0 && g.n_embd <= INT_MAX && g.n_ff > 0 && g.n_ff <= INT_MAX &&
+            CP::mul((CP::Bytes) tmax, (CP::Bytes) m->top_k, entries) && entries <= INT_MAX &&
+            CP::mul((CP::Bytes) g.n_expert, 4, sizes[0]) &&
+            CP::add((CP::Bytes) g.n_expert, 1, values) && CP::mul(values, 4, sizes[2]) &&
+            CP::mul(entries, 4, sizes[4]) && size_for_q8(entries, g.n_embd, sizes[6]) &&
+            size_for_q8(entries, g.n_ff, sizes[7]) &&
+            CP::mul(entries, (CP::Bytes) g.n_ff, values) && CP::mul(values, 4, sizes[9]) &&
+            CP::mul(sizes[9], 2, sizes[8]);
+        if (!valid) { keep_native("workspace dimensions overflow"); return; }
+        sizes[1] = sizes[0]; sizes[3] = sizeof(int32_t); sizes[5] = sizes[4];
+        for (CP::Bytes bytes : sizes) {
+            if (!CP::add(total_bytes, bytes, total_bytes)) { keep_native("workspace bytes overflow"); return; }
+        }
+        int device = 0, sms = 0;
+        auto status = cudaGetDevice(&device);
+        if (status == cudaSuccess) status = cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device);
+        if (status != cudaSuccess || sms <= 0) {
+            (void) cudaGetLastError(); keep_native("device resources unavailable"); return;
+        }
+        // The largest pinned CUDA MMQ configuration family uses I=128 and
+        // J<=128. Its distinct fixup sizes total 331776 bytes/SM; the caching
+        // pool can retain smaller earlier buffers. Leave at least 1 MiB/SM
+        // (and 64 MiB minimum) for that lazy pool, in addition to the reserve.
+        CP::Bytes fixup_guard = 0, guard = 0, required = 0;
+        if (!CP::mul((CP::Bytes) sms, CP::MiB, fixup_guard) ||
+            !CP::add((CP::Bytes) vram_reserve, std::max<CP::Bytes>(64 * CP::MiB, fixup_guard), guard) ||
+            !CP::add(total_bytes, guard, required)) {
+            keep_native("workspace headroom overflow"); return;
+        }
+        size_t free = 0, total = 0;
+        status = resident_mem_info(&free, &total);
+        if (status != cudaSuccess) { (void) cudaGetLastError(); keep_native("free VRAM unavailable"); return; }
+        if (required > (CP::Bytes) free) {
+            std::fprintf(stderr, "tinystrata: automatic per-layer MMQ kept off: %zu MiB workspace plus %zu MiB "
+                                 "reserve/fixup headroom exceeds %zu MiB free; Expert residency retained\n",
+                         (size_t) (total_bytes >> 20), (size_t) (guard >> 20), free >> 20);
+            return;
+        }
+        // Publish no engine pointers or route flags until every optional
+        // allocation and initialization succeeds. OOM rolls back to native.
+        void* buffers[10] = {};
+        std::unique_ptr<MMQ::Context> context;
+        try { context = std::make_unique<MMQ::Context>(); }
+        catch (const std::bad_alloc&) { keep_native("host context allocation failed"); return; }
+        for (int i = 0; i < 10 && status == cudaSuccess; ++i)
+            status = cudaMalloc(&buffers[i], (size_t) sizes[i]);
+        if (status == cudaSuccess) {
+            for (int i = 0; i < 10 && status == cudaSuccess; ++i)
+                if (i != 6 && i != 7) status = cudaMemsetAsync(buffers[i], 0, (size_t) sizes[i], st);
+            if (status == cudaSuccess) {
+                MMQ::iota((int32_t*) buffers[4], (int64_t) entries, st);
+                status = cudaGetLastError();
+            }
+            if (status == cudaSuccess) status = cudaStreamSynchronize(st);
+        }
+        const auto rollback = [&]() {
+            (void) cudaGetLastError();
+            const auto drained = cudaStreamSynchronize(st);
+            cudaError_t freed = cudaSuccess;
+            for (void* p : buffers) if (p) {
+                const auto result = cudaFree(p);
+                if (freed == cudaSuccess) freed = result;
+            }
+            if (drained != cudaSuccess || freed != cudaSuccess)
+                throw std::runtime_error("automatic MMQ workspace rollback could not drain/free its buffers");
+        };
+        if (status != cudaSuccess) {
+            const auto failure = status;
+            rollback();
+            if (failure == cudaErrorMemoryAllocation) { keep_native("optional CUDA allocation ran out of memory"); return; }
+            throw std::runtime_error(std::string("automatic MMQ workspace initialization: ") + cudaGetErrorString(failure));
+        }
+        status = resident_mem_info(&free, &total);
+        if (status != cudaSuccess || (CP::Bytes) free < guard) {
+            rollback();
+            keep_native("VRAM headroom changed during allocation");
+            return;
+        }
+        rcnt = (int32_t*) buffers[0]; rcur = (int32_t*) buffers[1]; rbounds = (int32_t*) buffers[2];
+        rmax = (int32_t*) buffers[3]; ident = (int32_t*) buffers[4]; rinv = (int32_t*) buffers[5];
+        mq_x = buffers[6]; mq_hq = buffers[7]; mq_gu = (float*) buffers[8]; mq_h = (float*) buffers[9];
+        mctx = std::move(context);
+        main_only_mmq = use_mmq = auto_main_mmq_selected = true;
+        mtp_mmq = auto_main_mmq_mtp;
+        auto_main_mmq_workspace = (size_t) total_bytes;
+        std::fprintf(stderr, "tinystrata: automatic per-layer MMQ enabled: GPU-resident main Experts, minimum %d rows, "
+                             "%zu MiB workspace, %zu MiB reserve/fixup headroom; no permanent staging pair\n",
+                     mmq_min_t, auto_main_mmq_workspace >> 20, (size_t) (guard >> 20));
+#endif
+    }
+
     /// The first prompt after load ran at about half speed (pp4096 rep 0: ~1770 tok/s against ~3290): the GPU's code
     /// objects, the BLAS handles' kernels and the decode graph are made on first use.  A throw-away prompt of one
     /// chunk, a decode step and (with drafts) a speculative step at load do that before the first request; then the
@@ -3738,6 +3938,7 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     if (E.main_hybrid) E.use_graph = false;   // the host takes part in every layer
     E.mtp_graph = false;                      // the MTP block's layer is hybrid either way
     E.hybrid_t = std::max(1, std::min(hybrid_t, E.tmax));
+    if (E.main_only_mmq && E.use_mmq) E.hybrid_t = std::max(E.hybrid_t, Engine::kGemmT);
     E.stage_buffer_bytes = max_layer + kMmqTail;
     // Select the default only after placement is known. Whole-KV/non-VMM and
     // MTP-only hybrid retain their existing routes without a permanent pair.
@@ -3783,6 +3984,18 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
                                ? 2 * (max_layer + kMmqTail) : 0;
     size_t slot_bytes = budget2 > staging ? budget2 - staging : 0;
     if (slot_bytes + staging + ((size_t) 256 << 20) > fr) slot_bytes = fr > staging + ((size_t) 512 << 20) ? fr - staging - ((size_t) 512 << 20) : 0;
+#if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
+    if (E.expert_auto && !m.clover && E.stage_loan) {
+        // These two GPU output buffers are allocated below, after selecting the
+        // slots. Keep them and a small allowance for lazy CUDA allocations out
+        // of the idle cache so a staging loan can restore it above the reserve.
+        const size_t cpu_buffers = (size_t) E.tmax * (size_t) m.top_k * ((size_t) g.n_embd + 1) * 4;
+        const size_t lazy_headroom = (size_t) 64 << 20;
+        slot_bytes -= std::min(slot_bytes, cpu_buffers + lazy_headroom);
+        std::fprintf(stderr, "tinystrata: staging loan auto budget: %zu bytes CPU outputs + %zu bytes lazy CUDA headroom reserved\n",
+                     cpu_buffers, lazy_headroom);
+    }
+#endif
     // --expert-slots: that many per layer (tests: the same split with and without the MTP block)
     int S = slots > 0 ? (int) std::min<int64_t>(ne, slots) : (int) std::min<size_t>((size_t) ne, slot_bytes / per_slot);
     if (mtp_only) {   // the main layers all, the MTP block what is left
@@ -4097,13 +4310,17 @@ int serve(Engine& E) {
     std::printf("INFO version=0.1.0 kv=%s expert_slots=%d expert_total=%d expert_cache_mib=%zu expert_cache_bytes=%zu "
                 "expert_arena_bytes=%zu expert_auto=%d vram_free_bytes=%zu vram_cuda_free_bytes=%zu "
                 "vram_physical_free_bytes=%zu vram_free_source=%s vram_reserve_mib=%zu mtp=%d "
-                "kv_auto=%d context_auto=%d gpu_cc=%d vision=%d chunk=%d clover_draft=%d "
+                "kv_auto=%d context_auto=%d gpu_cc=%d vision=%d chunk=%d q36_mmvq_il=%d q36_mmvq_il_auto=%d "
+                "q36_main_mmq=%d q36_main_mmq_auto=%d q36_mtp_mmq=%d q36_mmq_min_rows=%d q36_mmq_auto_workspace_bytes=%zu clover_draft=%d "
                 "clover_mode=%s clover_block_size=%d clover_threshold=%.9g "
                 "clover_accept=%s clover_accept_ratio=%.9g clover_accept_delta=%.9g clover_draft_penalty_gpu=%d clover_gpu_exact_verify=%d clover_query_tile=%d\n",
                 E.kv_name(), expert_slots, E.total_experts(), expert_bytes >> 20, expert_bytes, arena_bytes, E.expert_auto ? 1 : 0,
                 memory.free, memory.cuda_free, memory.physical ? memory.physical_free : memory.cuda_free,
                 memory.source(), E.vram_reserve >> 20, E.mtp_d,
-                E.kv_auto ? 1 : 0, E.context_auto ? 1 : 0, E.gpu_cc, E.vision_enabled ? 1 : 0, E.tmax, E.clover_draft,
+                E.kv_auto ? 1 : 0, E.context_auto ? 1 : 0, E.gpu_cc, E.vision_enabled ? 1 : 0, E.tmax,
+                E.mmvq_il_enabled ? 1 : 0, E.mmvq_il_auto ? 1 : 0,
+                E.use_mmq ? 1 : 0, E.auto_main_mmq_selected ? 1 : 0, E.use_mmq && E.mtp_mmq ? 1 : 0, E.mmq_min_t,
+                E.auto_main_mmq_workspace, E.clover_draft,
                 E.clover_mode.c_str(), E.clover_block_size, (double) E.clover_threshold,
                 E.clover_accept.c_str(), (double) E.clover_accept_ratio, (double) E.clover_accept_delta,
                 E.clover_draft_penalty_gpu ? 1 : 0, E.clover_gpu_exact_verify ? 1 : 0, E.clover_query_tile);
@@ -4991,21 +5208,66 @@ int strata::qwen35::run(int argc, char** argv) {
         chunk = fits ? 512 : 2048;
         const double GiB = (double) (1ull << 30);
         if (fits && expert_vram < 0) {
-            // a bigger prompt chunk feeds the MMQ expert kernels more rows per expert (R9700, UD-Q4_K_XL, pp4096: 512 3390, 1024
-            // 4495, 2048 5353, 4096 5750 tok/s): the largest that fits beside the experts.  Its buffers grow by about 0.5 MiB per
-            // token (measured 0.47: 1.66 GiB more at 4096 than at 512), the sessions' K / V caches by 50 KB per cell and session.
-            // With several slots a long prompt would hold the other slots' windows for a whole chunk: 1024 at most there.
-            // (measured on a 32 GB R9700 at 8192 cells, 512 chunk: 1.77 GiB of buffers + K / V; the free room after init must still hold
-            // every expert and the 0.77 GiB reserve, or place_experts gives the packed decode copies back - slower decode - or goes hybrid)
-            const int ns = 1;   // TinyStrata has one native session
-            const double kv_one = 45056.0, kv_shared = 5120.0;   // per cell: a session's K / V, and the fp16 copies the prompt attention keeps
-            const double sess_extra = std::max(0.0, (double) ctx * (kv_one * ns + kv_shared) - 8192.0 * (kv_one + kv_shared));
-            const int cap = ns > 1 ? 1024 : 4096;
-            for (int c : {4096, 2048, 1024})
-                if (c <= cap && (double) experts + 2.75 * GiB + (double) (c - 512) * 0.5 * 1048576.0 + sess_extra <= (double) fr_raw) {   // (no give-back of the packed decode copies for a bigger chunk)
-                    chunk = c;
-                    break;
+            bool geometry_planned = false;
+#if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
+            if (!m.clover) {
+                namespace CP = strata::qwen35::chunk_policy;
+                CP::Geometry geometry;
+                geometry.context = (CP::Bytes) ctx;
+                for (const Layer& L : m.layers) geometry.attention_layers += L.attn ? 1 : 0;
+                geometry.mtp_attention = m.has_mtp;
+                geometry.kv_heads = (CP::Bytes) m.g.n_head_kv;
+                geometry.head_dim = (CP::Bytes) m.g.head_dim;
+                geometry.kv_format = kv_format;
+                const bool byte_shape = m.g.head_dim == 256 && m.g.n_head == 8 * m.g.n_head_kv;
+                geometry.tiled_prompt = byte_shape &&
+                    ((kv_format == 2 && strata::qwen35::int8_attention::available()) ||
+                     (kv_format == 3 && strata::qwen35::fp8_attention::available()));
+                // Match Engine::init: a requested growth mode may fall back
+                // to whole allocation when this device/build has no VMM.
+                geometry.growth = kv_grow && strata::qwen35::kv_grow::api().ok;
+                if (geometry.growth) geometry.granularity = strata::qwen35::kv_grow::api().gran;
+                // A larger prompt must not buy scratch by evicting a loaded
+                // drafter's Experts. The legacy initial fits test deliberately
+                // considers only main Experts; keep that fallback unchanged.
+                CP::Bytes mtp_experts = 0, resident_experts = 0;
+                const bool expert_bytes_valid =
+                    (!m.has_mtp || CP::mul((CP::Bytes) m.mtp.stride, (CP::Bytes) m.g.n_expert, mtp_experts)) &&
+                    CP::add((CP::Bytes) experts, mtp_experts, resident_experts);
+                CP::Plan plan;
+                if (expert_bytes_valid && CP::plan((CP::Bytes) fr_raw, resident_experts, (CP::Bytes) vram_reserve, geometry, plan)) {
+                    chunk = plan.chunk;
+                    geometry_planned = true;
+                    std::fprintf(stderr, "tinystrata: Qwen chunk geometry: %llu attention caches, KV %.2f GiB logical / "
+                                         "%.2f GiB initial backing / %.2f GiB full backing, FP16 staging %.2f GiB; "
+                                         "main+MTP Experts %.2f GiB; full-growth budget chunk %d%s\n",
+                                 (unsigned long long) (geometry.attention_layers + (geometry.mtp_attention ? 1 : 0)),
+                                 plan.memory.logical_kv / 1073741824.0, plan.memory.initial_backing / 1073741824.0,
+                                 plan.memory.full_backing / 1073741824.0, plan.memory.fallback_fp16 / 1073741824.0,
+                                 resident_experts / 1073741824.0,
+                                 chunk, plan.full_resident_fits ? "" : " (full residency exceeds envelope)");
+                } else {
+                    std::fprintf(stderr, "tinystrata: Qwen chunk geometry unavailable; retaining conservative legacy rule\n");
                 }
+            }
+#endif
+            if (!geometry_planned) {
+                // a bigger prompt chunk feeds the MMQ expert kernels more rows per expert (R9700, UD-Q4_K_XL, pp4096: 512 3390, 1024
+                // 4495, 2048 5353, 4096 5750 tok/s): the largest that fits beside the experts.  Its buffers grow by about 0.5 MiB per
+                // token (measured 0.47: 1.66 GiB more at 4096 than at 512), the sessions' K / V caches by 50 KB per cell and session.
+                // With several slots a long prompt would hold the other slots' windows for a whole chunk: 1024 at most there.
+                // (measured on a 32 GB R9700 at 8192 cells, 512 chunk: 1.77 GiB of buffers + K / V; the free room after init must still hold
+                // every expert and the 0.77 GiB reserve, or place_experts gives the packed decode copies back - slower decode - or goes hybrid)
+                const int ns = 1;   // TinyStrata has one native session
+                const double kv_one = 45056.0, kv_shared = 5120.0;   // per cell: a session's K / V, and the fp16 copies the prompt attention keeps
+                const double sess_extra = std::max(0.0, (double) ctx * (kv_one * ns + kv_shared) - 8192.0 * (kv_one + kv_shared));
+                const int cap = ns > 1 ? 1024 : 4096;
+                for (int c : {4096, 2048, 1024})
+                    if (c <= cap && (double) experts + 2.75 * GiB + (double) (c - 512) * 0.5 * 1048576.0 + sess_extra <= (double) fr_raw) {   // (no give-back of the packed decode copies for a bigger chunk)
+                        chunk = c;
+                        break;
+                    }
+            }
         } else if (!fits) {
             // the hybrid mode: 2048 (a chunk streams every layer's experts over PCIe once); a small card, where the chunk's buffers
             // would take the slots' room, falls back to less
@@ -5042,6 +5304,8 @@ int strata::qwen35::run(int argc, char** argv) {
     } report{E};
     E.reset();
     E.mtp_d = m.has_mtp ? mtp_d : 0;
+    E.configure_auto_mmvq_il();
+    E.configure_auto_main_mmq();
     if (warm) E.warmup();
     if (serve_mode) {
         try { return serve(E); }
