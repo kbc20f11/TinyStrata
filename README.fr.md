@@ -117,16 +117,18 @@ Consultez `GET /v1/model/switch` jusqu’à `state: ready`. Pour revenir à Qwen
 
 ## Vitesse mesurée — Qwen3.6
 
-Mesuré le **2026-10-27** sous Windows avec une RTX PRO 4000 Blackwell SFF Edition (24 GB), un Ryzen 9 7945HX3D, 64 GB de RAM et le modèle Unsloth MTP UD-IQ3_XXS fixé pour ce projet. L’encodeur d’images est resté sur GPU pendant les requêtes par API. Le raisonnement, les valeurs d’échantillonnage par défaut du modèle (température 0.7) et MTP 3 étaient activés. Les blocs d’entrée et la répartition des experts étaient automatiques ; la capacité de contexte était fixée selon la classe de VRAM. Le chemin hybride CUDA Graph est resté désactivé par défaut et les CUDA Graphs habituels en exécution entièrement sur GPU sont restés actifs.
+Mesuré le **2026-11-03** sous Windows avec une RTX PRO 4000 Blackwell SFF Edition (24 GB), un Ryzen 9 7945HX3D, 64 GB de RAM et le modèle Unsloth MTP UD-IQ3_XXS fixé pour ce projet. L’encodeur d’images est resté sur GPU pendant les requêtes par API. Le raisonnement, les valeurs d’échantillonnage par défaut du modèle (température 0.7) et MTP 3 étaient activés. Les blocs d’entrée et la répartition des experts étaient automatiques ; la capacité de contexte était fixée selon la classe de VRAM. Le chemin hybride CUDA Graph est resté désactivé par défaut et les CUDA Graphs habituels en exécution entièrement sur GPU sont restés actifs.
 
 | Mémoire disponible | Capacité de contexte | Génération INT8 | Génération FP8 native | Remarques |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 124.83 tok/s | 137.26 tok/s | Tous les poids résidents en VRAM |
-| environ 16 GB | 256K | 101.04 tok/s | 103.07 tok/s | 8 GiB occupés séparément ; experts calculés sur CPU et GPU |
-| environ 12 GB | 128K | 86.65 tok/s | 91.11 tok/s | 12 GiB occupés séparément ; experts calculés sur CPU et GPU |
-| environ 8 GB | 64K | 66.24 tok/s | 68.99 tok/s | Calcul des experts sur GPU et CPU |
+| 24 GB | 256K | 141.52 tok/s | 134.41 tok/s | Tous les poids résidents en VRAM |
+| environ 16 GB | 256K | 103.69 tok/s | 105.15 tok/s | 8 GiB occupés séparément ; experts calculés sur CPU et GPU |
+| environ 12 GB | 128K | 92.89 tok/s | 94.74 tok/s | 12 GiB occupés séparément ; experts calculés sur CPU et GPU |
+| environ 8 GB | 64K | 67.17 tok/s | 69.95 tok/s | Calcul des experts sur GPU et CPU |
 
 Les mêmes trois textes ont été exécutés deux fois par configuration FP8/INT8 avec les valeurs d’échantillonnage par défaut du modèle et 128 tokens générés par requête, raisonnement compris. La vitesse est le nombre total de tokens divisé par le temps total de décodage, hors chargement et traitement de l’entrée ; le contexte indique la capacité du cache. Les lignes avec moins de mémoire réservent 8, 12 ou 16 GiB sur le même GPU de 24 GB et utilisent le contexte de cette classe de VRAM ; ce ne sont pas des mesures de GPU physiques de 16/12/8 GB.
+
+INT8 et FP8 ont été mesurés en alternance avec quatre démarrages indépendants par format, chacun exécutant les trois entrées deux fois avec 128 tokens générés par requête ; voir la [comparaison directe](benchmark/results/qwen-kv-direct-20261103.md) pour les détails.
 
 ## Vitesse mesurée — Gemma 4
 

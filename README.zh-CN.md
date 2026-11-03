@@ -117,16 +117,18 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 ## 实测速度 — Qwen3.6
 
-于 **2026-10-27** 在 Windows 上测量，使用 RTX PRO 4000 Blackwell SFF Edition（24 GB）、Ryzen 9 7945HX3D、64 GB 系统内存和固定的 Unsloth MTP UD-IQ3_XXS 模型。图像编码器常驻 GPU，通过 API 进行测量；启用思考、模型默认采样设置（温度 0.7）及 MTP 3。输入分块和专家分配自动选择，上下文容量按各显存档位设置。混合 CUDA Graph 保持默认关闭，全部专家常驻 GPU 时的常规 CUDA Graph 保持启用。
+于 **2026-11-03** 在 Windows 上测量，使用 RTX PRO 4000 Blackwell SFF Edition（24 GB）、Ryzen 9 7945HX3D、64 GB 系统内存和固定的 Unsloth MTP UD-IQ3_XXS 模型。图像编码器常驻 GPU，通过 API 进行测量；启用思考、模型默认采样设置（温度 0.7）及 MTP 3。输入分块和专家分配自动选择，上下文容量按各显存档位设置。混合 CUDA Graph 保持默认关闭，全部专家常驻 GPU 时的常规 CUDA Graph 保持启用。
 
 | 可用内存条件 | 上下文容量 | INT8 生成 | 原生 FP8 生成 | 备注 |
 | --- | ---: | ---: | ---: | --- |
-| 24 GB | 256K | 124.83 tok/s | 137.26 tok/s | 所有权重常驻显存 |
-| 约 16 GB | 256K | 101.04 tok/s | 103.07 tok/s | GPU 与 CPU 共同计算专家 |
-| 约 12 GB | 128K | 86.65 tok/s | 91.11 tok/s | GPU 与 CPU 共同计算专家 |
-| 约 8 GB | 64K | 66.24 tok/s | 68.99 tok/s | GPU 和 CPU 计算专家 |
+| 24 GB | 256K | 141.52 tok/s | 134.41 tok/s | 所有权重常驻显存 |
+| 约 16 GB | 256K | 103.69 tok/s | 105.15 tok/s | GPU 与 CPU 共同计算专家 |
+| 约 12 GB | 128K | 92.89 tok/s | 94.74 tok/s | GPU 与 CPU 共同计算专家 |
+| 约 8 GB | 64K | 67.17 tok/s | 69.95 tok/s | GPU 和 CPU 计算专家 |
 
 每个 FP8/INT8 配置均使用相同的三段文本各运行两次，采用模型默认采样设置，每次生成包含思考的 128 个 token。速度为总生成 token 数除以总解码时间，不含加载与输入处理；上下文值表示缓存容量。内存受限行是在同一块 24 GB GPU 上另行预留 8、12 或 16 GiB，并设置相应显存档位的上下文容量，并非使用实际的 16/12/8 GB GPU。
+
+INT8 和 FP8 按交替顺序各独立启动 4 次，每次启动将 3 段输入各运行 2 次、每次生成 128 个 token，详见[直接对比](benchmark/results/qwen-kv-direct-20261103.md)。
 
 ## 实测速度 — Gemma 4
 
