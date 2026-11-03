@@ -313,26 +313,29 @@ function turnBlocksUnload(live) {
   const state = (live && live.state) || "";
   return pageBusy() || state === "reading" || state === "generating" || (live && live.queued > 0);
 }
-function setModelButton(text, title, disabled) {
+function setModelButton(text, title, disabled, iconName = "eject") {
   const btn = $("unload-btn");
-  btn.textContent = text; btn.title = title; btn.disabled = disabled;
+  $("model-button-text").textContent = text;
+  $("model-button-icon").toggleAttribute("hidden", !iconName);
+  if (iconName) $("model-button-symbol").setAttribute("href", `web/sprite.svg#i-${iconName}`);
+  btn.title = title; btn.disabled = disabled;
   fitHeader();
 }
 function modelButton(live) {
-  if (modelSwitching) return setModelButton(tr("model.switching", "Switching model…"), "", true);
-  if (modelOp === "load") return setModelButton(tr("model.loading", "Loading…"), tr("model.loadingTitle", "The model is loading"), true);
+  if (modelSwitching) return setModelButton(tr("model.switching", "Switching model…"), "", true, null);
+  if (modelOp === "load") return setModelButton(tr("model.loading", "Loading…"), tr("model.loadingTitle", "The model is loading"), true, "download");
   if (modelOp === "unload") return setModelButton(tr("model.unloading", "Unloading…"), tr("model.unloadingTitle", "The model is unloading"), true);
   const state = (live && live.state) || "";
   const metricsBusy = state === "reading" || state === "generating" || (live && live.queued > 0);
   const imageNow = imageLive(live);
   const unload = tr("model.unload", "Unload");
   if (state === "unloaded") {
-    if (imageNow) return setModelButton(tr("model.loading", "Loading…"), tr("model.imageLoading", "An image is already loading the model"), true);
-    if (pageBusy()) return setModelButton(tr("model.loading", "Loading…"), tr("model.replyLoading", "A reply is already loading the model"), true);
-    return setModelButton(tr("model.load", "Load"), tr("model.loadTitle", "Load the model now. A message also loads it."), false);
+    if (imageNow) return setModelButton(tr("model.loading", "Loading…"), tr("model.imageLoading", "An image is already loading the model"), true, "download");
+    if (pageBusy()) return setModelButton(tr("model.loading", "Loading…"), tr("model.replyLoading", "A reply is already loading the model"), true, "download");
+    return setModelButton(tr("model.load", "Load"), tr("model.loadTitle", "Load the model now. A message also loads it."), false, "download");
   }
   if (imageNow) return setModelButton(unload, tr("model.imageBusy", "An image is generating. It finishes on its own."), true);
-  if (!state) return setModelButton("…", tr("model.waiting", "Waiting for the server"), true);
+  if (!state) return setModelButton("…", tr("model.waiting", "Waiting for the server"), true, null);
   if (metricsBusy || pageBusy()) return setModelButton(unload, tr("model.stopFirst", "Stop the reply, then unload"), true);
   return setModelButton(unload, tr("model.unloadTitle", "Unload the model and free the GPU"), false);
 }

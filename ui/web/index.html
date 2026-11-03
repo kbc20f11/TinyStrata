@@ -40,7 +40,8 @@
   <span class="st-header__spacer"></span>
   <span class="st-pill" id="pill" data-state="idle" role="status" aria-live="polite">
     <span class="st-pill__dot"></span><span id="pill-text" data-i18n="pill.connecting">Connecting&hellip;</span></span>
-  <button class="st-btn st-btn--secondary" id="unload-btn" type="button" title="Waiting for the server" data-i18n-title="model.waiting" disabled>&hellip;</button>
+  <button class="st-btn st-btn--secondary" id="unload-btn" type="button" title="Waiting for the server" data-i18n-title="model.waiting" disabled>
+    <svg class="st-icon st-icon--sm" id="model-button-icon" aria-hidden="true" hidden><use id="model-button-symbol" href="web/sprite.svg#i-eject"/></svg><span id="model-button-text">&hellip;</span></button>
   <button class="st-btn st-btn--icon" id="theme-btn" title="Light / dark" aria-label="Switch between light and dark" data-i18n-title="theme.title" data-i18n-label="theme.label" hidden>
     <svg class="st-icon"><use id="theme-icon" href="web/sprite.svg#i-moon"/></svg></button>
 </header>
