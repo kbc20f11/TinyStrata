@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta, timezone
+import hashlib
 import http.client
 import json
 import os
@@ -19,6 +20,15 @@ PROFILES = {"qwen36": ("qwen3.6-35b-a3b", "config.json"),
             "lfm2": ("lfm2.5-24b-a2b", "config-lfm2.json"),
             "clover": ("clover-35b-a3b-preview", "config-clover.json")}
 MODELS = {model: family for family, (model, _) in PROFILES.items()}
+
+
+def backend_revision(source):
+    """Identify Python code loaded by a UI, independently of changing web assets."""
+    digest = hashlib.sha256()
+    for name in ("server.py", "launch.py", "chat_history.py", "web_search.py", "tool_settings.py", "sandbox_runtime.py"):
+        digest.update(name.encode("ascii") + b"\0")
+        digest.update((Path(source) / "ui" / name).read_bytes())
+    return digest.hexdigest()
 
 
 def port_number(value):
@@ -96,6 +106,87 @@ def process_started(pid):
     return utc.strftime("%Y-%m-%dT%H:%M:%S") + f".{fraction:07d}Z"
 
 
+def windows_ui_metadata(pid, port):
+    script = r"""$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$request = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$item = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + [int]$request.pid)
+$owners = @(Get-NetTCPConnection -State Listen -LocalPort ([int]$request.port) -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique)
+@{ executable = $item.ExecutablePath; command = $item.CommandLine; parent = $item.ParentProcessId; owners = $owners } | ConvertTo-Json -Compress
+"""
+    result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+                            input=json.dumps({"pid": pid, "port": port}), text=True, encoding="utf-8",
+                            capture_output=True, timeout=15, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    return json.loads(result.stdout) if result.returncode == 0 else {}
+
+
+def matching_ui_process(metadata, pid, command, launcher_pid=None):
+    try:
+        # Windows' venv python.exe can be a redirector: the actual listener is
+        # its direct child running the base interpreter with the same command.
+        executable = metadata.get("executable", "")
+        executables = [command[0], getattr(sys, "_base_executable", sys.executable)]
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.GetModuleFileNameW.argtypes = [wintypes.HMODULE, wintypes.LPWSTR, wintypes.DWORD]
+            kernel.GetModuleFileNameW.restype = wintypes.DWORD
+            buffer = ctypes.create_unicode_buffer(32768)
+            length = kernel.GetModuleFileNameW(None, buffer, len(buffer))
+            if 0 < length < len(buffer):
+                # App Execution Aliases can be distinct redirector files; the
+                # loaded interpreter image is the reliable file identity.
+                executables.append(buffer.value)
+        executable_matches = any(Path(candidate).is_file() and os.path.samefile(executable, candidate)
+                                 for candidate in executables)
+        return (executable_matches and metadata.get("command") == subprocess.list2cmdline(command) and
+                metadata.get("owners") == [pid] and
+                (launcher_pid is None or pid == launcher_pid or metadata.get("parent") == launcher_pid))
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def stop_owned_ui(pid, command, started, port, launcher_pid=None):
+    """Stop an exact, independently verified Windows UI process, never a PID alone."""
+    if os.name != "nt":
+        raise RuntimeError("Close the previous UI server before updating it on this platform")
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.WaitForSingleObject.restype = wintypes.DWORD
+    kernel.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel.TerminateProcess.restype = wintypes.BOOL
+    # Holding the handle ensures that a PID reused during inspection cannot be
+    # terminated in place of the inspected UI. No process tree is terminated.
+    handle = kernel.OpenProcess(0x1000 | 0x0001 | 0x00100000, False, pid)
+    if not handle:
+        raise RuntimeError("The previous UI process could not be verified; it was left unchanged")
+    try:
+        if kernel.WaitForSingleObject(handle, 0) != 258:
+            return
+        observed_started = process_started(pid)
+        saved_pid = launcher_pid or pid
+        if started and process_started(saved_pid) != started:
+            raise RuntimeError("The saved UI process identity has changed; it was left unchanged")
+        try:
+            metadata = windows_ui_metadata(pid, port)
+            valid = matching_ui_process(metadata, pid, command, launcher_pid)
+        except (OSError, TypeError, ValueError):
+            valid = False
+        if not valid or kernel.WaitForSingleObject(handle, 0) != 258 or process_started(pid) != observed_started:
+            raise RuntimeError("The previous UI listener or command did not match this installation; it was left unchanged")
+        if not kernel.TerminateProcess(handle, 0) or kernel.WaitForSingleObject(handle, 5000) != 0:
+            raise RuntimeError("The verified previous UI server did not exit")
+    finally:
+        kernel.CloseHandle(handle)
+
+
 class Launcher:
     def __init__(self, args, source, work):
         self.source, self.work = source, work
@@ -156,7 +247,10 @@ class Launcher:
             process = subprocess.Popen(command, cwd=self.source, stdin=subprocess.DEVNULL,
                                        stdout=output, stderr=errors, creationflags=flags)
         self.log(f"Started {label}: PID {process.pid}")
-        self.write_state(f"{label}-process.json", {"pid": process.pid, "command": command})
+        state = {"pid": process.pid, "command": command}
+        if label == "ui" and os.name == "nt":
+            state["started"] = process_started(process.pid)
+        self.write_state(f"{label}-process.json", state)
         return process
 
     def prepare_api(self, config):
@@ -241,15 +335,34 @@ class Launcher:
     def ensure_ui(self):
         health = self.existing_ui()
         if health is not None:
-            self.log(f"Reusing the UI server: PID {health.get('pid')}")
-            return
+            if self.current_ui(health):
+                self.log(f"Reusing the UI server: PID {health.get('pid')}")
+                return
+            # An incomplete update must not stop the working previous UI.
+            backend_revision(self.source)
+            self.restart_previous_ui(health)
         process = self.spawn(self.source / "ui" / "server.py", ["--port", str(self.port),
-                             "--api-port", str(self.api_port)], "ui")
+                             "--api-port", str(self.api_port), "--data-dir", str(self.state_dir)], "ui")
+        self.ui_process = process
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
             try:
                 health = self.existing_ui()
-                if health is not None:
+                if health is not None and self.current_ui(health):
+                    pid = health.get("pid")
+                    command = [str(self.python), "-B", str(self.source / "ui" / "server.py"),
+                               "--port", str(self.port), "--api-port", str(self.api_port),
+                               "--data-dir", str(self.state_dir)]
+                    if type(pid) is not int or pid <= 0:
+                        raise RuntimeError("The started UI returned an invalid process identity")
+                    state = {"pid": pid, "launcher_pid": process.pid, "command": command}
+                    if os.name == "nt":
+                        if not matching_ui_process(windows_ui_metadata(pid, self.port), pid, command, process.pid):
+                            raise RuntimeError("The UI listener did not match the started process; it was left unchanged")
+                        state["started"] = process_started(pid)
+                    elif pid != process.pid:
+                        raise RuntimeError("The UI listener did not match the started process; it was left unchanged")
+                    self.write_state("ui-process.json", state)
                     return
             except (OSError, ValueError, http.client.HTTPException, RuntimeError):
                 # A newly spawned listener may have bound before serving HTTP.
@@ -259,6 +372,40 @@ class Launcher:
                 break
             time.sleep(.2)
         raise RuntimeError(f"The UI server did not become ready; see {self.state_dir / 'ui.stderr.log'}")
+
+    def current_ui(self, health):
+        try:
+            return (health.get("backend_revision") == backend_revision(self.source) and
+                    Path(health["source_dir"]).resolve() == self.source.resolve() and
+                    Path(health["data_dir"]).resolve() == self.state_dir.resolve())
+        except (OSError, KeyError, TypeError, ValueError):
+            return False
+
+    def restart_previous_ui(self, health):
+        try:
+            state = read_json(self.state_dir / "ui-process.json")
+            pid = health["pid"]
+            old_command = [str(self.python), "-B", str(self.source / "ui" / "server.py"),
+                           "--port", str(self.port), "--api-port", str(self.api_port)]
+            new_command = old_command + ["--data-dir", str(self.state_dir)]
+            # Legacy state has no creation timestamp, so OS executable, exact
+            # command and listener ownership are all required before upgrading.
+            if (type(pid) is not int or pid <= 0 or not isinstance(state, dict) or
+                    type(state.get("pid")) is not int or state["pid"] <= 0 or
+                    state.get("command") not in (old_command, new_command) or
+                    ("started" in state and not isinstance(state["started"], str))):
+                raise ValueError("UI process record does not match")
+        except (OSError, KeyError, TypeError, ValueError) as error:
+            raise RuntimeError("The UI server needs updating, but its ownership could not be verified. Close that UI server and run TinyStrata again; the API and model were left unchanged") from error
+        stop_owned_ui(pid, state["command"], state.get("started"), self.port,
+                      launcher_pid=state["pid"] if state["pid"] != pid else None)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if not port_occupied(self.port):
+                self.log(f"Stopped the verified previous UI server for an update: PID {pid}")
+                return
+            time.sleep(.1)
+        raise RuntimeError("The previous UI port is still occupied; no replacement server was started")
 
 
 def main():

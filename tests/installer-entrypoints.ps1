@@ -174,6 +174,73 @@ foreach ($fixture in @(
     Assert-Entrypoint ((Test-TinyStrataCudaCompilerVersion -Version $compilerVersion) -eq $fixture.Safe) ('CUDA compiler patch-level validation: ' + $fixture.Text)
 }
 
+# Evaluate UI dependency helpers with a function in place of Python. No native
+# interpreter/pip is invoked: every invocation and exit code is a fixture.
+$uiDependenciesFunction = $readinessAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Initialize-TinyStrataUiDependencies' }, $true)
+$optionalUiFunction = $readinessAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Initialize-TinyStrataOptionalUI' }, $true)
+if (-not $uiDependenciesFunction -or -not $optionalUiFunction) { throw 'Optional UI dependency helpers are missing.' }
+function Invoke-MockedUiDependencies {
+    param([string]$FunctionText, [bool]$PinsHealthy = $true, [bool]$Private = $true, [bool]$InstallFails = $false)
+    & {
+        param($probeFunction, $probePins, $probePrivate, $probeInstallFails)
+        $probeCalls = New-Object 'System.Collections.Generic.List[object]'
+        function Test-Path { param($LiteralPath, $PathType) return $true }
+        function Invoke-MockedUiPython {
+            $probeArguments = @($args)
+            $probeCalls.Add($probeArguments)
+            if ($probeArguments -contains '-c') { $global:LASTEXITCODE = $(if ($probePrivate) { 0 } else { 1 }) }
+            elseif ($probeArguments -contains 'install') { $global:LASTEXITCODE = $(if ($probeInstallFails) { 1 } else { 0 }) }
+            elseif ($probeArguments -contains 'check') { $global:LASTEXITCODE = 0 }
+            else { $global:LASTEXITCODE = $(if ($probePins) { 0 } else { 1 }) }
+        }
+        Invoke-Expression $probeFunction
+        $caught = $null
+        try { Initialize-TinyStrataUiDependencies -SourceRoot 'C:\UI source' -WorkRoot 'C:\UI work' -Python 'Invoke-MockedUiPython' }
+        catch { $caught = $_.Exception.Message }
+        return [pscustomobject]@{ Calls = $probeCalls.ToArray(); Error = $caught }
+    } $FunctionText $PinsHealthy $Private $InstallFails
+}
+$result = Invoke-MockedUiDependencies -FunctionText $uiDependenciesFunction.Extent.Text
+Assert-Entrypoint (-not $result.Error -and $result.Calls.Count -eq 3) 'healthy UI dependencies are checked and reused'
+Assert-Entrypoint (@($result.Calls | Where-Object { $_ -contains 'install' }).Count -eq 0) 'healthy UI does not run pip install'
+Assert-Entrypoint ($result.Calls[0][-1] -eq 'C:\UI work\runtime\.venv') 'private environment identity checks the installation venv'
+$result = Invoke-MockedUiDependencies -FunctionText $uiDependenciesFunction.Extent.Text -PinsHealthy $false
+$installCalls = @($result.Calls | Where-Object { $_ -contains 'install' })
+Assert-Entrypoint (-not $result.Error -and $installCalls.Count -eq 1) 'missing pinned UI dependency takes install path once'
+Assert-Entrypoint ($installCalls[0][-1] -eq 'C:\UI source\ui\requirements.txt' -and $installCalls[0] -contains '--require-virtualenv') 'UI install uses only UI requirements and requires a venv'
+Assert-Entrypoint ($installCalls[0] -contains '--isolated' -and $installCalls[0] -contains '--only-binary=:all:' -and $installCalls[0] -contains 'https://pypi.org/simple') 'UI install preserves isolated binary-only official-index policy'
+$result = Invoke-MockedUiDependencies -FunctionText $uiDependenciesFunction.Extent.Text -Private $false
+Assert-Entrypoint ($result.Error -like '*private Python virtual environment*' -and $result.Calls.Count -eq 1) 'global interpreter is refused before dependency or pip commands'
+$result = Invoke-MockedUiDependencies -FunctionText $uiDependenciesFunction.Extent.Text -PinsHealthy $false -InstallFails $true
+Assert-Entrypoint ($result.Error -like '*dependency installation failed*' -and $result.Calls.Count -eq 3) 'UI install failure prevents launch and later verification'
+
+# Intercept only the launcher call in the actual optional-UI function. Source
+# and dependencies remain separate mocked steps, for both start and NoStart.
+$optionalProbeText = $optionalUiFunction.Extent.Text.Replace('& $python @arguments', 'Invoke-MockedUiLauncher @arguments')
+if ($optionalProbeText -eq $optionalUiFunction.Extent.Text) { throw 'Could not safely intercept the optional UI launcher.' }
+foreach ($configureOnly in @($false, $true)) {
+    $result = & {
+        param($probeText, $probeConfigure)
+        $probeSteps = New-Object 'System.Collections.Generic.List[string]'
+        $probeCapture = @{ Arguments = @() }
+        function Test-Path { param($LiteralPath, $PathType) return $true }
+        function Initialize-TinyStrataUiSource { param($SourceRoot, $WorkRoot) $probeSteps.Add('source') }
+        function Initialize-TinyStrataUiDependencies { param($SourceRoot, $WorkRoot, $Python) $probeSteps.Add('dependencies') }
+        function Invoke-MockedUiLauncher { $probeSteps.Add('launch'); $probeCapture.Arguments = @($args); $global:LASTEXITCODE = 0 }
+        Invoke-Expression $probeText
+        Initialize-TinyStrataOptionalUI -SourceRoot 'C:\UI source' -WorkRoot 'C:\UI work' -ApiPort 8080 -ConfigureOnly:$probeConfigure
+        return [pscustomobject]@{ Steps = $probeSteps.ToArray(); Arguments = $probeCapture.Arguments }
+    } $optionalProbeText $configureOnly
+    Assert-Entrypoint (($result.Steps -join ',') -eq 'source,dependencies,launch') 'UI dependencies follow source acquisition and precede every launch mode'
+    Assert-Entrypoint (($configureOnly -and $result.Arguments -contains '--configure-only') -or (-not $configureOnly -and $result.Arguments -contains '--no-api-start')) 'UI start and configure-only keep their original launch contracts'
+}
+$installerBody = $readinessAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-TinyStrataInstaller' }, $true)
+$inspectBranch = $installerBody.Find({ param($node) $node -is [System.Management.Automation.Language.IfStatementAst] -and $node.Clauses[0].Item1.Extent.Text -eq '$InspectOnly' }, $true)
+Assert-Entrypoint ($inspectBranch -and $inspectBranch.Extent.Text -notmatch 'Initialize-TinyStrata' -and $inspectBranch.Extent.Text -match '\breturn\b') 'CheckOnly remains an inspection path without dependency installation'
+$rootRequirements = [IO.File]::ReadAllText((Join-Path $entrypointRoot 'requirements.txt'))
+$uiRequirements = [IO.File]::ReadAllText((Join-Path $entrypointRoot 'ui\requirements.txt'))
+Assert-Entrypoint ($rootRequirements -notmatch '(?im)^ddgs' -and $uiRequirements -match '(?m)^ddgs==9\.16\.1\s*$') 'DDGS is pinned in UI-only requirements'
+
 [pscustomobject]@{
     Result = 'passed'
     PowerShell = $PSVersionTable.PSVersion.ToString()

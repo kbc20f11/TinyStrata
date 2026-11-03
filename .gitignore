@@ -48,6 +48,12 @@
 !/tests/native-conversations.cpp
 !/tests/q36-int8-fdec-reference.cu
 !/tests/q36-prefill-cancel.py
+!/tests/test_ui_chat_history.py
+!/tests/test_ui_web_search.py
+!/tests/test_ui_server_tools.py
+!/tests/test_ui_launcher_upgrade.py
+!/tests/ui-chatstore.cjs
+!/tests/ui-local-tools.cjs
 
 # Only build/runtime sources and the fixed public benchmark inputs belong here.
 /benchmark/**
@@ -93,6 +99,13 @@
 /ui/**
 !/ui/server.py
 !/ui/launch.py
+!/ui/chat_history.py
+!/ui/web_search.py
+!/ui/tool_settings.py
+!/ui/sandbox_runtime.py
+!/ui/requirements.txt
+!/ui/python-runtime-LICENSE.txt
+!/ui/python-runtime-NOTICES.txt
 !/ui/web/
 !/ui/web/*.html
 !/ui/web/*.css

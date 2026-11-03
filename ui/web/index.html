@@ -11,6 +11,7 @@
 <link rel="stylesheet" href="web/app.css">
 <link rel="stylesheet" href="web/terminal-theme.css?v=20261101.12">
 <link rel="stylesheet" href="web/syntax.css?v=20261103.1">
+<link rel="stylesheet" href="web/local-tools.css?v=20261103.2">
 <script>
   // Match the operating system before the first paint, including older installs.
   try {
@@ -86,6 +87,7 @@
             <button type="button" class="st-btn st-btn--secondary chat-settings-button" id="sampling-btn" title="Chat settings" aria-label="Chat settings" data-i18n-title="drawer.title" data-i18n-label="drawer.title">
               <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-settings"/></svg>
               <span class="chat-settings-label" data-i18n="drawer.title">Chat settings</span><span class="chat-settings-short" aria-hidden="true" data-i18n="drawer.short">Settings</span></button>
+            <span class="composer-tools muted small" id="composer-tools" hidden></span>
             <span class="spacer"></span>
             <div class="composer-controls">
               <label class="composer-select composer-select--model" for="composer-model">
@@ -271,7 +273,7 @@
           <span><span data-i18n="settings.followsOs">Follows your operating system</span> · <span id="theme-mode"></span></span></div>
         <div class="toggle-row" hidden><span data-i18n="settings.darkTheme">Dark theme</span>
           <button class="st-toggle" id="dark-toggle" role="switch" aria-checked="false" aria-label="Dark theme"></button></div>
-        <p class="muted small"><span data-i18n="about.browserStorage">Chats, settings and the key are kept in this browser only.</span>
+        <p class="muted small"><span data-i18n="about.browserStorage">Chat history is saved on this PC. Display preferences and the API connection key stay in this browser.</span>
           <a href="https://github.com/kbc20f11/TinyStrata" target="_blank" rel="noopener noreferrer" data-i18n="about.github">TinyStrata on GitHub</a></p>
       </div>
       <div class="st-card cfg-card" id="cfg-card" hidden>
@@ -327,6 +329,26 @@
     <div class="toggle-row" id="mcp-row" hidden><span><span data-i18n="drawer.mcp">Use tools from MCP servers</span><br><span class="muted small"
       id="mcp-row-sub" data-i18n="mcp.modelCalls">the model may call them while it answers</span></span>
       <button class="st-toggle" id="s-mcp" role="switch" aria-checked="true" aria-label="Use tools from MCP servers" data-i18n-label="drawer.mcp"></button></div>
+    <div class="drawer-group" role="group" aria-labelledby="g-local-tools">
+      <h3 class="drawer-group__title" id="g-local-tools" data-i18n="localTools.title">Search and code execution</h3>
+      <div class="toggle-row"><span><span data-i18n="localTools.search">Web search</span><br><span class="muted small" data-i18n="localTools.searchNote">Let the model search when useful. Queries go to the selected provider.</span></span>
+        <button class="st-toggle" id="s-web-search" role="switch" aria-checked="false" aria-label="Web search" data-i18n-label="localTools.search"></button></div>
+      <div class="toggle-row"><span><span data-i18n="localTools.python">Python</span><br><span class="muted small" data-i18n="localTools.pythonNote">Let the model calculate in an isolated environment. Standard library only, with no network or access to this PC's files.</span></span>
+        <button class="st-toggle" id="s-code-execution" role="switch" aria-checked="false" aria-label="Python" data-i18n-label="localTools.python"></button></div>
+      <p class="muted small" data-i18n="localTools.shared">The provider, search key and concurrency apply to every model in this UI.</p>
+      <fieldset class="local-search-fields" id="search-provider-fields">
+        <div class="st-field"><label class="st-label" for="s-search-provider" data-i18n="localTools.provider">Search provider</label>
+          <select class="st-input" id="s-search-provider"><option value="ddgs" data-i18n="localTools.ddgs">DDGS — no API key</option><option value="brave">Brave LLM Context</option></select></div>
+        <div class="st-field"><label class="st-label" for="s-search-key" data-i18n="localTools.braveKey">Brave Search API key</label>
+          <input class="st-input" id="s-search-key" type="password" autocomplete="new-password" spellcheck="false" maxlength="4096" placeholder="Enter a new key; leave empty to keep the saved key" data-i18n-placeholder="localTools.keyPlaceholder">
+          <span class="muted small" id="search-key-status"></span>
+          <label class="search-key-remove"><input type="checkbox" id="s-search-clear"><span data-i18n="localTools.removeKey">Delete the saved key when applying</span></label></div>
+        <div class="st-field"><label class="st-label" for="s-search-concurrency" data-i18n="localTools.concurrency">Concurrent searches</label>
+          <input class="st-input" id="s-search-concurrency" type="number" min="1" max="4" step="1" value="1">
+          <span class="muted small" id="search-rate-note"></span></div>
+      </fieldset>
+      <p class="muted small" id="tools-settings-status" role="status"></p>
+    </div>
     <div class="toggle-row" id="esp-row" hidden><span><span data-i18n="about.projectionLabel">Experimental speed projection</span><br><span class="muted small" data-i18n="projection.note">The engine's control vector; off uses the stock model. Switching reads the chat again once.</span></span>
       <button class="st-toggle" id="s-esp" role="switch" aria-checked="true" aria-label="Experimental speed projection" data-i18n-label="about.projectionLabel"></button></div>
     <div class="toggle-row"><span><span data-i18n="drawer.share">Use for other apps too</span><br><span class="muted small" data-i18n="drawer.shareNote">omp and other API clients get
@@ -336,7 +358,7 @@
     <div class="drawer-group" role="group" aria-labelledby="g-chats">
       <h3 class="drawer-group__title" id="g-chats" data-i18n="drawer.chats">Chats</h3>
       <div class="toggle-row"><span><span data-i18n="drawer.list">Saved chats list</span><br><span class="muted small"
-        data-i18n="drawer.listNote">keeps every chat in a list on the left, in this browser only. Off: one chat, as before</span></span>
+        data-i18n="drawer.listNote">History is saved on this PC. Turning this off hides the list while saving continues.</span></span>
         <button class="st-toggle" id="s-list" role="switch" aria-checked="true" aria-label="Saved chats list" data-i18n-label="drawer.list"></button></div>
       <div class="st-field">
         <label class="st-label" for="s-busy"><span data-i18n="drawer.busy">When you send while it is answering</span></label>
@@ -384,9 +406,12 @@
 <script src="web/math.js?v=20261101.6"></script>
 <script src="web/math-adapter.js"></script>
 <script src="web/latex.js?v=20261101.12"></script>
+<script src="web/sandbox.js?v=20261103.2"></script>
+<script src="web/local-tools.js?v=20261103.2"></script>
+<script src="web/code-runner.js?v=20261103.2"></script>
 <script src="web/history.js"></script>
-<script src="web/chatstore.js"></script>
-<script src="web/chats-ui.js?v=20261101.10"></script>
-<script src="web/app.js?v=20261103.1"></script>
+<script src="web/chatstore.js?v=20261103.2"></script>
+<script src="web/chats-ui.js?v=20261103.2"></script>
+<script src="web/app.js?v=20261103.2"></script>
 </body>
 </html>

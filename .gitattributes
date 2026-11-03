@@ -9,3 +9,6 @@
 benchmark/cases.json -text whitespace=cr-at-eol
 # Keep the upstream minified bundle byte-for-byte, including its template strings.
 ui/web/vendor/mermaid/dist/mermaid.min.js -text whitespace=-trailing-space
+# Runtime notices retain upstream bytes because preparation verifies their SHA-256.
+ui/python-runtime-LICENSE.txt -text whitespace=-trailing-space
+ui/python-runtime-NOTICES.txt -text whitespace=-trailing-space

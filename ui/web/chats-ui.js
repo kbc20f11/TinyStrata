@@ -3,7 +3,7 @@
 // the pure part is serve/web/history.js, the browser store is serve/web/chatstore.js.
 //
 // The saved-chats list is on by default; message actions are always available. With the list off, the page keeps one chat,
-// with "New chat" clearing it (and an Undo). Nothing here goes to the server.
+// with "New chat" opening a fresh chat. History is stored by the local UI server.
 //
 // This file is loaded before app.js and uses its globals when its functions run: $, esc, icon, node, toast, store, settings,
 // messages, attachments, busy, pending, setBusy, renderChat, renderAttachments, autosize, generateReply, releasePending.
@@ -23,7 +23,7 @@ const node = (tag, cls, text) => {
 let listOn = false;                  // the saved-chats list is on
 let chats = [], chat = null, chatId = "";
 // Unsent text and attachment contents belong to one chat. Keep them only for
-// this visit, outside the persisted chat records (which retain attachment names).
+// this visit, outside the persisted chat records.
 const composerDrafts = new Map();
 let composerDraft = {text: "", attachments: []};
 function saveComposerDraft() {
@@ -67,10 +67,17 @@ function setMessages(next) {
   if (chat) chat.messages = next;
 }
 function saveChat() {
-  if (!listOn) { store.set("chat", H.cleanMessages(messages)); return; }   // off: one chat, as before
+  if (!chat || chat.id !== chatId) {
+    chat = chats.find((item) => item.id === chatId) || {...H.newChat(), id: chatId || H.newChat().id};
+    chatId = chat.id;
+    if (!chats.includes(chat)) chats.push(chat);
+  }
+  chat.messages = messages;
   chat.time = Date.now();
-  chatStore.put(H.cleanChat(chat));
-  renderSidebar();
+  store.set("chatId", chatId);
+  chatStore.put(chat);
+  if (!listOn) store.set("chat", H.cleanMessages(messages));
+  else renderSidebar();
 }
 function stillWriting() { toast("warn", tr("busy.stillWriting", "Still writing"), tr("busy.stopFirst", "Stop the answer first.")); }
 
@@ -81,13 +88,14 @@ function stillWriting() { toast("warn", tr("busy.stillWriting", "Still writing")
 async function openChats(fromScreen) {
   const screenMessages = messages, screenDraft = fromScreen ? saveComposerDraft() : null;
   await chatStore.start();
+  await chatStore.flush();
   chats = await chatStore.all();
   if (!chats.length && !fromScreen) {
     const old = store.get("chat", []);
     if (old.length) {
       const c = {...H.newChat(), messages: old, time: old[old.length - 1].time || Date.now()};
       chats = [c];
-      chatStore.put(H.cleanChat(c));                    // the migrated chat is a record like the others
+      chatStore.put(c);                                // the original browser copy is retained
     }
   }
   if (fromScreen) {
@@ -101,7 +109,7 @@ async function openChats(fromScreen) {
   restoreComposerDraft(chatDraft(chat));
   if (fromScreen) {
     store.set("chatId", chatId);
-    chatStore.put(H.cleanChat(chat));
+    chatStore.put(chat);
   }
 }
 async function setChatList(on, fromScreen) {
@@ -109,8 +117,8 @@ async function setChatList(on, fromScreen) {
   $("sidebar").hidden = !on;
   $("new-btn").hidden = on;                              // the list has its own New chat
   if (!on) {                                             // off writes the single chat, so a reload shows the chat you were in
+    if (!fromScreen) await openChats(false);
     if (chat) messages = chat.messages;
-    chat = null;
     store.set("chat", H.cleanMessages(messages));
     renderChat();
     return;
@@ -150,16 +158,19 @@ function renderSidebar() {
       box.appendChild(chatItem(c));
     }
   }
-  $("sidebar-foot").textContent = tr("sidebar.foot", {one: "{n} chat · kept in this browser", other: "{n} chats · kept in this browser"}, {n: chats.length});
+  $("sidebar-foot").textContent = chatStore.storage === "sqlite"
+    ? tr("sidebar.footSqlite", {one: "{n} chat · saved on this PC", other: "{n} chats · saved on this PC"}, {n: chats.length})
+    : tr("sidebar.foot", {one: "{n} chat · kept in this browser", other: "{n} chats · kept in this browser"}, {n: chats.length});
 }
 
 function showChat(c) {
+  if (typeof StrataCodeRunner !== "undefined") StrataCodeRunner.cancelAll();
   saveComposerDraft();
   clearUndo();
   chat = c; chatId = c.id; messages = c.messages;
   restoreComposerDraft(chatDraft(c));
   store.set("chatId", chatId);
-  chatStore.put(H.cleanChat(chat));       // renderChat renders the list, so the write here does not render it again
+  chatStore.put(chat);                   // renderChat renders the list, so the write here does not render it again
   renderChat();
 }
 function openChat(id) {
@@ -203,7 +214,7 @@ function deleteChat(c) {
     if (chats.includes(c)) return;                  // already put back
     if (draft) composerDrafts.set(c.id, draft);
     chats.splice(Math.min(i, chats.length), 0, c);  // the display is sorted by time, so only the index matters
-    if (wasOpen) showChat(c); else { chatStore.put(H.cleanChat(c)); renderSidebar(); }
+    if (wasOpen) showChat(c); else { chatStore.put(c); renderSidebar(); }
   }});
 }
 // rename: the row turns into a field; Enter or a click outside keeps the name, Escape gives it up
@@ -218,7 +229,7 @@ function renameChat(row, c) {
   const finish = (keep) => {
     if (done) return;
     done = true;
-    if (keep) { c.title = input.value.trim(); chatStore.put(H.cleanChat(c)); }
+    if (keep) { c.title = input.value.trim(); chatStore.put(c); }
     renderSidebar();
   };
   input.addEventListener("keydown", (e) => {

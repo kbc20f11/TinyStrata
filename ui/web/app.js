@@ -135,7 +135,9 @@ retireLegacyUiWorker();
 function renderEmptyChat() {
   $("attach-btn").title = health.images ? tr("composer.attachPictures", "Attach a text file or a picture (or drop it here)")
                                         : tr("composer.attach", "Attach a text file (or drop it here)");
-  $("chat-empty-sub").textContent = tr("chat.emptyModel", "{model} runs on this PC. Nothing leaves it.", {model: health.model});
+  $("chat-empty-sub").textContent = settings.webSearch
+    ? tr("localTools.emptySearch", "{model} runs on this PC. Web search sends queries to your selected provider.", {model: health.model})
+    : tr("chat.emptyModel", "{model} runs on this PC. Nothing leaves it.", {model: health.model});
 }
 async function loadHealth() {
   try {
@@ -943,13 +945,14 @@ function markdown(text) {
 // 0.7 / 0.8 / 20 with a presence penalty). Before 0.1.45 the page sent 0.6 itself; a stored 0.6 with the other two
 // values untouched counts as "not set" too.
 const DEFAULTS = {thinking: "high", temperature: 1.0, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true, math: true,
-                  chatList: true, whileBusy: "wait"};
+                  chatList: true, whileBusy: "wait", webSearch: false, codeExecution: false};
 const OLD_DEFAULT_TEMPERATURE = 0.6;
 function samplingUntouched(s) {
   const t = +s.temperature;
   return (t === DEFAULTS.temperature || t === OLD_DEFAULT_TEMPERATURE) && +s.top_p === DEFAULTS.top_p && +s.top_k === DEFAULTS.top_k;
 }
 let settings = {...DEFAULTS, ...store.get("sampling", {})};
+let globalTools = null, toolSettingsSaving = false;
 delete settings.chatEdit;                            // retired: message actions are always available
 if (samplingUntouched(settings)) settings.temperature = DEFAULTS.temperature;
 let messages = store.get("chat", []);   // the open chat's messages (chats-ui.js: with the saved-chats list on, also that chat's own)
@@ -991,7 +994,7 @@ function syncComposerControls() {
   if (!modelSwitching && [...select.options].some((option) => option.value === health.model)) select.value = health.model;
   $("composer-effort").value = effortForModel();
   $("composer-effort").disabled = modelSwitching || sharedSaving || pageBusy();
-  $("s-apply").disabled = modelSwitching || sharedSaving;
+  $("s-apply").disabled = modelSwitching || sharedSaving || toolSettingsSaving;
   const noThinking = $("composer-effort").querySelector('[value="none"]');
   noThinking.disabled = health.model === "lfm2.5-24b-a2b";
   noThinking.title = noThinking.disabled ? tr("model.thinkingRequired", "This model requires thinking.") : "";
@@ -1509,15 +1512,16 @@ function terminalMetrics(stats, sample) {
   const live = sample && sample.live;
   // Before this reply's own first token, another client may own the engine.
   // Parallel runs cannot be assigned to this message from global metrics.
-  if (!live || !terminalNumber(stats.firstTokenMs) || live.state !== "generating" ||
+  if (!live || stats.roundHasToken === false || !terminalNumber(stats.firstTokenMs) || live.state !== "generating" ||
       (live.parallel || 0) > 1 || (live.running || 0) > 1 || !terminalNumber(sample.time) ||
       sample.time * 1000 < stats.startedAt + stats.firstTokenMs ||
       !terminalNumber(live.elapsed_s) || !terminalNumber(live.generated)) return false;
   const start = sample.time * 1000 - live.elapsed_s * 1000;
   if (start < stats.startedAt - 1500 || (terminalNumber(stats.serverStartMs) && Math.abs(stats.serverStartMs - start) > 350)) return false;
   if (!terminalNumber(stats.serverStartMs)) stats.serverStartMs = start;
-  if (terminalNumber(stats.generated) && live.generated < stats.generated) return false;
-  stats.generated = live.generated;
+  const generated = (stats.generatedOffset || 0) + live.generated;
+  if (terminalNumber(stats.generated) && generated < stats.generated) return false;
+  stats.generated = generated;
   if (terminalNumber(live.tok_s)) stats.decodeRate = live.tok_s;
   stats.rateSource = "live";
   return true;
@@ -1653,7 +1657,18 @@ function toolHtml(t, k) {
   const [cls, labelOf] = TOOL_STATE[t.state] || ["", () => t.state];
   const label = labelOf();
   const args = t.arguments == null ? "" : JSON.stringify(t.arguments, null, 2);
-  const preview = t.result != null ? t.result : args.replace(/\s+/g, " ");
+  let preview = t.result != null ? t.result : args.replace(/\s+/g, " ");
+  if (t.local && t.name === "web_search") preview = t.arguments?.query || "";
+  if (t.local && t.name === "run_python") {
+    preview = t.arguments?.code || "";
+    if (t.result != null) {
+      try {
+        const result = JSON.parse(t.result);
+        preview = result.stdout || result.result || result.stderr || result.error?.message || tr("codeRun.empty", "No output.");
+      } catch (_) { preview = t.result; }
+    }
+  }
+  preview = String(preview).replace(/\s+/g, " ");
   let body = "";
   if (t.open) {
     body = `<div class="tool-call__label">${esc(tr("tool.arguments", "Arguments"))}</div><pre class="tool-call__pre">${esc(args || tr("tool.beingWritten", "(being written)"))}</pre>`;
@@ -1662,12 +1677,17 @@ function toolHtml(t, k) {
               `${t.truncated ? esc(tr("tool.cut", ", cut for the model")) : ""}</div><pre class="tool-call__pre">${esc(t.result)}</pre>`;
     }
   }
+  const sources = (t.sources || []).map((source) => {
+    const url = StrataLocalTools.safeURL(source.url);
+    return url ? `<a class="tool-source" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(source.title || new URL(url).hostname)}</a>` : "";
+  }).join("");
   return `<details class="st-collapse tool-call" data-tool="${k}" data-state="${esc(t.state)}"${t.open ? " open" : ""}>` +
     `<summary>${icon("tool", "st-icon st-icon--sm")}<span class="tool-call__name" title="${esc(t.name || "")}">${esc(t.tool || t.name || "tool")}</span>` +
     (t.server ? `<span class="muted small">${esc(t.server)}</span>` : "") +
     `<span class="tool-call__preview muted">${esc(preview.slice(0, 200))}</span>` +
     `<span class="st-badge ${cls}">${esc(label)}</span>${t.ms != null && t.state !== "skipped" ? `<span class="muted small">${fmt(t.ms / 1000, 1)} s</span>` : ""}` +
-    `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body">${body}</div></details>`;
+    `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body">${body}</div></details>` +
+    (sources ? `<div class="tool-sources" aria-label="${esc(tr("localTools.sources", "Sources"))}">${sources}</div>` : "");
 }
 // Raster tool results are same-origin cached files; credentials stay in request headers.
 const mediaBlobs = new Map();
@@ -1681,7 +1701,11 @@ window.addEventListener("pagehide", clearToolMedia);
 window.addEventListener("pageshow", (event) => { if (event.persisted) hydrateToolImages(document); });
 function safeToolMedia(url) { return typeof url === "string" && /^tool-media\/[0-9a-f]{64}\.(png|jpg|webp)$/.test(url); }
 function toolImages(t) {
-  return (t.images || []).filter((im) => safeToolMedia(im.url)).map((im) =>
+  const local = (t.images || []).filter((im) => StrataLocalTools.safeImage(im.data_url)).map((im) =>
+    `<figure class="tool-image"><img src="${esc(im.data_url)}" alt="${esc(im.name || tr("media.toolImage", "Tool image"))}" loading="lazy"></figure>`).join("");
+  const files = (t.files || []).filter((file) => typeof file.data_url === "string" && file.data_url.length <= 6 * 1024 * 1024 && /^data:application\/octet-stream;base64,[A-Za-z0-9+/=]+$/.test(file.data_url)).map((file) =>
+    `<a class="st-btn st-btn--secondary tool-download" href="${esc(file.data_url)}" download="${esc((file.name || "result.bin").replace(/[\\/:*?"<>|]/g, "_"))}">${esc(tr("localTools.download", "Download {name}", {name: file.name || "result.bin"}))}</a>`).join("");
+  return local + files + (t.images || []).filter((im) => safeToolMedia(im.url)).map((im) =>
     `<figure class="tool-image"><img data-tool-image="${esc(im.url)}" alt="${esc(tr("media.toolImage", "Tool image"))}" loading="lazy">` +
     `<figcaption><a class="st-btn" data-tool-download="${esc(im.url)}" download="${esc(im.name || "generated-image.png")}">${esc(tr("media.downloadImage", "Download image"))}</a></figcaption></figure>`).join("");
 }
@@ -1847,6 +1871,8 @@ function updateAssistant(el, m, streaming) {
     if (settings.math) StrataMath.hydrate(bubble);
     if (!streaming && typeof StrataDiagrams !== "undefined") StrataDiagrams.hydrate(bubble);
     if (!streaming && settings.math && typeof StrataLatex !== "undefined") StrataLatex.hydrate(bubble, () => settings.math);
+    if (typeof StrataCodeRunner !== "undefined") StrataCodeRunner.hydrate(bubble, m, {streaming,
+      disabled: () => !!busy || modelSwitching, execute: (code, signal) => StrataLocalTools.executePython(code, {signal, headers}), onSave: saveCodeMessage});
   }
   for (const button of bubble.querySelectorAll("[data-code-copy]")) button.disabled = !!streaming;
   if (activeStream && m.text) setTerminalCursor(bubble);
@@ -1972,7 +1998,8 @@ $("chat").addEventListener("toggle", (e) => {
 // UI-only guidance. Keep it out of saved chat messages and shared API defaults.
 const UI_SYSTEM_PROMPT = "明示的な言語指定がなければ、思考テキストと最終回答は、最新のユーザーメッセージと同じ言語で記述してください。コード・数式・固有名詞は原表記を維持してください。";
 function apiMessages() {
-  const out = [{role: "system", content: UI_SYSTEM_PROMPT}];
+  const out = [{role: "system", content: UI_SYSTEM_PROMPT +
+    (settings.webSearch || settings.codeExecution ? "\n" + StrataLocalTools.guidance : "")}];
   for (const m of messages) {
     if (m.role === "user") {
       const imgs = (m.images || []).filter((i) => i.url);
@@ -2005,9 +2032,9 @@ function assistantMessages(m) {
     out.push({role: "assistant", content: m.text.slice(pos, at).trim(),
               tool_calls: calls.map((t) => ({id: t.id, type: "function", function: {name: t.name, arguments: JSON.stringify(t.arguments || {})}}))});
     for (const t of calls) {
-      const pictures = t.vision ? (t.images || []).filter((im) => safeToolMedia(im.url)) : [];
+      const pictures = t.vision ? (t.images || []).filter((im) => safeToolMedia(im.url) || StrataLocalTools.safeImage(im.data_url)) : [];
       const content = pictures.length ? [{type: "text", text: t.result}, ...pictures.map((im) =>
-        ({type: "image_url", image_url: {url: "strata-tool-media:" + im.url.split("/").pop()}}))] : t.result;
+        ({type: "image_url", image_url: {url: im.data_url || "strata-tool-media:" + im.url.split("/").pop()}}))] : t.result;
       out.push({role: "tool", tool_call_id: t.id, content});
     }
     pos = at;
@@ -2038,6 +2065,14 @@ function setBusy(on) {
   renderUndoBar();
   renderPending();
   syncComposerControls();
+  if (typeof StrataCodeRunner !== "undefined") for (const button of document.querySelectorAll("[data-python-run]")) button.disabled = on || modelSwitching;
+}
+
+function saveCodeMessage(message) {
+  if (listOn) {
+    const owner = chats.find((item) => item.messages.includes(message));
+    if (owner) chatStore.put(owner);
+  } else if (messages.includes(message)) saveChat();
 }
 
 // A message sent while an answer is being written (#4004). "queue": it waits and goes when the answer is done. "interject": the
@@ -2121,6 +2156,7 @@ async function send(payload) {
   if (panel) return;                                  // something is open above (an edit): finish it first
   if (!canUseModelImages(messages, p.images)) return;
   if (busy) { park(p, own); return; }
+  if (typeof StrataCodeRunner !== "undefined") StrataCodeRunner.cancelAll();
   clearUndo();
   messages.push({role: "user", text: p.text, images: p.images, files: p.files, time: Date.now()});
   if (own) {
@@ -2138,6 +2174,7 @@ async function generateReply() {
   const m = {role: "assistant", text: "", reasoning: "", model: health.model, time: Date.now(),
              stats: {startedAt: Date.now(), elapsedMs: 0, firstTokenMs: null}};
   messages.push(m);
+  saveChat();                                       // Keep the question even if this page closes during generation.
   renderChat();
   let el = $("chat").lastElementChild;
   // Language changes may rebuild the message nodes while this stream stays open.
@@ -2167,9 +2204,22 @@ async function generateReply() {
   if (projectionLoaded()) body.experimental_speed_projection = !!settings.esp;
   if (settings.mcp !== false && mcpInfo.tools > 0) body.strata_mcp = true;   // this server may run MCP tools for it
 
+  const enabledTools = {...settings}, localSession = StrataLocalTools.session(enabledTools, {headers});
+  const completedRounds = [];
   let firstAt = null, thinkStart = null, usage = null, timings = null, frame = 0;
   const paint = () => { frame = 0; const target = currentElement(); if (target) updateAssistant(target, m, true); scrollDown(); };
   try {
+   for (let round = 0; round <= StrataLocalTools.MAX_ROUNDS; round++) {
+    const offered = round < StrataLocalTools.MAX_ROUNDS ? StrataLocalTools.definitions(enabledTools) : [];
+    if (offered.length) body.tools = offered; else delete body.tools;
+    if (round) body.messages = apiMessages().concat(assistantMessages(m));
+    const calls = new Map();
+    const roundBase = Math.max(0, ...(m.tools || []).map((tool) => tool.round || 0)) + 1;
+    let roundUsage = null, roundTimings = null, finishReason = null, streamComplete = false;
+    const cumulative = StrataLocalTools.combined(completedRounds);
+    m.stats.generatedOffset = cumulative.usage?.completion_tokens ?? cumulative.timings?.predicted_n ?? 0;
+    m.stats.roundHasToken = false;
+    delete m.stats.serverStartMs;
     const r = await fetch("v1/chat/completions", {method: "POST", headers: headers(true), body: JSON.stringify(body),
                                                    signal: controller.signal});
     if (!r.ok) {
@@ -2190,19 +2240,29 @@ async function generateReply() {
         buf = buf.slice(nl + 1);
         if (!line.startsWith("data:")) continue;              // ": keep-alive" comments while a long prompt is read
         const data = line.slice(5).trim();
-        if (data === "[DONE]") continue;
+        if (data === "[DONE]") { streamComplete = true; continue; }
         let j;
         try { j = JSON.parse(data); } catch (e) { continue; }
         if (j.error) throw new Error(j.error.message || tr("toast.engineError", "the engine reported an error"));
-        if (j.usage) usage = j.usage;
-        if (j.timings) timings = j.timings;
+        if (j.usage) roundUsage = j.usage;
+        if (j.timings) roundTimings = j.timings;
         if (j.prompt_progress) m.stats.promptProgress = j.prompt_progress;
         if (j.strata_mcp) {
-          onTool(m, j.strata_mcp);
+          onTool(m, {...j.strata_mcp, ...(j.strata_mcp.round == null ? {} : {round: roundBase + j.strata_mcp.round})});
           // an interjection waited for a running tool: it has its result now, so the answer can stop
           if (busy.cutAfterTool && !busy.cut && !(m.tools || []).some((t) => t.state === "running")) { busy.cut = true; controller.abort(); }
         }
         const d = (j.choices && j.choices[0] && j.choices[0].delta) || {};
+        if (j.choices?.[0]?.finish_reason) finishReason = j.choices[0].finish_reason;
+        if (d.reasoning_content || d.content || d.tool_calls?.length) m.stats.roundHasToken = true;
+        if (d.tool_calls?.length) {
+          for (const call of StrataLocalTools.mergeCalls(calls, d.tool_calls)) {
+            if (!call.id) continue;
+            onTool(m, {event: "start", id: call.id, name: call.name});
+            const view = m.tools.find((item) => item.id === call.id);
+            try { view.arguments = JSON.parse(call.arguments || "{}"); } catch (_) { view.arguments = {partial: call.arguments}; }
+          }
+        }
         if ((d.reasoning_content || d.content || (d.tool_calls && d.tool_calls.length)) && m.stats.firstTokenMs == null)
           m.stats.firstTokenMs = Math.max(0, performance.now() - busy.startedMono);
         const lastTool = m.tools && m.tools.length ? m.tools[m.tools.length - 1] : null;   // a new round after a tool
@@ -2221,12 +2281,43 @@ async function generateReply() {
         if (!frame) frame = requestAnimationFrame(paint);
       }
     }
+    completedRounds.push({usage: roundUsage, timings: roundTimings});
+    ({usage, timings} = StrataLocalTools.combined(completedRounds));
+    if (usage) m.stats.generated = usage.completion_tokens;
+    const requested = [...calls.values()].sort((a, b) => a.index - b.index);
+    if (!requested.length || finishReason !== "tool_calls" || !streamComplete) break;
+    if (round >= StrataLocalTools.MAX_ROUNDS) { m.localToolLimit = true; break; }
+    const localRound = Math.max(0, ...(m.tools || []).map((tool) => tool.round || 0)) + 1;
+    for (const call of requested) {
+      let args = {};
+      try { args = StrataLocalTools.parseCall(call); } catch (_) { /* The bounded executor returns the argument error. */ }
+      onTool(m, {event: "call", id: call.id, name: call.name, tool: call.name === "web_search"
+        ? tr("localTools.search", "Web search") : call.name === "run_python" ? tr("localTools.python", "Python") : call.name,
+        server: "TinyStrata", arguments: args, round: localRound});
+    }
+    paint();
+    await StrataLocalTools.mapLimit(requested, globalTools?.max_concurrency || 1, async (call) => {
+      const started = performance.now(), result = await localSession.run(call, controller.signal);
+      if (controller.signal.aborted) return;
+      onTool(m, {event: "result", id: call.id, ok: result.ok, text: result.text,
+        chars: result.text.length, truncated: false, ms: performance.now() - started,
+        images: result.images || [], vision: !!health.images});
+      const view = m.tools.find((item) => item.id === call.id);
+      view.sources = result.sources || []; view.files = result.files || []; view.local = true;
+      if (!frame) frame = requestAnimationFrame(paint);
+    });
+    saveChat();                                     // Tool results survive a later round being interrupted.
+    if (controller.signal.aborted) throw new DOMException("Cancelled", "AbortError");
+    if (busy.cutAfterTool && !busy.cut) { busy.cut = true; controller.abort(); throw new DOMException("Cancelled", "AbortError"); }
+   }
   } catch (e) {
+    controller.abort();                             // Also stop a stream rejected by local parser validation.
     if (e.name === "AbortError") m.stopped = true;
     else { m.error = e.message || String(e); toast("error", tr("toast.requestFailed", "The request failed"), m.error, 6000); }
   }
   clearInterval(statsTimer);
   refreshTerminalStats();
+  if (m.stopped || m.error) { usage = null; timings = null; m.stats.finalCount = false; }
   m.stats = terminalFinalStats(m.stats, usage, timings);
   const cut = busy.cut;                                      // an interjection ended it: kept as written, marked interrupted
   if (cut) m.interrupted = true;
@@ -2245,6 +2336,7 @@ async function generateReply() {
   const ran = (m.tools || []).filter((t) => t.state === "done" || t.state === "error").length;
   if (ran) m.meta = `${m.meta ? `${m.meta} · ` : ""}${tr("chat.toolCalls", {one: "{n} tool call", other: "{n} tool calls"}, {n: ran})}`;
   if (m.limit) m.meta = `${m.meta || ""} · ${tr("chat.toolLimit", "stopped at the limit of {n} tool rounds (mcp.max_rounds)", {n: m.limit})}`;
+  if (m.localToolLimit) m.meta = `${m.meta || ""} · ${tr("localTools.limit", "Tool round limit reached")}`;
   busy = null;
   setBusy(false);
   paintLive();
@@ -2387,7 +2479,7 @@ function openDrawer(open) {
   $("drawer").dataset.open = String(open);
   $("drawer").setAttribute("aria-hidden", String(!open));
   $("scrim").hidden = !open;
-  if (open) { loadDrawer(); loadShared(); loadMcp(); }
+  if (open) { loadDrawer(); loadShared(); loadMcp(); loadGlobalTools(true); }
 }
 const checked = (id) => $(id).getAttribute("aria-checked") === "true";
 const segValue = (id) => { const b = [...$(id).children].find((x) => x.getAttribute("aria-checked") === "true"); return b ? b.dataset.v : null; };
@@ -2400,11 +2492,56 @@ function loadDrawer(s = settings) {
   $("s-esp").setAttribute("aria-checked", String(s.esp !== false));
   $("esp-row").hidden = !projectionLoaded();
   $("s-mcp").setAttribute("aria-checked", String(s.mcp !== false));
+  $("s-web-search").setAttribute("aria-checked", String(!!s.webSearch));
+  $("s-code-execution").setAttribute("aria-checked", String(!!s.codeExecution));
   $("s-share").setAttribute("aria-checked", String(sharedOn));
   $("s-list").setAttribute("aria-checked", String(!!s.chatList));
   for (const b of $("s-busy").children) b.setAttribute("aria-checked", String(b.dataset.v === (s.whileBusy || "wait")));
   outputs();
 }
+function renderLocalToolStatus() {
+  const names = [];
+  if (settings.webSearch) names.push(tr("localTools.search", "Web search"));
+  if (settings.codeExecution) names.push(tr("localTools.python", "Python"));
+  $("composer-tools").textContent = names.join(" · ");
+  $("composer-tools").hidden = !names.length;
+  if (globalTools) $("search-key-status").textContent = globalTools.has_brave_key
+    ? tr("localTools.keySaved", "A key is saved. Leave the field empty to keep it.") : tr("localTools.keyMissing", "No Brave key is saved. DDGS does not need one.");
+  $("search-rate-note").textContent = $("s-search-provider").value === "brave"
+    ? tr("localTools.braveRate", "Default: 1 concurrent search, at least 1.1 seconds between starts. Rate-limit headers are respected.")
+    : tr("localTools.ddgsRate", "Default: 1 concurrent search, at least 2 seconds between starts. Repeated queries are cached for 5 minutes.");
+}
+async function loadGlobalTools(drawer = false) {
+  if (drawer) { $("search-provider-fields").disabled = true; $("s-search-key").value = ""; $("s-search-clear").checked = false; }
+  try {
+    globalTools = await StrataLocalTools.json("local-ui/settings", {headers});
+    if (drawer) {
+      $("s-search-provider").value = globalTools.provider;
+      $("s-search-concurrency").value = globalTools.max_concurrency;
+      $("search-key-status").textContent = globalTools.has_brave_key
+        ? tr("localTools.keySaved", "A key is saved. Leave the field empty to keep it.") : tr("localTools.keyMissing", "No Brave key is saved. DDGS does not need one.");
+      $("s-search-clear").disabled = !globalTools.has_brave_key;
+      $("tools-settings-status").textContent = "";
+    }
+  } catch (error) {
+    if (drawer) $("tools-settings-status").textContent = tr("localTools.settingsUnavailable", "Search settings could not be loaded: {error}", {error: error.message});
+  } finally {
+    if (drawer) $("search-provider-fields").disabled = !globalTools;
+    renderLocalToolStatus();
+  }
+}
+async function saveGlobalTools() {
+  if (!globalTools || $("search-provider-fields").disabled) return;
+  const key = $("s-search-key").value.trim(), remove = $("s-search-clear").checked;
+  if (key && remove) throw new Error(tr("localTools.keyConflict", "Enter a new key or delete the saved key, not both."));
+  const changes = {provider: $("s-search-provider").value, max_concurrency: Number($("s-search-concurrency").value), revision: globalTools.revision};
+  if (key || remove) changes.brave_api_key = remove ? "" : key;
+  if (checked("s-web-search") && changes.provider === "brave" && !(key || (globalTools.has_brave_key && !remove)))
+    throw new Error(tr("localTools.braveKeyRequired", "Enter a Brave Search API key or choose DDGS."));
+  globalTools = await StrataLocalTools.json("local-ui/settings", {method: "PUT", body: changes, headers});
+  $("s-search-key").value = "";
+}
+$("s-search-provider").onchange = renderLocalToolStatus;
 // "Use for other apps too": the server keeps these settings as every client's defaults (GET/POST /settings)
 let sharedOn = false, sharedSaving = false;
 async function loadShared() {
@@ -2462,20 +2599,37 @@ function outputs() {
 for (const b of $("s-thinking").children) b.onclick = () => { for (const x of $("s-thinking").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
 for (const b of $("s-busy").children) b.onclick = () => { for (const x of $("s-busy").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
 for (const id of ["s-temp", "s-topp", "s-topk"]) $(id).oninput = outputs;
-for (const id of ["s-math", "s-show", "s-esp", "s-mcp", "s-share", "s-list"]) {
+for (const id of ["s-math", "s-show", "s-esp", "s-mcp", "s-share", "s-list", "s-web-search", "s-code-execution"]) {
   $(id).onclick = () => $(id).setAttribute("aria-checked", String($(id).getAttribute("aria-checked") !== "true"));
 }
-$("s-reset").onclick = () => loadDrawer(DEFAULTS);
+$("s-reset").onclick = () => {
+  loadDrawer(DEFAULTS);
+  $("s-search-provider").value = "ddgs";
+  $("s-search-concurrency").value = 1;
+  $("s-search-key").value = "";
+  $("s-search-clear").checked = false;
+  renderLocalToolStatus();
+};
 $("s-apply").onclick = async () => {
+  if (toolSettingsSaving) return;
+  toolSettingsSaving = true;
+  $("s-apply").disabled = true;
+  try {
+  try { await saveGlobalTools(); }
+  catch (error) { toast("error", tr("localTools.notSaved", "Search settings were not saved"), error.message, 6000); return; }
   const prev = settings;
   // Changing the list replaces the messages on the screen, so wait for an open operation.
   const locked = !!busy || !!panel;
   settings = {thinking: segValue("s-thinking") || "high", temperature: +$("s-temp").value, top_p: +$("s-topp").value,
               top_k: +$("s-topk").value, max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
               math: checked("s-math"), show: checked("s-show"), esp: checked("s-esp"), mcp: checked("s-mcp"),
+              webSearch: checked("s-web-search"), codeExecution: checked("s-code-execution"),
               chatList: locked ? !!prev.chatList : checked("s-list"),
               whileBusy: segValue("s-busy") || "wait"};
   store.set("sampling", settings);
+  if (busy && ((prev.webSearch && !settings.webSearch) || (prev.codeExecution && !settings.codeExecution))) busy.controller.abort();
+  renderLocalToolStatus();
+  renderEmptyChat();
   syncComposerControls();
   StrataMath.reset();                                  // math on or off: every answer is drawn again
   if (settings.chatList !== !!prev.chatList) await setChatList(settings.chatList, true);
@@ -2498,6 +2652,7 @@ $("s-apply").onclick = async () => {
     return;
   }
   toast("success", tr("drawer.saved", "Chat settings saved"), settings.temperature === 0 ? tr("drawer.savedGreedy", "Greedy: the same question gives the same answer.") : "");
+  } finally { toolSettingsSaving = false; syncComposerControls(); }
 };
 $("sampling-btn").onclick = () => openDrawer(true);
 $("drawer-close").onclick = () => openDrawer(false);
@@ -2518,6 +2673,7 @@ function showLanguage() {
   renderChat();
   setBusy(!!busy);
   renderModelDownload();
+  renderLocalToolStatus();
   if (lastMetrics) render(lastMetrics);
 }
 $("lang").onchange = async () => {
@@ -2533,7 +2689,8 @@ async function start() {
   setTheme(document.documentElement.dataset.theme, false);
   renderEmptyChat();
   initChats();
-  if (settings.chatList) await setChatList(true, false);       // the saved-chats list is read before the first draw
+  await loadGlobalTools();
+  await setChatList(!!settings.chatList, false);               // storage is independent of sidebar visibility
   setBusy(false);
   renderChat();
   const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)

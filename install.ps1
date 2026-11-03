@@ -924,7 +924,7 @@ function Initialize-TinyStrataUiSource {
     param([string]$SourceRoot, [string]$WorkRoot)
     $uiRoot = Join-Path $SourceRoot 'ui'
     $runner = Join-Path $SourceRoot 'run-ui.bat'
-    $required = @('ui\launch.py', 'ui\server.py', 'ui\web\index.html', 'run-ui.bat')
+    $required = @('ui\launch.py', 'ui\server.py', 'ui\requirements.txt', 'ui\web\index.html', 'run-ui.bat')
     $complete = $true
     foreach ($path in $required) {
         if (-not (Test-Path -LiteralPath (Join-Path $SourceRoot $path) -PathType Leaf)) { $complete = $false; break }
@@ -982,6 +982,48 @@ function Initialize-TinyStrataUiSource {
     Copy-Item -LiteralPath (Join-Path $unpacked 'run-ui.bat') -Destination $runner -Force
 }
 
+function Initialize-TinyStrataUiDependencies {
+    param([string]$SourceRoot, [string]$WorkRoot, [string]$Python)
+    $requirements = Join-Path $SourceRoot 'ui\requirements.txt'
+    $venvRoot = Join-Path $WorkRoot 'runtime\.venv'
+    if (-not (Test-Path -LiteralPath $requirements -PathType Leaf)) { throw 'Optional UI requirements are missing. Update the UI sources first.' }
+    # Never direct pip at a global interpreter, even if an existing runtime path
+    # was replaced or linked. pip also gets its own --require-virtualenv guard.
+    $privateCheck = 'from pathlib import Path;import sys;assert sys.prefix != sys.base_prefix and Path(sys.prefix).resolve()==Path(sys.argv[1]).resolve()'
+    $privateReady = $false
+    try {
+        & $Python -I -B -c $privateCheck $venvRoot 2>$null | Out-Null
+        $privateReady = $LASTEXITCODE -eq 0
+    } catch { $privateReady = $false }
+    if (-not $privateReady) { throw 'Optional UI dependencies require this installation''s private Python virtual environment; no packages were installed.' }
+    $requirementCheck = @'
+import importlib.metadata, re, sys
+for raw in open(sys.argv[1], encoding='utf-8-sig'):
+    spec = raw.split('#', 1)[0].strip()
+    if not spec:
+        continue
+    match = re.fullmatch(r'([A-Za-z0-9_.-]+)==([^\s]+)', spec)
+    if not match or importlib.metadata.version(match[1]) != match[2]:
+        raise SystemExit(1)
+'@
+    $healthy = $false
+    try {
+        $requirementCheck | & $Python -I -B - $requirements 2>$null | Out-Null
+        $healthy = $LASTEXITCODE -eq 0
+        if ($healthy) {
+            & $Python -I -B -m pip --isolated --require-virtualenv --disable-pip-version-check check 2>$null | Out-Null
+            $healthy = $LASTEXITCODE -eq 0
+        }
+    } catch { $healthy = $false }
+    if ($healthy) { Write-Host 'Reusing the optional UI dependencies.'; return }
+    Write-Host 'Installing optional UI search dependencies in the private environment...'
+    & $Python -I -B -m pip --isolated --require-virtualenv --disable-pip-version-check --no-input install `
+        --index-url https://pypi.org/simple --only-binary=:all: -r $requirements | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'Optional UI dependency installation failed. The API was left unchanged.' }
+    & $Python -I -B -m pip --isolated --require-virtualenv --disable-pip-version-check check | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'Optional UI dependency verification failed. The API was left unchanged.' }
+}
+
 function Initialize-TinyStrataOptionalUI {
     param([string]$SourceRoot, [string]$WorkRoot, [int]$ApiPort,
           [int]$UiPort = 3000, [string]$Family = 'qwen36', [switch]$ConfigureOnly)
@@ -989,6 +1031,7 @@ function Initialize-TinyStrataOptionalUI {
     $python = Join-Path $WorkRoot 'runtime\.venv\Scripts\python.exe'
     Initialize-TinyStrataUiSource -SourceRoot $SourceRoot -WorkRoot $WorkRoot
     if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw "The UI needs the installed Python runtime: $python" }
+    Initialize-TinyStrataUiDependencies -SourceRoot $SourceRoot -WorkRoot $WorkRoot -Python $python
     $arguments = @('-B', $launcher, '--source-dir', $SourceRoot, '--work-dir', $WorkRoot,
                    '--api-port', [string]$ApiPort, '--port', [string]$UiPort, '--model-family', $Family)
     if ($ConfigureOnly) { $arguments += '--configure-only' }

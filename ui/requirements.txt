@@ -1,0 +1,2 @@
+# Optional local UI search; API-only installations do not install this file.
+ddgs==9.16.1

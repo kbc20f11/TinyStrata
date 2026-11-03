@@ -97,6 +97,16 @@ ui/web/vendor/katex/LICENSE and ui/web/vendor/katex/PROVENANCE.json.
 The offline Highlight.js syntax highlighter is BSD-3-Clause licensed; see
 ui/web/vendor/highlight/LICENSE and ui/web/vendor/highlight/PROVENANCE.json.
 
+The UI search/Python tool integration and SQLite history were independently
+implemented after consulting Open WebUI at
+f7ac7ee10962ddec0017f5c29b6740d9b9c5faca (https://github.com/open-webui/open-webui).
+No Open WebUI source or branding assets are incorporated. Its distribution
+license includes branding restrictions.
+Browser Python uses the separately downloaded, pinned Pyodide 314.0.7 runtime
+(MPL-2.0) and its dependencies. Runtime license and third-party notices are
+included in ui/python-runtime-LICENSE.txt and ui/python-runtime-NOTICES.txt;
+the UI copies them into the runtime cache during preparation.
+
 Clover-35B-A3B-Preview support independently implements its published
 bidirectional GDN, block coreset, and generation-control equations. References:
 Diffuspace/Clover-35B-A3B-Preview at 4b0402b (Apache-2.0 model/custom code),
