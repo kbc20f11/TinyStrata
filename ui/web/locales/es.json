@@ -551,6 +551,8 @@
   "localTools.braveKey": "Clave API de Brave Search",
   "localTools.braveKeyRequired": "Introduce una clave de la API de Brave Search o elige DDGS.",
   "localTools.braveRate": "Por defecto: 1 búsqueda simultánea, con al menos 1,1 segundos entre inicios. Se respetan las cabeceras de límite de solicitudes.",
+  "localTools.codeExecution": "Ejecutar código",
+  "localTools.composerHint": "Activa o desactiva la búsqueda web y la ejecución de código junto a los ajustes del chat en el cuadro de mensaje.",
   "localTools.concurrency": "Búsquedas simultáneas",
   "localTools.ddgs": "DDGS — sin clave API",
   "localTools.ddgsRate": "Por defecto: 1 búsqueda simultánea, con al menos 2 segundos entre inicios. Las consultas repetidas se guardan en caché durante 5 minutos.",

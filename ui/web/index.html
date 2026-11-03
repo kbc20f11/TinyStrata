@@ -87,7 +87,14 @@
             <button type="button" class="st-btn st-btn--secondary chat-settings-button" id="sampling-btn" title="Chat settings" aria-label="Chat settings" data-i18n-title="drawer.title" data-i18n-label="drawer.title">
               <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-settings"/></svg>
               <span class="chat-settings-label" data-i18n="drawer.title">Chat settings</span><span class="chat-settings-short" aria-hidden="true" data-i18n="drawer.short">Settings</span></button>
-            <span class="composer-tools muted small" id="composer-tools" hidden></span>
+            <div class="composer-tools" id="composer-tools" role="group" aria-label="Search and code execution" data-i18n-label="localTools.title">
+              <label class="composer-tool-check" title="Let the model search when useful. Queries go to the selected provider." data-i18n-title="localTools.searchNote">
+                <input id="s-web-search" type="checkbox"><span data-i18n="localTools.search">Web search</span>
+              </label>
+              <label class="composer-tool-check" title="Run Python in an isolated environment without network or access to this PC's files." data-i18n-title="localTools.pythonNote">
+                <input id="s-code-execution" type="checkbox"><span data-i18n="localTools.codeExecution">Code execution</span>
+              </label>
+            </div>
             <span class="spacer"></span>
             <div class="composer-controls">
               <label class="composer-select composer-select--model" for="composer-model">
@@ -331,10 +338,7 @@
       <button class="st-toggle" id="s-mcp" role="switch" aria-checked="true" aria-label="Use tools from MCP servers" data-i18n-label="drawer.mcp"></button></div>
     <div class="drawer-group" role="group" aria-labelledby="g-local-tools">
       <h3 class="drawer-group__title" id="g-local-tools" data-i18n="localTools.title">Search and code execution</h3>
-      <div class="toggle-row"><span><span data-i18n="localTools.search">Web search</span><br><span class="muted small" data-i18n="localTools.searchNote">Let the model search when useful. Queries go to the selected provider.</span></span>
-        <button class="st-toggle" id="s-web-search" role="switch" aria-checked="false" aria-label="Web search" data-i18n-label="localTools.search"></button></div>
-      <div class="toggle-row"><span><span data-i18n="localTools.python">Python</span><br><span class="muted small" data-i18n="localTools.pythonNote">Let the model calculate in an isolated environment. Standard library only, with no network or access to this PC's files.</span></span>
-        <button class="st-toggle" id="s-code-execution" role="switch" aria-checked="false" aria-label="Python" data-i18n-label="localTools.python"></button></div>
+      <p class="muted small" data-i18n="localTools.composerHint">Turn web search and code execution on or off beside Chat settings in the message box.</p>
       <p class="muted small" data-i18n="localTools.shared">The provider, search key and concurrency apply to every model in this UI.</p>
       <fieldset class="local-search-fields" id="search-provider-fields">
         <div class="st-field"><label class="st-label" for="s-search-provider" data-i18n="localTools.provider">Search provider</label>

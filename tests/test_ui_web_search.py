@@ -68,10 +68,31 @@ class SearchTests(unittest.TestCase):
         self.assertNotIn('secret', out[0]['snippet'])
 
     def test_retry_windows_and_http_date(self):
-        self.assertEqual(search.retry_delay({'Retry-After': '3', 'X-RateLimit-Remaining': '0, 2', 'X-RateLimit-Reset': '1, 999'}), 3)
-        self.assertEqual(search.retry_delay({'X-RateLimit-Remaining': '1,0', 'X-RateLimit-Reset': '1,3600'}), 3600)
+        self.assertEqual(search.retry_delay({'Retry-After': '3', 'X-RateLimit-Limit': '1,1000', 'X-RateLimit-Remaining': '0, 2', 'X-RateLimit-Reset': '1, 999'}), 3)
+        self.assertEqual(search.retry_delay({'X-RateLimit-Limit': '1,1000', 'X-RateLimit-Remaining': '1,0', 'X-RateLimit-Reset': '1,3600'}), 3600)
         self.assertEqual(search.retry_delay({'Retry-After': 'Thu, 01 Jan 1970 00:01:00 GMT'}, now=30), 30)
         self.assertIsNone(search.retry_delay({'Retry-After': 'nan', 'X-RateLimit-Reset': 'not-a-number'}))
+
+    def test_unlimited_brave_window_is_not_exhausted_monthly_quota(self):
+        headers = {'X-RateLimit-Limit': '50, 0', 'X-RateLimit-Policy': '50;w=1, 0;w=2592000',
+                   'X-RateLimit-Remaining': '49, 0', 'X-RateLimit-Reset': '1, 2380757'}
+        self.assertIsNone(search.retry_delay(headers))
+        self.assertEqual(search.retry_delay({**headers, 'X-RateLimit-Remaining': '0, 0'}), 1)
+        self.assertEqual(search.retry_delay({**headers, 'Retry-After': '3'}), 3)
+        self.assertEqual(search.retry_delay({**headers, 'X-RateLimit-Limit': '50, 1000'}), 2380757)
+
+    def test_rate_limit_policy_fallback_and_malformed_tuple_alignment(self):
+        headers = {'X-RateLimit-Policy': '50;w=1, 0;w=2592000',
+                   'X-RateLimit-Remaining': '0, 0', 'X-RateLimit-Reset': '1, 2380757'}
+        self.assertEqual(search.retry_delay(headers), 1)
+        # Unidentified or malformed limits must not manufacture a month-long
+        # local ban. Provider 429 and Retry-After remain independently handled.
+        self.assertIsNone(search.retry_delay({k: v for k, v in headers.items() if k != 'X-RateLimit-Policy'}))
+        for invalid in ('bad', 'nan', '-1', ''):
+            with self.subTest(limit=invalid):
+                self.assertEqual(search.retry_delay({**headers, 'X-RateLimit-Limit': '50,' + invalid}), 1)
+        self.assertIsNone(search.retry_delay({**headers, 'X-RateLimit-Limit': '50,0', 'X-RateLimit-Reset': 'bad,2380757'}))
+        self.assertEqual(search.retry_delay({**headers, 'X-RateLimit-Limit': '50,1000', 'X-RateLimit-Reset': 'bad,2380757'}), 2380757)
 
     def test_public_resolution_rejects_any_private_answer(self):
         public = (socket.AF_INET, socket.SOCK_STREAM, 6, '', ('8.8.8.8', 443))
@@ -96,7 +117,7 @@ class SearchTests(unittest.TestCase):
 
     def test_brave_official_shape_auth_and_no_redirect_follow(self):
         response = Mock(status=200)
-        response.getheaders.return_value = [('X-RateLimit-Remaining', '0,100'), ('X-RateLimit-Reset', '1,999')]
+        response.getheaders.return_value = [('X-RateLimit-Limit', '1,1000'), ('X-RateLimit-Remaining', '0,100'), ('X-RateLimit-Reset', '1,999')]
         response.read.return_value = json.dumps({'grounding': {'generic': [{'url': 'https://example.org/', 'title': 'Example', 'snippets': ['one', 'two']}]}}).encode()
         conn = Mock()
         conn.getresponse.return_value = response
@@ -116,7 +137,7 @@ class SearchTests(unittest.TestCase):
 
     def test_brave_429_monthly_quota_and_secret_safe_errors(self):
         response = Mock(status=429)
-        response.getheaders.return_value = [('X-RateLimit-Remaining', '1,0'), ('X-RateLimit-Reset', '1,999')]
+        response.getheaders.return_value = [('X-RateLimit-Limit', '1,1000'), ('X-RateLimit-Remaining', '1,0'), ('X-RateLimit-Reset', '1,999')]
         response.read.return_value = b'{"error":{"code":"QUOTA_LIMITED","detail":"private-test-key"}}'
         conn = Mock()
         conn.getresponse.return_value = response
@@ -125,6 +146,28 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 'quota_exceeded')
         self.assertEqual(caught.exception.retry_after, 999)
         self.assertNotIn('private-test-key', repr(caught.exception.to_dict()))
+
+    def test_successful_unlimited_plan_allows_subsequent_distinct_search(self):
+        response = Mock(status=200)
+        response.getheaders.return_value = [('X-RateLimit-Limit', '50, 0'),
+                                            ('X-RateLimit-Policy', '50;w=1, 0;w=2592000'),
+                                            ('X-RateLimit-Remaining', '49, 0'),
+                                            ('X-RateLimit-Reset', '1, 2380757')]
+        response.read.return_value = json.dumps({'grounding': {'generic': ROWS}}).encode()
+        conn = Mock()
+        conn.getresponse.return_value = response
+        settings = {'provider': 'brave', 'brave_api_key': 'private-test-key'}
+        s = service(lambda query, settings, *_: search._brave_search(query, settings['brave_api_key']))
+        try:
+            with patch.object(search, '_PinnedHTTPS', return_value=conn):
+                first = s.search('first query', settings=settings)
+                second = s.search('different query', settings=settings)
+            self.assertFalse(first['cached'])
+            self.assertFalse(second['cached'])
+            self.assertEqual(first['results'], second['results'])
+            self.assertEqual(conn.request.call_count, 2)
+        finally:
+            s.close()
 
     def test_ddgs_interface_limits_and_missing_dependency(self):
         klass = Mock()

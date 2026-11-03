@@ -546,6 +546,8 @@
   "localTools.braveKey": "Brave SearchのAPIキー",
   "localTools.braveKeyRequired": "Brave SearchのAPIキーを入力するか、DDGSを選択してください。",
   "localTools.braveRate": "既定：同時実行1件、検索開始の間隔は1.1秒以上。検索サービスの利用制限に従います。",
+  "localTools.codeExecution": "コード実行",
+  "localTools.composerHint": "ウェブ検索・コード実行のON/OFFは、入力欄のチャット設定の隣で切り替えます。",
   "localTools.concurrency": "検索の同時実行数",
   "localTools.ddgs": "DDGS · APIキー不要",
   "localTools.ddgsRate": "既定：同時実行1件、検索開始の間隔は2秒以上。同じ検索の結果は5分間再利用します。",

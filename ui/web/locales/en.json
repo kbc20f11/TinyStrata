@@ -551,6 +551,8 @@
   "localTools.braveKey": "Brave Search API key",
   "localTools.braveKeyRequired": "Enter a Brave Search API key or choose DDGS.",
   "localTools.braveRate": "Default: 1 concurrent search, at least 1.1 seconds between starts. Rate-limit headers are respected.",
+  "localTools.codeExecution": "Code execution",
+  "localTools.composerHint": "Turn web search and code execution on or off beside Chat settings in the message box.",
   "localTools.concurrency": "Concurrent searches",
   "localTools.ddgs": "DDGS — no API key",
   "localTools.ddgsRate": "Default: 1 concurrent search, at least 2 seconds between starts. Repeated queries are cached for 5 minutes.",

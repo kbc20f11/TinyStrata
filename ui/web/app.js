@@ -995,6 +995,7 @@ function syncComposerControls() {
   $("composer-effort").value = effortForModel();
   $("composer-effort").disabled = modelSwitching || sharedSaving || pageBusy();
   $("s-apply").disabled = modelSwitching || sharedSaving || toolSettingsSaving;
+  for (const id of ["s-web-search", "s-code-execution"]) $(id).disabled = modelSwitching || toolSettingsSaving;
   const noThinking = $("composer-effort").querySelector('[value="none"]');
   noThinking.disabled = health.model === "lfm2.5-24b-a2b";
   noThinking.title = noThinking.disabled ? tr("model.thinkingRequired", "This model requires thinking.") : "";
@@ -2481,7 +2482,7 @@ function openDrawer(open) {
   $("scrim").hidden = !open;
   if (open) { loadDrawer(); loadShared(); loadMcp(); loadGlobalTools(true); }
 }
-const checked = (id) => $(id).getAttribute("aria-checked") === "true";
+const checked = (id) => $(id).type === "checkbox" ? $(id).checked : $(id).getAttribute("aria-checked") === "true";
 const segValue = (id) => { const b = [...$(id).children].find((x) => x.getAttribute("aria-checked") === "true"); return b ? b.dataset.v : null; };
 function loadDrawer(s = settings) {
   for (const b of $("s-thinking").children) b.setAttribute("aria-checked", String(b.dataset.v === effortForModel(s)));
@@ -2492,25 +2493,40 @@ function loadDrawer(s = settings) {
   $("s-esp").setAttribute("aria-checked", String(s.esp !== false));
   $("esp-row").hidden = !projectionLoaded();
   $("s-mcp").setAttribute("aria-checked", String(s.mcp !== false));
-  $("s-web-search").setAttribute("aria-checked", String(!!s.webSearch));
-  $("s-code-execution").setAttribute("aria-checked", String(!!s.codeExecution));
   $("s-share").setAttribute("aria-checked", String(sharedOn));
   $("s-list").setAttribute("aria-checked", String(!!s.chatList));
   for (const b of $("s-busy").children) b.setAttribute("aria-checked", String(b.dataset.v === (s.whileBusy || "wait")));
   outputs();
 }
 function renderLocalToolStatus() {
-  const names = [];
-  if (settings.webSearch) names.push(tr("localTools.search", "Web search"));
-  if (settings.codeExecution) names.push(tr("localTools.python", "Python"));
-  $("composer-tools").textContent = names.join(" · ");
-  $("composer-tools").hidden = !names.length;
+  $("s-web-search").checked = !!settings.webSearch;
+  $("s-code-execution").checked = !!settings.codeExecution;
   if (globalTools) $("search-key-status").textContent = globalTools.has_brave_key
     ? tr("localTools.keySaved", "A key is saved. Leave the field empty to keep it.") : tr("localTools.keyMissing", "No Brave key is saved. DDGS does not need one.");
   $("search-rate-note").textContent = $("s-search-provider").value === "brave"
     ? tr("localTools.braveRate", "Default: 1 concurrent search, at least 1.1 seconds between starts. Rate-limit headers are respected.")
     : tr("localTools.ddgsRate", "Default: 1 concurrent search, at least 2 seconds between starts. Repeated queries are cached for 5 minutes.");
 }
+function setComposerTools(changes) {
+  const prev = settings;
+  settings = {...settings, ...changes};
+  store.set("sampling", settings);
+  if (busy && ((prev.webSearch && !settings.webSearch) || (prev.codeExecution && !settings.codeExecution))) busy.controller.abort();
+  if (prev.codeExecution && !settings.codeExecution && typeof StrataCodeRunner !== "undefined") StrataCodeRunner.cancelAll();
+  renderLocalToolStatus();
+  renderEmptyChat();
+  syncComposerControls();
+}
+$("s-web-search").onchange = () => {
+  if ($("s-web-search").checked && globalTools?.provider === "brave" && !globalTools.has_brave_key) {
+    $("s-web-search").checked = false;
+    toast("warn", tr("localTools.braveKeyRequired", "Enter a Brave Search API key or choose DDGS."));
+    openDrawer(true);
+    return;
+  }
+  setComposerTools({webSearch: $("s-web-search").checked});
+};
+$("s-code-execution").onchange = () => setComposerTools({codeExecution: $("s-code-execution").checked});
 async function loadGlobalTools(drawer = false) {
   if (drawer) { $("search-provider-fields").disabled = true; $("s-search-key").value = ""; $("s-search-clear").checked = false; }
   try {
@@ -2599,10 +2615,11 @@ function outputs() {
 for (const b of $("s-thinking").children) b.onclick = () => { for (const x of $("s-thinking").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
 for (const b of $("s-busy").children) b.onclick = () => { for (const x of $("s-busy").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
 for (const id of ["s-temp", "s-topp", "s-topk"]) $(id).oninput = outputs;
-for (const id of ["s-math", "s-show", "s-esp", "s-mcp", "s-share", "s-list", "s-web-search", "s-code-execution"]) {
+for (const id of ["s-math", "s-show", "s-esp", "s-mcp", "s-share", "s-list"]) {
   $(id).onclick = () => $(id).setAttribute("aria-checked", String($(id).getAttribute("aria-checked") !== "true"));
 }
 $("s-reset").onclick = () => {
+  setComposerTools({webSearch: false, codeExecution: false});
   loadDrawer(DEFAULTS);
   $("s-search-provider").value = "ddgs";
   $("s-search-concurrency").value = 1;
@@ -2623,7 +2640,7 @@ $("s-apply").onclick = async () => {
   settings = {thinking: segValue("s-thinking") || "high", temperature: +$("s-temp").value, top_p: +$("s-topp").value,
               top_k: +$("s-topk").value, max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
               math: checked("s-math"), show: checked("s-show"), esp: checked("s-esp"), mcp: checked("s-mcp"),
-              webSearch: checked("s-web-search"), codeExecution: checked("s-code-execution"),
+              webSearch: prev.webSearch, codeExecution: prev.codeExecution,
               chatList: locked ? !!prev.chatList : checked("s-list"),
               whileBusy: segValue("s-busy") || "wait"};
   store.set("sampling", settings);

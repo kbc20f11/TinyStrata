@@ -551,6 +551,8 @@
   "localTools.braveKey": "Clé API Brave Search",
   "localTools.braveKeyRequired": "Saisissez une clé API Brave Search ou choisissez DDGS.",
   "localTools.braveRate": "Par défaut : 1 recherche à la fois, avec au moins 1,1 seconde entre deux lancements. Les en-têtes de limitation de débit sont respectés.",
+  "localTools.codeExecution": "Exécution de code",
+  "localTools.composerHint": "Activez ou désactivez la recherche web et l’exécution de code à côté des paramètres du chat dans la zone de saisie.",
   "localTools.concurrency": "Recherches simultanées",
   "localTools.ddgs": "DDGS — sans clé API",
   "localTools.ddgsRate": "Par défaut : 1 recherche à la fois, avec au moins 2 secondes entre deux lancements. Les requêtes répétées sont mises en cache pendant 5 minutes.",

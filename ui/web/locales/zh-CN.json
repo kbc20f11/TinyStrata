@@ -546,6 +546,8 @@
   "localTools.braveKey": "Brave Search API 密钥",
   "localTools.braveKeyRequired": "请输入Brave Search API密钥，或选择DDGS。",
   "localTools.braveRate": "默认：同时进行1次搜索，启动间隔至少为1.1秒。遵循搜索服务的速率限制。",
+  "localTools.codeExecution": "代码执行",
+  "localTools.composerHint": "在输入框的聊天设置旁，可开启或关闭网页搜索和代码执行。",
   "localTools.concurrency": "并发搜索数",
   "localTools.ddgs": "DDGS · 无需API密钥",
   "localTools.ddgsRate": "默认：同时进行1次搜索，启动间隔至少为2秒。相同查询的结果会缓存5分钟。",

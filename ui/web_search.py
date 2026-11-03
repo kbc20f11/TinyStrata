@@ -202,7 +202,7 @@ def normalize_results(rows):
 
 
 def retry_delay(headers, *, now=None):
-    """Honor Retry-After and every exhausted Brave rate-limit window."""
+    """Honor Retry-After and exhausted finite Brave rate-limit windows."""
     headers = {k.lower(): str(v) for k, v in headers.items()}
     delays = []
     value = headers.get('retry-after')
@@ -214,12 +214,29 @@ def retry_delay(headers, *, now=None):
                 delays.append(parsedate_to_datetime(value).timestamp() - (time.time() if now is None else now))
             except (ValueError, OverflowError, TypeError):
                 pass
-    try:
-        remaining = [float(x.strip()) for x in headers.get('x-ratelimit-remaining', '').split(',')]
-        reset = [float(x.strip()) for x in headers.get('x-ratelimit-reset', '').split(',')]
-        delays.extend(wait for left, wait in zip(remaining, reset) if left <= 0)
-    except ValueError:
-        pass
+    def numbers(value):
+        values = []
+        for item in value.split(','):
+            try:
+                number = float(item.strip())
+                values.append(number if math.isfinite(number) else None)
+            except ValueError:
+                values.append(None)
+        return values
+
+    # A zero limit means unlimited, not an exhausted quota. For example a paid
+    # plan can return Limit=50,0 / Remaining=49,0 / Reset=1,<month reset> on
+    # HTTP 200. Inferring exhaustion from Remaining alone would block all new
+    # searches until next month. Preserve tuple positions, including bad fields.
+    raw_limits = headers.get('x-ratelimit-limit')
+    if raw_limits is None:
+        policy = headers.get('x-ratelimit-policy', '')
+        raw_limits = ','.join(item.split(';', 1)[0] for item in policy.split(','))
+    limits = numbers(raw_limits)
+    remaining = numbers(headers.get('x-ratelimit-remaining', ''))
+    reset = numbers(headers.get('x-ratelimit-reset', ''))
+    delays.extend(wait for limit, left, wait in zip(limits, remaining, reset)
+                  if limit is not None and limit > 0 and left is not None and left <= 0 and wait is not None)
     valid = [max(0, d) for d in delays if math.isfinite(d)]
     return max(valid) if valid else None
 

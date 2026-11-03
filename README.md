@@ -106,7 +106,7 @@ For the API-only installation, use `run-api.bat`:
 
 ### UI search, Python and saved chats
 
-Enable **Web search** or **Python** in Chat settings to let any of the four models use these tools. Completed Python code blocks also have a **Run Python** button.
+Use the **Web search** and **Code execution** checkboxes beside **Chat settings** in the composer to enable these tools for any of the four models. Configure the search provider, API key and concurrency in Chat settings. Completed Python code blocks also have a **Run Python** button.
 
 - **Search:** DDGS needs no key and defaults to one concurrent search with at least 2 seconds between starts. Brave needs an API key and defaults to one concurrent search with at least 1.1 seconds between starts; rate-limit headers are respected. Queries are cached for 5 minutes, with at most 3 searches per reply. Provider, key and concurrency settings are shared across models by the UI server; keys are protected with Windows DPAPI and are not returned to the browser.
 - **Python:** standard-library code runs in an isolated browser iframe/worker using Pyodide, with a 10-second execution limit and no network, host filesystem, shell or `pip` access. First use downloads a pinned, SHA-256-verified runtime of about **13.5 MB** into the work directory, outside Git; later runs reuse it.

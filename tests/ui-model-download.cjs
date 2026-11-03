@@ -26,7 +26,7 @@ function fixture(saved=[]){
  const backend={model:IDS[0],jobs,nextError:null,rejectSwitch:false,rollback:false};
  const ctx={console,Map,Promise,Number,JSON,Array,String,Error,encodeURIComponent,AbortSignal,
   $:element,health:{model:IDS[0],images:true},settings:{thinking:'high'},messages:[],busy:null,pending:null,
-  sharedSaving:false,modelOp:null,panel:null,lastMetrics:{live:{state:'idle'}},inflight:false,
+  sharedSaving:false,toolSettingsSaving:false,modelOp:null,panel:null,lastMetrics:{live:{state:'idle'}},inflight:false,
   tr:(key,en,values={})=>en.replace(/\{(\w+)\}/g,(_,k)=>values[k]),fmt:(v,d=0)=>Number(v).toFixed(d),
   store:{get:(key,d)=>storage[key]??d,set:(key,value)=>{storage[key]=JSON.parse(JSON.stringify(value));return true;}},
   turnBlocksUnload:()=>ctx.inflight||ctx.busy!==null,pageBusy:()=>ctx.busy!==null,
