@@ -39,7 +39,7 @@
   </nav>
   <span class="st-header__spacer"></span>
   <span class="st-pill" id="pill" data-state="idle" role="status" aria-live="polite">
-    <span class="st-pill__dot"></span><span id="pill-text" data-i18n="pill.connecting">Connecting&hellip;</span></span>
+    <svg class="st-icon st-status-icon" aria-hidden="true"><use id="pill-symbol" href="web/sprite.svg#i-refresh"/></svg><span id="pill-text" data-i18n="pill.connecting">Connecting&hellip;</span></span>
   <button class="st-btn st-btn--secondary" id="unload-btn" type="button" title="Waiting for the server" data-i18n-title="model.waiting" disabled>
     <svg class="st-icon st-icon--sm" id="model-button-icon" aria-hidden="true" hidden><use id="model-button-symbol" href="web/sprite.svg#i-eject"/></svg><span id="model-button-text">&hellip;</span></button>
   <button class="st-btn st-btn--icon" id="theme-btn" title="Light / dark" aria-label="Switch between light and dark" data-i18n-title="theme.title" data-i18n-label="theme.label" hidden>
@@ -180,12 +180,12 @@
         <div class="state-card__head">
           <span class="card-title" data-i18n="monitor.modelState">Model state</span>
           <span class="badges" id="state-badges">
-            <span class="st-badge" data-s="idle" data-i18n="monitor.idle">Idle</span>
-            <span class="st-badge" data-s="unloaded" data-i18n="monitor.unloaded">Unloaded</span>
-            <span class="st-badge st-badge--reading" data-s="reading" data-i18n="monitor.reading">Reading</span>
-            <span class="st-badge st-badge--generating" data-s="generating" data-i18n="monitor.generating">Generating</span>
-            <span class="st-badge st-badge--queued" data-s="queued" data-i18n="monitor.queued">Queued</span>
-            <span class="st-badge st-badge--error" data-s="error" data-i18n="monitor.error">Error</span>
+            <span class="st-badge st-badge--icon" data-s="idle"><svg class="st-icon st-status-icon" aria-hidden="true"><use href="web/sprite.svg#i-check-circle"/></svg><span data-i18n="monitor.idle">Ready</span></span>
+            <span class="st-badge st-badge--icon" data-s="unloaded"><svg class="st-icon st-status-icon" aria-hidden="true"><use href="web/sprite.svg#i-eject"/></svg><span data-i18n="monitor.unloaded">Unloaded</span></span>
+            <span class="st-badge st-badge--icon st-badge--reading" data-s="reading"><svg class="st-icon st-status-icon" aria-hidden="true"><use href="web/sprite.svg#i-refresh"/></svg><span data-i18n="monitor.reading">Reading</span></span>
+            <span class="st-badge st-badge--icon st-badge--generating" data-s="generating"><svg class="st-icon st-status-icon" aria-hidden="true"><use href="web/sprite.svg#i-activity"/></svg><span data-i18n="monitor.generating">Generating</span></span>
+            <span class="st-badge st-badge--icon st-badge--queued" data-s="queued"><svg class="st-icon st-status-icon" aria-hidden="true"><use href="web/sprite.svg#i-clock"/></svg><span data-i18n="monitor.queued">Queued</span></span>
+            <span class="st-badge st-badge--icon st-badge--error" data-s="error"><svg class="st-icon st-status-icon" aria-hidden="true"><use href="web/sprite.svg#i-warning"/></svg><span data-i18n="monitor.error">Error</span></span>
           </span>
         </div>
         <div class="state-card__row"><span id="state-label" data-i18n="monitor.waiting">Waiting for a request</span><span class="muted" id="state-detail"></span></div>

@@ -193,7 +193,7 @@
   "pending.takeBack": "Zurücknehmen",
   "pill.connecting": "Verbinde…",
   "pill.generating": "Schreibt · {rate} Tok/s",
-  "pill.idle": "Leerlauf",
+  "pill.idle": "Bereit",
   "pill.image": "Erzeugt ein Bild…",
   "pill.keyNeeded": "API-Schlüssel nötig",
   "pill.queued": "{n} in der Warteschlange",

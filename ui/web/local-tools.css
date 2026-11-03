@@ -1,4 +1,10 @@
 .local-search-fields{border:0;padding:0;margin:0;min-width:0}
+.st-status-icon{width:14px;height:14px;flex:none}
+.st-badge--icon::before{content:none}
+.st-badge--success,.st-pill[data-state="idle"]{color:var(--st-accent-text)}
+.st-pill[data-state="error"]{color:var(--st-danger-text);border-color:var(--st-danger)}
+.st-pill[data-state="queued"]{color:var(--st-warn-text)}
+.st-pill[data-state="loading"],.st-pill[data-state="switching"],.st-pill[data-state="unloading"]{color:var(--st-info-text)}
 .local-search-fields:disabled{opacity:.6}
 .search-key-remove{display:flex;align-items:center;gap:8px;font-size:var(--st-fs-sm);color:var(--st-ink-muted)}
 .search-key-remove input{accent-color:var(--st-accent)}

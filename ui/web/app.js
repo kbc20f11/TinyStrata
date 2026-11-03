@@ -5,6 +5,11 @@
 const $ = (id) => document.getElementById(id);
 const SPRITE = "web/sprite.svg";
 const icon = (name, cls = "st-icon") => `<svg class="${cls}" aria-hidden="true"><use href="${SPRITE}#i-${name}"/></svg>`;
+const STATUS_ICONS = {idle: "check-circle", ready: "check-circle", done: "check", error: "warning", failed: "warning",
+  queued: "clock", writing: "edit", running: "activity", generating: "activity", reading: "refresh",
+  loading: "refresh", starting: "refresh", switching: "refresh", unloading: "eject", unloaded: "eject",
+  skipped: "stop", stopped: "stop", timeout: "warning", inactive: "info"};
+const statusIcon = (state) => icon(STATUS_ICONS[state] || "info", "st-icon st-status-icon");
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const fmt = (n, d = 0) => (n == null || Number.isNaN(n) ? "–" : Number(n).toLocaleString(StrataI18n.lang, {maximumFractionDigits: d, minimumFractionDigits: d}));
 const kfmt = (n) => (n == null ? "–" : n >= 1000 ? `${fmt(n / 1000, n >= 10000 ? 0 : 1)}k` : fmt(n));
@@ -269,7 +274,7 @@ async function poll() {
     placementSampleValid = false;
     renderPlacement(null);
     renderContext(null);
-    if (modelSwitching) setPill("idle", tr("model.switching", "Switching model…"));
+    if (modelSwitching) setPill("switching", tr("model.switching", "Switching model…"));
     else if (++metricsFailures === 3) setPill("error", tr("pill.unreachable", "Server not reachable"));
   }
   if (tab === "monitor" && ++mcpTick % 10 === 0) loadMcp();       // server states change rarely: every 10 s
@@ -279,7 +284,10 @@ async function poll() {
 }
 
 function setPill(state, text) {
-  $("pill").dataset.state = state === "error" ? "queued" : state;
+  $("pill").dataset.state = state;
+  $("pill").title = text;
+  $("pill").setAttribute("aria-label", text);
+  $("pill-symbol").setAttribute("href", `${SPRITE}#i-${STATUS_ICONS[state] || "info"}`);
   $("pill-text").textContent = text;
   // a poll re-sets the sentence every second; refit only when its text changed
   if (text !== lastPillText) { lastPillText = text; fitHeader(); }
@@ -481,13 +489,13 @@ function render(m) {
   // ensure_loaded(), and metrics stay "unloaded" until the engine is READY. An image POST in that window is still a load.
   const localLoad = live.state === "unloaded" && (busy != null || imageBusy);
   if (modelSwitching) {
-    setPill("idle", tr("model.switching", "Switching model…"));
+    setPill("switching", tr("model.switching", "Switching model…"));
   } else if (modelOp === "load") {
-    setPill("idle", tr("model.loading", "Loading…"));
+    setPill("loading", tr("model.loading", "Loading…"));
   } else if (modelOp === "unload") {
-    setPill("idle", tr("model.unloading", "Unloading…"));
+    setPill("unloading", tr("model.unloading", "Unloading…"));
   } else if (localLoad) {
-    setPill("idle", tr("model.loading", "Loading…"));
+    setPill("loading", tr("model.loading", "Loading…"));
   } else if (imageLive(live)) {
     setPill("reading", tr("pill.image", "Generating image…"));
   } else if (live.state === "reading") {
@@ -496,9 +504,9 @@ function render(m) {
   } else if (live.state === "generating") {
     setPill("generating", tr("pill.generating", "Generating · {rate} tok/s", {rate: fmt(live.tok_s, 1)}));
   } else if (live.state === "unloaded") {
-    setPill("idle", tr("pill.unloaded", "Unloaded"));
+    setPill("unloaded", tr("pill.unloaded", "Unloaded"));
   } else {
-    setPill("idle", tr("pill.idle", "Idle"));
+    setPill("idle", tr("pill.idle", "Ready"));
   }
   modelButton(live);
   renderPlacement(m);
@@ -674,11 +682,11 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   if (!requests.length) {
     body.innerHTML = `<tr><td colspan="9" class="muted">${esc(tr("monitor.noRequests", "No requests yet"))}</td></tr>`;
   } else {
-    const badge = {stop: ["", tr("monitor.done", "Done")], length: ["", tr("monitor.maxTokens", "Max tokens")], cancel: ["st-badge--queued", tr("monitor.stopped", "Stopped")],
-                   disconnect: ["st-badge--queued", tr("monitor.closed", "Closed")], error: ["st-badge--error", tr("monitor.error", "Error")],
-                   timeout: ["st-badge--queued", tr("monitor.timeout", "Timeout")]};
+    const badge = {stop: ["st-badge--success", tr("monitor.done", "Done"), "done"], length: ["", tr("monitor.maxTokens", "Max tokens"), "info"], cancel: ["st-badge--queued", tr("monitor.stopped", "Stopped"), "stopped"],
+                   disconnect: ["st-badge--queued", tr("monitor.closed", "Closed"), "stopped"], error: ["st-badge--error", tr("monitor.error", "Error"), "error"],
+                   timeout: ["st-badge--queued", tr("monitor.timeout", "Timeout"), "timeout"]};
     body.innerHTML = requests.slice(0, reqShowAll ? requests.length : 12).map((r) => {
-      const [cls, text] = badge[r.finish] || ["", r.finish || "–"];
+      const [cls, text, state] = badge[r.finish] || ["", r.finish || "–", "info"];
       const t = new Date(r.time * 1000).toLocaleTimeString(StrataI18n.lang, {hour: "2-digit", minute: "2-digit", second: "2-digit"});
       const proj = r.projection == null ? "" : ` <span class="st-badge${r.projection ? " st-badge--reading" : ""}" title="${esc(tr("monitor.projectionState", "Experimental speed projection: {state}", {state: r.projection ? tr("common.on", "on") : tr("common.off", "off")}))}">${r.projection ? "ESP" : tr("monitor.stock", "stock")}</span>`;
       // #588: the VRAM share; the PCIe share (--pcie-frac) beside it when there is one
@@ -687,7 +695,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
       // Reused tokens are not prefetched again. Match the Monitor's existing Prefill metric.
       const fresh = r.prompt_tokens == null ? null : Math.max(0, r.prompt_tokens - (r.reused || 0));
       const prefillRate = fresh > 0 && r.prompt_ms > 0 ? fresh / (r.prompt_ms / 1000) : null;
-      return `<tr><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(text)}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
+      return `<tr><td>${esc(t)}</td><td><span class="st-badge st-badge--icon ${cls}">${statusIcon(state)}${esc(text)}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
         <td class="num">${fmt(r.reused)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(prefillRate)}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>
         <td class="num">${hit}</td><td class="num">${fmt(r.duration_s, 1)} s</td></tr>`;
     }).join("");
@@ -775,7 +783,7 @@ function renderMcp() {
     const [cls, english] = MCP_STATE[s.status] || ["", s.status];
     const text = tr("mcp.state." + s.status, english);
     const info = s.info && s.info.name ? ` · ${s.info.name}${s.info.version ? ` ${s.info.version}` : ""}` : "";
-    return `<div class="mcp-server"><div class="mcp-server__head"><span class="st-badge ${cls}">${esc(text)}</span>` +
+    return `<div class="mcp-server"><div class="mcp-server__head"><span class="st-badge st-badge--icon ${cls}">${statusIcon(s.status === "idle" ? "inactive" : s.status)}${esc(text)}</span>` +
       `<strong>${esc(s.name)}</strong><span class="muted small">${esc(s.transport)} · ${esc(tr("mcp.toolCount", "{n} tools", {n: fmt(s.tools.length)}))}${esc(info)}</span></div>` +
       (s.error ? `<div class="msg-error">${esc(s.error)}</div>` : "") +
       (s.tools.length ? `<div class="mcp-server__tools">${s.tools.map((t) => `<span class="chip" title="${esc(t.description || "")}">${esc(t.tool)}</span>`).join("")}</div>` : "") +
@@ -1655,7 +1663,7 @@ function msgEl(m, i) {
 // One MCP tool call in the answer: a compact block (name, state, a one-line preview) that opens to the arguments and
 // the result as the model read it.  Its body is built only while open: a result can be 20,000 characters.
 const TOOL_STATE = {writing: ["st-badge--reading", () => tr("tool.writing", "Writing")], running: ["st-badge--generating", () => tr("tool.running", "Running")],
-                    done: ["", () => tr("tool.done", "Done")], error: ["st-badge--error", () => tr("tool.error", "Error")],
+                    done: ["st-badge--success", () => tr("tool.done", "Done")], error: ["st-badge--error", () => tr("tool.error", "Error")],
                     skipped: ["st-badge--queued", () => tr("tool.skipped", "Not run")]};
 function toolHtml(t, k) {
   const [cls, labelOf] = TOOL_STATE[t.state] || ["", () => t.state];
@@ -1689,7 +1697,7 @@ function toolHtml(t, k) {
     `<summary>${icon("tool", "st-icon st-icon--sm")}<span class="tool-call__name" title="${esc(t.name || "")}">${esc(t.tool || t.name || "tool")}</span>` +
     (t.server ? `<span class="muted small">${esc(t.server)}</span>` : "") +
     `<span class="tool-call__preview muted">${esc(preview.slice(0, 200))}</span>` +
-    `<span class="st-badge ${cls}">${esc(label)}</span>${t.ms != null && t.state !== "skipped" ? `<span class="muted small">${fmt(t.ms / 1000, 1)} s</span>` : ""}` +
+    `<span class="st-badge st-badge--icon ${cls}">${statusIcon(t.state)}${esc(label)}</span>${t.ms != null && t.state !== "skipped" ? `<span class="muted small">${fmt(t.ms / 1000, 1)} s</span>` : ""}` +
     `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body">${body}</div></details>` +
     (sources ? `<div class="tool-sources" aria-label="${esc(tr("localTools.sources", "Sources"))}">${sources}</div>` : "");
 }
