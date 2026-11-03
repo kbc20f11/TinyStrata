@@ -3,6 +3,7 @@
 // 26e4cb5df7996edfb5ff549a63b82d8581e1e658. See LICENSE and NOTICE.
 // Copyright (c) 2026 Niko1221 and the Strata contributors.
 #include "engine.hpp"
+#include "strata/common/conversations.hpp"
 #include "strata/common/context_policy.hpp"
 #include "strata/gemma4/vram.hpp"
 #include <cuda_runtime.h>
@@ -303,7 +304,7 @@ bool read_prompt_prefix(Engine& e, const int32_t* ids, int n, const std::atomic<
 
 bool prompt(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop, Clock::time_point start,
             bool report, bool pictures = false, bool trace_stage = false, int reused = 0, PromptMark* mark = nullptr,
-            MemoryReporter* memory = nullptr) {
+            MemoryReporter* memory = nullptr, const std::function<void()>* before_logits = nullptr) {
     const size_t before_stage = trace_stage ? e.staging_bytes() : 0;
     const double before_cache = trace_stage ? e.cached_gib() * 1024 : 0;
     bool ended = false;
@@ -326,6 +327,7 @@ bool prompt(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop,
         const bool complete = read_prompt_prefix(e, ids, n, stop, start, report, pictures, reused, mark, memory);
         end_read();
         if (!complete || stop.load()) return false;
+        if (before_logits) (*before_logits)();
         e.eval(ids + n - 1, 1, true);
         if (memory) memory->changed(true);
         if (report) {
@@ -369,7 +371,9 @@ void memory_info(const Engine& e, int64_t used) {
                 (long long) (used < 0 ? e.pos() : used));
 }
 
-int serve(Engine& e, const Options& o) {
+int serve(Engine& e, const Options& o, strata::conversation::Options cache_options) {
+    cache_options.max_tokens = e.max_context();
+    strata::conversation::Cache<Engine> cache(e, cache_options);
     std::printf("INFO version=0.1.0 family=gemma4 model=gemma-4-26b-a4b-it kv=%s mtp=%d vision=%d expert_slots=%d expert_total=%d "
                 "expert_cache_mib=%lld expert_auto=%d chunk=%d vram_reserve_mib=%d graph=%d prompt_logits_first=1 "
                 "kv_grow=%d kv_committed_rows=%lld kv_logical_bytes=%llu kv_mapped_bytes=%llu kv_used_tokens=%lld\n",
@@ -379,6 +383,7 @@ int serve(Engine& e, const Options& o) {
                 e.cached_experts(), e.total_experts(), (long long) (e.cached_gib() * 1024), o.expert_vram_gib < 0 && o.gpu_experts,
                 e.max_rows(), e.reserve_mib(), o.graphs, e.kv_growing(), (long long) e.kv_committed_rows(),
                 (unsigned long long) e.kv_logical_bytes(), (unsigned long long) e.kv_mapped_bytes(), (long long) e.pos());
+    if (cache.enabled()) cache.info();
     std::printf("READY %d stop\n", e.max_context());
     std::fflush(stdout);
     struct Inbox {
@@ -437,7 +442,7 @@ int serve(Engine& e, const Options& o) {
         if (line.empty()) continue;
         try {
             if (line == "RESET") {
-                e.reset(); live.clear(); checkpoint_ids.clear();
+                e.reset(); live.clear(); checkpoint_ids.clear(); cache.clear();
                 memory_info(e);
                 std::puts("OK RESET"); std::fflush(stdout);
                 continue;
@@ -497,20 +502,26 @@ int serve(Engine& e, const Options& o) {
                         throw std::invalid_argument("turn_at cannot split a picture");
             }
             e.images(pictures.at.data(), (int) pictures.at.size());
+            const auto cache_start = Clock::now();
             size_t reuse = 0;
-            const bool live_valid = e.pos() == (int64_t) live.size();
-            if (!live_valid || checkpoint_ids.size() > live.size() ||
-                !std::equal(checkpoint_ids.begin(), checkpoint_ids.end(), live.begin())) checkpoint_ids.clear();
-            if (live_valid && live.size() < ids.size() &&
-                std::equal(live.begin(), live.end(), ids.begin())) reuse = live.size();
-            else if (!checkpoint_ids.empty() && checkpoint_ids.size() < ids.size() &&
-                     std::equal(checkpoint_ids.begin(), checkpoint_ids.end(), ids.begin())) {
-                // Rewind recurrent/ring state as well as position. Positional KV
-                // before this boundary has not been overwritten by generation.
-                e.load_state(checkpoint_state.data(), (int64_t) checkpoint_ids.size());
-                live = checkpoint_ids;
-                reuse = live.size();
-            } else { e.reset(); live.clear(); checkpoint_ids.clear(); }
+            if (cache.enabled()) {
+                reuse = (size_t) cache.resume(ids, checkpoint);
+                live = cache.seq();
+            } else {
+                const bool live_valid = e.pos() == (int64_t) live.size();
+                if (!live_valid || checkpoint_ids.size() > live.size() ||
+                    !std::equal(checkpoint_ids.begin(), checkpoint_ids.end(), live.begin())) checkpoint_ids.clear();
+                if (live_valid && live.size() < ids.size() &&
+                    std::equal(live.begin(), live.end(), ids.begin())) reuse = live.size();
+                else if (!checkpoint_ids.empty() && checkpoint_ids.size() < ids.size() &&
+                         std::equal(checkpoint_ids.begin(), checkpoint_ids.end(), ids.begin())) {
+                    // Rewind recurrent/ring state as well as position. Positional KV
+                    // before this boundary has not been overwritten by generation.
+                    e.load_state(checkpoint_state.data(), (int64_t) checkpoint_ids.size());
+                    live = checkpoint_ids;
+                    reuse = live.size();
+                } else { e.reset(); live.clear(); checkpoint_ids.clear(); }
+            }
             std::printf("RESUME %zu\n", reuse); std::fflush(stdout);
             // Between requests, unused KV pages can go back to the Expert cache.
             // trim_kv also keeps the preceding request's reach to avoid churn.
@@ -519,10 +530,14 @@ int serve(Engine& e, const Options& o) {
             e.mind_vram();
             memory.changed(true);
             const auto before = e.stats();
-            const auto p0 = Clock::now();
+            const auto p0 = cache.enabled() ? cache_start : Clock::now();
             const int fresh = (int) (ids.size() - reuse);
             PromptMark mark;
             if (checkpoint && turn_at > (int64_t) reuse) {
+                if (cache.enabled()) {
+                    mark.state = cache.prepare_mark(turn_at);
+                    if (mark.state) mark.at = turn_at;
+                } else {
                 // Never leave an old prefix attached to a buffer being replaced.
                 checkpoint_ids.clear();
                 try {
@@ -531,21 +546,32 @@ int serve(Engine& e, const Options& o) {
                 } catch (const std::bad_alloc&) {
                     std::fprintf(stderr, "gemma4: skipping conversation checkpoint: insufficient host memory\n");
                 }
+                }
             }
             // A GENI continuation still carries its earlier pictures, but when
             // they are all cached the new suffix is an ordinary text read.
             const bool fresh_pictures = std::any_of(pictures.at.begin(), pictures.at.end(),
                 [&](const auto& im) { return im.at + im.n > (int64_t) reuse; });
+            const std::function<void()> before_logits = [&] {
+                if (mark.saved) cache.publish_mark(ids);
+                cache.capture(ids);
+            };
             if (!prompt(e, ids.data() + reuse, fresh, box->stop, p0, true, fresh_pictures, o.stage_read_mib > 0,
-                        (int) reuse, &mark, &memory)) {
-                e.reset(); live.clear(); checkpoint_ids.clear();
+                        (int) reuse, &mark, &memory, cache.enabled() ? &before_logits : nullptr)) {
+                if (cache.enabled()) {
+                    if (mark.saved) cache.publish_mark(ids); else cache.discard_mark();
+                    cache.rewind(); live = cache.seq(); cache.release(); cache.info();
+                } else { e.reset(); live.clear(); checkpoint_ids.clear(); }
                 memory_info(e);
                 std::printf("DONE 0 %zu %.1f 0 cancel 0 0 %zu 0 0 0 0 0.0 0 0\n", ids.size(), elapsed(p0), reuse);
                 std::fflush(stdout);
                 continue;
             }
             live = ids;
-            if (mark.saved) checkpoint_ids.assign(ids.begin(), ids.begin() + (std::ptrdiff_t) turn_at);
+            if (cache.enabled()) {
+                if (mark.saved) cache.publish_mark(ids); else cache.discard_mark();
+                cache.set_seq(live);
+            } else if (mark.saved) checkpoint_ids.assign(ids.begin(), ids.begin() + (std::ptrdiff_t) turn_at);
             const double pp = elapsed(p0);
             std::vector<int32_t> history = ids;
             if (geni) std::replace_if(history.begin(), history.end(), [](int32_t id) { return id < 0; }, image_pad);
@@ -597,9 +623,15 @@ int serve(Engine& e, const Options& o) {
                 if (!more) break;
             }
             if ((int64_t) live.size() != e.pos()) throw std::logic_error("history/state mismatch");
+            const double native_tg = elapsed(d0);
+            if (cache.enabled()) {
+                cache.set_seq(live);
+                if (std::strcmp(finish, "cancel") == 0) { cache.rewind(); live = cache.seq(); }
+                cache.release(); cache.info();
+            }
             memory_info(e);
             std::printf("DONE %d %zu %.1f %.1f %s %lld %lld %zu 0 0 0 0 0.0 %d 0\n", produced, ids.size(), pp,
-                        elapsed(d0), finish, (long long) accepted, (long long) guessed, reuse, fresh);
+                        native_tg, finish, (long long) accepted, (long long) guessed, reuse, fresh);
             std::fflush(stdout);
             const auto& st = e.stats();
             std::fprintf(stderr, "gemma4: generated=%d decode_evaluated=%d prompt_logits_first=1 "
@@ -616,7 +648,7 @@ int serve(Engine& e, const Options& o) {
         } catch (const std::exception& ex) {
             // A failed/cancelled read may leave only some recurrent layers advanced.
             // Reset before accepting another request, rather than reuse that state.
-            e.reset(); e.images(nullptr, 0); live.clear(); checkpoint_ids.clear();
+            e.reset(); e.images(nullptr, 0); live.clear(); checkpoint_ids.clear(); cache.drop_current();
             memory_info(e);
             std::printf("ERR %s\n", ex.what());
             std::fflush(stdout);
@@ -628,6 +660,9 @@ int serve(Engine& e, const Options& o) {
 int main(int argc, char** argv) {
     try {
         Options opt;
+        strata::conversation::Options cache_options;
+        cache_options.slots = 2;
+        bool cache_budget_explicit = false;
         std::string ids_text, force_text, dump, ctx = "auto", chunk = "auto";
         int n_gen = 64, mtp = 3;
         bool server = false, require_vision = false;
@@ -665,6 +700,10 @@ int main(int argc, char** argv) {
                           "  --chunk auto|N         Prompt chunk size (auto: 1120, enough for one full-resolution image)\n"
                           "  --expert-vram auto|GiB Expert GPU cache budget; overflow runs on CPU\n"
                           "  --vram-reserve-mib N   Leave VRAM headroom (default 768 MiB)\n"
+                          "  --conversation-cache-mib N  Serve cache cap (CUDA: 1024 MiB, HIP: 0; 0 disables)\n"
+                          "  --conversation-cache-disk-mib N  Disk part of that cap (default 0, heap only)\n"
+                          "  --conversation-cache-slots N --conversation-cache-checkpoints N\n"
+                          "  --conversation-cache-min-tokens N  Minimum prefix parked (default 1024)\n"
                           "  --cpu-threads N --no-graph --no-gpu-experts\n"
 #if defined(STRATA_USE_HIP)
                           "  --kv-type auto|fp8|int8  Auto: INT8; native FP8 is opt-in on RDNA4\n"
@@ -696,6 +735,11 @@ int main(int argc, char** argv) {
                 }
             } else if (arg == "--vram-reserve-mib") opt.vram_reserve_mib = bounded_integer(next(), "reserve", 0, 1048576);
             else if (arg == "--stage-mib") opt.stage_mib = bounded_integer(next(), "stage", 1, 65536);
+            else if (arg == "--conversation-cache-mib") { cache_options.bytes = size_t(bounded_integer(next(), "conversation cache MiB", 0, 65536)) << 20; cache_budget_explicit = true; }
+            else if (arg == "--conversation-cache-disk-mib") cache_options.disk_bytes = size_t(bounded_integer(next(), "conversation disk MiB", 0, 65536)) << 20;
+            else if (arg == "--conversation-cache-slots") cache_options.slots = bounded_integer(next(), "conversation slots", 1, 16);
+            else if (arg == "--conversation-cache-checkpoints") cache_options.checkpoints = bounded_integer(next(), "conversation checkpoints", 1, 8);
+            else if (arg == "--conversation-cache-min-tokens") cache_options.min_tokens = bounded_integer(next(), "conversation minimum tokens", 0, 262144);
             else if (arg == "--cpu-threads" || arg == "--threads") opt.threads = bounded_integer(next(), "threads", 0, 1024);
             else if (arg == "--no-graph") opt.graphs = false;
             else if (arg == "--no-gpu-experts") opt.gpu_experts = false;
@@ -743,7 +787,11 @@ int main(int argc, char** argv) {
         if (require_vision && !e->sees()) throw std::runtime_error("this engine cannot receive image embeddings");
         if (e->kv_format() == strata::gemma4::KvFmt::kFp8)
             std::fprintf(stderr, "gemma4: native FP8 Attention is experimental; INT8 is the default.\n");
-        if (server) return serve(*e, opt);
+#if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
+        if (server && !cache_budget_explicit) cache_options.bytes = size_t(1024) << 20;
+#endif
+        if (cache_options.bytes && !server) throw std::invalid_argument("conversation cache requires --serve");
+        if (server) return serve(*e, opt, cache_options);
         const auto ids = parse_ids(ids_text), forced = parse_ids(force_text);
         check_ids(ids, *e);
         for (int id : forced) if (id >= e->n_vocab()) throw std::invalid_argument("forced token outside vocabulary");

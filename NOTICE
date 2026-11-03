@@ -45,6 +45,9 @@ Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 BSD-3-Clause; full license and disclaimer retained in the adapted file and
 third_party/licenses/FlashInfer-BSD-3-Clause.txt (include with binary distributions).
 The surrounding dense scheduler is adapted from MoMoE, credited above.
+The CUDA Qwen INT8 decode module adapts VecSzn/PolyStrata's
+src/poly/fattn.cu at f472d85a30927301663401f7dc892e668578a90e (MIT), with
+TinyStrata's per-64 KV layout and amplified FP16 residual compensation.
 SageAttention d1a57a546c3d395b1ffcbeecc66d81db76f3b4b5 was consulted for
 FP8 accumulation design; no SageAttention source is incorporated.
 
@@ -102,3 +105,15 @@ Maphist0/llama.cpp-pub dev-clover at 4838ffb0c8ade92f34d9157deea38d92758ab824
 2243dc6edb416073b60be0765904cabae9eb61cf (SGLang PR #46927, Apache-2.0).
 Clover weights are downloaded separately from the official Diffuspace GGUF
 repository and retain their Apache-2.0 model license and upstream Qwen attribution.
+
+Gemma/LFM same-model conversation parking and bounded private spill files adapt
+VecSzn/PolyStrata conversations.hpp at 6f279e9f4b82ce9c20a27df02b72601e690ce4ea
+(MIT). Copyright (c) 2026 VecSzn and the PolyStrata contributors. TinyStrata adds
+combined payload/metadata accounting, synchronous spill, opt-out handling,
+image fingerprints and model-specific state/KV ordering.
+Qwen/Clover prefill cancellation follows the complete-prefix retention approach
+in aflin/momoe d5fe98dd5bb86bb67820160ff00d4afad853c93f (MIT), adapted to
+TinyStrata's native GDN, MTP, image and staging lifetimes.
+Gemma's configurable CUDA host upload chunk size follows the memory-sizing
+approach in VecSzn/PolyStrata f2ce72b6720f4bfa722fd5ac3821789cb610f2c3 (MIT),
+with TinyStrata's measured 256 MiB default and the existing two-buffer lifetime.

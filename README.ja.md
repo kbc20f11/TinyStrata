@@ -267,6 +267,10 @@ MTP は greedy 生成と温度付きサンプリングの両方に対応して�
 
 CUDA 版 Qwen では、主モデルのエキスパートが GPU に常駐し、CUDA Graph が有効な MTP 1〜3 の実行で、データを並べ替える行列ベクトル演算の高速経路を自動使用します。`TINYSTRATA_Q36_MMVQ_IL=0` で従来の演算経路に戻せます。MTP は引き続き有効です。また、MTP の重み形式が MMQ 未対応でも、主モデルの入力処理は 128 行以上から MMQ を独立して選択できます。自動選択はエキスパート配置後に行い、作業領域と余裕容量が足りる場合に有効にします。主モデルを RAM と併用する構成では native の CPU/GPU 演算経路を使います。`TINYSTRATA_Q36_MAIN_MMQ=0` で従来の MMQ 選択に戻せます。[CUDA での条件を揃えた比較と検証結果](benchmark/results/qwen-cuda-20261103.md)。
 
+CUDA 版 Qwen は、対応する SM80 以降の GPU で補償付き INT8 FDEC 生成を自動使用します。FP8・Clover は従来経路を維持します。今回の Blackwell 実機では、4K 入力後の生成が **114.24 → 149.14 tok/s** に改善しました。入力処理の取消後も完了したチャンクを保持します。[11月3日の採用結果・計測条件・品質確認](benchmark/results/fork-adoption-20261103.md#日本語)。
+
+CUDA の Gemma/LFM は、同じモデル内のチャット復帰用キャッシュを **1024/512 MiB** の上限・退避2枠・ディスク保存なしで保持します。HIP の追加キャッシュは既定オフです。Gemma の CUDA アップロードバッファは1本256 MiBとなり、2本で **512 MiB** 削減します。LFM は1本512 MiBを維持します。
+
 明示的な設定は自動選択より優先され、既存の手動設定も引き続き有効です。たとえば、`run-api.bat --kv-type int8` は INT8 に固定し、`run-api.bat --kv-type auto --max-context auto --expert-vram auto` は KV、コンテキスト、エキスパート配置を自動設定に戻します。
 
 ## API サーバー

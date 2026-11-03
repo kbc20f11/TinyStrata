@@ -669,7 +669,10 @@ class Assembler:
             return out + [self.event("response.incomplete", response=self.snapshot())]
         self.response["status"] = "completed"
         self.response["completed_at"] = int(time.time())
-        return out + [self.event("response.completed", response=self.snapshot())]
+        event = self.event("response.completed", response=self.snapshot())
+        if done.get("timings"):
+            event["timings"] = copy.deepcopy(done["timings"])  # top-level SSE extension, like llama.cpp
+        return out + [event]
 
     def failed(self, message: str, code: str = "server_error") -> dict:
         """response.failed: an error after the stream started (the HTTP status is already sent)."""

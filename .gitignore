@@ -41,7 +41,13 @@
 !/tests/benchmark-64k.py
 !/tests/test_tool_parser_markdown.py
 !/tests/test_tool_parser_values.py
+!/tests/test_responses_timings.py
+!/tests/test_parking_settings.py
+!/tests/test_benchmark_profiles.py
 !/tests/q36-chunk-policy.cpp
+!/tests/native-conversations.cpp
+!/tests/q36-int8-fdec-reference.cu
+!/tests/q36-prefill-cancel.py
 
 # Only build/runtime sources and the fixed public benchmark inputs belong here.
 /benchmark/**

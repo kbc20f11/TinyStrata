@@ -152,7 +152,7 @@ class Benchmark64K(unittest.TestCase):
         requests = FakeService.instances[0].requests
         self.assertEqual(len(requests), 9)  # Existing warm-up + eight measurements.
         expected = dict(model='clover-35b-a3b-preview', messages=[dict(role='user', content=self.cases['generation'][0]['text'])],
-                        max_tokens=128, stream=True, enable_thinking=True, seed=1234,
+                        max_tokens=128, stream=True, enable_thinking=True, strata_checkpoint=False, seed=1234,
                         frequency_penalty=0.0, temperature=0.0, top_p=1.0, top_k=64,
                         min_p=0.0, presence_penalty=.9, repetition_penalty=1.05)
         self.assertEqual(requests[1], expected)

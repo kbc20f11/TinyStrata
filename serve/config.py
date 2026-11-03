@@ -23,7 +23,13 @@ ENGINE_OPTIONS = {
     "clover_accept_ratio": ("--clover-accept-ratio", 0, 1, False),
     "clover_accept_delta": ("--clover-accept-delta", 0, 1, False),
     "chunk": ("--chunk", 1, 4096, True),
+    "conversation_cache_mib": ("--conversation-cache-mib", 0, 65536, True),
+    "conversation_cache_disk_mib": ("--conversation-cache-disk-mib", 0, 65536, True),
+    "conversation_cache_slots": ("--conversation-cache-slots", 1, 16, True),
+    "conversation_cache_checkpoints": ("--conversation-cache-checkpoints", 1, 8, True),
+    "conversation_cache_min_tokens": ("--conversation-cache-min-tokens", 0, 262144, True),
 }
+CONVERSATION_CACHE_KEYS = tuple(key for key in ENGINE_OPTIONS if key.startswith("conversation_cache_"))
 
 
 def value_of(cfg: dict, key: str):
@@ -42,6 +48,8 @@ def check(key: str, value, cfg: dict):
     """Validate one CLI engine override; None restores its engine default."""
     if key not in ENGINE_OPTIONS:
         raise ValueError(f"Unknown engine setting: {key!r}")
+    if key in CONVERSATION_CACHE_KEYS and cfg.get("arch", "qwen35moe") not in ("gemma4", "lfm2moe"):
+        raise ValueError(f"{key}: conversation parking settings are supported only by Gemma 4 and LFM2.5")
     if value is None:
         return None
     spec = ENGINE_OPTIONS[key]
@@ -56,8 +64,9 @@ def check(key: str, value, cfg: dict):
     if key == "chunk" and not isinstance(value, bool) and isinstance(value, (int, float)) and value == 0:
         return "auto"
     _, lo, hi, whole = spec
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or \
-            (whole and value != int(value)) or value < lo or (hi is not None and value > hi):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or \
+            value < lo or (hi is not None and value > hi) or not math.isfinite(value) or \
+            (whole and value != int(value)):
         bounds = f"at least {lo:g}" + (f" and at most {hi:g}" if hi is not None else "")
         raise ValueError(f"{key}: expected a {'whole ' if whole else ''}number, {bounds}, not {value!r}")
     if key == "clover_block_size" and 32 % int(value):

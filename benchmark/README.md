@@ -118,7 +118,7 @@ generation tok/s = 1000 × Σ engine_generated / Σ decode_ms
 input tok/s      = 1000 × Σ prompt_read       / Σ prompt_ms
 ```
 
-Do not average per-request tok/s or select the fastest repetition. Loading and the separate warm-up are excluded. Failed, cancelled, cached or wrong-length samples cannot silently be dropped from a standard result: report an incomplete run or repeat the complete protocol after fixing the cause.
+Do not average per-request tok/s or select the fastest repetition. Loading and the separate warm-up are excluded. Each benchmark request sets `strata_checkpoint: false` so conversation parking cannot turn a repeated input into a cache hit. Failed, cancelled, cached or wrong-length samples cannot silently be dropped from a standard result: report an incomplete run or repeat the complete protocol after fixing the cause.
 
 For an image, start the client's monotonic clock immediately before POST. First-output time ends at the first nonempty streamed model text, not HTTP headers/keep-alives. Completion time ends at `message_stop`. These times include upload, image decoding/encoding, prompt processing and generation; they exclude server/model startup. Native `prompt_ms` alone excludes image encoding and must not replace the image times. Record the actual description and output length too.
 
@@ -250,7 +250,7 @@ MTP を含む通常の Messages API を使い、native の `--tokens` 生成ル�
 入力 tok/s = 1000 × Σ prompt_read       / Σ prompt_ms
 ```
 
-各回の tok/s の単純平均や最速値の選別はしません。モデルの読み込みと別枠のウォームアップは除外します。失敗・中断・KV 再利用・入力数違いの試行を黙って除外せず、未完了として報告するか、原因を直して規約の全手順を測り直します。
+各回の tok/s の単純平均や最速値の選別はしません。モデルの読み込みと別枠のウォームアップは除外します。各リクエストに `strata_checkpoint: false` を指定し、会話キャッシュによって繰り返し入力がヒットしないようにします。失敗・中断・KV 再利用・入力数違いの試行を黙って除外せず、未完了として報告するか、原因を直して規約の全手順を測り直します。
 
 画像はクライアントの単調増加時計で POST 直前から測ります。最初の出力は空でないモデルの文字列が届いた時点、完了は `message_stop` です。HTTP ヘッダーや keep-alive は出力に数えません。アップロード・画像の読み込み／エンコード・入力処理・生成を含み、サーバーとモデルの起動は含みません。エンジンの `prompt_ms` は画像エンコードを含まないため、画像の秒数の代わりには使いません。説明文と実出力数も保存します。
 

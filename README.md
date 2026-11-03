@@ -267,6 +267,10 @@ MTP supports both greedy generation and temperature-based sampling, including re
 
 CUDA Qwen automatically uses the interleaved dense matvec fast path with MTP 1–3 when the main Experts stay on the GPU and CUDA Graphs are enabled. `TINYSTRATA_Q36_MMVQ_IL=0` restores the previous matvec dispatch while MTP remains enabled. Main-model prompt MMQ can also be selected independently of unsupported MTP weight formats, from 128 input rows. This automatic choice is made after Expert placement and requires enough extra workspace and headroom; hybrid main-model execution uses native CPU/GPU kernels. `TINYSTRATA_Q36_MAIN_MMQ=0` restores the previous MMQ selection. [Controlled CUDA comparisons and validation](benchmark/results/qwen-cuda-20261103.md).
 
+CUDA Qwen now automatically selects compensated INT8 FDEC decode on supported SM80+ GPUs; FP8 and Clover retain their existing paths. On the tested Blackwell card, generation after 4K input improves from **114.24 to 149.14 tok/s**. Qwen also retains completed input chunks after cancellation. [November 3 adoption results, conditions and quality checks](benchmark/results/fork-adoption-20261103.md#english).
+
+Gemma/LFM can retain bounded same-model chat snapshots on CUDA: **1024/512 MiB** cache limits, two parked slots, disk storage off. HIP's additional parking defaults to off. Gemma's CUDA upload buffers are now 256 MiB each, saving **512 MiB** across two buffers; LFM keeps 512 MiB per buffer.
+
 Explicit settings override automatic choices, and existing manually selected settings remain in effect. For example, `run-api.bat --kv-type int8` fixes INT8; `run-api.bat --kv-type auto --max-context auto --expert-vram auto` restores automatic KV, context and Expert placement.
 
 ## API server

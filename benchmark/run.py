@@ -28,6 +28,11 @@ import psutil
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
+# Also support `python benchmark/run.py` when the repository is not on PYTHONPATH.
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from serve import tinyconfig
+
 GIB = 1 << 30
 MODELS = {
     'qwen': ('config.json', 'qwen35moe', 'qwen3.6-35b-a3b'),
@@ -54,7 +59,7 @@ ENGINE_KEYS = ('model', 'version', 'kv', 'kv_grow', 'mtp', 'clover_draft', 'clov
                'max_context', 'context_auto', 'chunk', 'chunk_auto', 'expert_auto',
                'expert_slots', 'expert_cache_bytes', 'expert_cache_mib',
                'kv_logical_bytes', 'kv_mapped_bytes', 'kv_committed_rows', 'gpu_cc',
-               'q36_mmvq_il', 'q36_mmvq_il_auto',
+               'q36_mmvq_il', 'q36_mmvq_il_auto', 'q36_int8_fdec',
                'q36_main_mmq', 'q36_main_mmq_auto', 'q36_mtp_mmq',
                'q36_mmq_min_rows', 'q36_mmq_auto_workspace_bytes')
 CLOVER_INFO_FLOATS = ('clover_threshold', 'clover_last_threshold', 'clover_preview_ms',
@@ -223,6 +228,10 @@ def controlled_config(original, model, folder, port, cases, *, clover_mode='caus
                env=dict(clover_env or {}) if model == 'clover' else {}, parallel=1,
                enable_thinking=clover_thinking if model == 'clover' else True,
                max_tokens=24576 if model == 'clover' else 32768,
+               # These are deliberate benchmark choices, not legacy app defaults.
+               memory_policy_version=tinyconfig.MEMORY_POLICY_VERSION,
+               chunk_policy_version=tinyconfig.CHUNK_POLICY_VERSION,
+               generation_policy_version=tinyconfig.GENERATION_POLICY_VERSION,
                sampling=model_sampling(model, cases), vision_mode='gpu' if has_vision else 'no')
     if model == 'clover':
         # Both on and off are explicit protocol choices, never an old app default.
@@ -248,7 +257,7 @@ def request_body(model, text, limit, cases, thinking=True):
     sampling = {'frequency_penalty': 0.0, **model_sampling(model, cases)}
     return dict(model=MODELS[model][2], messages=[dict(role='user', content=text)],
                 max_tokens=limit, stream=True, enable_thinking=thinking,
-                seed=cases['seed'], **sampling)
+                strata_checkpoint=False, seed=cases['seed'], **sampling)
 
 
 def read_sse(response, started, clock=time.perf_counter):

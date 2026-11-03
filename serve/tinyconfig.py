@@ -290,6 +290,7 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
               "--expert-slots", "--cpu-threads", "--hybrid-rows", "--vram-reserve-mib", "--clover-draft",
               "--clover-mode", "--clover-block-size", "--clover-threshold", "--clover-accept",
               "--clover-accept-ratio", "--clover-accept-delta"}
+    values.update(config.ENGINE_OPTIONS[key][0] for key in config.CONVERSATION_CACHE_KEYS)
     switches = {"--no-graph", "--no-warmup", "--hybrid-graph", "--no-hybrid-graph", "--vision",
                 "--kv-grow", "--kv-whole", "--no-kv-grow"}
     seen = set()
@@ -311,7 +312,7 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         raise ValueError("Choose only one KV allocation mode: --kv-grow or --kv-whole")
     for key in ("kv_type", "max_context", "expert_vram", "vram_reserve_mib", "mtp", "chunk", "clover_draft",
                 "clover_mode", "clover_block_size", "clover_threshold", "clover_accept",
-                "clover_accept_ratio", "clover_accept_delta"):
+                "clover_accept_ratio", "clover_accept_delta") + config.CONVERSATION_CACHE_KEYS:
         value = config.value_of(cfg, key)
         if value is not None:
             config.check(key, value, cfg)

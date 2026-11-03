@@ -2024,7 +2024,7 @@ void Engine::alloc() {
         // small experts has a few hundred MiB a layer, and the rest of the default would be VRAM that the
         // expert cache of a small card does without.
         stage_bytes_ = std::max(std::min((size_t) opt_.stage_mib << 20, (size_t) n_expert_ * one_expert), one_expert);
-        chunk_bytes_ = std::max(kChunkBytes, one_expert);
+        chunk_bytes_ = std::max(upload_chunk_bytes(), one_expert);
         // With stage_read_mib the buffer's addresses are reserved for the larger size, and a read maps the rest.
         stage_narrow_ = stage_wide_ = stage_bytes_;
         if (vmm_ && !split_ && opt_.stage_read_mib > 0)

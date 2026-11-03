@@ -137,7 +137,7 @@ def prepare(a) -> tuple[dict, Path]:
         cfg["vision_tokens"] = a.vision_tokens
     for key in ("max_context", "kv_type", "mtp", "expert_vram", "vram_reserve_mib", "chunk", "clover_draft",
                 "clover_mode", "clover_block_size", "clover_threshold", "clover_accept",
-                "clover_accept_ratio", "clover_accept_delta"):
+                "clover_accept_ratio", "clover_accept_delta") + config.CONVERSATION_CACHE_KEYS:
         value = getattr(a, key, None)
         if value is not None:
             if key == "expert_vram" and value == "auto":
@@ -209,6 +209,8 @@ def prepare(a) -> tuple[dict, Path]:
 
 
 def main() -> int:
+    from serve import config
+
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", type=Path, help="existing supported GGUF (the local header selects its model family)")
     ap.add_argument("--model-family", choices=("qwen36", "qwen3.6", "lfm2", "lfm2.5", "gemma4", "gemma-4", "clover"),
@@ -255,6 +257,9 @@ def main() -> int:
                     help="override the automatic VRAM reserve (default: 768 MiB; upstream near-fit path: 256 MiB)")
     ap.add_argument("--chunk", type=chunk_size, metavar="auto|TOKENS",
                     help="use the upstream engine's automatic chunk selection (default: auto), or fix 1-4096 tokens")
+    for key in config.CONVERSATION_CACHE_KEYS:
+        ap.add_argument(config.ENGINE_OPTIONS[key][0], type=int, metavar="N",
+                        help="Gemma4/LFM2.5 conversation parking setting; omitted keeps the engine default")
     ap.add_argument("--gpu", type=int, help="GPU index")
     ap.add_argument("--lib-dir", type=Path, action="append", help="GPU runtime DLL directory (repeatable)")
     ap.add_argument("--port", type=int, help="API port (default: saved setting or 18080)")

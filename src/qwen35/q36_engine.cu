@@ -39,6 +39,9 @@
 #include "strata/qwen35/speculative_sampling.hpp"
 #include "strata/qwen35/vision.hpp"
 #include "strata/qwen35/kv_grow.hpp"
+#if defined(STRATA_Q36_INT8_FDEC)
+#include "strata/qwen35/int8_fdec.hpp"
+#endif
 #if defined(STRATA_Q36_CPU_POOL)
 #include "strata/kernels/cpu/native_expert.hpp"
 #include "strata/kernels/cpu/pool.hpp"
@@ -1241,6 +1244,7 @@ struct Engine {
     std::vector<int> grow_max_slots;
     int gpu_cc = 0;
     bool int8_prompt = false, fp8_prompt = false;
+    bool int8_fdec_enabled = false;
     bool tiled_prompt() const { return int8_prompt || fp8_prompt; }
     const char* kv_name() const { return kv_format == 3 ? "fp8-mma" : kv_format == 2 ? "int8" : kv_format == 1 ? "fp8" : "fp32"; }
     // verify windows (T <= kVerify): the GDN inputs of every row per layer, kept for the commit
@@ -1664,6 +1668,20 @@ struct Engine {
         pacc = dalloc((size_t) att_rows * n_chunk * g.head_dim);
         pm = dalloc((size_t) att_rows * n_chunk);
         pl = dalloc((size_t) att_rows * n_chunk);
+#if defined(STRATA_Q36_INT8_FDEC)
+        if (const char* setting = std::getenv("TINYSTRATA_Q36_INT8_FDEC");
+            !m->clover && kv_format == 2 && (!setting || std::strcmp(setting, "1") == 0)) {
+            namespace F = strata::qwen35::int8_fdec;
+            const size_t fdec_part = F::part_floats(ctx, (int) g.n_head_kv);
+            const size_t fdec_meta = F::meta_floats(ctx, (int) g.n_head_kv);
+            int8_fdec_enabled = !m->clover && kv_format == 2 && g.head_dim == 256 &&
+                g.n_head == 8 * g.n_head_kv && ctx >= 4096 &&
+                fdec_part && fdec_meta && fdec_part <= (size_t) att_rows * n_chunk * g.head_dim &&
+                fdec_meta <= (size_t) att_rows * n_chunk && F::available();
+            std::fprintf(stderr, "tinystrata: compensated INT8 FDEC %s (main Qwen rows1..4; existing partial scratch; TINYSTRATA_Q36_INT8_FDEC=0 disables)\n",
+                         int8_fdec_enabled ? "enabled" : "unavailable");
+        }
+#endif
         auto alloc_kv = [&]() {
             A::KvCache cache;
             const size_t slots = (size_t) g.n_head_kv * ctx;
@@ -2269,6 +2287,18 @@ struct Engine {
             auto attention = [&]<int Format>() {
                 A::k_attn_prep<Format><<<dim3(H + HKV, T), kThreads, 0, st>>>(qg, kx, vx, L.q_norm, L.k_norm, q, gate, kv[li], H,
                                                                   HKV, HD, m->n_rot, dpos, ctx, m->rope_base, m->eps, mrope);
+#if defined(STRATA_Q36_INT8_FDEC)
+                if constexpr (Format == 2) {
+                    if (int8_fdec_enabled && !clover_preview && li < m->layers.size() && T >= 1 && T <= 4) {
+                        const auto& c = kv[li];
+                        const strata::qwen35::int8_fdec::Cache view{(const int8_t*) c.key, (const int8_t*) c.value,
+                            c.key_scale16, c.value_scale16};
+                        if (strata::qwen35::int8_fdec::run(q, view, dpos, p0, T, H, HKV, ctx, 1.f / sqrtf((float) HD),
+                                pacc, (size_t) att_rows * n_chunk * HD, pm, (size_t) att_rows * n_chunk,
+                                gate, att, st, graph_mode)) return;
+                    }
+                }
+#endif
                 auto launch_part = [&](int nc, int nt, int t0, int visible_end = 0) {
 #if defined(STRATA_USE_HIP) || defined(__HIPCC__)
                     if constexpr (Format == 2) {
@@ -3313,14 +3343,18 @@ struct Engine {
     /// The tokens at the current position: a prompt in chunks (eager), one token from the decode graph.  The last
     /// token's logits stay in `logits` (its greedy pick in `pick`), hlast its normed hidden.  With the MTP block the
     /// prompt also runs through it (its K / V for every position: row q reads h_{q-1} and token q).
-    template <class F> void process(const int32_t* toks, int64_t n, F on_chunk, bool sync_mtp = false, bool need_head = true) {
+    template <class F> int64_t process(const int32_t* toks, int64_t n, F on_chunk, bool sync_mtp = false,
+                                       bool need_head = true, const std::atomic<bool>* cancel = nullptr) {
+        if (n <= 0 || (cancel && cancel->load())) return 0;
         ensure_kv(std::min<int64_t>(ctx, pos + n + 64));
         const int N = (int) m->g.n_embd;
         const bool sampled_request = sync_mtp;
         // A resumed sampled request may append just one token to a previous
         // verify window. Repair its accepted drafts before hmain is replaced.
-        // The existing greedy processing path keeps its original operations.
-        sync_mtp = sync_mtp || mtp_sampled_pending;
+        // Ordinary decode (without a cancellation pointer) retains its existing operations.
+        // A cancellable read can become a reusable checkpoint after any whole
+        // chunk, including one row. Fill its MTP prefix before replacing hlast.
+        sync_mtp = sync_mtp || mtp_sampled_pending || cancel != nullptr;
         if (sync_mtp && m->has_mtp && mtp_d > 0 && !mtp_pending.empty()) {
             CK(cudaStreamSynchronize(st));
             const int T = (int) mtp_pending.size();
@@ -3359,8 +3393,9 @@ struct Engine {
             CK(cudaMemcpyAsync(hlast, hmain, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
             pos += 1;
             after_rows(1);
+            if (cancel) CK(cudaStreamSynchronize(st));
             on_chunk(1);
-            return;
+            return 1;
         }
         struct ScopedStageLoan {
             Engine& engine;
@@ -3384,7 +3419,9 @@ struct Engine {
                 else if (!tried) { tried = true; engine.begin_stage_loan(); }
             }
         } loan{*this};
+        int64_t consumed = 0;
         for (int64_t i = 0; i < n; i += tmax) {
+            if (cancel && cancel->load()) break;
             const int T = (int) std::min<int64_t>(tmax, n - i);
             loan.prepare(T); // return the cache before a small tail takes the CPU/GPU path
             CK(cudaStreamSynchronize(st));
@@ -3404,10 +3441,14 @@ struct Engine {
             CK(cudaMemcpyAsync(hlast, hmain + (size_t) (T - 1) * N, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
             pos += T;
             CK(cudaStreamSynchronize(st));
-            on_chunk(i + T);
+            // Cancellation is observed only after main + MTP, recurrent state,
+            // hlast and position all describe the same complete causal prefix.
+            consumed = i + T;
+            on_chunk(consumed);
         }
         finish_stage_loan(); // includes allocation, transfer and restoration time in prompt_ms
-        if (m->hybrid) rebalance(hybrid_swaps_after_prompt);
+        if (m->hybrid && consumed == n && (!cancel || !cancel->load())) rebalance(hybrid_swaps_after_prompt);
+        return consumed;
     }
     int hybrid_swaps_after_prompt = 2048;
     /// the MTP seed rows of a prompt chunk: a buffer the block's own forward does not use (`moe_out`, [tmax][N])
@@ -4311,7 +4352,7 @@ int serve(Engine& E) {
                 "expert_arena_bytes=%zu expert_auto=%d vram_free_bytes=%zu vram_cuda_free_bytes=%zu "
                 "vram_physical_free_bytes=%zu vram_free_source=%s vram_reserve_mib=%zu mtp=%d "
                 "kv_auto=%d context_auto=%d gpu_cc=%d vision=%d chunk=%d q36_mmvq_il=%d q36_mmvq_il_auto=%d "
-                "q36_main_mmq=%d q36_main_mmq_auto=%d q36_mtp_mmq=%d q36_mmq_min_rows=%d q36_mmq_auto_workspace_bytes=%zu clover_draft=%d "
+                "q36_main_mmq=%d q36_main_mmq_auto=%d q36_mtp_mmq=%d q36_mmq_min_rows=%d q36_mmq_auto_workspace_bytes=%zu q36_int8_fdec=%d clover_draft=%d "
                 "clover_mode=%s clover_block_size=%d clover_threshold=%.9g "
                 "clover_accept=%s clover_accept_ratio=%.9g clover_accept_delta=%.9g clover_draft_penalty_gpu=%d clover_gpu_exact_verify=%d clover_query_tile=%d\n",
                 E.kv_name(), expert_slots, E.total_experts(), expert_bytes >> 20, expert_bytes, arena_bytes, E.expert_auto ? 1 : 0,
@@ -4320,7 +4361,7 @@ int serve(Engine& E) {
                 E.kv_auto ? 1 : 0, E.context_auto ? 1 : 0, E.gpu_cc, E.vision_enabled ? 1 : 0, E.tmax,
                 E.mmvq_il_enabled ? 1 : 0, E.mmvq_il_auto ? 1 : 0,
                 E.use_mmq ? 1 : 0, E.auto_main_mmq_selected ? 1 : 0, E.use_mmq && E.mtp_mmq ? 1 : 0, E.mmq_min_t,
-                E.auto_main_mmq_workspace, E.clover_draft,
+                E.auto_main_mmq_workspace, E.int8_fdec_enabled ? 1 : 0, E.clover_draft,
                 E.clover_mode.c_str(), E.clover_block_size, (double) E.clover_threshold,
                 E.clover_accept.c_str(), (double) E.clover_accept_ratio, (double) E.clover_accept_delta,
                 E.clover_draft_penalty_gpu ? 1 : 0, E.clover_gpu_exact_verify ? 1 : 0, E.clover_query_tile);
@@ -4334,16 +4375,18 @@ int serve(Engine& E) {
     std::fflush(stdout);
     std::mutex mu;
     std::condition_variable cv;
-    std::deque<std::string> lines;
+    struct Command { std::string text; uint64_t cancel_epoch; };
+    std::deque<Command> lines;
     bool eof = false;
+    uint64_t cancel_epoch = 0;
     std::atomic<bool> stop{false};
     std::thread reader([&] {
         std::string l;
         while (std::getline(std::cin, l)) {
             if (!l.empty() && l.back() == '\r') l.pop_back();
-            if (l == "STOP") { stop.store(true); continue; }
             std::lock_guard<std::mutex> lk(mu);
-            lines.push_back(l);
+            if (l == "STOP") { ++cancel_epoch; stop.store(true); continue; }
+            lines.push_back({l, cancel_epoch});
             cv.notify_one();
         }
         std::lock_guard<std::mutex> lk(mu);
@@ -4361,8 +4404,12 @@ int serve(Engine& E) {
             std::unique_lock<std::mutex> lk(mu);
             cv.wait(lk, [&] { return eof || !lines.empty(); });
             if (lines.empty()) return 0;
-            line = lines.front();
+            auto command = std::move(lines.front());
+            line = std::move(command.text);
             lines.pop_front();
+            // A STOP received after this GEN was queued must not be cleared.
+            // A later GEN starts normally even when the preceding one stopped.
+            stop.store(command.cancel_epoch != cancel_epoch);
         }
         if (line.empty()) continue;
         // Invalid commands/requests leave this exact prefix intact, including
@@ -4521,7 +4568,6 @@ int serve(Engine& E) {
         if (turn_at > 0 && !V::whole_prefix(image_input, (size_t) turn_at)) {
             std::printf("ERR turn_at cannot split an image\n"); std::fflush(stdout); continue;
         }
-        stop.store(false);
         if ((int64_t) live.size() != E.pos) {
             std::fprintf(stderr, "tinystrata: consumed history (%zu) differs from model position (%lld)\n",
                          live.size(), (long long) E.pos);
@@ -4572,24 +4618,52 @@ int serve(Engine& E) {
                         (double) done / std::max(1e-9, ms_since(t0) / 1000.0));
             std::fflush(stdout);
         };
+        int64_t read = 0;
         if (checkpoint && turn_at > (int64_t) reuse && turn_at < (int64_t) ids.size()) {
             const int64_t before = turn_at - (int64_t) reuse;
             // Even a one-token boundary must populate its MTP KV row before
             // saving, so a restored turn has no deferred draft repair to run.
-            E.process(ids.data() + reuse, before, progress, true, request_clover_mode != "diffusion");
-            turn_ids.clear();
-            try {
-                E.save_turn(turn_state);
-                turn_ids.assign(ids.begin(), ids.begin() + turn_at);
-            } catch (const std::bad_alloc&) {
-                std::fprintf(stderr, "tinystrata: skipping conversation checkpoint: insufficient host memory\n");
+            read = E.process(ids.data() + reuse, before, progress, true, request_clover_mode != "diffusion", &stop);
+            if (read == before) {
+                turn_ids.clear();
+                try {
+                    E.save_turn(turn_state);
+                    turn_ids.assign(ids.begin(), ids.begin() + turn_at);
+                } catch (const std::bad_alloc&) {
+                    std::fprintf(stderr, "tinystrata: skipping conversation checkpoint: insufficient host memory\n");
+                }
+                read += E.process(ids.data() + turn_at, (int64_t) ids.size() - turn_at,
+                          [&](int64_t done) { progress(before + done); }, smp.needs_logits(), request_clover_mode != "diffusion", &stop);
             }
-            E.process(ids.data() + turn_at, (int64_t) ids.size() - turn_at,
-                      [&](int64_t done) { progress(before + done); }, smp.needs_logits(), request_clover_mode != "diffusion");
-        } else E.process(ids.data() + reuse, fresh, progress, smp.needs_logits(), request_clover_mode != "diffusion");
-        live.insert(live.end(), ids.begin() + (long) reuse, ids.end());
+        } else read = E.process(ids.data() + reuse, fresh, progress, smp.needs_logits(), request_clover_mode != "diffusion", &stop);
+        if (E.pos != (int64_t) reuse + read) throw std::runtime_error("prefill position does not match its committed prefix");
+        live.insert(live.end(), ids.begin() + (std::ptrdiff_t) reuse, ids.begin() + (std::ptrdiff_t) E.pos);
         kv_usage.publish((int64_t) live.size(), true);
         const double prompt_ms = ms_since(t0);
+        if (read < fresh || stop.load()) {
+            // The live causal prefix itself is a checkpoint: its attention KV
+            // and GDN/MTP state remain resident for an immediate matching retry.
+            // A prefix ending inside an image cannot be reused as a whole image.
+            if (!V::whole_prefix(E.image_input, live.size())) {
+                if (!turn_ids.empty() && turn_ids.size() <= live.size() &&
+                    std::equal(turn_ids.begin(), turn_ids.end(), live.begin()) &&
+                    V::whole_prefix(E.image_input, turn_ids.size())) {
+                    E.load_turn(turn_state);
+                    live = turn_ids;
+                } else {
+                    E.reset(); live.clear(); turn_ids.clear(); turn_state.bytes.clear();
+                    E.clear_images();
+                }
+            }
+            kv_usage.publish((int64_t) live.size(), true);
+            std::fprintf(stderr, "tinystrata: prefill cancelled after %lld new tokens; %zu committed tokens retained\n",
+                         (long long) read, live.size());
+            E.print_kv_info();
+            std::printf("DONE 0 %zu %.1f 0 cancel 0 0 %zu 0 0 0 0 0.0 %lld 0\n",
+                        ids.size(), prompt_ms, reuse, (long long) read);
+            std::fflush(stdout);
+            continue;
+        }
         std::mt19937_64 rng(smp.seed);
         std::vector<int32_t> hist = E.m->clover ? std::vector<int32_t>{} : ids;
         const auto d0 = Clock::now();
