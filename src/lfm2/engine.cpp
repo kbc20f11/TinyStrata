@@ -2286,8 +2286,9 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
     Clock::time_point t0 = Clock::now();
     ck(cudaEventSynchronize((cudaEvent_t) ev_), "router");
     stats_.route_wait_ms += ms_since(t0);
-    const double wait_ms = ms_since(t0);
-    const Clock::time_point t_prep = Clock::now();
+    const bool host_prof = g_host.on && n == 1 && !split_ && !next_;   // diagnostics off: no extra clock reads
+    const double wait_ms = host_prof ? ms_since(t0) : 0.0;
+    const Clock::time_point t_prep = host_prof ? Clock::now() : Clock::time_point();
 
     const float limit = clamp_exp_[(size_t) il];
     const size_t xq_row = kernels::lfm_native_q8_1_bytes(n_embd_);
@@ -2371,9 +2372,9 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
         // The next layer's router wait is what makes h_cpu_ free to write again.
         float* cpu = h_cpu_ + (size_t) at * e_row;
         if (n_host == 0) {
-            const Clock::time_point t_launch = Clock::now();
+            const Clock::time_point t_launch = host_prof ? Clock::now() : Clock::time_point();
             launch();
-            if (g_host.on && n == 1 && m == 1) {
+            if (host_prof && m == 1) {
                 g_host.wait += wait_ms;
                 g_host.prep += std::chrono::duration<double, std::milli>(t_launch - t_prep).count();
                 g_host.launch += ms_since(t_launch);

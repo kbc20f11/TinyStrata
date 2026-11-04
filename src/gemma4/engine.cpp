@@ -2313,8 +2313,9 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
     Clock::time_point t0 = Clock::now();
     ck(cudaEventSynchronize((cudaEvent_t) ev_), "router");
     stats_.route_wait_ms += ms_since(t0);
-    const double wait_ms = ms_since(t0);
-    const Clock::time_point t_prep = Clock::now();
+    const bool host_prof = g_phase.host && n == 1 && !split_ && !next_;   // diagnostics off: no extra clock reads
+    const double wait_ms = host_prof ? ms_since(t0) : 0.0;
+    const Clock::time_point t_prep = host_prof ? Clock::now() : Clock::time_point();
 
     const float limit = clamp_exp_[(size_t) il];
     const size_t xq_row = kernels::gemma_native_q8_1_bytes(n_embd_);
@@ -2405,9 +2406,9 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
             const bool fine = g_phase.on && g_phase.fine && n == 1;
             g_phase.kin = fine;
             if (fine) cudaEventRecord(g_phase.cev[0], cs(st_));
-            const Clock::time_point t_launch = Clock::now();
+            const Clock::time_point t_launch = host_prof ? Clock::now() : Clock::time_point();
             launch();
-            if (g_phase.host && n == 1 && m == 1) {
+            if (host_prof && m == 1) {
                 g_phase.h_wait += wait_ms;
                 g_phase.h_prep += std::chrono::duration<double, std::milli>(t_launch - t_prep).count();
                 g_phase.h_launch += ms_since(t_launch);
@@ -2469,18 +2470,21 @@ bool Engine::card_moe(int n) {
 // on the host, or its formats have no kernel for picks on the card.
 bool Engine::moe_card(Layer& L, int il, int n) {
     if (L.card == 0) return false;
-    if (!kernels::gemma_native_mmvq_ids_supported((int) L.gu_type) || !kernels::gemma_native_mmvq_ids_supported((int) L.d_type) ||
-        !route_card(il, n, d_ids_, d_wts_)) {
+    const bool fine = g_phase.on && g_phase.fine;   // diagnostics: single engine, single device only (see run())
+    const auto mark = [&](int k) { if (fine) cudaEventRecord(g_phase.cev[k], cs(st_)); };
+    if (!kernels::gemma_native_mmvq_ids_supported((int) L.gu_type) || !kernels::gemma_native_mmvq_ids_supported((int) L.d_type)) {
         L.card = 0;
         return false;
     }
+    mark(0);   // the device routing is bracketed by marks 0 and 1
+    if (!route_card(il, n, d_ids_, d_wts_)) {
+        L.card = 0;
+        return false;
+    }
+    mark(1);
     L.card = 1;
     const int rr = n * n_used_;
     const void* const* table = d_slots_ + (size_t) il * n_expert_;
-    const bool fine = g_phase.on && g_phase.fine;
-    const auto mark = [&](int k) { if (fine) cudaEventRecord(g_phase.cev[k], cs(st_)); };
-    mark(0);
-    mark(1);
     const kernels::MmvqIds gate_up{table, d_ids_, 0, xq_, kernels::gemma_native_q8_1_bytes(n_embd_), n_used_, g_,
                                    2 * (size_t) n_ff_exp_};
     kernels::gemma_native_mmvq_ids((int) L.gu_type, gate_up, rr, n_embd_, 2 * n_ff_exp_, st_);
@@ -2498,7 +2502,7 @@ bool Engine::moe_card(Layer& L, int il, int n) {
     if (fine) {
         cudaEventSynchronize(g_phase.cev[5]);
         float t = 0;
-        for (int k = 1; k < 5; ++k) {
+        for (int k = 0; k < 5; ++k) {
             cudaEventElapsedTime(&t, g_phase.cev[k], g_phase.cev[k + 1]);
             g_phase.cms[k] += t;
         }
@@ -3063,7 +3067,7 @@ void Engine::run(const int32_t* tokens, int n) {
     }
     for (int il = lo_; il < hi_; ++il) {
         Layer& L = layers_[(size_t) il];
-        const bool prof = g_phase.on && !replay && n == 1 && L.moe && !batched(L, n);
+        const bool prof = g_phase.on && !split_ && !next_ && !replay && n == 1 && L.moe && !batched(L, n);   // single engine, single device
         if (prof) {
             if (!g_phase.ev[0]) {
                 for (auto& e : g_phase.ev) cudaEventCreate(&e);
