@@ -94,16 +94,29 @@ double time_items(hipStream_t st, int count, int idle_us, F&& issue) {
         CK(hipEventRecord(b[(size_t) i], st));
     }
     CK(hipStreamSynchronize(st));
+    // An event pair on a busy stream can come back with a timestamp slightly out of order (a negative or zero span).
+    // Those pairs are counted and left out of the mean; the run is rejected if more than 1% of them are invalid.
     double total_ms = 0;
+    int valid = 0, invalid = 0;
     for (int i = 0; i < count; ++i) {
         float ms = 0;
         CK(hipEventElapsedTime(&ms, a[(size_t) i], b[(size_t) i]));
-        if (!std::isfinite(ms) || ms <= 0.f) fail("an event pair gave a non-positive or non-finite time");
-        total_ms += ms;
+        if (std::isfinite(ms) && ms > 0.f) {
+            total_ms += ms;
+            ++valid;
+        } else {
+            ++invalid;
+        }
         CK(hipEventDestroy(a[(size_t) i]));
         CK(hipEventDestroy(b[(size_t) i]));
     }
-    return total_ms * 1000.0 / count;
+    if (valid == 0 || invalid * 100 > count) {
+        std::fprintf(stderr, "error: %d of %d event pairs were not positive finite spans (host idle %d us)\n", invalid, count,
+                     idle_us);
+        std::exit(2);
+    }
+    if (invalid) std::fprintf(stderr, "  note: %d of %d event pairs were not positive and are left out of the mean\n", invalid, count);
+    return total_ms * 1000.0 / valid;
 }
 
 void fill_random(uint8_t* dev, size_t bytes) {
@@ -232,7 +245,7 @@ void free_arena(Arena& a) {
 }
 
 // The routed-expert step of Engine::moe() for one token.
-void run_layout(hipStream_t st, int steps, int idle_us, int layers) {
+void run_layout(hipStream_t st, int steps, int idle_us, int layers, int extra_events) {
     const int n_embd = 2816, ff = 704, experts = 128, used = 8;
     const size_t gu = gemma_native_mmvq_weight_bytes(kQ4_0, n_embd, ff);      // gate (or up) of one expert
     const size_t dn = gemma_native_mmvq_weight_bytes(kQ4_0, ff, n_embd);      // down of one expert
@@ -268,6 +281,9 @@ void run_layout(hipStream_t st, int steps, int idle_us, int layers) {
         std::shuffle(all.begin(), all.end(), rng);
         r.assign(all.begin(), all.begin() + experts * 85 / 100);
     }
+    std::vector<hipEvent_t> extra((size_t) extra_events);
+    for (auto& e : extra) CK(hipEventCreate(&e));
+    std::printf("extra events recorded between the two launches of a step: %d\n", extra_events);
     std::printf("%-34s %12s %12s\n", "arena / submission", "us per step", "GB/s");
     for (const bool vmm : {false, true}) {
         Arena arena = make_arena(total, vmm, device);
@@ -294,6 +310,8 @@ void run_layout(hipStream_t st, int steps, int idle_us, int layers) {
                 down.y[j] = d + (size_t) j * n_embd;
             }
             if (!gemma_native_mmvq_slots(kQ4_0, gate_up, used, n_embd, 2 * ff, st)) fail("slots kernel unsupported");
+            // events recorded between the two launches, as the engine's per-stage diagnostics do (extra_events)
+            for (hipEvent_t e : extra) CK(hipEventRecord(e, st));
             if (!gemma_native_mmvq_slots(kQ4_0, down, used, ff, n_embd, st)) fail("slots kernel unsupported");
         };
         for (int i = 0; i < 20; ++i) step(i % steps);
@@ -336,7 +354,8 @@ int main(int argc, char** argv) {
         run_shapes(st, argc > 2 ? positive_int(argv[2], "calls") : 400, argc > 3 ? non_negative_int(argv[3], "host_idle_us") : 0);
     } else if (mode == "layout") {
         run_layout(st, argc > 2 ? positive_int(argv[2], "steps") : 400, argc > 3 ? non_negative_int(argv[3], "host_idle_us") : 0,
-                   argc > 4 ? positive_int(argv[4], "layers") : 12);
+                   argc > 4 ? positive_int(argv[4], "layers") : 12,
+                   argc > 5 ? non_negative_int(argv[5], "extra_events") : 0);
     } else {
         std::fprintf(stderr, "unknown mode '%s'\n", mode.c_str());
         return 2;

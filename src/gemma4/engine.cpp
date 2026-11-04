@@ -2275,6 +2275,8 @@ struct PhaseProf {
     long cn = 0;
     bool fine = false;   // set by run() around a profiled layer
     bool kin = false;   // inside moe(): time each launch of the experts' chain
+    bool stages = !(std::getenv("TINYSTRATA_PHASE_PROF") && std::string(std::getenv("TINYSTRATA_PHASE_PROF")) == "2");   // =2: only the outer events
+    double chain_ms = 0;
     double gap_ms = 0, exec_ms = 0, stage_ms[5] = {};   // moe(): shared expert done -> first expert launch lands; experts' own launches
     long gap_n = 0;
     bool host = std::getenv("TINYSTRATA_HOST_PROF") != nullptr;   // host-side chrono only: no events, no extra syncs
@@ -2292,6 +2294,9 @@ struct PhaseProf {
                          gap_ms / gap_n * 1e3, stage_ms[0] / gap_n * 1e3, stage_ms[1] / gap_n * 1e3,
                          stage_ms[2] / gap_n * 1e3, stage_ms[3] / gap_n * 1e3, stage_ms[4] / gap_n * 1e3,
                          (stage_ms[0] + stage_ms[1] + stage_ms[2] + stage_ms[3] + stage_ms[4]) / gap_n * 1e3);
+        if (gap_n)
+            std::fprintf(stderr, "gemma4 moe() experts' chain, first event to last event (the outer pair only counts): %.1f us per layer\n",
+                         chain_ms / gap_n * 1e3);
         if (cn)
             std::fprintf(stderr, "gemma4 moe_card profile over %ld calls, us per call: route %.1f, gate_up %.1f, "
                          "act+quant %.1f, down %.1f, sum %.1f, (sum of parts %.1f)\n", cn, cms[0] / cn * 1e3, cms[1] / cn * 1e3,
@@ -2404,7 +2409,7 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
         float* cpu = h_cpu_ + (size_t) at * e_row;
         if (n_host == 0) {
             const bool fine = g_phase.on && g_phase.fine && n == 1;
-            g_phase.kin = fine;
+            g_phase.kin = fine && g_phase.stages;
             if (fine) cudaEventRecord(g_phase.cev[0], cs(st_));
             const Clock::time_point t_launch = host_prof ? Clock::now() : Clock::time_point();
             launch();
@@ -2421,6 +2426,9 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
                 float t = 0;
                 cudaEventElapsedTime(&t, g_phase.ev[1], g_phase.cev[0]);
                 g_phase.gap_ms += t;
+                cudaEventElapsedTime(&t, g_phase.cev[0], g_phase.cev[5]);
+                g_phase.chain_ms += t;
+                if (g_phase.stages)
                 for (int k = 0; k < 5; ++k) {
                     cudaEventElapsedTime(&t, g_phase.cev[k], g_phase.cev[k + 1]);
                     g_phase.stage_ms[k] += t;
