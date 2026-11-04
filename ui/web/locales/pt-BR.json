@@ -574,6 +574,16 @@
   "localTools.shared": "O provedor, a chave de busca e o número de buscas simultâneas valem para todos os modelos desta interface.",
   "localTools.sources": "Fontes",
   "localTools.title": "Busca e execução de código",
+  "drawer.compaction": "Compactar o contexto automaticamente",
+  "drawer.compactionNote": "Perto do limite de contexto, as conversas antigas são resumidas e as recentes são mantidas. As mensagens originais continuam salvas. O resumo pode omitir detalhes.",
+  "context.compacting": "Resumindo a conversa anterior…",
+  "context.compacted": "Conversa anterior resumida",
+  "context.summary": "Resumo da conversa",
+  "context.compactionStats": "{before} → {after} tokens",
+  "context.compactionFailed": "Não foi possível resumir a conversa. O histórico não foi alterado. Tente novamente ou inicie outro chat.",
+  "context.tooLarge": "As últimas mensagens ou anexos excedem o limite de contexto. Reduza-os ou inicie outro chat.",
+  "context.compactionUnavailable": "Atualize a API do TinyStrata para usar a compactação automática do contexto.",
+  "context.compactionStopped": "Resumo interrompido",
   "sidebar.footSqlite": {
     "one": "{n} chat · salvo neste PC",
     "other": "{n} chats · salvos neste PC"

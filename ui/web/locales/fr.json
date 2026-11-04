@@ -574,6 +574,16 @@
   "localTools.shared": "Le fournisseur, la clé de recherche et le nombre de recherches simultanées s’appliquent à tous les modèles de cette interface.",
   "localTools.sources": "Sources",
   "localTools.title": "Recherche et exécution de code",
+  "drawer.compaction": "Compacter automatiquement le contexte",
+  "drawer.compactionNote": "À l’approche de la limite de contexte, les anciens échanges sont résumés et les plus récents conservés. Les messages originaux restent enregistrés. Certains détails peuvent être omis.",
+  "context.compacting": "Résumé des échanges précédents…",
+  "context.compacted": "Échanges précédents résumés",
+  "context.summary": "Résumé de la conversation",
+  "context.compactionStats": "{before} → {after} tokens",
+  "context.compactionFailed": "La conversation n’a pas pu être résumée. L’historique est inchangé. Réessayez ou démarrez une nouvelle discussion.",
+  "context.tooLarge": "Les derniers messages ou pièces jointes dépassent le budget de contexte. Raccourcissez-les ou démarrez une nouvelle discussion.",
+  "context.compactionUnavailable": "Mettez à jour l’API TinyStrata pour utiliser la compaction automatique du contexte.",
+  "context.compactionStopped": "Résumé interrompu",
   "sidebar.footSqlite": {
     "one": "{n} conversation · enregistrée sur ce PC",
     "other": "{n} conversations · enregistrées sur ce PC"

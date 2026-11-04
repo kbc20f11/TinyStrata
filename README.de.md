@@ -92,6 +92,17 @@ Für die reine API-Installation verwenden Sie `run-api.bat`:
 & "$env:LOCALAPPDATA\TinyStrata\run-api.bat" --port 18080
 ```
 
+### Automatische Kontextkomprimierung
+
+**Kontext automatisch komprimieren** ist in den Chat-Einstellungen der optionalen UI standardmäßig aktiviert. Vor Antworten und zwischen lokalen Werkzeugrunden zählt die UI den Prompt mit dem Tokenizer des aktuellen Modells. Sobald Prompt und reservierter Ausgaberaum **85 %** des Kontextlimits erreichen, fasst das aktuelle Modell ältere Gespräche zusammen. Mindestens die letzten zwei Benutzerbeiträge bleiben mit ihren vollständigen Antworten erhalten; Werkzeugaufrufe und Ergebnisse bleiben zusammen. Systemanweisungen und verfügbare Werkzeuge werden beibehalten.
+
+Die Zusammenfassung wird als fortlaufender Prüfpunkt mit dem Chat in SQLite gespeichert; der vollständige Originalverlauf bleibt in der UI sichtbar. Änderungen oder Zurückspringen innerhalb des zusammengefassten Bereichs machen den Prüfpunkt ungültig. Fehler oder Abbruch löschen keine Nachrichten. Zusammenfassungen können Details verlieren und sind von der KV-Quantisierung unabhängig. Ein neuer zusammengefasster Präfix muss einmal neu verarbeitet werden, bevor spätere Beiträge seinen KV-Cache wiederverwenden.
+
+Ohne ausdrückliches Ausgabelimit werden bis zu **8K Tokens**, höchstens ein Viertel des Kontexts, reserviert. Zusammenfassungen sind auf **2K Ausgabetokens** und ein Achtel des Kontexts begrenzt. Für Bilder mit unbekannter kodierter Größe wird eine vorsichtige Tokenobergrenze verwendet. Eine einzelne zu große Nachricht muss gekürzt werden. `POST /v1/chat/token-count` erzeugt keinen Text und verändert keinen KV-Cache; reine API-Clients werden nicht automatisch komprimiert.
+
+Grundlagen: [Open WebUI](https://docs.openwebui.com/troubleshooting/context-window/) und [Anthropic](https://www.anthropic.com/research/effective-context-engineering-for-ai-agents).
+
+
 ### Modell ohne Neustart wechseln
 
 Das Installationsprogramm startet standardmäßig Qwen. Laden Sie Gemma für denselben laufenden API-Server herunter und prüfen Sie den Fortschritt:

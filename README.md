@@ -114,6 +114,17 @@ Use the **Web search** and **Code execution** checkboxes beside **Chat settings*
 
 These features belong to the optional UI; API-only inference is unchanged. Runtime licenses are included in [the Pyodide license](ui/python-runtime-LICENSE.txt) and [third-party notices](ui/python-runtime-NOTICES.txt).
 
+### Automatic context compaction
+
+The optional UI enables **Automatically compact context** in Chat settings by default. Before a reply and between local tool rounds, it counts the active prompt with the current model’s tokenizer. When the prompt plus reserved output space reaches **85%** of the context limit, the current model summarizes older exchanges. The most recent exchanges, including at least two user turns, remain verbatim; tool calls and their results stay together. System instructions and available tools are preserved.
+
+Rolling summaries are saved with the chat in SQLite, while the full original conversation remains available in the UI. Editing or rewinding into a summarized part invalidates that checkpoint. A failed or interrupted summary does not delete messages or replace a valid checkpoint. Summaries can lose details; this is conversation summarization, separate from KV quantization. After compaction, the changed prefix must be processed again once before subsequent turns can reuse its KV cache.
+
+The trigger reserves the requested output limit, or up to **8K tokens** (at most a quarter of the context) when no limit is set. A summary uses up to **2K output tokens**, capped at an eighth of the context. Images use a conservative token allowance when their exact encoded size is unavailable. An individual message or attachment that cannot fit still needs to be shortened. The counting endpoint, `POST /v1/chat/token-count`, does not generate text or change the model’s KV cache; API clients are not automatically compacted.
+
+The design follows [Open WebUI’s rolling context compaction](https://docs.openwebui.com/troubleshooting/context-window/) and [Anthropic’s context-engineering guidance](https://www.anthropic.com/research/effective-context-engineering-for-ai-agents).
+
+
 ### Switch models without restarting
 
 The installer starts with Qwen by default. To prepare Gemma on the same running API server, download it and check its progress:

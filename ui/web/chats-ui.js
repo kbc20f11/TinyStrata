@@ -382,7 +382,7 @@ function regenerateAt(i) {
   if (!historyReady()) return false;
   const plan = H.regenerate(messages, i);
   if (!plan) return false;
-  if (!canUseModelImages(plan.keep)) return false;
+  // generateReply validates the projected history after checking its summary.
   if (H.lostAttachments(messages[plan.keep.length - 1])) {
     toast("warn", tr("hist.lostTitle", "Attachments need to be added again"), tr("hist.lostText", "This browser kept their names, not their contents. Start a new chat and attach them again."), 7000);
     return false;
@@ -442,7 +442,7 @@ function sendUserEdit(i, text) {
     toast("warn", tr("hist.lostTitle", "Attachments need to be added again"), tr("hist.lostText", "This browser kept their names, not their contents. Start a new chat and attach them again."), 7000);
     return false;
   }
-  if (!canUseModelImages(next)) return false;
+  if (!canUseModelImages([], edited.images || [])) return false;
   closePanel();
   commit(next, tr("hist.userEdited", "Message edited and sent"));
   return generateReply();

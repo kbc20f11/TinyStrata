@@ -3,7 +3,8 @@
     python -m serve.server --engine mock --port 8095            (a scripted engine, for clients and tests)
     python -m serve.server --engine strata --config strata.json --port 8080   (the real engine, resident)
 
-Endpoints: POST /v1/chat/completions (OpenAI, stream and non-stream), POST /v1/messages (Anthropic, stream and
+Endpoints: POST /v1/chat/completions (OpenAI, stream and non-stream), POST /v1/chat/token-count (prompt planning),
+POST /v1/messages (Anthropic, stream and
 non-stream), POST /v1/responses (Responses API), GET /v1/models, GET /models, GET /props, GET /slots, GET /health, GET /mcp. One sequence at a time behind a FIFO (plan: one resident sequence).
 Image generation (optional, when the config has an "images" section): POST /v1/images/generations (OpenAI's shape,
 plus seed and steps) runs stable-diffusion.cpp's sd-cli for Qwen-Image-2.1-Turbo, one job at a time on the GPU the
@@ -30,6 +31,7 @@ import base64
 import hashlib
 import hmac
 import codecs
+import copy
 import ctypes
 import json
 import math
@@ -2308,6 +2310,7 @@ class Vision:
             args += ["--threads", str(cfg["threads"])]
         if cfg.get("max_tokens"):
             args += ["--max-tokens", str(cfg["max_tokens"])]
+        self.max_tokens = int(cfg.get("max_tokens") or 0)
         if cfg.get("min_tokens"):                       # #767: mtmd's image_min_tokens (a hand-edited key)
             args += ["--min-tokens", str(cfg["min_tokens"])]
         self.dir = self.work_dir()
@@ -3944,6 +3947,75 @@ class Service:
             return self.tok.encode(prompt, parse_special=True)
         prompt, plain = unmark_think_literals(prompt, self.literals)
         return self.tok.encode(prompt, parse_special=True, plain=plain)
+
+    def chat_token_count(self, req: dict) -> dict:
+        """Count the chat prompt without loading, entering the GPU turn or changing cached state.
+
+        Text uses the generation path's template and tokenizer. Images use the
+        encoder's enforced upper bound, including Gemma's added boundary tokens;
+        no image is opened or encoded just to decide whether to compact a chat.
+        """
+        requested_model = req.get("model")
+        if self.models is not None:
+            self.models.check_model(req)
+        elif requested_model is not None and requested_model not in self.model_names():
+            raise ValueError("model is not active; count tokens with the active model")
+        req = self.with_shared(req, "openai")
+        int(req.get("max_completion_tokens") or req.get("max_tokens") or 0)  # same type validation as chat
+        bias_api.validate_request(req, self.engine, len(getattr(self.tok, "tokens", ())) or None)
+        messages, tools, kw = openai_to_messages(req)
+        if tool_choice_of(req.get("tool_choice"))[0] == "none":
+            tools = None
+        force = forced_call(req.get("tool_choice"), tools, call_format=self.call_format)
+        messages, validator = prepare_format(req.get("response_format"), messages)
+        if validator is not None and (tools or req.get("strata_mcp")):
+            raise ValueError("structured response_format with tools/MCP is not supported")
+        use_mcp = req.get("strata_mcp") is True and self.mcp is not None
+        if use_mcp:
+            if any(thread.is_alive() for thread in self.mcp.threads):
+                raise GpuBusy("MCP tools are still starting; retry the token count shortly")
+            # routes() updates the hub's routing lookup. Build that lookup on a
+            # shallow snapshot so counting never changes the live tool cache.
+            hub = copy.copy(self.mcp)
+            own = {t.get("name") for t in tools or [] if isinstance(t, dict)}
+            extra = hub.template_tools(exclude=own)
+            use_mcp = bool(extra)
+            tools = (tools or []) + extra or None
+        if force and use_mcp:
+            raise ValueError("a forced tool_choice with MCP tools is not supported")
+        self.reasoning_budget(req)
+        stop_strings(req)
+        check_request_sampling(req)
+        self.clover_request_settings(req)
+        kw = self.template_defaults(kw, req)
+        ids = self.encode_prompt(messages, tools, kw)
+        if force and kw.get("enable_thinking", True) is False:
+            ids += self.tok.encode(force, parse_special=True)
+        images = images_of(messages)
+        count = len(ids)
+        if images:
+            if self.vision is None:
+                raise ValueError("this server was started without the vision encoder, so it cannot read images")
+            gemma = self.call_format == "gemma"
+            mark = "<|image|>" if gemma else IMAGE_PAD
+            def one(text):
+                values = self.tok.encode(text, parse_special=True)
+                if len(values) != 1:
+                    raise ValueError(f"the model tokenizer has no image control token {text}")
+                return values[0]
+            pad = one(mark)
+            start = None if gemma else one(VISION_START)
+            placeholders = sum(t == pad and (start is None or j > 0 and ids[j - 1] == start)
+                               for j, t in enumerate(ids))
+            if placeholders != len(images):
+                raise ValueError("the prompt and its images do not match")
+            limit = getattr(self.vision, "max_tokens", 0)
+            if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+                limit = 1120 if gemma else 4096  # tinystrata_vision.cpp's enforced default
+            boundaries = len([one("<|image>"), one("<image|>")]) if gemma else 0
+            count += len(images) * (limit + boundaries - 1)
+        return {"prompt_tokens": count, "max_context": self.reported_ctx(),
+                "exact": not images, "images_estimated": len(images), "model": self.model}
 
     def prompt_turn_at(self, messages, tools, kwargs, ids) -> int | None:
         """A reusable history boundary before the generated assistant prefix.
@@ -5779,10 +5851,10 @@ def make_handler(svc: Service):
                         self._json(200 if state.get("state") in ("ready", "cancelled", "idle", "error") else 202,
                                    state)
                     return
-                if svc.models is not None and path in ("/v1/chat/completions", "/v1/messages", "/v1/responses",
+                if svc.models is not None and path in ("/v1/chat/completions", "/v1/chat/token-count", "/v1/messages", "/v1/responses",
                                                        "/v1/messages/count_tokens"):
                     svc.models.check_model(req)
-                if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses",
+                if path in ("/v1/chat/completions", "/v1/chat/token-count", "/v1/messages", "/v1/responses",
                             "/v1/messages/count_tokens") and not svc.model_available:
                     raise GpuBusy("the model is not ready; POST /v1/model/download, then poll GET /v1/model/download")
                 if path.startswith("/v1/responses/"):        # retrieve/delete/cancel/compact: nothing is stored
@@ -5839,6 +5911,10 @@ def make_handler(svc: Service):
                     self._json(code, body)
                 elif path == "/v1/chat/completions":
                     self._openai(req)
+                elif path == "/v1/chat/token-count":
+                    if req.get("strata_mcp") is True and svc.mcp is not None and not self._own_page("MCP tools can be used"):
+                        return
+                    self._json(200, svc.chat_token_count(req))
                 elif path == "/v1/messages":
                     self._anthropic(req)
                 elif path == "/v1/messages/count_tokens":

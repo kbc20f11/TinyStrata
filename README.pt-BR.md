@@ -92,6 +92,17 @@ Para a instalação somente com API, use `run-api.bat`:
 & "$env:LOCALAPPDATA\TinyStrata\run-api.bat" --port 18080
 ```
 
+### Compactação automática do contexto
+
+A opção **Compactar o contexto automaticamente** fica ativada por padrão nas configurações de chat da UI. Antes das respostas e entre rodadas de ferramentas locais, a UI conta o prompt com o tokenizador do modelo atual. Quando o prompt e o espaço reservado para a saída atingem **85%** do contexto, esse modelo resume as conversas antigas. Pelo menos as duas últimas mensagens do usuário e suas respectivas conversas são mantidas integralmente; chamadas de ferramentas e resultados permanecem juntos. As instruções de sistema e ferramentas disponíveis são preservadas.
+
+O resumo acumulado é salvo com o chat no SQLite, e o histórico original completo permanece visível. Editar ou voltar a uma parte resumida invalida o resumo. Falhas ou interrupções não apagam mensagens. Resumos podem omitir detalhes; esta função é separada da quantização KV. Após a compactação, o novo prefixo é processado uma vez antes de os turnos seguintes reutilizarem seu cache KV.
+
+Sem limite explícito de saída, são reservados até **8K tokens**, no máximo um quarto do contexto. O resumo produz até **2K tokens**, limitado a um oitavo do contexto. Imagens com tamanho codificado desconhecido usam uma estimativa conservadora. Uma mensagem grande demais ainda precisa ser reduzida. `POST /v1/chat/token-count` não gera texto nem altera o cache KV; clientes da API não são compactados automaticamente.
+
+Referências: [Open WebUI](https://docs.openwebui.com/troubleshooting/context-window/) e [Anthropic](https://www.anthropic.com/research/effective-context-engineering-for-ai-agents).
+
+
 ### Trocar de modelo sem reiniciar
 
 O instalador inicia o Qwen por padrão. Para preparar o Gemma no mesmo servidor API, inicie o download e consulte o progresso:

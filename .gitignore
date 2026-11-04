@@ -54,6 +54,8 @@
 !/tests/test_ui_launcher_upgrade.py
 !/tests/ui-chatstore.cjs
 !/tests/ui-local-tools.cjs
+!/tests/ui-context-compaction.cjs
+!/tests/test_chat_token_count.py
 
 # Only build/runtime sources and the fixed public benchmark inputs belong here.
 /benchmark/**

@@ -569,6 +569,16 @@
   "localTools.shared": "搜索服务、搜索密钥和并发数对本界面中的所有模型通用。",
   "localTools.sources": "来源",
   "localTools.title": "搜索与代码执行",
+  "drawer.compaction": "自动压缩上下文",
+  "drawer.compactionNote": "接近上下文上限时，总结较早的对话并保留最近的交流。原始消息仍会保存，但摘要可能省略细节。",
+  "context.compacting": "正在总结较早的对话…",
+  "context.compacted": "已总结较早的对话",
+  "context.summary": "对话摘要",
+  "context.compactionStats": "{before} → {after} 个词元",
+  "context.compactionFailed": "无法总结对话，历史记录未作更改。请重试或开始新聊天。",
+  "context.tooLarge": "最近的消息或附件超出上下文容量。请缩短内容或开始新聊天。",
+  "context.compactionUnavailable": "请更新 TinyStrata API 以使用自动上下文压缩。",
+  "context.compactionStopped": "已停止总结",
   "sidebar.footSqlite": {
     "other": "{n} 个聊天 · 保存在此电脑上"
   }

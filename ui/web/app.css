@@ -341,3 +341,6 @@ main { flex: 1; min-height: 0; display: flex; }
 /* a message may use the room a wide window gives the chat column (#3176 widened the column; the kit's 720px kept the messages narrow in it) */
 .st-msg { max-width: min(100%, 900px); }
 .st-toast .st-btn { white-space: nowrap; }
+.context-summary { margin-block: var(--st-s-3); }
+.context-summary summary { color: var(--st-ink-muted); font-size: 0.85em; }
+.context-summary .st-collapse__body { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 20rem; overflow: auto; }

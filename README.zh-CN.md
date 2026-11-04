@@ -92,6 +92,17 @@ irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/insta
 & "$env:LOCALAPPDATA\TinyStrata\run-api.bat" --port 18080
 ```
 
+### 自动压缩上下文
+
+UI 的聊天设置默认启用**自动压缩上下文**。在回答前及本地工具调用轮次之间，UI 使用当前模型的 tokenizer 计算输入长度。当输入加上预留输出空间达到上下文上限的 **85%** 时，由当前模型总结较早的对话。最近至少两次用户消息及其完整交流保留原文，工具调用与结果不会分开。系统指令和可用工具保持不变。
+
+滚动摘要与聊天一起保存在 SQLite 中，原始对话全文仍可在 UI 中查看。编辑或回退到已总结的范围会使该摘要失效。总结失败或中断不会删除消息。摘要可能遗漏细节；这与 KV 量化是不同的功能。压缩后，新前缀需要重新处理一次，之后的对话可以再次复用其 KV 缓存。
+
+未指定输出上限时，最多预留 **8K 词元**，且不超过上下文的四分之一。摘要最多输出 **2K 词元**，且不超过上下文的八分之一。无法获取图像编码后的精确大小时，按保守的词元上限计算。单条消息或附件本身超出容量时，仍需缩短内容。`POST /v1/chat/token-count` 不生成文本，也不修改 KV 缓存；API 客户端不会被自动压缩。
+
+设计参考：[Open WebUI](https://docs.openwebui.com/troubleshooting/context-window/) 与 [Anthropic](https://www.anthropic.com/research/effective-context-engineering-for-ai-agents)。
+
+
 ### 无需重启即可切换模型
 
 安装器默认启动 Qwen。要在同一个 API 服务中使用 Gemma，请先下载并查看进度：

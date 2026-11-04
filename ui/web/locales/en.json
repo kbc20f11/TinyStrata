@@ -574,6 +574,16 @@
   "localTools.shared": "The provider, search key and concurrency apply to every model in this UI.",
   "localTools.sources": "Sources",
   "localTools.title": "Search and code execution",
+  "drawer.compaction": "Automatically compact context",
+  "drawer.compactionNote": "Near the context limit, summarize older exchanges while keeping recent turns. Original messages remain saved. Summaries can omit details.",
+  "context.compacting": "Summarizing earlier conversation…",
+  "context.compacted": "Earlier conversation summarized",
+  "context.summary": "Conversation summary",
+  "context.compactionStats": "{before} → {after} tokens",
+  "context.compactionFailed": "The conversation could not be summarized. Your history is unchanged. Please try again or start a new chat.",
+  "context.tooLarge": "The latest messages or attachments exceed the context budget. Shorten them or start a new chat.",
+  "context.compactionUnavailable": "Update the TinyStrata API to use automatic context compaction.",
+  "context.compactionStopped": "Summarization stopped",
   "sidebar.footSqlite": {
     "one": "{n} chat · saved on this PC",
     "other": "{n} chats · saved on this PC"

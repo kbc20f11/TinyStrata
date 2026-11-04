@@ -569,6 +569,16 @@
   "localTools.shared": "検索サービス、検索用APIキー、同時実行数は、このUIの全モデルで共通です。",
   "localTools.sources": "出典",
   "localTools.title": "検索とコード実行",
+  "drawer.compaction": "コンテキストを自動圧縮",
+  "drawer.compactionNote": "上限に近づくと古いやり取りを要約し、直近の会話を残します。元のメッセージは保存されますが、要約では細部が省略されることがあります。",
+  "context.compacting": "これまでの会話を要約しています…",
+  "context.compacted": "これまでの会話を要約しました",
+  "context.summary": "会話の要約",
+  "context.compactionStats": "{before} → {after} トークン",
+  "context.compactionFailed": "会話を要約できませんでした。履歴は変更していません。再試行するか、新しいチャットを始めてください。",
+  "context.tooLarge": "直近のメッセージや添付ファイルがコンテキスト容量を超えています。短くするか、新しいチャットを始めてください。",
+  "context.compactionUnavailable": "コンテキストの自動圧縮を利用するには、TinyStrataのAPIを更新してください。",
+  "context.compactionStopped": "要約を停止しました",
   "sidebar.footSqlite": {
     "other": "{n} 件のチャット · このPCに保存"
   }

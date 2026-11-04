@@ -362,6 +362,9 @@
 
     <div class="drawer-group" role="group" aria-labelledby="g-chats">
       <h3 class="drawer-group__title" id="g-chats" data-i18n="drawer.chats">Chats</h3>
+      <div class="toggle-row"><span><span data-i18n="drawer.compaction">Automatically compact context</span><br><span class="muted small"
+        data-i18n="drawer.compactionNote">Near the context limit, summarize older exchanges while keeping recent turns. Original messages remain saved. Summaries can omit details.</span></span>
+        <button class="st-toggle" id="s-compact" role="switch" aria-checked="true" aria-label="Automatically compact context" data-i18n-label="drawer.compaction"></button></div>
       <div class="toggle-row"><span><span data-i18n="drawer.list">Saved chats list</span><br><span class="muted small"
         data-i18n="drawer.listNote">History is saved on this PC. Turning this off hides the list while saving continues.</span></span>
         <button class="st-toggle" id="s-list" role="switch" aria-checked="true" aria-label="Saved chats list" data-i18n-label="drawer.list"></button></div>
@@ -417,6 +420,7 @@
 <script src="web/history.js"></script>
 <script src="web/chatstore.js?v=20261103.2"></script>
 <script src="web/chats-ui.js?v=20261103.2"></script>
-<script src="web/app.js?v=20261103.2"></script>
+<script src="web/context-compaction.js?v=20261104.1"></script>
+<script src="web/app.js?v=20261104.1"></script>
 </body>
 </html>

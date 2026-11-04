@@ -92,6 +92,17 @@ Pour l’installation avec API seule, utilisez `run-api.bat` :
 & "$env:LOCALAPPDATA\TinyStrata\run-api.bat" --port 18080
 ```
 
+### Compaction automatique du contexte
+
+L’option **Compacter automatiquement le contexte** est activée par défaut dans les paramètres de discussion de l’UI. Avant chaque réponse et entre les tours d’outils locaux, l’UI compte le prompt avec le tokenizer du modèle courant. Lorsque le prompt et l’espace réservé à la sortie atteignent **85 %** de la fenêtre de contexte, ce modèle résume les échanges anciens. Au moins les deux derniers messages utilisateur et leurs échanges sont conservés intégralement ; les appels d’outils restent associés à leurs résultats. Les instructions système et les outils disponibles sont préservés.
+
+Le résumé évolutif est enregistré avec la discussion dans SQLite ; l’historique original complet reste visible. Modifier ou remonter dans une partie résumée invalide ce résumé. Un échec ou une interruption ne supprime aucun message. Un résumé peut omettre des détails : il s’agit d’une fonction distincte de la quantification KV. Après compaction, le nouveau préfixe est retraité une fois avant que les tours suivants puissent réutiliser son cache KV.
+
+Sans limite de sortie explicite, jusqu’à **8K tokens**, au maximum un quart du contexte, sont réservés. Le résumé produit jusqu’à **2K tokens**, sans dépasser un huitième du contexte. La taille des images est comptée de manière prudente lorsque leur taille encodée exacte est inconnue. Un message trop volumineux doit encore être raccourci. `POST /v1/chat/token-count` ne génère pas de texte et ne modifie pas le cache KV ; les clients API ne sont pas compactés automatiquement.
+
+Références : [Open WebUI](https://docs.openwebui.com/troubleshooting/context-window/) et [Anthropic](https://www.anthropic.com/research/effective-context-engineering-for-ai-agents).
+
+
 ### Changer de modèle sans redémarrer
 
 Le programme d’installation démarre Qwen par défaut. Pour préparer Gemma sur le même serveur API, lancez son téléchargement et consultez la progression :

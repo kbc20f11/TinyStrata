@@ -574,6 +574,16 @@
   "localTools.shared": "Anbieter, Suchschlüssel und Anzahl gleichzeitiger Suchen gelten für alle Modelle in dieser Oberfläche.",
   "localTools.sources": "Quellen",
   "localTools.title": "Suche und Codeausführung",
+  "drawer.compaction": "Kontext automatisch komprimieren",
+  "drawer.compactionNote": "Nahe der Kontextgrenze werden ältere Gespräche zusammengefasst und die neuesten Beiträge beibehalten. Die ursprünglichen Nachrichten bleiben gespeichert. Zusammenfassungen können Details auslassen.",
+  "context.compacting": "Frühere Unterhaltung wird zusammengefasst…",
+  "context.compacted": "Frühere Unterhaltung zusammengefasst",
+  "context.summary": "Gesprächszusammenfassung",
+  "context.compactionStats": "{before} → {after} Tokens",
+  "context.compactionFailed": "Das Gespräch konnte nicht zusammengefasst werden. Der Verlauf ist unverändert. Versuchen Sie es erneut oder beginnen Sie einen neuen Chat.",
+  "context.tooLarge": "Die neuesten Nachrichten oder Anhänge überschreiten das Kontextbudget. Kürzen Sie sie oder beginnen Sie einen neuen Chat.",
+  "context.compactionUnavailable": "Aktualisieren Sie die TinyStrata-API, um die automatische Kontextkomprimierung zu nutzen.",
+  "context.compactionStopped": "Zusammenfassung gestoppt",
   "sidebar.footSqlite": {
     "one": "{n} Chat · auf diesem PC gespeichert",
     "other": "{n} Chats · auf diesem PC gespeichert"
