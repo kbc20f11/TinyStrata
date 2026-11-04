@@ -201,9 +201,9 @@ Radeon 显卡上的速度，使用 [tinystrata-bench-v1](benchmark/README.md#eng
 | GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS (exact D3, Vision GPU) |
 | --- | ---: | ---: | ---: | ---: |
 | [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 41.67 / 942.27 / 892.94 |
-| [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 97.89 / 1353.97 / 1561.60 | 70.40 / 2697.67 / 3589.72 | 88.99 / 1749.32 / 1880.91 | — |
+| [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 89.11 / 1056.20 / 1383.33 | 87.81 / 2977.93 / 3667.40 | 102.67 / 2601.75 / 2531.47 | 39.86 / 888.74 / 1215.40 |
 
-Clover 使用 exact D3／INT8／MT1，图像编码器常驻 GPU。图像首次输出／完成时间为 **2.43／4.54 秒**；专家缓存为 **7.32–8.10 → 7.18–7.95 GiB**（启动时 → 16K 输入后）。[条件与图像验证](benchmark/results/rx-9060-xt.md#clover-vision-with-exact-d3-2026-11-01)。
+Clover 使用 exact D3／INT8／MT1，图像编码器常驻 GPU。图像首次输出／完成时间为 **2.43／4.54 秒** (RX 9060 XT), **2.61／5.47 秒** (RX 9070 XT)；专家缓存为 **7.32–8.10 → 7.18–7.95 GiB** (RX 9060 XT), **6.84 → 6.70 GiB** (RX 9070 XT)（启动时 → 16K 输入后）。[条件与图像验证](benchmark/results/rx-9060-xt.md#clover-vision-with-exact-d3-2026-11-01)。
 
 **Clover IQ3_XXS — RX 9060 XT（2026-11-01，Attention 共享前的历史记录）**
 
