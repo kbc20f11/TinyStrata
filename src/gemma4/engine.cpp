@@ -1301,6 +1301,7 @@ void Engine::fill_expert_cache() {
 // The thread and the stream that bring experts into the cache while an answer is written (follow()).
 void Engine::start_swaps() {
     if (swap_ || cached_ == 0 || opt_.expert_swaps == 0) return;
+    if (std::getenv("TINYSTRATA_DIAG_NO_SWAP")) return;   // diagnostics: decode with a static cache (issue #7)
     swap_ = std::make_unique<Swap[]>((size_t) opt_.expert_swaps);
     cudaStream_t up = nullptr;
     ck(cudaStreamCreateWithFlags(&up, cudaStreamNonBlocking), "cudaStreamCreate");

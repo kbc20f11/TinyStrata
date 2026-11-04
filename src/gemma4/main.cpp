@@ -831,7 +831,8 @@ int main(int argc, char** argv) {
                      "cache=%d/%d gpu_experts=%lld cpu_experts=%lld staged=%lld\n", ids.size(), pp, produced, evaluated, tg,
                      produced * 1000.0 / std::max(tg, 0.001), e->cached_experts(), e->total_experts(),
                      (long long) s.gpu_experts, (long long) s.cpu_experts, (long long) s.batch_staged);
-        std::fprintf(stderr, "gemma4: route_wait_ms=%.2f cpu_ms=%.2f (totals over prompt and decode)\n", s.route_wait_ms, s.cpu_ms);
+        std::fprintf(stderr, "gemma4: route_wait_ms=%.2f cpu_ms=%.2f swapped_experts=%lld (totals over prompt and decode)\n",
+                     s.route_wait_ms, s.cpu_ms, (long long) s.swapped_experts);
         return 0;
     } catch (const std::exception& ex) {
         std::fprintf(stderr, "tinystrata-gemma4: %s\n", ex.what());
