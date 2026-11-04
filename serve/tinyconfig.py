@@ -9,7 +9,7 @@ from serve import config
 MEMORY_POLICY_VERSION = 1
 VISION_POLICY_VERSION = 1
 GENERATION_POLICY_VERSION = 1
-CLOVER_DECODE_POLICY_VERSION = 1
+CLOVER_DECODE_POLICY_VERSION = 2
 CLOVER_VISION_POLICY_VERSION = 1
 CHUNK_POLICY_VERSION = config.CHUNK_POLICY_VERSION
 DEFAULT_MAX_TOKENS = 32768
@@ -31,7 +31,7 @@ def clover_decode_defaults(cfg: dict) -> dict:
     """The managed API/launcher profile; native direct-CLI defaults are separate."""
     if cfg.get("arch") != "clover_moe":
         return cfg
-    new, _ = config.apply(cfg, {"clover_mode": "self-spec", "clover_draft": 3,
+    new, _ = config.apply(cfg, {"clover_mode": "causal", "clover_draft": 0,
                                 "clover_accept": "exact", "kv_type": "int8"})
     env = dict(new.get("env") or {})
     # A supplied CPU arithmetic rule wins, including an explicit process env.
@@ -42,32 +42,43 @@ def clover_decode_defaults(cfg: dict) -> dict:
 
 
 def migrate_clover_decode_settings(cfg: dict) -> tuple[dict, bool]:
-    """Upgrade only the unmarked, managed former stock causal/auto profile.
+    """Return the former managed D3 default to causal without retuning the model.
 
-    Old releases did not distinguish stock values from the identical values
-    entered manually. That exact historical signature is migrated once; local
-    models and custom decode/KV/CPU settings stay intact. The saved marker and
-    run.py's pre-migration explicit-CLI guard protect later same-value choices.
+    Historical same-value manual D3 settings have no provenance. Only the
+    complete old stock tuple migrates once; local models and custom settings
+    stay intact. Explicit CLI choices are marked before this migration, so D3
+    remains opt-in on later launches. Never upgrade an old causal profile to D3.
     """
-    if cfg.get("arch") != "clover_moe" or "clover_decode_policy_version" in cfg:
+    if cfg.get("arch") != "clover_moe" or cfg.get("clover_decode_policy_version") not in (None, 1):
         return cfg, False
-    stock_values = {"--model": None, "--max-context": "auto", "--kv-type": "auto",
-                    "--chunk": "auto", "--clover-mode": "causal", "--clover-draft": "0"}
+    stock_values = {"--model": None, "--max-context": "auto", "--kv-type": "int8",
+                    "--chunk": "auto", "--clover-mode": "self-spec", "--clover-draft": "3",
+                    "--clover-accept": "exact"}
     args = cfg.get("args")
-    stock = (cfg.get("model_source") == "managed" and cfg.get("env") in (None, {}) and
+    stock = (cfg.get("model_source") == "managed" and cfg.get("env") == {"STRATA_IQ_MT_MIN": "1"} and
              cfg.get("sampling") == CLOVER_SAMPLING and cfg.get("enable_thinking", True) is True and
-             cfg.get("vision_mode", "no") == "no" and not cfg.get("vision") and
-             not any(k.startswith(("STRATA_IQ_", "STRATA_CPU_")) for k in os.environ) and
-             isinstance(args, list) and len(args) % 2 == 0)
+             isinstance(args, list))
     seen = set()
     if stock:
-        for flag, value in zip(args[::2], args[1::2]):
-            if flag not in stock_values or flag in seen or (stock_values[flag] is not None and value != stock_values[flag]):
+        i = 0
+        while i < len(args):
+            flag = args[i]
+            if flag in seen:
                 stock = False
                 break
             seen.add(flag)
-        stock = stock and {"--model", "--clover-mode", "--clover-draft"}.issubset(seen)
-    new = clover_decode_defaults(cfg) if stock else {**cfg, "clover_decode_policy_version": CLOVER_DECODE_POLICY_VERSION}
+            # Image-enabled managed profiles also carry this standalone flag.
+            if flag == "--vision":
+                i += 1
+                continue
+            if (flag not in stock_values or i + 1 >= len(args) or
+                    (stock_values[flag] is not None and args[i + 1] != stock_values[flag])):
+                stock = False
+                break
+            i += 2
+        stock = stock and {"--model", "--kv-type", "--clover-mode", "--clover-draft", "--clover-accept"}.issubset(seen)
+    new = config.apply(cfg, {"clover_mode": "causal", "clover_draft": 0})[0] if stock else dict(cfg)
+    new["clover_decode_policy_version"] = CLOVER_DECODE_POLICY_VERSION
     return new, new != cfg
 
 
@@ -234,10 +245,11 @@ def migrate_settings(cfg: dict) -> tuple[dict, bool]:
     changed = changed or memory_changed
     new, generation_changed = migrate_generation_settings(new)
     changed = changed or generation_changed
-    new, decode_changed = migrate_clover_decode_settings(new)
-    changed = changed or decode_changed
+    # Upgrade the historical D3 image signature before changing its decode mode.
     new, clover_vision_changed = migrate_clover_vision_settings(new)
     changed = changed or clover_vision_changed
+    new, decode_changed = migrate_clover_decode_settings(new)
+    changed = changed or decode_changed
     # Old configs default to GPU encoding; explicit CPU/off preferences survive
     # both migration and model preparation on every subsequent launch.
     mode = check_vision_options(new)

@@ -32,7 +32,7 @@ O **LFM2.5-24B-A2B Q4_K_M** usa o [GGUF oficial da LiquidAI](https://huggingface
 
 O **Clover-35B-A3B-Preview IQ3_XXS** usa por padrão o [GGUF de AtomicChat](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf), com **IQ3_XXS em gate/up e IQ3_S em down** dos especialistas. O modelo de linguagem de **15.515 GB** preserva o tokenizador próprio do Clover e seus parâmetros GDN bidirecionais aprendidos. O TinyStrata amplia a capacidade de contexto para **256K**. [O Clover oficial especifica 128K](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview/blob/main/config.json); a qualidade geral das respostas acima de 128K ainda não foi avaliada. O Clover oficial aceita apenas texto; o TinyStrata adiciona imagens reutilizando o projetor Qwen3.6 (**0.899 GB**, **16.414 GB** no total). Se ele já foi baixado para Qwen, é reutilizado. Selecione-o com `run-api.bat --model-family clover`; um novo perfil independente usa a porta **18083** e salva os ajustes em `config-clover.json`.
 
-Os perfis gerenciados do Clover agora usam autoespeculação exata D3 com KV INT8 (`--clover-mode self-spec --clover-draft 3 --clover-accept exact --kv-type int8`) e MT1 (`STRATA_IQ_MT_MIN=1`) como padrão. O codificador de imagens fica residente na GPU por padrão; `--vision cpu` seleciona CPU e `--vision no` o desativa. Vision aceita geração causal ou autoespeculação exata; difusão e aceitação por limiar exigem `--vision no`. LowConfidence por blocos e a aceitação aproximada por limiar continuam como opções experimentais de ativação explícita; veja as [opções de decodificação](benchmark/README.md#english).
+Os perfis gerenciados do Clover usam geração causal sem rascunhos, D0, com KV INT8 (`--clover-mode causal --clover-draft 0 --kv-type int8`) e MT1 (`STRATA_IQ_MT_MIN=1`) como padrão. A autoespeculação exata D3 continua opcional (`--clover-mode self-spec --clover-draft 3 --clover-accept exact`); compare sua velocidade com a geração causal no seu hardware antes de ativá-la. O codificador de imagens fica residente na GPU por padrão; `--vision cpu` seleciona CPU e `--vision no` o desativa. Vision aceita geração causal ou autoespeculação exata; difusão e aceitação por limiar exigem `--vision no`. LowConfidence por blocos e a aceitação aproximada por limiar continuam como opções experimentais de ativação explícita; veja as [opções de decodificação](benchmark/README.md#english).
 
 Os motores Qwen, Gemma e LFM usam cache automático de especialistas na VRAM, cálculo de especialistas na CPU a partir da RAM, streaming de pesos durante a entrada e CUDA Graphs. Compartilham a mesma API e permitem trocar o modelo sem reiniciar, com configurações salvas separadamente para cada modelo. Os especialistas selecionados não são omitidos. Também oferecem crescimento automático da memória KV física, sem alterar a capacidade máxima de contexto.
 
@@ -40,7 +40,7 @@ Os motores Qwen, Gemma e LFM usam cache automático de especialistas na VRAM, c�
 | --- | --- | --- | --- | --- |
 | Contexto máximo | 256K | 256K | 128K | 256K (extensão) |
 | Entrada de imagens | Sim; codificador na GPU por padrão | Sim; codificador na GPU por padrão | Não | Sim (extensão TinyStrata; residente na GPU por padrão) |
-| MTP | 3 | 3 | Não | Não (autoespeculação exata D3) |
+| MTP | 3 | 3 | Não | Não (autoespeculação exata D3 opcional) |
 | Formatos KV | FP32 / INT8 / FP8 nativo | FP16 / INT8 / FP8 nativo (experimental) | FP16 / INT8 / FP8 nativo | FP32 / INT8 / FP8 nativo |
 | KV automático (padrão) | FP8 → INT8 | INT8 | FP8 → INT8 | INT8 |
 
@@ -190,7 +190,7 @@ Medido em **2026-11-02** no Windows com uma RTX PRO 4000 Blackwell SFF Edition (
 | Aprox. 12 GB | 128K | 51.31 tok/s | 50.89 tok/s | Especialistas GiB — INT8: 3.08–3.18 → 2.80–3.04; FP8: 2.94–3.18 → 2.80–3.04 |
 | Aprox. 8 GB | 64K | Instável (3/4 inicializações) | 39.75 tok/s | Especialistas GiB — INT8: 0.00 → 0.00 (3/4); FP8: 0.00 → 0.00; INT8/FP8: especialistas de decodificação na CPU; cálculo denso/entrada em streaming na GPU |
 
-Foram tentadas quatro inicializações independentes por condição KV/VRAM, com as entradas, amostragem e medição de tempo de v1. Os valores numéricos exigem quatro inicializações bem-sucedidas; falhas e resultados mistos são indicados. É uma variante controlada, separada do v1 padrão e do padrão D3/INT8 dos perfis gerenciados. O cache mostra as alocações reais das inicializações bem-sucedidas: início → após a entrada de 16K. [Resultados completos e condições](benchmark/results/rtx-pro-4000-blackwell-sff.md).
+Foram tentadas quatro inicializações independentes por condição KV/VRAM, com as entradas, amostragem e medição de tempo de v1. Os valores numéricos exigem quatro inicializações bem-sucedidas; falhas e resultados mistos são indicados. É uma variante controlada, separada do v1 padrão e do padrão causal D0/INT8 dos perfis gerenciados. O cache mostra as alocações reais das inicializações bem-sucedidas: início → após a entrada de 16K. [Resultados completos e condições](benchmark/results/rtx-pro-4000-blackwell-sff.md).
 
 As linhas de memória reduzida reservam e escrevem 8, 12 ou 16 GiB na mesma GPU de 24 GB, com capacidades de contexto de 256K / 256K / 128K / 64K. Não são testes de GPUs físicas de 16/12/8 GB. A seleção automática dos blocos distingue estes resultados do ajuste local anterior com bloco fixo de 2.048 tokens.
 
@@ -203,24 +203,24 @@ Velocidade em placas Radeon, medida com [tinystrata-bench-v1](benchmark/README.m
 | [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 41.67 / 942.27 / 892.94 |
 | [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 89.11 / 1056.20 / 1383.33 | 87.81 / 2977.93 / 3667.40 | 102.67 / 2601.75 / 2531.47 | 39.86 / 888.74 / 1215.40 |
 
-O Clover usa exact D3/INT8/MT1 com codificador de imagens residente na GPU. Primeira saída / conclusão com imagem: **2.43 / 4.54 s** (RX 9060 XT), **2.61 / 5.47 s** (RX 9070 XT); cache de especialistas: **7.32–8.10 → 7.18–7.95 GiB** (RX 9060 XT), **6.84 → 6.70 GiB** (RX 9070 XT) (início → após entrada de 16K). [Condições e testes de imagens](benchmark/results/rx-9060-xt.md#clover-vision-with-exact-d3-2026-11-01).
+Esta medição do Clover usa exact D3/INT8/MT1 com codificador de imagens residente na GPU; D3 não é mais o padrão do aplicativo. Primeira saída / conclusão com imagem: **2.43 / 4.54 s** (RX 9060 XT), **2.61 / 5.47 s** (RX 9070 XT); cache de especialistas: **7.32–8.10 → 7.18–7.95 GiB** (RX 9060 XT), **6.84 → 6.70 GiB** (RX 9070 XT) (início → após entrada de 16K). [Condições e testes de imagens](benchmark/results/rx-9060-xt.md#clover-vision-with-exact-d3-2026-11-01).
 
 **Clover IQ3_XXS — RX 9060 XT (2026-11-01; histórico anterior à atenção compartilhada)**
 
-As mesmas entradas fixas foram medidas com contexto de 128K, crescimento físico do KV, raciocínio ativado, workers CPU/blocos automáticos e quatro inicializações independentes da API por perfil. As linhas exact históricas eram variantes; o causal INT8 é o controle v1 fixo, não o padrão D3 atual. Cache de especialistas: início → após 16K, em GiB.
+As mesmas entradas fixas foram medidas com contexto de 128K, crescimento físico do KV, raciocínio ativado, workers CPU/blocos automáticos e quatro inicializações independentes da API por perfil. As linhas exact históricas eram variantes; o causal INT8 é o controle v1 fixo com seus ajustes originais sem Vision. Cache de especialistas: início → após 16K, em GiB.
 
 | Perfil | KV | Geração com entrada curta tok/s | Entrada 4K tok/s | Geração após 4K tok/s | Entrada 16K tok/s | Geração após 16K tok/s | Cache de especialistas GiB |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | Causal, padrão (controle) | INT8 | 41.27 | 962.29 | 38.05 | 877.43 | 35.68 | 9.98 → 9.83 |
 | Causal, MT1 (controle) | INT8 | 40.64 | 962.21 | 36.99 | 877.58 | 35.77 | 9.98 → 9.83 |
-| Autoespeculação exata D3 (perfil rápido opcional) | INT8 | 49.39 | 963.95 | 33.06 | 878.30 | 33.83 | 9.98 → 9.83 |
+| Autoespeculação exata D3 (opcional) | INT8 | 49.39 | 963.95 | 33.06 | 878.30 | 33.83 | 9.98 → 9.83 |
 | Autoespeculação exata D3 | FP8 (opcional) | 46.11 | 959.49 | 28.94 | 872.02 | 18.00 | 9.98 → 9.83 |
 
-Estas são medições históricas de controle, anteriores à atenção compartilhada. O Clover agora usa exact D3, KV INT8 e MT1 como padrão. A difusão por blocos e a aceitação por limiar continuam experimentais. [Ajustes e verificações de qualidade](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01) / [Comparação IQ3 anterior](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31) / [Medições Q4_0 anteriores](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31).
+Estas são medições históricas de controle, anteriores à atenção compartilhada. O Clover agora usa causal D0, KV INT8 e MT1 como padrão; exact D3 é opcional. Estes resultados históricos D3 não medem o padrão atual. A difusão por blocos e a aceitação por limiar continuam experimentais. [Ajustes e verificações de qualidade](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01) / [Comparação IQ3 anterior](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31) / [Medições Q4_0 anteriores](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31).
 
 **Clover HIP INT8: consultas de atenção compartilhadas — RX 9060 XT (2026-11-01; antes de Vision, histórico)**
 
-KV INT8; quatro inicializações independentes da API por perfil, em ordem intercalada. A geração curta tem limite de 128 tokens de saída; os testes 4K/16K/64K, de 32. O controle do antigo padrão causal usa a aritmética CPU habitual (MT2); as duas linhas D3 usam MT1. Estas medições são anteriores ao Vision; o codificador de imagens não estava residente. Elas mantêm os ajustes atuais D3/INT8/MT1 de decodificação. [Condições, qualidade e resultados](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01).
+KV INT8; quatro inicializações independentes da API por perfil, em ordem intercalada. A geração curta tem limite de 128 tokens de saída; os testes 4K/16K/64K, de 32. O controle do antigo padrão causal usa a aritmética CPU habitual (MT2); as duas linhas D3 usam MT1. Estas medições são anteriores ao Vision; o codificador de imagens não estava residente. As linhas D3 usam D3/INT8/MT1, que continua como perfil opcional. [Condições, qualidade e resultados](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01).
 
 | Perfil | Geração curta tok/s | Geração após 4K tok/s | Geração após 16K tok/s | Geração após 64K tok/s | Entrada 64K tok/s | Cache de especialistas GiB: início → 64K |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |

@@ -32,7 +32,7 @@ TinyStrata 会根据你的硬件自动选择推理和内存设置，因此无需
 
 **Clover-35B-A3B-Preview IQ3_XXS** 默认使用 [AtomicChat 提供的 GGUF](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf)，专家的 **gate/up 使用 IQ3_XXS，down 使用 IQ3_S**。语言模型大小为 **15.515 GB**，保留 Clover 自己的分词器和已学习的双向 GDN 参数。TinyStrata 将上下文容量扩展至 **256K**。[官方 Clover 的标称上限为 128K](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview/blob/main/config.json)，超过 128K 时的整体回答质量尚未评估。官方 Clover 仅支持文本；TinyStrata 通过复用 Qwen3.6 projector 添加图像输入。projector 为 **0.899 GB**，总计 **16.414 GB**，已为 Qwen 下载时会直接复用。通过 `run-api.bat --model-family clover` 选择；新建的独立配置使用端口 **18083**，设置保存在 `config-clover.json`。
 
-托管的 Clover 配置现在默认使用 exact 自投机 D3、INT8 KV（`--clover-mode self-spec --clover-draft 3 --clover-accept exact --kv-type int8`）和 MT1（`STRATA_IQ_MT_MIN=1`）。图像编码器默认常驻 GPU；`--vision cpu` 使用 CPU，`--vision no` 关闭图像功能。Vision 支持因果生成或 exact 自投机；块扩散和阈值接受需要 `--vision no`。LowConfidence 块扩散和近似阈值接受仍为需显式启用的实验性选项，参见[解码设置](benchmark/README.md#english)。
+托管的 Clover 配置默认使用不带草稿的因果生成 D0、INT8 KV（`--clover-mode causal --clover-draft 0 --kv-type int8`）和 MT1（`STRATA_IQ_MT_MIN=1`）。exact 自投机 D3 仍可显式选择（`--clover-mode self-spec --clover-draft 3 --clover-accept exact`）；启用前请在自己的硬件上与因果生成比较速度。图像编码器默认常驻 GPU；`--vision cpu` 使用 CPU，`--vision no` 关闭图像功能。Vision 支持因果生成或 exact 自投机；块扩散和阈值接受需要 `--vision no`。LowConfidence 块扩散和近似阈值接受仍为需显式启用的实验性选项，参见[解码设置](benchmark/README.md#english)。
 
 Qwen、Gemma 和 LFM 引擎均支持根据空闲显存自动调整的专家缓存、利用系统 RAM 的 CPU 专家计算、输入阶段权重流式传输及 CUDA Graph。它们使用相同的 API，支持运行中切换模型，并分别保存各模型的设置。不省略模型选中的专家。还支持按实际序列长度自动扩展 KV 物理内存，最大上下文容量保持不变。
 
@@ -40,7 +40,7 @@ Qwen、Gemma 和 LFM 引擎均支持根据空闲显存自动调整的专家缓�
 | --- | --- | --- | --- | --- |
 | 最大上下文 | 256K | 256K | 128K | 256K（扩展） |
 | 图像输入 | 支持；默认编码器常驻 GPU | 支持；默认编码器常驻 GPU | 不支持 | 支持（TinyStrata 扩展，默认常驻 GPU） |
-| MTP | 3 | 3 | 不支持 | 无（exact 自投机 D3） |
+| MTP | 3 | 3 | 不支持 | 无（exact 自投机 D3 可选） |
 | KV 格式 | FP32 / INT8 / 原生 FP8 | FP16 / INT8 / 原生 FP8（实验性） | FP16 / INT8 / 原生 FP8 | FP32 / INT8 / 原生 FP8 |
 | KV 自动选择（默认） | FP8 → INT8 | INT8 | FP8 → INT8 | INT8 |
 
@@ -190,7 +190,7 @@ INT8 和 FP8 按交替顺序各独立启动 4 次，每次启动将 3 段输入�
 | 约 12 GB | 128K | 51.31 tok/s | 50.89 tok/s | 专家 GiB — INT8: 3.08–3.18 → 2.80–3.04; FP8: 2.94–3.18 → 2.80–3.04 |
 | 约 8 GB | 64K | 不稳定（成功 3/4） | 39.75 tok/s | 专家 GiB — INT8: 0.00 → 0.00 (3/4); FP8: 0.00 → 0.00; INT8/FP8: 解码专家在 CPU，稠密计算及输入流式处理在 GPU |
 
-每个 KV／显存条件均尝试四次独立启动，采用 v1 的输入、采样和计时方式。数值仅用于四次均成功的条件；启动失败或成功失败混合的情况会明确标记。这是单独标记的受控比较，不属于标准 v1，也不改变应用默认的 D3／INT8。专家缓存显示成功启动时的实际分配范围，顺序为启动时 → 16K 输入后。[完整结果与条件](benchmark/results/rtx-pro-4000-blackwell-sff.md)。
+每个 KV／显存条件均尝试四次独立启动，采用 v1 的输入、采样和计时方式。数值仅用于四次均成功的条件；启动失败或成功失败混合的情况会明确标记。这是单独标记的受控比较，不属于标准 v1，也不改变应用默认的因果 D0／INT8。专家缓存显示成功启动时的实际分配范围，顺序为启动时 → 16K 输入后。[完整结果与条件](benchmark/results/rtx-pro-4000-blackwell-sff.md)。
 
 显存受限行在同一块 24 GB GPU 上另行分配并写入 8、12 或 16 GiB，上下文容量为 256K／256K／128K／64K。它们不是实际 16／12／8 GB GPU 的性能测试。这里使用自动分块，与此前固定 2,048-token 分块的本机调优条件不同。
 
@@ -203,24 +203,24 @@ Radeon 显卡上的速度，使用 [tinystrata-bench-v1](benchmark/README.md#eng
 | [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 41.67 / 942.27 / 892.94 |
 | [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 89.11 / 1056.20 / 1383.33 | 87.81 / 2977.93 / 3667.40 | 102.67 / 2601.75 / 2531.47 | 39.86 / 888.74 / 1215.40 |
 
-Clover 使用 exact D3／INT8／MT1，图像编码器常驻 GPU。图像首次输出／完成时间为 **2.43／4.54 秒** (RX 9060 XT), **2.61／5.47 秒** (RX 9070 XT)；专家缓存为 **7.32–8.10 → 7.18–7.95 GiB** (RX 9060 XT), **6.84 → 6.70 GiB** (RX 9070 XT)（启动时 → 16K 输入后）。[条件与图像验证](benchmark/results/rx-9060-xt.md#clover-vision-with-exact-d3-2026-11-01)。
+本次 Clover 测量使用 exact D3／INT8／MT1，图像编码器常驻 GPU；D3 已不再是应用默认设置。图像首次输出／完成时间为 **2.43／4.54 秒** (RX 9060 XT), **2.61／5.47 秒** (RX 9070 XT)；专家缓存为 **7.32–8.10 → 7.18–7.95 GiB** (RX 9060 XT), **6.84 → 6.70 GiB** (RX 9070 XT)（启动时 → 16K 输入后）。[条件与图像验证](benchmark/results/rx-9060-xt.md#clover-vision-with-exact-d3-2026-11-01)。
 
 **Clover IQ3_XXS — RX 9060 XT（2026-11-01，Attention 共享前的历史记录）**
 
-使用相同的固定输入，128K 上下文、KV 物理内存逐步分配、启用思考、自动 CPU 工作线程数与分块，每个配置独立启动 API 四次。历史 exact 行单独标记为 variant；因果 INT8 行仍是固定 v1 对照，而不是目前默认的 D3。专家缓存按启动时 → 16K 输入后列出，单位为 GiB。
+使用相同的固定输入，128K 上下文、KV 物理内存逐步分配、启用思考、自动 CPU 工作线程数与分块，每个配置独立启动 API 四次。历史 exact 行单独标记为 variant；因果 INT8 行仍是采用当时无 Vision 设置的固定 v1 对照。专家缓存按启动时 → 16K 输入后列出，单位为 GiB。
 
 | 配置 | KV | 短输入生成 tok/s | 4K 输入 tok/s | 4K 输入后生成 tok/s | 16K 输入 tok/s | 16K 输入后生成 tok/s | 专家缓存 GiB |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | 因果・标准（对照） | INT8 | 41.27 | 962.29 | 38.05 | 877.43 | 35.68 | 9.98 → 9.83 |
 | 因果・MT1（对照） | INT8 | 40.64 | 962.21 | 36.99 | 877.58 | 35.77 | 9.98 → 9.83 |
-| exact 自投机 D3（高速配置，显式启用） | INT8 | 49.39 | 963.95 | 33.06 | 878.30 | 33.83 | 9.98 → 9.83 |
+| exact 自投机 D3（可选） | INT8 | 49.39 | 963.95 | 33.06 | 878.30 | 33.83 | 9.98 → 9.83 |
 | exact 自投机 D3 | FP8（可选） | 46.11 | 959.49 | 28.94 | 872.02 | 18.00 | 9.98 → 9.83 |
 
-以上是 Attention 共享之前的历史对照测量。目前 Clover 默认使用 exact D3、INT8 KV 和 MT1。块扩散与阈值接受仍为实验性功能。[设置与质量检查](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01)／[此前的 IQ3 对照](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31)／[此前的 Q4_0 测量](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31)。
+以上是 Attention 共享之前的历史对照测量。目前 Clover 默认使用因果 D0、INT8 KV 和 MT1，exact D3 为可选项。这些历史 D3 数据并非当前默认设置的测量结果。块扩散与阈值接受仍为实验性功能。[设置与质量检查](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01)／[此前的 IQ3 对照](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31)／[此前的 Q4_0 测量](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31)。
 
 **Clover HIP INT8 Attention 共享 — RX 9060 XT（2026-11-01，Vision 添加前的历史记录）**
 
-使用 INT8 KV，每个配置独立启动 API 四次，交错测量。短输入的输出上限为 128 个 token，4K/16K/64K 输入后为 32 个。此前默认因果模式的对照使用通常的 CPU 专家运算（MT2），两个 D3 行使用 MT1。这些数据测于添加 Vision 之前，图像编码器并未常驻；D3/INT8/MT1 解码设置与当前配置相同。[详细条件、质量检查与结果](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01)。
+使用 INT8 KV，每个配置独立启动 API 四次，交错测量。短输入的输出上限为 128 个 token，4K/16K/64K 输入后为 32 个。此前默认因果模式的对照使用通常的 CPU 专家运算（MT2），两个 D3 行使用 MT1。这些数据测于添加 Vision 之前，图像编码器并未常驻；D3 行采用 D3/INT8/MT1 解码设置，目前仍可作为可选配置使用。[详细条件、质量检查与结果](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01)。
 
 | 配置 | 短输入生成 tok/s | 4K 输入后生成 tok/s | 16K 输入后生成 tok/s | 64K 输入后生成 tok/s | 64K 输入 tok/s | 专家缓存 GiB：启动时 → 64K |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |

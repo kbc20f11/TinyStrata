@@ -32,7 +32,7 @@ TinyStrata は Strata を基盤に、限られた VRAM でも 30B 級の MoE モ
 
 **Clover-35B-A3B-Preview IQ3_XXS** は、[AtomicChat 配布の GGUF](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf) を既定で使います。エキスパートの **gate/up は IQ3_XXS、down は IQ3_S** です。本体は **15.515 GB** で、Clover 専用のトークナイザーと学習済みの双方向 GDN の追加重みを保持しています。TinyStrata ではコンテキスト容量を最大 **256K** に拡張します。[公式 Clover の公称上限は 128K](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview/blob/main/config.json) で、128K を超える長文全般の回答品質は未評価です。公式 Clover はテキスト専用ですが、TinyStrata は Qwen3.6 の projector を流用して画像入力に対応します。projector は **0.899 GB**、合計 **16.414 GB** で、Qwen 用にダウンロード済みなら再利用します。`run-api.bat --model-family clover` で選択でき、新規の単独プロファイルではポート **18083** を使い、設定は `config-clover.json` に保存します。
 
-管理対象の Clover プロファイルは、exact 自己投機 D3・INT8 KV（`--clover-mode self-spec --clover-draft 3 --clover-accept exact --kv-type int8`）と MT1（`STRATA_IQ_MT_MIN=1`）を既定とします。画像エンコーダは既定で GPU に常駐し、`--vision cpu` で CPU、`--vision no` で無効にできます。画像入力は因果生成と exact 自己投機に対応し、ブロック拡散・閾値採用には `--vision no` が必要です。LowConfidence 方式のブロック拡散と閾値による近似採用は、明示的に選ぶ実験的な機能です。[生成方式の設定](benchmark/README.md#日本語)を参照してください。
+管理対象の Clover プロファイルは、ドラフトを使わない因果生成 D0・INT8 KV（`--clover-mode causal --clover-draft 0 --kv-type int8`）と MT1（`STRATA_IQ_MT_MIN=1`）を既定とします。exact 自己投機 D3 は任意で選べます（`--clover-mode self-spec --clover-draft 3 --clover-accept exact`）。有効にする前に、使う環境で因果生成との速度を比較してください。画像エンコーダは既定で GPU に常駐し、`--vision cpu` で CPU、`--vision no` で無効にできます。画像入力は因果生成と exact 自己投機に対応し、ブロック拡散・閾値採用には `--vision no` が必要です。LowConfidence 方式のブロック拡散と閾値による近似採用は、明示的に選ぶ実験的な機能です。[生成方式の設定](benchmark/README.md#日本語)を参照してください。
 
 Qwen・Gemma・Clover・LFM はいずれも、空き VRAM に合わせたエキスパートキャッシュ、システム RAM を使った CPU でのエキスパート計算、入力時の重みのストリーミング、CUDA Graph に対応しています。共通の API と起動中のモデル切り替えを利用でき、設定はモデルごとに保存します。モデルが選んだエキスパートは省略しません。また、最大コンテキスト容量を変えずに、会話の長さに応じて KV の物理メモリを自動で増やせます。
 
@@ -40,7 +40,7 @@ Qwen・Gemma・Clover・LFM はいずれも、空き VRAM に合わせたエキ�
 | --- | --- | --- | --- | --- |
 | 最大コンテキスト | 256K | 256K | 128K | 256K（拡張） |
 | 画像入力 | 対応（画像エンコーダは既定で GPU 常駐） | 対応（画像エンコーダは既定で GPU 常駐） | なし | 対応（TinyStrata 拡張・既定で GPU 常駐） |
-| MTP | 3 | 3 | なし | なし（exact 自己投機 D3） |
+| MTP | 3 | 3 | なし | なし（exact 自己投機 D3 は任意選択） |
 | KV 形式 | FP32 / INT8 / ネイティブ FP8 | FP16 / INT8 / ネイティブ FP8（実験的） | FP16 / INT8 / ネイティブ FP8 | FP32 / INT8 / ネイティブ FP8 |
 | KV の自動選択（既定） | FP8 → INT8 | INT8 | FP8 → INT8 | INT8 |
 
@@ -208,7 +208,7 @@ INT8 と FP8 を交互に各 4 回独立起動し、各起動で 3 入力を 2 �
 | VRAM を約 12 GB に制限 | 128K | 51.31 tok/s | 50.89 tok/s | Expert GiB — INT8: 3.08–3.18 → 2.80–3.04; FP8: 2.94–3.18 → 2.80–3.04 |
 | VRAM を約 8 GB に制限 | 64K | 不安定（成功 3/4） | 39.75 tok/s | Expert GiB — INT8: 0.00 → 0.00 (3/4); FP8: 0.00 → 0.00; INT8/FP8: decode Expert は CPU、dense／入力ストリーミングは GPU |
 
-KV／VRAM の各条件で独立起動を 4 回試み、v1 の入力・サンプリング・計時方法を使いました。表の数値は 4 回とも成功した条件で、起動失敗や成功・失敗の混在は明示しています。標準 v1 と配布版の既定 D3／INT8 とは別の比較条件です。Expert キャッシュは成功した起動の実割当範囲を起動時 → 16K 入力後の順に示します。[全測定値と条件](benchmark/results/rtx-pro-4000-blackwell-sff.md)。
+KV／VRAM の各条件で独立起動を 4 回試み、v1 の入力・サンプリング・計時方法を使いました。表の数値は 4 回とも成功した条件で、起動失敗や成功・失敗の混在は明示しています。標準 v1 と配布版の既定である因果 D0／INT8 とは別の比較条件です。Expert キャッシュは成功した起動の実割当範囲を起動時 → 16K 入力後の順に示します。[全測定値と条件](benchmark/results/rtx-pro-4000-blackwell-sff.md)。
 
 制限した行は、同じ 24 GB GPU 上で別途 8・12・16 GiB を確保して書き込み、コンテキスト容量を 256K／256K／128K／64K に設定したものです。物理的な 16／12／8 GB GPU の測定ではありません。今回のチャンク自動設定は、先に示したチャンク 2048 固定のローカル調整とは別条件です。
 
@@ -221,24 +221,24 @@ Radeon カードでの速度を [tinystrata-bench-v1](benchmark/README.md#日本
 | [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 41.67 / 942.27 / 892.94 |
 | [RX 9070 XT](benchmark/results/rx-9070-xt.md) | 89.11 / 1056.20 / 1383.33 | 87.81 / 2977.93 / 3667.40 | 102.67 / 2601.75 / 2531.47 | 39.86 / 888.74 / 1215.40 |
 
-Clover は画像エンコーダ GPU 常駐の exact D3・INT8・MT1 です。画像の最初の出力／完了は **2.43／4.54 秒** (RX 9060 XT), **2.61／5.47 秒** (RX 9070 XT)、Expert キャッシュは **7.32–8.10 → 7.18–7.95 GiB** (RX 9060 XT), **6.84 → 6.70 GiB** (RX 9070 XT)（起動直後 → 16K 入力後）です。[条件・画像検証](benchmark/results/rx-9060-xt.md#clover-vision-with-exact-d3-2026-11-01)。
+この Clover の計測は画像エンコーダ GPU 常駐の exact D3・INT8・MT1 で、D3 は現在のアプリの既定ではありません。画像の最初の出力／完了は **2.43／4.54 秒** (RX 9060 XT), **2.61／5.47 秒** (RX 9070 XT)、Expert キャッシュは **7.32–8.10 → 7.18–7.95 GiB** (RX 9060 XT), **6.84 → 6.70 GiB** (RX 9070 XT)（起動直後 → 16K 入力後）です。[条件・画像検証](benchmark/results/rx-9060-xt.md#clover-vision-with-exact-d3-2026-11-01)。
 
 **Clover IQ3_XXS — RX 9060 XT（2026-11-01・Attention 共有前の記録）**
 
-同じ規定入力を、128K コンテキスト・KV 段階確保・思考有効・CPU ワーカー数とチャンク自動で、各条件 4 回独立に API を起動して測りました。この過去計測の exact 行は別枠の variant、因果生成 INT8 の行は固定 v1 の対照で、現在の D3 既定とは異なります。Expert キャッシュは起動時 → 16K 入力後、単位は GiB です。
+同じ規定入力を、128K コンテキスト・KV 段階確保・思考有効・CPU ワーカー数とチャンク自動で、各条件 4 回独立に API を起動して測りました。この過去計測の exact 行は別枠の variant、因果生成 INT8 の行は当時の画像なし設定で測った固定 v1 の対照です。Expert キャッシュは起動時 → 16K 入力後、単位は GiB です。
 
 | 条件 | KV | 短文生成 tok/s | 4K 入力 tok/s | 4K 入力後の生成 tok/s | 16K 入力 tok/s | 16K 入力後の生成 tok/s | Expert キャッシュ GiB |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | 因果・標準（対照） | INT8 | 41.27 | 962.29 | 38.05 | 877.43 | 35.68 | 9.98 → 9.83 |
 | 因果・MT1（対照） | INT8 | 40.64 | 962.21 | 36.99 | 877.58 | 35.77 | 9.98 → 9.83 |
-| exact 自己投機 D3（高速設定・明示選択） | INT8 | 49.39 | 963.95 | 33.06 | 878.30 | 33.83 | 9.98 → 9.83 |
+| exact 自己投機 D3（任意選択） | INT8 | 49.39 | 963.95 | 33.06 | 878.30 | 33.83 | 9.98 → 9.83 |
 | exact 自己投機 D3 | FP8（任意選択） | 46.11 | 959.49 | 28.94 | 872.02 | 18.00 | 9.98 → 9.83 |
 
-ここまでは Attention 共有前の対照計測です。現在の Clover の既定は exact D3・INT8 KV・MT1 です。ブロック拡散と閾値による近似採用は実験的な機能です。[詳細設定・品質確認](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01)／[過去の IQ3 比較](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31)／[過去の Q4_0 計測](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31)。
+ここまでは Attention 共有前の対照計測です。現在の Clover の既定は因果 D0・INT8 KV・MT1 で、exact D3 は任意選択です。過去の D3 の数値は現在の既定設定での測定値ではありません。ブロック拡散と閾値による近似採用は実験的な機能です。[詳細設定・品質確認](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01)／[過去の IQ3 比較](benchmark/results/rx-9060-xt.md#clover-iq3-2026-10-31)／[過去の Q4_0 計測](benchmark/results/rx-9060-xt.md#clover-causal-and-native-block-diffusion-2026-10-31)。
 
 **Clover HIP INT8 Attention 共有 — RX 9060 XT（2026-11-01・Vision 追加前の記録）**
 
-INT8 KV、各条件で API を 4 回独立に起動し、交互に計測しました。短文の出力上限は 128、4K・16K・64K 入力後は 32 トークンです。以前の既定である因果生成の対照は通常の CPU Expert 演算（MT2）、D3 の両行は MT1 を使います。これは Vision 追加前で、画像エンコーダを常駐させていない計測です。生成設定は現在と同じ D3・INT8・MT1 です。[詳細条件・品質確認・結果](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01)。
+INT8 KV、各条件で API を 4 回独立に起動し、交互に計測しました。短文の出力上限は 128、4K・16K・64K 入力後は 32 トークンです。以前の既定である因果生成の対照は通常の CPU Expert 演算（MT2）、D3 の両行は MT1 を使います。これは Vision 追加前で、画像エンコーダを常駐させていない計測です。D3 の行は、現在も任意選択できる D3・INT8・MT1 の設定です。[詳細条件・品質確認・結果](benchmark/results/rx-9060-xt.md#clover-hip-int8-query-sharing-2026-11-01)。
 
 | 条件 | 短文生成 tok/s | 4K 入力後の生成 tok/s | 16K 入力後の生成 tok/s | 64K 入力後の生成 tok/s | 64K 入力 tok/s | Expert キャッシュ GiB：起動時 → 64K |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |

@@ -8,7 +8,7 @@ Measured on **2026-11-02** under **Windows 11 Pro build 26300**, using an **RTX 
 
 ### Conditions and results
 
-Protocol: **`tinystrata-bench-v1-clover-causal-vision-vram-variant`**, a controlled variant using the [v1 fixed workloads and timers](../README.md#english). It is separate from fixed standard v1 and the managed-profile **D3/INT8** default. All rows use **causal D0**, no MTP/draft model, **automatic CPU workers, prompt chunks and Expert placement**, physical KV growth, normal Graph selection, `STRATA_IQ_MT_MIN=1` and `STRATA_EXP_MODE=8`. The saved local fixed-2,048 tuning profile was not substituted for the automatic-chunk comparison.
+Protocol: **`tinystrata-bench-v1-clover-causal-vision-vram-variant`**, a controlled variant using the [v1 fixed workloads and timers](../README.md#english). It is separate from fixed standard v1 and uses explicit tuning and simulated VRAM limits. The current managed-profile default is **causal D0/INT8/MT1**, with D3 optional. All rows use **causal D0**, no MTP/draft model, **automatic CPU workers, prompt chunks and Expert placement**, physical KV growth, normal Graph selection, `STRATA_IQ_MT_MIN=1` and `STRATA_EXP_MODE=8`. The saved local fixed-2,048 tuning profile was not substituted for the automatic-chunk comparison.
 
 | Nominal VRAM | KV | Successful / planned starts | Context | Generation tok/s | 4K input tok/s | 16K input tok/s | Image first / end s | Expert GiB: startup → 16K |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
@@ -123,7 +123,7 @@ Record the reservation size, initial/retouch checks, context, actual automatic s
 
 ### 条件と測定値
 
-計測ラベルは **`tinystrata-bench-v1-clover-causal-vision-vram-variant`** です。[v1 の固定入力・計時方法](../README.md#日本語)を使う比較条件であり、固定の標準 v1 や配布版の既定 **D3／INT8** とは別です。全条件で **因果実行 D0**、MTP／別 draft モデルなし、**CPU ワーカー数・入力チャンク・Expert 配置は自動**、KV 段階確保、通常の Graph 選択を使い、`STRATA_IQ_MT_MIN=1` と `STRATA_EXP_MODE=8` を指定しました。保存済みのチャンク 2048 固定設定は、このチャンク自動の比較へ持ち込んでいません。
+計測ラベルは **`tinystrata-bench-v1-clover-causal-vision-vram-variant`** です。[v1 の固定入力・計時方法](../README.md#日本語)を使う比較条件であり、固定の標準 v1 とは別で、調整用環境変数と仮想的な VRAM 制限を明示した条件です。現在の配布版の既定は **因果 D0／INT8／MT1** で、D3 は任意選択です。全条件で **因果実行 D0**、MTP／別 draft モデルなし、**CPU ワーカー数・入力チャンク・Expert 配置は自動**、KV 段階確保、通常の Graph 選択を使い、`STRATA_IQ_MT_MIN=1` と `STRATA_EXP_MODE=8` を指定しました。保存済みのチャンク 2048 固定設定は、このチャンク自動の比較へ持ち込んでいません。
 
 | 名目 VRAM | KV | 成功／計画起動数 | コンテキスト | 生成 tok/s | 4K 入力 tok/s | 16K 入力 tok/s | 画像 最初／完了 秒 | Expert GiB：起動 → 16K |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |

@@ -25,6 +25,16 @@ def stock(**changes):
             "sampling":dict(tinyconfig.CLOVER_SAMPLING),**changes}
 
 
+def old_d3(**changes):
+    """The former managed default, with an explicit retained image preference."""
+    cfg=stock(env={'STRATA_IQ_MT_MIN':'1'},clover_decode_policy_version=1,
+              clover_vision_policy_version=1,memory_policy_version=tinyconfig.MEMORY_POLICY_VERSION,
+              chunk_policy_version=tinyconfig.CHUNK_POLICY_VERSION)
+    cfg,_=config.apply(cfg,dict(clover_mode='self-spec',clover_draft=3,clover_accept='exact',
+                              kv_type='int8',max_context='auto',chunk='auto'))
+    return {**cfg,**changes}
+
+
 class DecodeCompatibility(unittest.TestCase):
     def test_stock_saved_profiles_keep_original_defaults(self):
         for origin in ('managed','local',None):
@@ -51,21 +61,63 @@ class DecodeCompatibility(unittest.TestCase):
             self.assertEqual(config.value_of(new,'kv_type'),'auto')
             self.assertEqual(new['env'],original['env'])
 
-    def test_legacy_managed_stock_signature_upgrades_once(self):
-        # Historical same-value manual edits had no provenance and cannot be
-        # distinguished from the stock tuple. Only this narrow tuple upgrades.
+    def test_legacy_causal_stock_is_not_upgraded_to_speculation(self):
         original=stock()
         original['args']+=['--max-context','auto','--chunk','auto']
         before=copy.deepcopy(original)
         with patch.dict(os.environ,{},clear=True):new,changed=tinyconfig.migrate_settings(original)
         self.assertTrue(changed);self.assertEqual(original,before)
-        self.assertEqual(config.value_of(new,'clover_mode'),'self-spec')
-        self.assertEqual(config.value_of(new,'clover_draft'),3)
-        self.assertEqual(config.value_of(new,'clover_accept'),'exact')
-        self.assertEqual(config.value_of(new,'kv_type'),'int8')
-        self.assertEqual(new['env'],{'STRATA_IQ_MT_MIN':'1'})
+        self.assertEqual(new['args'],original['args'])
+        self.assertEqual(config.value_of(new,'clover_mode'),'causal')
+        self.assertEqual(config.value_of(new,'clover_draft'),0)
+        self.assertEqual(config.value_of(new,'kv_type'),'auto')
+        self.assertNotIn('env',new)
+        self.assertEqual(new['clover_decode_policy_version'],tinyconfig.CLOVER_DECODE_POLICY_VERSION)
         again,changed=tinyconfig.migrate_settings(new)
         self.assertFalse(changed);self.assertEqual(again,new)
+
+    def test_former_d3_defaults_migrate_without_mutating_sampling_or_cpu_policy(self):
+        for version in (None,1):
+            original=old_d3()
+            if version is None:original.pop('clover_decode_policy_version')
+            before=copy.deepcopy(original)
+            new,changed=tinyconfig.migrate_settings(original)
+            self.assertTrue(changed);self.assertEqual(original,before)
+            self.assertEqual(config.value_of(new,'clover_mode'),'causal')
+            self.assertEqual(config.value_of(new,'clover_draft'),0)
+            self.assertEqual(config.value_of(new,'clover_accept'),'exact')
+            self.assertEqual(config.value_of(new,'kv_type'),'int8')
+            self.assertEqual(new['sampling'],original['sampling'])
+            self.assertEqual(new['env'],original['env'])
+            self.assertEqual(new['vision_mode'],'no')
+            self.assertEqual(new['clover_decode_policy_version'],tinyconfig.CLOVER_DECODE_POLICY_VERSION)
+            again,changed=tinyconfig.migrate_settings(new)
+            self.assertFalse(changed);self.assertEqual(again,new)
+
+    def test_new_policy_and_custom_former_d3_profiles_remain_opt_in(self):
+        choices=[old_d3(clover_decode_policy_version=tinyconfig.CLOVER_DECODE_POLICY_VERSION),
+                 old_d3(model_source='local'),old_d3(env={'STRATA_IQ_MT_MIN':'2'}),
+                 old_d3(env={'STRATA_IQ_MT_MIN':'1','USER_FIXTURE':'keep'}),
+                 old_d3(sampling={**tinyconfig.CLOVER_SAMPLING,'temperature':.7})]
+        for key,value in (('clover_draft',7),('clover_accept','threshold'),('kv_type','fp8-mma'),
+                          ('max_context',65536),('chunk',1024)):
+            custom,_=config.apply(old_d3(),{key:value});choices.append(custom)
+        for flag,value in (('--cpu-threads','9'),('--expert-vram','4')):
+            custom=old_d3();custom['args'] += [flag,value];choices.append(custom)
+        for original in choices:
+            before=copy.deepcopy(original)
+            new,_=tinyconfig.migrate_settings(original)
+            self.assertEqual(original,before)
+            self.assertEqual(new['args'],original['args'])
+            self.assertEqual(new['sampling'],original['sampling'])
+            self.assertEqual(new['env'],original['env'])
+
+    def test_old_policy_causal_choice_keeps_args_and_environment(self):
+        original=stock(clover_decode_policy_version=1,env={'STRATA_IQ_MT_MIN':'1'})
+        original['args'] += ['--chunk','auto']
+        new,_=tinyconfig.migrate_settings(original)
+        self.assertEqual(new['args'],original['args']);self.assertEqual(new['env'],original['env'])
+        self.assertEqual(new['clover_decode_policy_version'],tinyconfig.CLOVER_DECODE_POLICY_VERSION)
 
     def test_custom_legacy_choices_are_preserved(self):
         for key,value in (('kv_type','int8'),('kv_type','fp8-mma'),('kv_type','fp8'),
@@ -144,8 +196,8 @@ class DecodeCompatibility(unittest.TestCase):
                           ('gemma-4-26b-a4b-it','gemma4'),('lfm2.5-24b-a2b','lfm2moe')):
             new=profiles._defaults(name,arch)
             if arch=='clover_moe':
-                self.assertEqual(config.value_of(new,'clover_mode'),'self-spec')
-                self.assertEqual(config.value_of(new,'clover_draft'),3)
+                self.assertEqual(config.value_of(new,'clover_mode'),'causal')
+                self.assertEqual(config.value_of(new,'clover_draft'),0)
                 self.assertEqual(config.value_of(new,'clover_accept'),'exact')
                 self.assertEqual(config.value_of(new,'kv_type'),'int8')
                 self.assertEqual(new['env'],{'STRATA_IQ_MT_MIN':'1'})
@@ -198,8 +250,8 @@ class LauncherPolicy(unittest.TestCase):
 
     def test_fresh_managed_factory(self):
         cfg=self.prepare()
-        self.assertEqual(config.value_of(cfg,'clover_mode'),'self-spec')
-        self.assertEqual(config.value_of(cfg,'clover_draft'),3)
+        self.assertEqual(config.value_of(cfg,'clover_mode'),'causal')
+        self.assertEqual(config.value_of(cfg,'clover_draft'),0)
         self.assertEqual(config.value_of(cfg,'clover_accept'),'exact')
         self.assertEqual(config.value_of(cfg,'kv_type'),'int8')
         self.assertEqual(cfg['env'],{'STRATA_IQ_MT_MIN':'1'})
@@ -207,8 +259,9 @@ class LauncherPolicy(unittest.TestCase):
 
     def test_saved_stock_and_explicit_same_value_cli(self):
         migrated=self.prepare(self.base)
-        self.assertEqual(config.value_of(migrated,'clover_mode'),'self-spec')
-        self.assertEqual(config.value_of(migrated,'kv_type'),'int8')
+        self.assertEqual(config.value_of(migrated,'clover_mode'),'causal')
+        self.assertEqual(config.value_of(migrated,'kv_type'),'auto')
+        self.assertNotIn('env',migrated)
         for explicit in ({'clover_mode':'causal'},{'clover_draft':0},{'kv_type':'auto'}):
             cfg=self.prepare(self.base,**explicit)
             self.assertEqual(config.value_of(cfg,'clover_mode'),'causal')
@@ -220,6 +273,24 @@ class LauncherPolicy(unittest.TestCase):
     def test_mode_only_self_spec_uses_three_drafts(self):
         cfg=self.prepare(self.base,clover_mode='self-spec')
         self.assertEqual(config.value_of(cfg,'clover_draft'),3)
+
+    def test_explicit_d3_precedes_old_default_migration_and_survives_reload(self):
+        original=old_d3(exe=str(self.exe),backend='hip',hip_ordinal=0,cwd=str(self.root))
+        original['args'][original['args'].index('--model')+1]=str(self.model)
+        migrated=self.prepare(original)
+        self.assertEqual(config.value_of(migrated,'clover_mode'),'causal')
+        self.assertEqual(config.value_of(migrated,'clover_draft'),0)
+        for explicit in ({'clover_mode':'self-spec'},{'clover_draft':3},
+                         {'clover_mode':'self-spec','clover_draft':3,'clover_accept':'exact'}):
+            cfg=self.prepare(original,**explicit)
+            self.assertEqual(config.value_of(cfg,'clover_mode'),'self-spec')
+            self.assertEqual(config.value_of(cfg,'clover_draft'),3)
+            self.assertEqual(config.value_of(cfg,'clover_accept'),'exact')
+            self.assertEqual(cfg['clover_decode_policy_version'],tinyconfig.CLOVER_DECODE_POLICY_VERSION)
+            reopened=self.prepare(cfg)
+            self.assertEqual(config.value_of(reopened,'clover_mode'),'self-spec')
+            self.assertEqual(config.value_of(reopened,'clover_draft'),3)
+            self.assertEqual(reopened,cfg)
 
     def test_fresh_explicit_causal_and_diffusion_modes(self):
         for mode in ('causal','diffusion'):
@@ -243,7 +314,7 @@ class LauncherPolicy(unittest.TestCase):
             self.path.unlink(missing_ok=True)
             cfg=self.prepare(vision=mode)
             self.assertEqual(cfg['vision_mode'],mode)
-            self.assertEqual(config.value_of(cfg,'clover_draft'),3)
+            self.assertEqual(config.value_of(cfg,'clover_draft'),0)
 
     def inherited_threshold(self):
         cfg,_=config.apply(self.base,dict(clover_mode='self-spec',clover_draft=3,clover_accept='threshold',
@@ -302,7 +373,7 @@ class HotSwitchPolicy(unittest.TestCase):
             with patch.object(model_setup,'resolve_executable',return_value=None), \
                  patch.object(model_setup,'shared_library_dirs',side_effect=lambda cfg:cfg), \
                  patch.object(tinyconfig,'check_files'):
-                for saved in (None,stock()):
+                for saved in (None,old_d3()):
                     path=folder/'config-clover.json'
                     path.unlink(missing_ok=True)
                     if saved is not None:
@@ -310,8 +381,8 @@ class HotSwitchPolicy(unittest.TestCase):
                         path.write_text(json.dumps(saved),encoding='utf-8')
                     profiles=ModelProfiles(folder/'config.json',qwen)
                     cfg=profiles.get('clover').config
-                    self.assertEqual(config.value_of(cfg,'clover_mode'),'self-spec')
-                    self.assertEqual(config.value_of(cfg,'clover_draft'),3)
+                    self.assertEqual(config.value_of(cfg,'clover_mode'),'causal')
+                    self.assertEqual(config.value_of(cfg,'clover_draft'),0)
                     self.assertEqual(config.value_of(cfg,'kv_type'),'int8')
                     self.assertEqual(cfg['env'],{'STRATA_IQ_MT_MIN':'1'})
                     def prepared(cfg,path,model,**kwargs):
@@ -321,8 +392,8 @@ class HotSwitchPolicy(unittest.TestCase):
                         ready=profiles.prepare('clover',model_path=model)
                     self.assertEqual(config.load(path),ready)
                     reopened=ModelProfiles(folder/'config.json',qwen).get('clover').config
-                    self.assertEqual(config.value_of(reopened,'clover_mode'),'self-spec')
-                    self.assertEqual(config.value_of(reopened,'clover_draft'),3)
+                    self.assertEqual(config.value_of(reopened,'clover_mode'),'causal')
+                    self.assertEqual(config.value_of(reopened,'clover_draft'),0)
                     self.assertEqual(reopened['env'],{'STRATA_IQ_MT_MIN':'1'})
 
 if __name__=='__main__':unittest.main(verbosity=2)

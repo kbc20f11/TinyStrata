@@ -36,7 +36,7 @@ def stock():
             'args':['--model','fixture.gguf','--max-context','auto','--chunk','auto','--kv-type','int8',
                     '--clover-mode','self-spec','--clover-draft','3','--clover-accept','exact'],
             'env':{'STRATA_IQ_MT_MIN':'1'},'sampling':dict(tinyconfig.CLOVER_SAMPLING),
-            'clover_decode_policy_version':tinyconfig.CLOVER_DECODE_POLICY_VERSION}
+            'clover_decode_policy_version':1}
 
 
 class VisionPolicy(unittest.TestCase):
@@ -48,10 +48,36 @@ class VisionPolicy(unittest.TestCase):
         self.assertTrue(changed);self.assertEqual(before,snapshot)
         self.assertEqual(after['vision_mode'],'gpu')
         self.assertEqual(after['clover_vision_policy_version'],tinyconfig.CLOVER_VISION_POLICY_VERSION)
-        self.assertEqual(config.value_of(after,'clover_draft'),3)
+        self.assertEqual(config.value_of(after,'clover_mode'),'causal')
+        self.assertEqual(config.value_of(after,'clover_draft'),0)
+        self.assertEqual(after['clover_decode_policy_version'],tinyconfig.CLOVER_DECODE_POLICY_VERSION)
         self.assertEqual(after['env'],before['env'])
         again,changed=tinyconfig.migrate_settings(after)
         self.assertFalse(changed);self.assertEqual(again,after)
+
+    def test_causal_migration_keeps_active_image_encoder_and_its_limits(self):
+        for mode in ('gpu','cpu'):
+            before=stock()|{'vision_mode':mode,'vision_policy_version':1,'clover_vision_policy_version':1,
+                            'vision_tokens':2048,'vision_mmproj':'fixture-mmproj.gguf',
+                            'vision':{'exe':'fixture-encoder.exe','mmproj':'fixture-mmproj.gguf',
+                                      'model':'fixture.gguf','gpu':mode=='gpu','min_tokens':512,'max_tokens':2048}}
+            before['args'].append('--vision');snapshot=copy.deepcopy(before)
+            after,_=tinyconfig.migrate_settings(before)
+            self.assertEqual(before,snapshot)
+            self.assertEqual(config.value_of(after,'clover_mode'),'causal')
+            self.assertEqual(config.value_of(after,'clover_draft'),0)
+            self.assertEqual(after['args'].count('--vision'),1)
+            for key in ('vision','vision_mode','vision_mmproj','vision_tokens','vision_policy_version',
+                        'clover_vision_policy_version'):
+                self.assertEqual(after[key],before[key])
+            tinyconfig.validate(after,allow_uninstalled=True)
+
+    def test_explicit_new_policy_d3_keeps_independent_image_upgrade(self):
+        before=stock()|{'clover_decode_policy_version':tinyconfig.CLOVER_DECODE_POLICY_VERSION}
+        after,_=tinyconfig.migrate_settings(before)
+        self.assertEqual(after['vision_mode'],'gpu')
+        self.assertEqual(config.value_of(after,'clover_mode'),'self-spec')
+        self.assertEqual(config.value_of(after,'clover_draft'),3)
 
     def test_explicit_off_cpu_and_custom_profiles_survive(self):
         for original in (stock()|{'clover_vision_policy_version':1},stock()|{'vision_mode':'cpu'},
@@ -68,7 +94,8 @@ class VisionPolicy(unittest.TestCase):
     def test_fresh_profiles_enable_only_clover_images(self):
         profiles=object.__new__(ModelProfiles);profiles._engine=None;profiles._hardware={'backend':'hip'}
         cfg=profiles._defaults('clover-35b-a3b-preview','clover_moe')
-        self.assertEqual(cfg['vision_mode'],'gpu');self.assertEqual(config.value_of(cfg,'clover_draft'),3)
+        self.assertEqual(cfg['vision_mode'],'gpu');self.assertEqual(config.value_of(cfg,'clover_draft'),0)
+        self.assertEqual(config.value_of(cfg,'clover_mode'),'causal')
         self.assertEqual(config.value_of(cfg,'kv_type'),'int8')
         for arch,name in (('qwen35moe','qwen3.6-35b-a3b'),('gemma4','gemma-4-26b-a4b-it'),('lfm2moe','lfm2.5-24b-a2b')):
             cfg=profiles._defaults(name,arch);self.assertNotIn('clover_vision_policy_version',cfg)
@@ -130,6 +157,16 @@ class TemplateAndRequests(unittest.TestCase):
         self.assertEqual(svc.clover_request_settings({'temperature':.7})['clover_accept'],'exact')
         svc.vision=None;svc.engine.info['vision']=0
         self.assertEqual(svc.clover_request_settings({'temperature':0})['clover_accept'],'threshold')
+
+    def test_causal_resident_engine_keeps_exact_d3_as_an_image_capable_option(self):
+        svc=self.service(object());svc.engine.info.update(clover_mode='causal',clover_draft=0)
+        self.assertEqual(svc.clover_request_settings()['clover_draft'],0)
+        for request in ({'clover_mode':'self-spec'},{'clover_draft':3},
+                        {'clover_mode':'self-spec','clover_draft':3,'clover_accept':'exact'}):
+            settings=svc.clover_request_settings(request)
+            self.assertEqual(settings['clover_mode'],'self-spec')
+            self.assertEqual(settings['clover_draft'],3)
+            self.assertEqual(settings['clover_accept'],'exact')
 
     def test_prepare_injects_embeddings_and_preserves_followup_prefix(self):
         encoded=self.root/('a'*16+'.sve');encoded.write_bytes(struct.pack('<5I',0x31455653,4,2,2,2048)+bytes(4*2048*4))

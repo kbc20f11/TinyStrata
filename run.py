@@ -105,7 +105,7 @@ def prepare(a) -> tuple[dict, Path]:
             cfg["model_source"] = "local"
         if a.model or any(getattr(a, key, None) is not None for key in (*config.CLOVER_REQUEST_KEYS, "kv_type")):
             # An explicit old-default value is still a user choice. Protect it
-            # before the unmarked historical stock signature is considered.
+            # before the historical stock signature is considered.
             cfg["clover_decode_policy_version"] = CLOVER_DECODE_POLICY_VERSION
         cfg = migrate_managed_clover_model(cfg, path)
     cfg, migrated = migrate_settings(cfg)
@@ -238,8 +238,8 @@ def main() -> int:
     ap.add_argument("--clover-draft", type=int, metavar="N",
                     help="legacy Clover self-speculative draft tokens, 0-31; 0 selects causal, positive values self-spec")
     ap.add_argument("--clover-mode", choices=("causal", "self-spec", "diffusion"),
-                    help="Clover generation mode (default: saved profile; fresh profiles use exact self-spec D3, INT8 KV and MT1); "
-                         "causal and native LowConfidence diffusion are optional alternatives")
+                    help="Clover generation mode (default: saved profile; fresh profiles use causal D0, INT8 KV and MT1); "
+                         "self-spec D3 and native LowConfidence diffusion are opt-in alternatives")
     ap.add_argument("--clover-block-size", type=int, metavar="N",
                     help="Clover diffusion block size: 1, 2, 4, 8, 16 or 32 (default: 32)")
     ap.add_argument("--clover-threshold", type=float, metavar="P",

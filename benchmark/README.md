@@ -17,7 +17,7 @@ $python = "$env:LOCALAPPDATA\TinyStrata-work\runtime\.venv\Scripts\python.exe"
 
 From a source checkout, use `.\benchmark\run.py` instead. `--model qwen`, `--model gemma`, `--model lfm` and `--model clover` select one model. Clover uses `config-clover.json`. The runner uses the existing model/configuration files, starts its own loopback API, and does not change the saved configuration. Results go under `%LOCALAPPDATA%\TinyStrata-work\benchmarks\`; generated logs and results do not belong in Git.
 
-The app defaults to exact D3 with INT8 KV and `STRATA_IQ_MT_MIN=1`; its selected route and the fixed benchmark regulation are separate. The standard benchmark always uses **INT8 causal decoding, D0**, independently of the app profile. Native LowConfidence block diffusion is measured separately:
+The app defaults to causal decoding without drafts, D0, with INT8 KV and `STRATA_IQ_MT_MIN=1`; exact D3 is optional. Its selected route and the fixed benchmark regulation are separate. The standard benchmark always uses **INT8 causal decoding, D0**, independently of the app profile. Native LowConfidence block diffusion is measured separately:
 
 ```powershell
 & $python .\benchmark\run.py --model clover --clover-mode causal
@@ -39,15 +39,16 @@ Self-speculative generation is another separately labelled variant. Use exact ac
 
 The first command accepts only drafts that match the causal verifier's selected token; the second measures the experimental threshold policy. Both report **`tinystrata-bench-v1-clover-self-spec`**, `standard: false`, with the same v1 workloads, sampling, repetitions and timers. In this benchmark runner, `--clover-draft` accepts **1–31** and defaults to **3** in self-spec mode; `--clover-accept` defaults to **exact**. Ratio and delta accept finite values in **0–1**, defaulting to **0.9** and **0.6**, and require self-spec mode. Specify these options explicitly when comparing policies.
 
-The recommended exact profile sets `STRATA_IQ_MT_MIN=1` so single-row and grouped CPU IQ Expert work use the same accumulation path. For a matching causal control, add the same `--engine-env STRATA_IQ_MT_MIN=1` to the causal command; that control is also a variant. The standard causal v1 baseline keeps an empty tuning environment (`env: {}`), regardless of the saved app profile.
+The optional exact D3 profile sets `STRATA_IQ_MT_MIN=1` so single-row and grouped CPU IQ Expert work use the same accumulation path. For a matching causal control, add the same `--engine-env STRATA_IQ_MT_MIN=1` to the causal command; that control is also a variant. The standard causal v1 baseline keeps an empty tuning environment (`env: {}`), regardless of the saved app profile.
 
-To measure Clover's normal **GPU-resident Vision + exact D3** profile, use:
+To measure Clover's default **GPU-resident Vision + causal D0** profile and optional **exact D3** profile, use these separately labelled variants:
 
 ```powershell
+& $python .\benchmark\run.py --model clover --clover-mode causal --engine-env STRATA_IQ_MT_MIN=1 --clover-vision
 & $python .\benchmark\run.py --model clover --clover-mode self-spec --clover-draft 3 --clover-accept exact --engine-env STRATA_IQ_MT_MIN=1 --clover-vision
 ```
 
-`--clover-vision` reuses the installed Qwen3.6 projector, keeps the image encoder resident during every text test, and adds the same canonical image-description test as Qwen/Gemma. It uses 1,024 minimum / 4,096 maximum image tokens and records `vision: true`. The result is labelled **`tinystrata-bench-v1-clover-self-spec-vision`**, `standard: false`. Causal Vision is also available; diffusion and threshold acceptance cannot use this flag. The fixed causal v1 baseline still has Vision off. Switching the app's default does not rewrite that historical comparison protocol.
+`--clover-vision` reuses the installed Qwen3.6 projector, keeps the image encoder resident during every text test, and adds the same canonical image-description test as Qwen/Gemma. It uses 1,024 minimum / 4,096 maximum image tokens and records `vision: true`. The results are labelled **`tinystrata-bench-v1-clover-causal-variant-vision`** and **`tinystrata-bench-v1-clover-self-spec-vision`**, both `standard: false`; the tuning environment adds the `-variant` suffix to the causal result. Diffusion and threshold acceptance cannot use this flag. The fixed causal v1 baseline still has Vision off. Switching the app's default does not rewrite that historical comparison protocol.
 
 `threshold` is approximate acceptance at temperature 0, not distribution-preserving speculative sampling. It uses target probabilities and entropy with the same response-count snapshot, including the already emitted anchor, for all preview and verification rows in a round; uncommitted drafts are excluded. It does not guarantee the causal/exact token sequence. A target EOS always stops, and an accepted draft EOS also remains a stopping boundary. Count final output tokens once and include preview, verification, transfers and acceptance work in decode time. The runner records the actual native settings, accepted/offered counts, transfers and kernel flags; report quality separately from throughput.
 
@@ -76,7 +77,7 @@ Use the project's fixed model files: Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS, Goo
 
 - **INT8 KV** is the common comparison profile on NVIDIA and Radeon. FP8 or manually tuned settings belong in separately labelled results.
 - KV growth, automatic context capacity, automatic input chunk size, automatic Expert placement and automatic CPU worker selection. Graphs use their normal defaults. Do not add tuning environment variables or omit Experts/tokens.
-- MTP **3** and a **GPU-resident vision encoder** for Qwen/Gemma, including the three text benchmarks. LFM has neither. The fixed-v1 Clover control uses neither MTP nor Vision and explicitly uses causal decoding (`--clover-mode causal`, D0); the current exact D3/Vision profile uses the separately labelled variant above.
+- MTP **3** and a **GPU-resident vision encoder** for Qwen/Gemma, including the three text benchmarks. LFM has neither. The fixed-v1 Clover control uses neither MTP nor Vision and explicitly uses causal decoding (`--clover-mode causal`, D0); the app's causal D0/Vision profile and optional exact D3/Vision profile use the separately labelled variants above.
 - One request at a time; **seed 1234**. The following sampling values are fixed in `cases.json`, with the added Clover profile fixed in `run.py` so the existing v1 input hashes remain unchanged:
 
 | Model | Temperature | top_p | top_k | min_p | presence_penalty | repetition_penalty |
@@ -149,7 +150,7 @@ $python = "$env:LOCALAPPDATA\TinyStrata-work\runtime\.venv\Scripts\python.exe"
 
 ソースを取得したフォルダーでは、スクリプトのパスを `.\benchmark\run.py` に置き換えます。個別に測る場合は `--model qwen`、`--model gemma`、`--model lfm`、`--model clover` を使います。Clover の設定ファイルは `config-clover.json` です。既存のモデルと設定ファイルを使って計測専用 API を起動し、保存済みの設定は書き換えません。結果は `%LOCALAPPDATA%\TinyStrata-work\benchmarks\` に保存します。生成したログや結果は Git に含めません。
 
-Clover のアプリの既定は exact D3・INT8 KV・`STRATA_IQ_MT_MIN=1` です。アプリで選ぶ生成経路と固定ベンチ規約は別で、標準ベンチはアプリのプロファイルにかかわらず、**INT8・因果生成・D0** を使います。LowConfidence 方式のネイティブなブロック拡散は別々に測定します。
+Clover のアプリの既定はドラフトを使わない因果生成 D0・INT8 KV・`STRATA_IQ_MT_MIN=1` で、exact D3 は任意選択です。アプリで選ぶ生成経路と固定ベンチ規約は別で、標準ベンチはアプリのプロファイルにかかわらず、**INT8・因果生成・D0** を使います。LowConfidence 方式のネイティブなブロック拡散は別々に測定します。
 
 ```powershell
 & $python .\benchmark\run.py --model clover --clover-mode causal
@@ -171,15 +172,16 @@ Clover のアプリの既定は exact D3・INT8 KV・`STRATA_IQ_MT_MIN=1` です
 
 前者は因果検証が選んだトークンと一致するドラフトだけを採用し、後者は実験的な閾値採用を測ります。どちらも **`tinystrata-bench-v1-clover-self-spec`**・`standard: false` とし、v1 の入力・サンプリング・反復数・計時範囲を維持します。このベンチスクリプトでは `--clover-draft` は **1〜31**、自己投機を選んだ場合の既定は **3**、`--clover-accept` の既定は **exact** です。ratio と delta は有限の **0〜1**、既定は **0.9** と **0.6** で、自己投機のときだけ指定できます。採用規則の比較では各値を明示してください。
 
-推奨する exact プロファイルは `STRATA_IQ_MT_MIN=1` を使い、CPU の IQ エキスパートを1行で計算するときと複数行で計算するときの積和経路をそろえます。同じ演算条件の因果対照には、causal のコマンドにも `--engine-env STRATA_IQ_MT_MIN=1` を付けて別枠として測定してください。標準の因果生成 v1 は、アプリの保存済み設定にかかわらず、調整用環境変数なし（`env: {}`）を維持します。
+任意選択の exact D3 プロファイルは `STRATA_IQ_MT_MIN=1` を使い、CPU の IQ エキスパートを1行で計算するときと複数行で計算するときの積和経路をそろえます。同じ演算条件の因果対照には、causal のコマンドにも `--engine-env STRATA_IQ_MT_MIN=1` を付けて別枠として測定してください。標準の因果生成 v1 は、アプリの保存済み設定にかかわらず、調整用環境変数なし（`env: {}`）を維持します。
 
-Clover の通常設定である **GPU 常駐 Vision＋exact D3** は次で測ります。
+Clover の既定である **GPU 常駐 Vision＋因果 D0** と、任意選択の **exact D3** は、次の別枠の条件でそれぞれ測ります。
 
 ```powershell
+& $python .\benchmark\run.py --model clover --clover-mode causal --engine-env STRATA_IQ_MT_MIN=1 --clover-vision
 & $python .\benchmark\run.py --model clover --clover-mode self-spec --clover-draft 3 --clover-accept exact --engine-env STRATA_IQ_MT_MIN=1 --clover-vision
 ```
 
-`--clover-vision` は既存の Qwen3.6 プロジェクタを再利用し、すべてのテキスト計測中も画像エンコーダーを常駐させ、Qwen・Gemma と同じ規定の画像説明を追加します。画像は最小 1,024／最大 4,096 トークン、結果には `vision: true` を記録します。プロトコル名は **`tinystrata-bench-v1-clover-self-spec-vision`**、`standard: false` とします。因果方式でも指定できますが、拡散・閾値採用との併用はできません。固定 v1 の因果対照は引き続き画像なしです。アプリの既定変更によって過去の比較規約を書き換えることはありません。
+`--clover-vision` は既存の Qwen3.6 プロジェクタを再利用し、すべてのテキスト計測中も画像エンコーダーを常駐させ、Qwen・Gemma と同じ規定の画像説明を追加します。画像は最小 1,024／最大 4,096 トークン、結果には `vision: true` を記録します。プロトコル名はそれぞれ **`tinystrata-bench-v1-clover-causal-variant-vision`** と **`tinystrata-bench-v1-clover-self-spec-vision`**、どちらも `standard: false` とします。因果方式の結果には調整用環境変数により `-variant` が付きます。拡散・閾値採用との併用はできません。固定 v1 の因果対照は引き続き画像なしです。アプリの既定変更によって過去の比較規約を書き換えることはありません。
 
 `threshold` は temperature 0 で使う近似的な採用規則で、確率分布を保存する投機サンプリングではありません。1 ラウンドの preview・検証の全行で、出力済み anchor を含む応答トークン数の履歴を固定し、未確定ドラフトを追加せずに本体の確率とエントロピーから採否を決めます。因果生成や exact と同じトークン列は保証しません。本体が選んだ EOS と採用されたドラフトの EOS は、いずれも応答終了として扱います。最終出力は各トークンを一度だけ数え、preview・因果検証・転送・採用判定もデコード時間に含めます。実際のエンジン設定・採用数／提案数・転送量・カーネル設定を保存し、品質は速度と分けて報告してください。
 
@@ -208,7 +210,7 @@ Clover の長文比較には **`--include-64k`** を追加できます。
 
 - NVIDIA・Radeon 共通の比較は **INT8 KV**。FP8 や手動調整を加えた結果は別枠です。
 - KV は段階確保。コンテキスト容量・入力チャンク・Expert 配置・CPU ワーカー数は自動選択、Graph は既定の動作です。高速化用の環境変数や Expert／トークンの省略は追加しません。
-- Qwen・Gemma は **MTP 3 と GPU 常駐 Vision** を使用します。テキストの計測でも画像エンコーダーを常駐させます。LFM はどちらも使いません。固定 v1 の Clover 対照は MTP・Vision なし、因果経路（`--clover-mode causal`、D0）で測り、現在の exact D3＋Vision は上記の別枠で測定します。
+- Qwen・Gemma は **MTP 3 と GPU 常駐 Vision** を使用します。テキストの計測でも画像エンコーダーを常駐させます。LFM はどちらも使いません。固定 v1 の Clover 対照は MTP・Vision なし、因果経路（`--clover-mode causal`、D0）で測り、アプリ既定の因果 D0＋Vision と任意選択の exact D3＋Vision は上記の別枠で測定します。
 - 同時実行は 1 リクエスト、**seed は 1234**。サンプリングは下表で固定します。既存 v1 入力のハッシュを維持するため、追加した Clover の設定は `run.py` に、他のモデルは `cases.json` に定義します。
 
 | モデル | temperature | top_p | top_k | min_p | presence_penalty | repetition_penalty |
