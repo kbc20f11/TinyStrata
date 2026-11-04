@@ -92,7 +92,7 @@ irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/insta
 
 The optional green-themed UI supports the seven README languages, image input and live generation statistics. Light and dark mode follow your OS settings.
 
-To start again, run this command or double-click `run-ui.bat`:
+The Windows UI installer creates a **TinyStrata** desktop shortcut. Open it to start or reuse the local API and UI and open the chat in your browser. The API-only installer does not create this shortcut. You can also run this command or double-click `run-ui.bat`:
 
 ```powershell
 & "$env:LOCALAPPDATA\TinyStrata\run-ui.bat"

@@ -1024,6 +1024,80 @@ for raw in open(sys.argv[1], encoding='utf-8-sig'):
     if ($LASTEXITCODE -ne 0) { throw 'Optional UI dependency verification failed. The API was left unchanged.' }
 }
 
+function Initialize-TinyStrataDesktopShortcut {
+    param([string]$SourceRoot, [string]$WorkRoot,
+          [string]$DesktopDirectory = [Environment]::GetFolderPath('DesktopDirectory'))
+    if (-not $DesktopDirectory) { throw 'The current user desktop directory could not be found.' }
+    $source = [IO.Path]::GetFullPath($SourceRoot).TrimEnd('\')
+    $work = [IO.Path]::GetFullPath($WorkRoot).TrimEnd('\')
+    $stateRoot = Join-Path $work 'runtime\ui'
+    $helperPath = Join-Path $stateRoot 'desktop-launch.ps1'
+    $shortcutPath = Join-Path $DesktopDirectory 'TinyStrata.lnk'
+    foreach ($path in @($helperPath, $shortcutPath)) {
+        if (Test-Path -LiteralPath $path) {
+            $item = Get-Item -LiteralPath $path -Force
+            if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                throw "The shortcut destination is linked or is a directory; it was left unchanged: $path"
+            }
+        }
+    }
+    New-Item -ItemType Directory -Path $stateRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $DesktopDirectory -Force | Out-Null
+    # Keep this launcher outside the source/update directory. No model or port
+    # is pinned here: ui/launch.py reads the saved UI selections on each click.
+    $helperText = ('$tinyStrataSource = ''{0}''' -f $source.Replace("'", "''")) + "`r`n" +
+                  ('$tinyStrataWork = ''{0}''' -f $work.Replace("'", "''")) + "`r`n"
+    $helperText += @'
+$ErrorActionPreference = 'Stop'
+$tinyStrataState = Join-Path $tinyStrataWork 'runtime\ui'
+$tinyStrataStdout = Join-Path $tinyStrataState 'desktop-launch.stdout.log'
+$tinyStrataStderr = Join-Path $tinyStrataState 'desktop-launch.stderr.log'
+function ConvertTo-TinyStrataWindowsArgument {
+    param([string]$Value)
+    # Quote for CreateProcess/CommandLineToArgvW, not for another shell.
+    return '"' + [regex]::Replace([regex]::Replace($Value, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1') + '"'
+}
+try {
+    $tinyStrataPython = Join-Path $tinyStrataWork 'runtime\.venv\Scripts\python.exe'
+    $tinyStrataLauncher = Join-Path $tinyStrataSource 'ui\launch.py'
+    if (-not (Test-Path -LiteralPath $tinyStrataPython -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $tinyStrataLauncher -PathType Leaf)) {
+        throw 'TinyStrata files are missing. Run the UI installer again to repair the installation.'
+    }
+    $tinyStrataArguments = @('-B', $tinyStrataLauncher, '--source-dir', $tinyStrataSource, '--work-dir', $tinyStrataWork)
+    $tinyStrataCommandLine = ($tinyStrataArguments | ForEach-Object { ConvertTo-TinyStrataWindowsArgument $_ }) -join ' '
+    $tinyStrataProcess = Start-Process -FilePath $tinyStrataPython -ArgumentList $tinyStrataCommandLine `
+        -WorkingDirectory $tinyStrataSource -WindowStyle Hidden -RedirectStandardOutput $tinyStrataStdout `
+        -RedirectStandardError $tinyStrataStderr -Wait -PassThru
+    if ($tinyStrataProcess.ExitCode -ne 0) { throw "TinyStrata launcher exited with code $($tinyStrataProcess.ExitCode)." }
+} catch {
+    ($_ | Out-String) | Add-Content -LiteralPath $tinyStrataStderr -Encoding UTF8
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        [void][System.Windows.Forms.MessageBox]::Show("TinyStrata could not start.`n`nSee: $tinyStrataStderr", 'TinyStrata', 'OK', 'Error')
+    } catch { }
+    exit 1
+}
+exit 0
+'@
+    # Windows PowerShell 5.1 needs the BOM to read Unicode installation paths.
+    $temporary = $helperPath + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
+    [IO.File]::WriteAllText($temporary, $helperText, (New-Object Text.UTF8Encoding($true)))
+    Move-Item -LiteralPath $temporary -Destination $helperPath -Force
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $shortcut.Arguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $helperPath
+    $shortcut.WorkingDirectory = $source
+    $shortcut.Description = 'Start TinyStrata and open the chat UI'
+    $shortcut.WindowStyle = 7
+    $icon = Join-Path $source 'ui\web\terminal-logo.ico'
+    $shortcut.IconLocation = if (Test-Path -LiteralPath $icon -PathType Leaf) { $icon + ',0' }
+                             else { (Join-Path $env:WINDIR 'System32\shell32.dll') + ',1' }
+    $shortcut.Save()
+    Write-Host "Desktop shortcut: $shortcutPath"
+}
+
 function Initialize-TinyStrataOptionalUI {
     param([string]$SourceRoot, [string]$WorkRoot, [int]$ApiPort,
           [int]$UiPort = 3000, [string]$Family = 'qwen36', [switch]$ConfigureOnly)
@@ -1040,6 +1114,8 @@ function Initialize-TinyStrataOptionalUI {
     if ($LASTEXITCODE -ne 0) {
         throw 'The optional UI could not be prepared or started. The API was not stopped; see the UI logs in the work directory.'
     }
+    try { Initialize-TinyStrataDesktopShortcut -SourceRoot $SourceRoot -WorkRoot $WorkRoot }
+    catch { Write-Warning "The UI is ready, but its desktop shortcut could not be created: $($_.Exception.Message)" }
     if ($ConfigureOnly) { Write-Host "UI prepared. Start it with $(Join-Path $SourceRoot 'run-ui.bat')." }
 }
 

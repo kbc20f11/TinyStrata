@@ -80,7 +80,7 @@ irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/insta
 
 Die optionale grüne Oberfläche unterstützt die sieben README-Sprachen, Bildeingaben und Live-Statistiken zur Generierung. Der helle oder dunkle Modus folgt den Betriebssystemeinstellungen.
 
-Zum erneuten Start diesen Befehl ausführen oder `run-ui.bat` doppelklicken:
+Der Windows-UI-Installer erstellt eine **TinyStrata**-Verknüpfung auf dem Desktop. Sie startet die lokale API und Oberfläche oder verwendet die bereits laufenden Prozesse und öffnet den Chat im Browser. Der reine API-Installer erstellt diese Verknüpfung nicht. Alternativ diesen Befehl ausführen oder `run-ui.bat` doppelklicken:
 
 ```powershell
 & "$env:LOCALAPPDATA\TinyStrata\run-ui.bat"

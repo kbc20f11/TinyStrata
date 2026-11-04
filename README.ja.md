@@ -92,7 +92,7 @@ irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/insta
 
 緑を基調とした UI は、README と同じ 7 言語、画像入力、生成状況のリアルタイム表示に対応します。ライト／ダークモードは OS の設定に従います。
 
-再び起動するには、次のコマンドを実行するか、`run-ui.bat` をダブルクリックしてください。
+Windows の UI ありインストーラーは、デスクトップに **TinyStrata** のショートカットを作成します。開くとローカルの API と UI を起動し、起動済みなら再利用して、ブラウザにチャットを表示します。API のみのインストーラーは、このショートカットを作成しません。次のコマンドや `run-ui.bat` のダブルクリックでも起動できます。
 
 ```powershell
 & "$env:LOCALAPPDATA\TinyStrata\run-ui.bat"

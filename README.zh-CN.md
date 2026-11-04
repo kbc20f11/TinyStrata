@@ -80,7 +80,7 @@ irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/insta
 
 绿色主题的可选 UI 支持 README 的七种语言、图像输入和实时生成统计。浅色／深色模式跟随操作系统设置。
 
-再次启动时，运行以下命令或双击 `run-ui.bat`：
+Windows 的带 UI 安装脚本会在桌面创建 **TinyStrata** 快捷方式。打开它即可启动或复用本地 API 和 UI，并在浏览器中显示聊天页面。仅安装 API 的脚本不会创建此快捷方式。也可以运行以下命令或双击 `run-ui.bat`：
 
 ```powershell
 & "$env:LOCALAPPDATA\TinyStrata\run-ui.bat"

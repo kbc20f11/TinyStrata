@@ -80,7 +80,7 @@ irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/insta
 
 L’interface verte optionnelle prend en charge les sept langues du README, les images et les statistiques de génération en direct. Le mode clair ou sombre suit les paramètres du système.
 
-Pour relancer TinyStrata, exécutez cette commande ou double-cliquez sur `run-ui.bat` :
+L’installateur avec interface pour Windows crée un raccourci **TinyStrata** sur le bureau. Ouvrez-le pour démarrer ou réutiliser l’API et l’interface locales, puis afficher le chat dans le navigateur. L’installateur avec API seule ne crée pas ce raccourci. Vous pouvez aussi exécuter cette commande ou double-cliquer sur `run-ui.bat` :
 
 ```powershell
 & "$env:LOCALAPPDATA\TinyStrata\run-ui.bat"
