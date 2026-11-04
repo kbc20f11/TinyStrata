@@ -83,6 +83,9 @@
     const covered = candidates.find((index) => suffix[index] <= active * retainFraction) ?? candidates[candidates.length - 1];
     return {covered, from, prefix: messages.slice(from, covered), recent: messages.slice(covered), previousSummary: checkpoint?.summary || ""};
   }
+  // A display hint only: prepare() still verifies source identity and token
+  // counts before returning a replacement projection.
+  const canCompact = (messages, options) => plan(messages, options) !== null;
   async function create(messages, covered, summary, details = {}) {
     if (!boundary(messages, covered) || typeof summary !== "string" || !summary.trim() || summary.length > 65536)
       throw failure("The conversation summary is invalid", "invalid_summary");
@@ -95,7 +98,7 @@
   // Callback contract: serialize(UI messages, previous summary) -> API messages;
   // count(request) -> {prompt_tokens,max_context}; summarize(API messages,maxTokens,options) -> text.
   // The caller owns committing the returned checkpoint after checking chat ownership.
-  async function prepare({messages, checkpoint = null, request, serialize, count, summarize, signal, onProgress = () => {}, keepUserTurns = 2}) {
+  async function prepare({messages, checkpoint = null, request, serialize, count, summarize, signal, onProgress = () => {}, keepUserTurns = 2, force = false}) {
     aborted(signal);
     const projection = await project(messages, checkpoint);
     aborted(signal);
@@ -109,7 +112,7 @@
     const limits = budget(initial.max_context, request.max_tokens);
     const unchanged = (reason) => ({request: original, checkpoint: projection.checkpoint, changed: false,
       beforeTokens: initial.prompt_tokens, afterTokens: initial.prompt_tokens, reason, targetMet: initial.prompt_tokens + limits.outputReserve <= limits.target});
-    if (initial.prompt_tokens + limits.outputReserve < limits.trigger) return unchanged("below_threshold");
+    if (force !== true && initial.prompt_tokens + limits.outputReserve < limits.trigger) return unchanged("below_threshold");
     const selected = plan(messages, {checkpoint: projection.checkpoint, keepUserTurns});
     if (!selected) {
       const actualMinimum = positive(request.max_tokens) ? Math.ceil(request.max_tokens) : 1;
@@ -144,7 +147,7 @@
     return {request: candidate, checkpoint: next, changed: true, beforeTokens: initial.prompt_tokens,
       afterTokens: final.prompt_tokens, reason: "compacted", targetMet: final.prompt_tokens + limits.outputReserve <= limits.target};
   }
-  const api = {VERSION, budget, summarySettings, weight, fingerprint, valid, project, plan, create, prepare};
+  const api = {VERSION, budget, summarySettings, weight, fingerprint, valid, project, plan, canCompact, create, prepare};
   root.StrataContextCompaction = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

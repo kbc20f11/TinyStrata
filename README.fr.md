@@ -92,11 +92,19 @@ Pour l’installation avec API seule, utilisez `run-api.bat` :
 & "$env:LOCALAPPDATA\TinyStrata\run-api.bat" --port 18080
 ```
 
+### Recherche et Python dans l’UI
+
+La case **Recherche web**, à côté des **Paramètres de discussion**, active la recherche pour les quatre modèles. Le fournisseur, la clé API et le nombre de recherches simultanées se règlent dans ces paramètres. L’exécution Python dans l’environnement isolé est toujours disponible lorsque le modèle en a besoin. Les blocs Python terminés peuvent aussi être exécutés manuellement avec **Exécuter Python**.
+
 ### Compaction automatique du contexte
 
 L’option **Compacter automatiquement le contexte** est activée par défaut dans les paramètres de discussion de l’UI. Avant chaque réponse et entre les tours d’outils locaux, l’UI compte le prompt avec le tokenizer du modèle courant. Lorsque le prompt et l’espace réservé à la sortie atteignent **85 %** de la fenêtre de contexte, ce modèle résume les échanges anciens. Au moins les deux derniers messages utilisateur et leurs échanges sont conservés intégralement ; les appels d’outils restent associés à leurs résultats. Les instructions système et les outils disponibles sont préservés.
 
 Le résumé évolutif est enregistré avec la discussion dans SQLite ; l’historique original complet reste visible. Modifier ou remonter dans une partie résumée invalide ce résumé. Un échec ou une interruption ne supprime aucun message. Un résumé peut omettre des détails : il s’agit d’une fonction distincte de la quantification KV. Après compaction, le nouveau préfixe est retraité une fois avant que les tours suivants puissent réutiliser son cache KV.
+
+Cliquez sur **KV** sous le chat pour afficher un diagramme en anneau de l’utilisation du contexte et **Compacter maintenant**. La compaction manuelle fonctionne même si la compaction automatique est désactivée. Les deux derniers échanges utilisateur sont conservés intégralement, et les messages et pièces jointes d’origine restent dans SQLite. Le contexte compacté est chargé immédiatement, sans ajouter de message à la conversation.
+
+À côté, **Répartition des experts** permet de choisir **Auto** ou le **nombre d’experts routés à conserver sur le GPU**. Le pas de réglage est adapté au modèle et le pourcentage est affiché à titre indicatif. L’application du réglage recharge le modèle et enregistre le choix pour ce modèle. La répartition réelle dépend de la VRAM disponible et de la taille des experts. Avec zéro expert, aucun expert routé ne reste en cache GPU ; les poids partagés, le KV et l’encodeur d’images utilisent toujours le GPU.
 
 Sans limite de sortie explicite, jusqu’à **8K tokens**, au maximum un quart du contexte, sont réservés. Le résumé produit jusqu’à **2K tokens**, sans dépasser un huitième du contexte. La taille des images est comptée de manière prudente lorsque leur taille encodée exacte est inconnue. Un message trop volumineux doit encore être raccourci. `POST /v1/chat/token-count` ne génère pas de texte et ne modifie pas le cache KV ; les clients API ne sont pas compactés automatiquement.
 

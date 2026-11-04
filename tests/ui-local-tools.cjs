@@ -14,7 +14,9 @@ function fixture(){
 const call=(name,args,id='call_test')=>({id,name,arguments:JSON.stringify(args)});
 async function main(){
  let f=fixture(),a=f.api;
- ok(a.definitions({}).length===0,'optional tools are absent until enabled');
+ ok(a.definitions({}).map(t=>t.function.name).join(',')==='run_python','Python is available by default while search remains opt-in');
+ ok(a.definitions({codeExecution:false}).map(t=>t.function.name).join(',')==='run_python','retired saved code-off preference does not disable Python');
+ ok(f.calls.length===0&&f.executed.length===0,'offering Python does not download or start its runtime');
  ok(a.definitions({webSearch:true,codeExecution:true}).map(t=>t.function.name).join(',')==='web_search,run_python','tools are model-independent');
  const collected=new Map();
  a.mergeCalls(collected,[{index:0,id:'call_a',function:{name:'web_search',arguments:'{"que'}}]);
@@ -34,9 +36,9 @@ async function main(){
  session=a.session({webSearch:false,codeExecution:false});
  r=await session.run(call('web_search',{query:'secret'}));
  ok(!r.ok&&f.calls.length===2,'disabled tool cannot run');
- f=fixture();a=f.api;session=a.session({codeExecution:true});
+ f=fixture();a=f.api;session=a.session({codeExecution:false});
  r=await session.run(call('run_python',{code:'print(6*7)'}));
- ok(r.ok&&r.images.length===1&&!r.text.includes('data:image'),'binary exports are separate from model context');
+ ok(r.ok&&r.images.length===1&&!r.text.includes('data:image'),'Python works with a retired false preference and binary exports stay separate from context');
  await session.run(call('run_python',{code:'print(1)'}));
  ok(f.calls.filter(c=>c.url.endsWith('/prepare')).length===1&&f.executed.length===2,'runtime preparation is cached for this page');
  await session.run(call('run_python',{code:'print(2)'}));

@@ -116,6 +116,24 @@ def apply(cfg: dict, changes: dict) -> tuple[dict, list[str]]:
         raise ValueError("Expected at least one engine setting")
     checked = {key: check(key, value, cfg) for key, value in changes.items()}
     new = json.loads(json.dumps(cfg))
+    if "expert_vram" in checked and value_of(cfg, "expert_vram") != checked["expert_vram"]:
+        # A direct CLI/API GiB override is a new manual budget. The dedicated
+        # percentage control adds its descriptor after applying that override.
+        new.pop("expert_gpu_percent", None)
+        new.pop("expert_gpu_count", None)
+        if "expert_gpu_percent" in cfg or "expert_gpu_count" in cfg:
+            args = list(new.get("args") or [])
+            filtered = []
+            index = 0
+            while index < len(args):
+                if args[index] == "--expert-slots":
+                    if index + 1 >= len(args) or not isinstance(args[index + 1], str) or args[index + 1].startswith("--"):
+                        raise ValueError("Incomplete percentage-owned --expert-slots option")
+                    index += 2
+                else:
+                    filtered.append(args[index])
+                    index += 1
+            new["args"] = filtered
     if "chunk" in checked:
         # A saved explicit choice, including 512, must survive later migrations.
         new["chunk_policy_version"] = CHUNK_POLICY_VERSION

@@ -5626,7 +5626,7 @@ def make_handler(svc: Service):
         def do_GET(self):
             try:
                 path = self.path.split("?")[0].rstrip("/")
-                control = path in ("/v1/model/switch", "/v1/model/download", "/v1/models", "/models",
+                control = path in ("/v1/model/switch", "/v1/model/expert-placement", "/v1/model/download", "/v1/models", "/models",
                                    "/health", "/api/health")
                 with svc.models.admit() if svc.models is not None and not control else contextlib.nullcontext():
                     self._get()
@@ -5635,6 +5635,13 @@ def make_handler(svc: Service):
 
         def _get(self):
             path = self.path.split("?")[0].rstrip("/")
+            if path == "/v1/model/expert-placement":
+                if self._authorized():
+                    if svc.models is None:
+                        self._json(404, {"error": {"message": "expert placement is not configured"}})
+                    else:
+                        self._json(200, svc.models.expert_placement())
+                return
             if path == "/v1/model/switch":
                 if self._authorized():
                     if svc.models is None:
@@ -5775,7 +5782,7 @@ def make_handler(svc: Service):
         def do_POST(self):
             try:
                 path = self.path.split("?")[0].rstrip("/")
-                control = path in ("/v1/model/switch", "/v1/model/download", "/v1/model/download/cancel")
+                control = path in ("/v1/model/switch", "/v1/model/expert-placement", "/v1/model/download", "/v1/model/download/cancel")
                 with svc.models.admit() if svc.models is not None and not control else contextlib.nullcontext():
                     self._post()
             except ModelControlError as e:
@@ -5824,6 +5831,19 @@ def make_handler(svc: Service):
                 req = json.loads(self._body() or b"{}")
                 if not isinstance(req, dict):
                     raise ValueError("send a JSON object")
+                if path == "/v1/model/expert-placement":
+                    if not self._own_page("expert placement can be changed"):
+                        return
+                    if set(req) not in ({"model", "gpu_percent"}, {"model", "gpu_experts"}):
+                        raise ValueError("send a JSON object containing model and either gpu_experts or gpu_percent")
+                    if svc.models is None:
+                        self._json(404, {"error": {"message": "expert placement is not configured"}})
+                    else:
+                        result = (svc.models.start_expert_count(req["model"], req["gpu_experts"])
+                                  if "gpu_experts" in req else
+                                  svc.models.start_expert_placement(req["model"], req["gpu_percent"]))
+                        self._json(202 if result['operation']['switching'] else 200, result)
+                    return
                 if path == "/v1/model/switch":
                     if not self._own_page("the active model can be changed"):
                         return

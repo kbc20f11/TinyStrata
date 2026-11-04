@@ -9,7 +9,7 @@
     if (settings.webSearch) tools.push({type: "function", function: {name: "web_search",
       description: "Search the web for current information and source URLs. Returns snippets or extracted context. Use one focused query and cite sources.",
       parameters: {type: "object", properties: {query: {type: "string", description: "Focused query, at most 500 characters and 75 words"}}, required: ["query"], additionalProperties: false}}});
-    if (settings.codeExecution) tools.push({type: "function", function: {name: "run_python",
+    tools.push({type: "function", function: {name: "run_python",
       description: "Execute Python to calculate or check a result. Standard library only; no network, host files or subprocesses. Fresh environment each call, 10-second limit. Print results; save generated files in /work.",
       parameters: {type: "object", properties: {code: {type: "string", description: "Python code to execute"}}, required: ["code"], additionalProperties: false}}});
     return tools;
@@ -84,7 +84,7 @@
           const value = await json("local-ui/search", {method: "POST", body: {query}, signal, headers: options.headers});
           return {ok: true, text: JSON.stringify(value), sources: value.results || [], cached: !!value.cached};
         }
-        if (call.name === "run_python" && settings.codeExecution) {
+        if (call.name === "run_python") {
           if (++python > MAX_PYTHON) throw new Error("Python execution limit reached for this reply");
           if (Object.keys(args).some((key) => key !== "code") || typeof args.code !== "string" || !args.code.trim() || args.code.length > 100000) throw new Error("Expected Python code of at most 100000 characters");
           const value = await executePython(args.code, {signal, headers: options.headers});

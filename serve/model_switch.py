@@ -2,13 +2,18 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import threading
 import time
 
 from serve.model_profiles import ModelProfiles
+from serve import config as engine_config
+from serve.expert_placement import geometry as expert_geometry
+from serve.tinyconfig import automatic_experts
 
 
 class ModelControlError(RuntimeError):
@@ -31,6 +36,18 @@ class ModelBundle:
     @property
     def vision(self):
         return self.fresh.vision
+
+
+@dataclass
+class PlacementChange:
+    config: dict
+    previous_profile: object
+    previous_content: bytes | None
+    public: dict
+    geometry: dict | None = None
+    mode: str = 'percent'
+    choice: int | None = None
+    save_attempted: bool = False
 
 
 # HTTP authentication, origins, listening address, telemetry and synchronization
@@ -65,6 +82,7 @@ class ModelSwitcher:
         self._rollback = None
         self._started = self._finished = None
         self._downloads = {}
+        self._placement_pending = None
         if svc.downloads is not None:
             self._downloads[self.active_id] = svc.downloads
 
@@ -175,6 +193,7 @@ class ModelSwitcher:
                 raise ModelControlError(409, 'the model is busy')
             self.svc.fifo.release()
             self._busy, self._state, self._phase = True, 'switching', 'preparing'
+            self._placement_pending = None
             self._target, self._error, self._rollback = target, None, None
             self._started, self._finished = time.time(), None
             self._worker = threading.Thread(target=self._switch, args=(target,),
@@ -182,14 +201,208 @@ class ModelSwitcher:
             self._worker.start()
             return self.status()
 
+    @staticmethod
+    def _placement_percent(value):
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or
+                                  value < 0 or value > 100 or value % 10):
+            raise ValueError('gpu_percent must be null (automatic) or a whole percentage from 0 to 100 in steps of 10')
+        return value
+
+    @staticmethod
+    def _placement_fixed_slots(cfg, native_info):
+        """Fixed slots are physically clamped only on the verified VMM path."""
+        if cfg.get('arch', 'qwen35moe') not in ('qwen35moe', 'clover_moe'):
+            return False
+        try:
+            if int((native_info or {}).get('kv_grow', 0)) != 1:
+                return False
+        except (TypeError, ValueError, OverflowError):
+            return False
+        args = cfg.get('args') or []
+        if '--kv-whole' in args or '--no-kv-grow' in args:
+            return False
+        if '--kv-grow' in args:
+            return True  # The native command-line flag overrides STRATA_KV_GROW.
+        setting = (cfg.get('env') or {}).get('STRATA_KV_GROW', os.environ.get('STRATA_KV_GROW'))
+        if setting is not None:
+            try:
+                if int(str(setting)) == 0:
+                    return False
+            except (TypeError, ValueError, OverflowError):
+                return False
+        return True
+
+    @staticmethod
+    def _placement_count_step(cfg, sizes):
+        if cfg.get('arch', 'qwen35moe') in ('qwen35moe', 'clover_moe'):
+            total, per_layer = sizes.get('expert_total'), sizes.get('experts_per_layer')
+            if isinstance(total, int) and isinstance(per_layer, int) and per_layer > 0 and total % per_layer == 0:
+                return max(1, total // per_layer)
+        return 1
+
+    @staticmethod
+    def _placement_count(value, total, step):
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0 or
+                                  value > total or value % step):
+            raise ValueError(f'gpu_experts must be null (automatic) or a whole count from 0 to {total} in steps of {step}')
+        return value
+
+    def _placement_requested_count(self, cfg, sizes):
+        total = sizes['expert_total']
+        step = self._placement_count_step(cfg, sizes)
+        if 'expert_gpu_count' in cfg:
+            return self._placement_count(cfg['expert_gpu_count'], total, step)
+        percent = self._placement_percent(cfg.get('expert_gpu_percent'))
+        return total * percent // (100 * step) * step if percent is not None else None
+
+    def _placement_configuration(self, original, choice, sizes, native_info, *, mode='percent'):
+        total_bytes = sizes['total_expert_bytes']
+        total = sizes['expert_total']
+        step = self._placement_count_step(original, sizes)
+        if mode == 'count':
+            count = self._placement_count(choice, total, step)
+            percent = None
+        else:
+            percent = self._placement_percent(choice)
+            count = total * percent // (100 * step) * step if percent is not None else None
+        requested_bytes = round(total_bytes * count / total) if count is not None else None
+        budget = requested_bytes / 2 ** 30 if count not in (None, total) else None
+        slots = None
+        # A GiB budget includes a permanent staging pair on some Qwen paths.
+        # Fixed slots express the requested Expert count directly, while VMM
+        # still reduces the count if its physical pages exceed available VRAM.
+        if count not in (None, 0, total) and self._placement_fixed_slots(original, native_info):
+            per_layer = sizes.get('experts_per_layer')
+            if isinstance(per_layer, int) and not isinstance(per_layer, bool) and per_layer > 0:
+                slots = count // step
+                budget = None if slots > 0 else 0
+        base = automatic_experts(original)
+        base['args'] = [arg for arg in base.get('args', []) if arg != '--no-gpu-experts']
+        cfg, _ = engine_config.apply(base, {'expert_vram': budget})
+        if slots is not None and slots > 0:
+            cfg['args'] += ['--expert-slots', str(slots)]
+        if mode == 'count' and count is not None:
+            cfg['expert_gpu_count'] = count
+        elif percent is not None:
+            cfg['expert_gpu_percent'] = percent
+        public = {'gpu_percent': percent, 'gpu_experts': count, 'count_step': step,
+                  'requested_percent': 100 * count / total if count is not None else None,
+                  'expert_vram_gib': budget, 'requested_expert_bytes': requested_bytes,
+                  'expert_slots_per_layer': slots}
+        return cfg, public
+
+    def expert_placement(self) -> dict:
+        """Requested placement and observed expert residency are separate figures."""
+        with self._lock:
+            self._open()
+            profile = self.profiles.get(self.active_id)
+            cfg = profile.config
+            percent = self._placement_percent(cfg.get('expert_gpu_percent'))
+            budget = engine_config.value_of(cfg, 'expert_vram')
+            explicit = isinstance(budget, (int, float)) and not isinstance(budget, bool) and budget >= 0
+            args = cfg.get('args') or []
+            fixed_slots = None
+            if '--expert-slots' in args[:-1]:
+                try:
+                    fixed_slots = max(0, int(args[args.index('--expert-slots') + 1])) or None
+                except (TypeError, ValueError, OverflowError):
+                    pass
+            cpu_only = '--no-gpu-experts' in args
+            total_bytes = total = requested_count = None
+            count_step = 1
+            error = None
+            try:
+                sizes = expert_geometry(cfg)
+                total_bytes, total = sizes['total_expert_bytes'], sizes['expert_total']
+                count_step = self._placement_count_step(cfg, sizes)
+                requested_count = self._placement_requested_count(cfg, sizes)
+            except (OSError, ValueError, KeyError, TypeError) as ex:
+                error = str(ex)
+            slots = actual = None
+            if not self._busy and self.svc.loaded():
+                info = getattr(self.svc.engine, 'info', {}) or {}
+                try:
+                    observed_total, observed_slots = int(info['expert_total']), int(info['expert_slots'])
+                    if observed_total > 0 and 0 <= observed_slots <= observed_total:
+                        total, slots = observed_total, observed_slots
+                        actual = 100 * slots / total
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    pass
+            controlled = percent is not None or cfg.get('expert_gpu_count') is not None
+            requested_bytes = (round(total_bytes * requested_count / sizes['expert_total'])
+                               if total_bytes is not None and requested_count is not None
+                               else round(budget * 2 ** 30) if explicit else None)
+            return {'placement': {'model': self.active_id, 'gpu_percent': percent,
+                    'gpu_experts': requested_count, 'count_step': count_step,
+                    'requested_percent': 100 * requested_count / sizes['expert_total']
+                        if requested_count is not None and total_bytes is not None else None,
+                    'auto': not controlled and not (explicit or fixed_slots or cpu_only),
+                    'legacy_budget': not controlled and bool(explicit or fixed_slots or cpu_only),
+                    'legacy_expert_slots': fixed_slots if not controlled else None,
+                    'expert_slots_per_layer': fixed_slots if controlled else None,
+                    'expert_vram_gib': budget if explicit else None, 'total_expert_bytes': total_bytes,
+                    'requested_expert_bytes': requested_bytes, 'actual_percent': actual,
+                    'expert_slots': slots, 'expert_total': total, 'pending': deepcopy(self._placement_pending),
+                    'supported': total_bytes is not None and total_bytes > 0, 'error': error},
+                    'operation': self.status()}
+
+    def start_expert_placement(self, model, gpu_percent) -> dict:
+        return self._start_expert_placement(model, self._placement_percent(gpu_percent), mode='percent')
+
+    def start_expert_count(self, model, gpu_experts) -> dict:
+        return self._start_expert_placement(model, gpu_experts, mode='count')
+
+    def _start_expert_placement(self, model, choice, *, mode) -> dict:
+        with self._lock:
+            self._open()
+            if model != self.active_id:
+                raise ModelControlError(409, 'the selected model changed; reopen expert placement for the active model')
+            if self._busy:
+                raise ModelControlError(409, 'a model reload or switch is in progress')
+            if self._requests:
+                raise ModelControlError(409, 'a request is preparing, running or queued; retry after it finishes')
+            if any(d.status().get('state') in ('downloading', 'verifying', 'loading') for d in self._downloads.values()):
+                raise ModelControlError(409, 'a model download or activation is running; wait for it first')
+            if not self.svc.fifo.acquire(blocking=False):
+                raise ModelControlError(409, 'the model is busy')
+            self.svc.fifo.release()
+            profile = self.profiles.get(self.active_id)
+            sizes = expert_geometry(profile.config)
+            total_bytes = sizes['total_expert_bytes']
+            if not isinstance(total_bytes, int) or total_bytes <= 0:
+                raise ValueError('the model routed-expert size is unavailable')
+            cfg, public = self._placement_configuration(profile.config, choice, sizes,
+                                                         getattr(self.svc.engine, 'info', {}) or {}, mode=mode)
+            if cfg == profile.config:
+                return self.expert_placement()
+            previous_content = profile.path.read_bytes() if profile.path.is_file() else None
+            change = PlacementChange(cfg, deepcopy(profile), previous_content, public, geometry=sizes,
+                                     mode=mode, choice=choice)
+            self._placement_pending = public
+            self._busy, self._state, self._phase = True, 'switching', 'preparing'
+            self._target, self._error, self._rollback = self.active_id, None, None
+            self._started, self._finished = time.time(), None
+            self._worker = threading.Thread(target=self._switch, args=(self.active_id, change),
+                                            name='expert-placement', daemon=True)
+            self._worker.start()
+            return self.expert_placement()
+
     def _set_phase(self, phase):
         with self._lock:
             self._open()
             self._phase = phase
 
-    def _prepare(self, model) -> ModelBundle:
+    def _prepare(self, model, configuration=None) -> ModelBundle:
         api, svc = self.api, self.svc
-        cfg = self.profiles.prepare(model)
+        if configuration is None:
+            cfg = self.profiles.prepare(model)
+        else:
+            # A same-model reconfiguration is already prepared/installed. Do
+            # not persist its new settings before the candidate reaches READY.
+            from serve import tinyconfig
+            cfg = deepcopy(configuration)
+            tinyconfig.validate(cfg, allow_uninstalled=True)
+            tinyconfig.check_files(cfg, allow_uninstalled=True)
         profile = self.profiles.get(model)
         from serve.model_setup import resolve_executable
         exe = resolve_executable(cfg)
@@ -283,7 +496,41 @@ class ModelSwitcher:
             if vision is not None:
                 vision.shutdown()
 
-    def _switch(self, target):
+    def _restore_placement(self, change):
+        profile = change.previous_profile
+        if change.save_attempted:
+            if change.previous_content is None:
+                profile.path.unlink(missing_ok=True)
+            else:
+                temporary = profile.path.with_name(profile.path.name + '.placement-rollback.tmp')
+                temporary.write_bytes(change.previous_content)
+                os.replace(temporary, profile.path)
+        self.profiles.update(profile.id, profile.config)
+
+    def _adjust_placement_bundle(self, bundle, change):
+        if change is None or change.geometry is None or change.public['gpu_experts'] in (None, 0, change.geometry['expert_total']):
+            return bundle
+        # A cold/unloaded API may not yet know whether this device supports
+        # VMM. Once READY reports the capability, use fixed slots when safe.
+        # The reverse adjustment also covers a driver falling back from VMM.
+        cfg, public = self._placement_configuration(change.config, change.choice,
+                                                     change.geometry, getattr(bundle.engine, 'info', {}) or {}, mode=change.mode)
+        if cfg == bundle.config:
+            return bundle
+        self._dispose(bundle.engine, bundle.vision)
+        change.config, change.public = cfg, public
+        with self._lock:
+            self._placement_pending = public
+        self._set_phase('preparing')
+        candidate = self._prepare(bundle.model_id, cfg)
+        try:
+            self._activate(candidate)
+            return candidate
+        except BaseException:
+            self._dispose(candidate.engine, candidate.vision)
+            raise
+
+    def _switch(self, target, placement=None):
         import serve.frontend as frontend
         svc = self.svc
         bundle = None
@@ -296,7 +543,7 @@ class ModelSwitcher:
         try:
             with svc.fifo:
                 try:
-                    bundle = self._prepare(target)
+                    bundle = self._prepare(target, placement.config) if placement is not None else self._prepare(target)
                     with self._lock:
                         downloads = self._downloader(target)
                     self._set_phase('unloading')
@@ -309,10 +556,18 @@ class ModelSwitcher:
                         old_vision.unload()
                     svc.model_available = False
                     self._activate(bundle)
+                    bundle = self._adjust_placement_bundle(bundle, placement)
                     # Same order as download activation: FIFO, then install_lock.
                     with svc.install_lock, self._lock:
                         self._open()
-                        if bundle.config.get('model_bootstrap'):
+                        if placement is not None:
+                            current_content = bundle.path.read_bytes() if bundle.path.is_file() else None
+                            if current_content != placement.previous_content:
+                                raise ValueError('model settings changed during the reload; the newer settings were left unchanged')
+                            bundle.config.pop('model_bootstrap', None)
+                            placement.save_attempted = True
+                            self.profiles.update(target, bundle.config, save=True)
+                        elif bundle.config.get('model_bootstrap'):
                             bundle.config.pop('model_bootstrap')
                             self.profiles.update(target, bundle.config, save=True)
                         self._publish(bundle)
@@ -326,6 +581,7 @@ class ModelSwitcher:
                         print(f'[tinystrata] old model cleanup: {ex}', flush=True)
                 except Exception as ex:
                     cleanup_error = None
+                    config_error = None
                     if bundle is not None and not published:
                         try:
                             self._dispose(bundle.engine, bundle.vision)
@@ -337,6 +593,11 @@ class ModelSwitcher:
                             setattr(svc, name, value)
                         self.active_id, svc.downloads = old_id, old_downloads
                         frontend.ENV_TO_USER = old_env_to_user
+                        if placement is not None:
+                            try:
+                                self._restore_placement(placement)
+                            except Exception as restore_config_error:
+                                config_error = f'previous placement settings could not be restored: {restore_config_error}'
                     rollback = not released
                     # The FIFO remains held until restoration completes. Never
                     # reload the old model while a failed candidate still runs.
@@ -351,6 +612,9 @@ class ModelSwitcher:
                         except Exception as restore_error:
                             cleanup_error = f'old model restoration failed: {restore_error}'
                             svc.model_available = False
+                    if config_error is not None:
+                        rollback = False
+                        cleanup_error = '; '.join(error for error in (cleanup_error, config_error) if error)
                     with self._lock:
                         self._state, self._phase = 'error', 'error'
                         self._rollback = rollback
@@ -360,6 +624,7 @@ class ModelSwitcher:
         finally:
             with self._lock:
                 self._busy = False
+                self._placement_pending = None
                 if published:
                     self._state, self._phase = 'ready', 'ready'
                     self._finished = time.time()

@@ -92,11 +92,19 @@ Für die reine API-Installation verwenden Sie `run-api.bat`:
 & "$env:LOCALAPPDATA\TinyStrata\run-api.bat" --port 18080
 ```
 
+### UI-Suche und Python
+
+Über das Kontrollkästchen **Websuche** neben **Chat-Einstellungen** wird die Suche für alle vier Modelle aktiviert. Suchanbieter, API-Schlüssel und Parallelität werden in den Chat-Einstellungen festgelegt. Python im isolierten Browserbereich steht dem Modell bei Bedarf immer zur Verfügung. Fertig generierte Python-Codeblöcke lassen sich auch über **Python ausführen** manuell starten.
+
 ### Automatische Kontextkomprimierung
 
 **Kontext automatisch komprimieren** ist in den Chat-Einstellungen der optionalen UI standardmäßig aktiviert. Vor Antworten und zwischen lokalen Werkzeugrunden zählt die UI den Prompt mit dem Tokenizer des aktuellen Modells. Sobald Prompt und reservierter Ausgaberaum **85 %** des Kontextlimits erreichen, fasst das aktuelle Modell ältere Gespräche zusammen. Mindestens die letzten zwei Benutzerbeiträge bleiben mit ihren vollständigen Antworten erhalten; Werkzeugaufrufe und Ergebnisse bleiben zusammen. Systemanweisungen und verfügbare Werkzeuge werden beibehalten.
 
 Die Zusammenfassung wird als fortlaufender Prüfpunkt mit dem Chat in SQLite gespeichert; der vollständige Originalverlauf bleibt in der UI sichtbar. Änderungen oder Zurückspringen innerhalb des zusammengefassten Bereichs machen den Prüfpunkt ungültig. Fehler oder Abbruch löschen keine Nachrichten. Zusammenfassungen können Details verlieren und sind von der KV-Quantisierung unabhängig. Ein neuer zusammengefasster Präfix muss einmal neu verarbeitet werden, bevor spätere Beiträge seinen KV-Cache wiederverwenden.
+
+Ein Klick auf **KV** unter dem Chat öffnet ein Ringdiagramm der Kontextnutzung und **Jetzt komprimieren**. Die manuelle Komprimierung funktioniert auch bei ausgeschalteter Automatik. Die letzten zwei Benutzerbeiträge mit ihren Antworten bleiben vollständig erhalten; Originalnachrichten und Anhänge bleiben in SQLite. Der komprimierte Kontext wird sofort geladen, ohne eine Nachricht zum Gespräch hinzuzufügen.
+
+Über **Expertenverteilung** daneben wählen Sie **Auto** oder die **Anzahl der auf der GPU gehaltenen gerouteten Experten**. Die Schrittweite passt zum Modell; der Prozentsatz wird zur Orientierung angezeigt. Anwenden lädt das Modell neu und speichert die Auswahl für dieses Modell. Die tatsächliche Verteilung hängt vom verfügbaren VRAM und den Expertengrößen ab. Bei null Experten werden keine gerouteten Experten auf der GPU vorgehalten; gemeinsame Gewichte, KV und der Bildencoder verwenden weiterhin die GPU.
 
 Ohne ausdrückliches Ausgabelimit werden bis zu **8K Tokens**, höchstens ein Viertel des Kontexts, reserviert. Zusammenfassungen sind auf **2K Ausgabetokens** und ein Achtel des Kontexts begrenzt. Für Bilder mit unbekannter kodierter Größe wird eine vorsichtige Tokenobergrenze verwendet. Eine einzelne zu große Nachricht muss gekürzt werden. `POST /v1/chat/token-count` erzeugt keinen Text und verändert keinen KV-Cache; reine API-Clients werden nicht automatisch komprimiert.
 

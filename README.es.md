@@ -92,11 +92,19 @@ Para la instalación de solo API, usa `run-api.bat`:
 & "$env:LOCALAPPDATA\TinyStrata\run-api.bat" --port 18080
 ```
 
+### Búsqueda y Python en la UI
+
+La casilla **Búsqueda web**, junto a **Ajustes del chat**, activa la búsqueda para los cuatro modelos. El proveedor, la clave API y la concurrencia se configuran en esos ajustes. La ejecución de Python en el entorno aislado está siempre disponible cuando el modelo la necesita. Los bloques Python terminados también se pueden ejecutar manualmente con **Ejecutar Python**.
+
 ### Compactación automática del contexto
 
 La opción **Compactar el contexto automáticamente** está activada por defecto en los ajustes del chat de la UI. Antes de responder y entre rondas de herramientas locales, la UI cuenta el prompt con el tokenizador del modelo actual. Cuando el prompt más el espacio reservado para la salida alcanza el **85 %** del contexto, ese modelo resume los intercambios antiguos. Se conservan íntegros al menos los dos últimos mensajes del usuario con sus intercambios, sin separar las llamadas a herramientas de sus resultados. Se mantienen las instrucciones del sistema y las herramientas disponibles.
 
 El resumen acumulativo se guarda con el chat en SQLite y el historial original completo permanece visible. Editar o retroceder a una parte resumida invalida ese resumen. Un fallo o una interrupción no elimina mensajes. Los resúmenes pueden omitir detalles; esta función es independiente de la cuantización KV. El nuevo prefijo se procesa una vez tras compactar y los turnos siguientes pueden reutilizar su caché KV.
+
+Pulsa **KV** al pie del chat para abrir un gráfico de anillo del uso del contexto y **Compactar ahora**. La compactación manual funciona aunque la automática esté desactivada. Se conservan íntegros los dos últimos intercambios del usuario, y los mensajes y adjuntos originales permanecen en SQLite. El contexto compactado se carga al instante, sin añadir un mensaje a la conversación.
+
+En **Distribución de expertos**, al lado, puedes elegir **Auto** o el **número de expertos enrutados que se mantendrán en la GPU**. Los incrementos se adaptan al modelo y el porcentaje se muestra como referencia. Al aplicar el cambio, se recarga el modelo y se guarda la elección para ese modelo. La distribución real depende de la VRAM disponible y del tamaño de los expertos. Con cero expertos, los expertos enrutados no residen en la caché GPU; los pesos compartidos, KV y el codificador de imágenes siguen usando la GPU.
 
 Sin límite de salida explícito, se reservan hasta **8K tokens**, como máximo un cuarto del contexto. El resumen genera hasta **2K tokens**, limitado a un octavo del contexto. Las imágenes cuyo tamaño codificado se desconoce usan una estimación conservadora. Un mensaje demasiado grande aún debe acortarse. `POST /v1/chat/token-count` no genera texto ni modifica la caché KV; los clientes API no se compactan automáticamente.
 

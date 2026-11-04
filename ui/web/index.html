@@ -9,9 +9,10 @@
 <link rel="stylesheet" href="web/tokens.css">
 <link rel="stylesheet" href="web/components.css">
 <link rel="stylesheet" href="web/app.css">
-<link rel="stylesheet" href="web/terminal-theme.css?v=20261101.12">
+<link rel="stylesheet" href="web/terminal-theme.css?v=20261104.2">
 <link rel="stylesheet" href="web/syntax.css?v=20261103.1">
 <link rel="stylesheet" href="web/local-tools.css?v=20261103.2">
+<link rel="stylesheet" href="web/resource-dialogs.css?v=20261104.3">
 <script>
   // Match the operating system before the first paint, including older installs.
   try {
@@ -92,9 +93,6 @@
               <label class="composer-tool-check" title="Let the model search when useful. Queries go to the selected provider." data-i18n-title="localTools.searchNote">
                 <input id="s-web-search" type="checkbox"><span data-i18n="localTools.search">Web search</span>
               </label>
-              <label class="composer-tool-check" title="Run Python in an isolated environment without network or access to this PC's files." data-i18n-title="localTools.pythonNote">
-                <input id="s-code-execution" type="checkbox"><span data-i18n="localTools.codeExecution">Code execution</span>
-              </label>
             </div>
             <span class="spacer"></span>
             <div class="composer-controls">
@@ -123,14 +121,14 @@
           </div>
         </form>
         <div class="chat-resources">
-        <a class="chat-context" id="chat-context" href="#monitor" data-state="unknown"
+        <button type="button" class="chat-context" id="chat-context" aria-haspopup="dialog" data-state="unknown"
            aria-label="KV cache usage" data-i18n-label="context.label">
           <span class="chat-context__label">KV</span>
           <span class="chat-context__value" id="context-value">–</span>
           <span class="chat-context__track" id="context-track" aria-hidden="true" hidden><span id="context-bar"></span></span>
           <span class="chat-context__pct" id="context-pct">–</span>
-        </a>
-        <a class="chat-placement" id="chat-placement" href="#monitor" data-state="unknown"
+        </button>
+        <button type="button" class="chat-placement" id="chat-placement" aria-haspopup="dialog" data-state="unknown"
            aria-label="Expert placement" data-i18n-label="placement.label">
           <span class="chat-placement__label" data-i18n="placement.label">Expert placement</span>
           <span class="chat-placement__device chat-placement__device--gpu">
@@ -145,7 +143,7 @@
             <svg class="st-icon" aria-hidden="true"><use href="web/sprite.svg#i-cpu"/></svg>
             <span>CPU <strong id="placement-cpu">–</strong></span>
           </span>
-        </a>
+        </button>
         </div>
       </div>
     </div>
@@ -339,7 +337,7 @@
       <button class="st-toggle" id="s-mcp" role="switch" aria-checked="true" aria-label="Use tools from MCP servers" data-i18n-label="drawer.mcp"></button></div>
     <div class="drawer-group" role="group" aria-labelledby="g-local-tools">
       <h3 class="drawer-group__title" id="g-local-tools" data-i18n="localTools.title">Search and code execution</h3>
-      <p class="muted small" data-i18n="localTools.composerHint">Turn web search and code execution on or off beside Chat settings in the message box.</p>
+      <p class="muted small" data-i18n="localTools.composerHint">Web search is optional. Isolated Python execution is always available when the model needs it.</p>
       <p class="muted small" data-i18n="localTools.shared">The provider, search key and concurrency apply to every model in this UI.</p>
       <fieldset class="local-search-fields" id="search-provider-fields">
         <div class="st-field"><label class="st-label" for="s-search-provider" data-i18n="localTools.provider">Search provider</label>
@@ -415,12 +413,14 @@
 <script src="web/math-adapter.js"></script>
 <script src="web/latex.js?v=20261101.12"></script>
 <script src="web/sandbox.js?v=20261103.2"></script>
-<script src="web/local-tools.js?v=20261103.2"></script>
+<script src="web/local-tools.js?v=20261104.2"></script>
 <script src="web/code-runner.js?v=20261103.2"></script>
 <script src="web/history.js"></script>
 <script src="web/chatstore.js?v=20261103.2"></script>
-<script src="web/chats-ui.js?v=20261103.2"></script>
-<script src="web/context-compaction.js?v=20261104.1"></script>
-<script src="web/app.js?v=20261104.1"></script>
+<script src="web/chats-ui.js?v=20261104.2"></script>
+<script src="web/context-compaction.js?v=20261104.2"></script>
+<script src="web/resource-dialogs.js?v=20261104.3"></script>
+<script src="web/resource-actions.js?v=20261104.3"></script>
+<script src="web/app.js?v=20261104.2"></script>
 </body>
 </html>

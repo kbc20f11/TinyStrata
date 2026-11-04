@@ -29,6 +29,7 @@ async function main() {
   check(planned && planned.covered % 2 === 0 && planned.covered <= 8 && planned.recent.filter((m) => m.role === "user").length >= 2, "only whole old turns are selected, preserving the latest two user turns");
   assert.deepEqual(messages, original); checks++;
   check(C.plan(messages.slice(-4)) === null, "a short history is not needlessly summarized");
+  check(C.canCompact(messages) && !C.canCompact(messages.slice(-4)), "manual compaction availability requires an older complete user turn");
   const cp = await C.create(messages, 6, "The user discussed a photo and Python.", {model: "qwen", beforeTokens: 10000, afterTokens: 2000});
   check(await C.valid(cp, messages), "a checkpoint matches its original semantic prefix");
   const presentation = clone(messages); presentation[1].stats = {elapsedMs: 1}; presentation[3].tools[0].open = true;
@@ -74,6 +75,25 @@ async function main() {
   let summaries = 0;
   result = await run({count: async () => ({prompt_tokens: 1000, max_context: 16384}), summarize: async () => {summaries++; return "unused";}});
   check(!result.changed && summaries === 0 && result.reason === "below_threshold", "ordinary prompts do not run a hidden summary completion");
+  let manualCounts = 0, manualSummaries = 0;
+  result = await run({force: true, count: async () => ({prompt_tokens: ++manualCounts === 1 ? 1000 : 400, max_context: 16384}),
+    summarize: async () => {manualSummaries++; return "A short manual summary of the older turns.";}});
+  check(result.changed && manualCounts === 2 && manualSummaries === 1 && result.beforeTokens === 1000 && result.afterTokens === 400,
+    "manual compaction summarizes below the automatic threshold and validates the reduced prompt");
+  assert.deepEqual(messages, original); checks++;
+  const fullyCompacted = await C.create(messages, 8, "All older turns have been summarized.");
+  check(!C.canCompact(messages, {checkpoint: fullyCompacted}), "a repeated manual operation cannot compact the last two user turns");
+  manualSummaries = 0;
+  result = await run({force: true, checkpoint: fullyCompacted, count: async () => ({prompt_tokens: 800, max_context: 16384}),
+    summarize: async () => {manualSummaries++; return "unused";}});
+  check(!result.changed && result.reason === "no_older_turns" && result.checkpoint === fullyCompacted && manualSummaries === 0,
+    "repeated manual compaction is a friendly no-op when there are no older turns");
+  const manualCancelled = new AbortController();
+  manualSummaries = 0;
+  await assert.rejects(run({force: true, signal: manualCancelled.signal,
+    count: async () => {manualCancelled.abort(); return {prompt_tokens: 1000, max_context: 16384};},
+    summarize: async () => {manualSummaries++; return "unused";}}), (error) => error.name === "AbortError"); checks++;
+  check(manualSummaries === 0, "cancelling manual preparation cannot run or commit a summary");
   result = await run({messages: messages.slice(-4), count: async () => ({prompt_tokens: 15000, max_context: 16384}), summarize: async () => {summaries++; return "unused";}});
   check(!result.changed && summaries === 0 && result.reason === "no_older_turns", "a giant recent question is never silently discarded");
   await rejection(run({messages: messages.slice(-4), count: async () => ({prompt_tokens: 16000, max_context: 16384})}), "recent_context_too_large", "an overflowing recent-only prompt is refused without deletion");

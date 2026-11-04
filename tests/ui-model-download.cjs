@@ -26,10 +26,10 @@ function fixture(saved=[]){
  const backend={model:IDS[0],jobs,nextError:null,rejectSwitch:false,rollback:false};
  const ctx={console,Map,Promise,Number,JSON,Array,String,Error,encodeURIComponent,AbortSignal,
   $:element,health:{model:IDS[0],images:true},settings:{thinking:'high'},messages:[],busy:null,pending:null,
-  sharedSaving:false,toolSettingsSaving:false,modelOp:null,panel:null,lastMetrics:{live:{state:'idle'}},inflight:false,
+  sharedSaving:false,toolSettingsSaving:false,modelOp:null,resourceOperation:null,panel:null,lastMetrics:{live:{state:'idle'}},inflight:false,
   tr:(key,en,values={})=>en.replace(/\{(\w+)\}/g,(_,k)=>values[k]),fmt:(v,d=0)=>Number(v).toFixed(d),
   store:{get:(key,d)=>storage[key]??d,set:(key,value)=>{storage[key]=JSON.parse(JSON.stringify(value));return true;}},
-  turnBlocksUnload:()=>ctx.inflight||ctx.busy!==null,pageBusy:()=>ctx.busy!==null,
+  turnBlocksUnload:()=>ctx.inflight||ctx.busy!==null,pageBusy:()=>ctx.busy!==null||ctx.resourceOperation!==null,
   toast:(...args)=>toasts.push(args),paintLive(){},setPill(){},
   setTimeout:(fn,delay)=>{timers.set(++tid,{fn,delay});return tid;},clearTimeout:id=>timers.delete(id),
   headers:()=>({}),fetch:()=>{throw Error('Real fetch prohibited');},
@@ -230,6 +230,11 @@ async function workerRegressions(){
  f.t.dismiss();
  ok(!f.t.flows.has(IDS[1])&&f.storage['model-downloads'].length===0&&posts(f,'v1/model/download').length===1,'cancelling renewed confirmation clears persisted intent without another POST');
  await workerRegressions();
+ f=fixture();f.ctx.resourceOperation='placement';f.t.controls();
+ ok(f.element('composer-model').disabled&&f.element('composer-effort').disabled,'placement reload locks model and effort controls');
+ ok(f.element('s-web-search').disabled&&f.element('s-apply').disabled,'resource operation keeps request settings stable');
+ await f.t.open(IDS[1]);
+ ok(posts(f,'v1/model/switch').length===0,'a resource operation cannot race a model switch');
  const required=[...snippet.matchAll(/tr\("(model\.download[^\"]+)"/g)].map(m=>m[1]);
  for(const name of fs.readdirSync(localeDirectory)){
    if(!name.endsWith('.json'))continue;

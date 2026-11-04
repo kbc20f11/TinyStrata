@@ -106,7 +106,7 @@ For the API-only installation, use `run-api.bat`:
 
 ### UI search, Python and saved chats
 
-Use the **Web search** and **Code execution** checkboxes beside **Chat settings** in the composer to enable these tools for any of the four models. Configure the search provider, API key and concurrency in Chat settings. Completed Python code blocks also have a **Run Python** button.
+Use the **Web search** checkbox beside **Chat settings** in the composer to enable web search for any of the four models. Configure the search provider, API key and concurrency in Chat settings. Python execution is always available when the model needs it; completed Python code blocks also have a **Run Python** button for manual execution.
 
 - **Search:** DDGS needs no key and defaults to one concurrent search with at least 2 seconds between starts. Brave needs an API key and defaults to one concurrent search with at least 1.1 seconds between starts; rate-limit headers are respected. Queries are cached for 5 minutes, with at most 3 searches per reply. Provider, key and concurrency settings are shared across models by the UI server; keys are protected with Windows DPAPI and are not returned to the browser.
 - **Python:** standard-library code runs in an isolated browser iframe/worker using Pyodide, with a 10-second execution limit and no network, host filesystem, shell or `pip` access. First use downloads a pinned, SHA-256-verified runtime of about **13.5 MB** into the work directory, outside Git; later runs reuse it.
@@ -119,6 +119,10 @@ These features belong to the optional UI; API-only inference is unchanged. Runti
 The optional UI enables **Automatically compact context** in Chat settings by default. Before a reply and between local tool rounds, it counts the active prompt with the current model’s tokenizer. When the prompt plus reserved output space reaches **85%** of the context limit, the current model summarizes older exchanges. The most recent exchanges, including at least two user turns, remain verbatim; tool calls and their results stay together. System instructions and available tools are preserved.
 
 Rolling summaries are saved with the chat in SQLite, while the full original conversation remains available in the UI. Editing or rewinding into a summarized part invalidates that checkpoint. A failed or interrupted summary does not delete messages or replace a valid checkpoint. Summaries can lose details; this is conversation summarization, separate from KV quantization. After compaction, the changed prefix must be processed again once before subsequent turns can reuse its KV cache.
+
+Click **KV** in the chat footer to open a context-usage doughnut and **Compact now**. Manual compaction works even when automatic compaction is off, keeps the latest two user exchanges intact, and retains the original messages and attachments in SQLite. The compacted context is loaded immediately without adding a message to the conversation.
+
+Click **Expert placement** beside it to choose **Auto** or the **number of routed Experts to keep on the GPU**. The control uses steps appropriate to the model and shows the percentage as a guide. Applying a change reloads the model and saves the choice for that model. Actual placement depends on available VRAM and Expert sizes. At zero Experts, routed Experts have no resident GPU cache; shared weights, KV and the image encoder still use the GPU.
 
 The trigger reserves the requested output limit, or up to **8K tokens** (at most a quarter of the context) when no limit is set. A summary uses up to **2K output tokens**, capped at an eighth of the context. Images use a conservative token allowance when their exact encoded size is unavailable. An individual message or attachment that cannot fit still needs to be shortened. The counting endpoint, `POST /v1/chat/token-count`, does not generate text or change the model’s KV cache; API clients are not automatically compacted.
 

@@ -141,6 +141,8 @@ def migrate_generation_settings(cfg: dict) -> tuple[dict, bool]:
 def automatic_experts(cfg: dict) -> dict:
     """Clear fixed expert allocations while keeping every other setting."""
     new = dict(cfg)
+    new.pop("expert_gpu_percent", None)
+    new.pop("expert_gpu_count", None)
     args = cfg.get("args")
     if isinstance(args, list):
         out = []

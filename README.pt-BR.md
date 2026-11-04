@@ -92,11 +92,19 @@ Para a instalação somente com API, use `run-api.bat`:
 & "$env:LOCALAPPDATA\TinyStrata\run-api.bat" --port 18080
 ```
 
+### Busca e Python na UI
+
+A caixa **Busca na web**, ao lado de **Configurações do chat**, ativa a busca para os quatro modelos. O provedor, a chave API e a concorrência são definidos nessas configurações. A execução Python no ambiente isolado está sempre disponível quando o modelo precisa dela. Blocos Python concluídos também podem ser executados manualmente com **Executar Python**.
+
 ### Compactação automática do contexto
 
 A opção **Compactar o contexto automaticamente** fica ativada por padrão nas configurações de chat da UI. Antes das respostas e entre rodadas de ferramentas locais, a UI conta o prompt com o tokenizador do modelo atual. Quando o prompt e o espaço reservado para a saída atingem **85%** do contexto, esse modelo resume as conversas antigas. Pelo menos as duas últimas mensagens do usuário e suas respectivas conversas são mantidas integralmente; chamadas de ferramentas e resultados permanecem juntos. As instruções de sistema e ferramentas disponíveis são preservadas.
 
 O resumo acumulado é salvo com o chat no SQLite, e o histórico original completo permanece visível. Editar ou voltar a uma parte resumida invalida o resumo. Falhas ou interrupções não apagam mensagens. Resumos podem omitir detalhes; esta função é separada da quantização KV. Após a compactação, o novo prefixo é processado uma vez antes de os turnos seguintes reutilizarem seu cache KV.
+
+Clique em **KV** no rodapé do chat para abrir um gráfico de rosca do uso do contexto e **Compactar agora**. A compactação manual funciona mesmo com a automática desativada. Os dois últimos intercâmbios do usuário são mantidos na íntegra, e as mensagens e os anexos originais permanecem no SQLite. O contexto compactado é carregado imediatamente, sem acrescentar uma mensagem à conversa.
+
+Ao lado, **Distribuição de especialistas** permite escolher **Auto** ou o **número de especialistas roteados mantidos na GPU**. Os incrementos são adequados ao modelo, com a porcentagem exibida como referência. A aplicação do ajuste recarrega o modelo e salva a escolha para esse modelo. A distribuição real depende da VRAM disponível e do tamanho dos especialistas. Com zero especialistas, os especialistas roteados não ficam residentes no cache GPU; pesos compartilhados, KV e o codificador de imagens continuam usando a GPU.
 
 Sem limite explícito de saída, são reservados até **8K tokens**, no máximo um quarto do contexto. O resumo produz até **2K tokens**, limitado a um oitavo do contexto. Imagens com tamanho codificado desconhecido usam uma estimativa conservadora. Uma mensagem grande demais ainda precisa ser reduzida. `POST /v1/chat/token-count` não gera texto nem altera o cache KV; clientes da API não são compactados automaticamente.
 

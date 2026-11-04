@@ -56,6 +56,9 @@
 !/tests/ui-local-tools.cjs
 !/tests/ui-context-compaction.cjs
 !/tests/test_chat_token_count.py
+!/tests/ui-resource-dialogs.cjs
+!/tests/test_expert_placement_control.py
+!/tests/test_expert_placement_geometry.py
 
 # Only build/runtime sources and the fixed public benchmark inputs belong here.
 /benchmark/**

@@ -174,7 +174,7 @@ function showChat(c) {
   renderChat();
 }
 function openChat(id) {
-  if (busy) { stillWriting(); return; }
+  if (busy || resourceOperation) { stillWriting(); return; }
   const c = chats.find((x) => x.id === id);
   if (!c || c === chat) return;
   releasePending();
@@ -182,7 +182,7 @@ function openChat(id) {
   showChat(c);
 }
 function startChat() {
-  if (busy) { stillWriting(); return; }
+  if (busy || resourceOperation) { stillWriting(); return; }
   if (!messages.length && !chat.parent && !$("input").value && !attachments.length && !pending) {
     $("input").focus(); return;                        // already a truly empty chat
   }
@@ -195,7 +195,7 @@ function startChat() {
   toast("info", tr("chat.newToast", "New chat"), tr("chat.newToastText", "The one you were in is in the list on the left."));
 }
 function deleteChat(c) {
-  if (busy && c.id === chatId) { stillWriting(); return; }
+  if ((busy || resourceOperation) && c.id === chatId) { stillWriting(); return; }
   const i = chats.indexOf(c), wasOpen = c.id === chatId;
   if (i < 0) return;                                // the list only ever passes a chat it holds
   if (wasOpen) saveComposerDraft();
@@ -356,7 +356,7 @@ function mountMsgActions(el, m, i) {
 // true when a history change may start now (and says why not when it may not)
 function historyReady() {
   if (modelSwitching) { toast("warn", tr("model.switching", "Switching model…"), ""); return false; }
-  if (busy) { stillWriting(); return false; }
+  if (busy || resourceOperation) { stillWriting(); return false; }
   if (modelOp || pageBusy()) { toast("warn", tr("model.switchBusy", "Wait for the current reply or operation to finish."), ""); return false; }
   if (panel) { toast("warn", tr("hist.finishFirst", "Finish what is open first"), tr("hist.finishFirstText", "Save it or press Cancel.")); return false; }
   if (pending) { toast("warn", tr("hist.pendingFirst", "A message is waiting"), tr("hist.pendingFirstText", "Send it or take it back first.")); return false; }
