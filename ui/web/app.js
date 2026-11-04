@@ -991,6 +991,7 @@ function effortForModel(s = settings) {
   return health.model === "lfm2.5-24b-a2b" && s.thinking === "none" ? "high" : s.thinking;
 }
 function syncComposerControls() {
+  $("home-btn").disabled = modelSwitching || !!modelOp || pageBusy();
   $("composer").dataset.switching = String(modelSwitching);
   $("composer").setAttribute("aria-busy", String(modelSwitching));
   const select = $("composer-model");
@@ -1673,10 +1674,7 @@ function msgEl(m, i) {
 const TOOL_STATE = {writing: ["st-badge--reading", () => tr("tool.writing", "Writing")], running: ["st-badge--generating", () => tr("tool.running", "Running")],
                     done: ["st-badge--success", () => tr("tool.done", "Done")], error: ["st-badge--error", () => tr("tool.error", "Error")],
                     skipped: ["st-badge--queued", () => tr("tool.skipped", "Not run")]};
-function toolHtml(t, k) {
-  const [cls, labelOf] = TOOL_STATE[t.state] || ["", () => t.state];
-  const label = labelOf();
-  const args = t.arguments == null ? "" : JSON.stringify(t.arguments, null, 2);
+function toolPreview(t, args) {
   let preview = t.result != null ? t.result : args.replace(/\s+/g, " ");
   if (t.local && t.name === "web_search") preview = t.arguments?.query || "";
   if (t.local && t.name === "run_python") {
@@ -1688,26 +1686,99 @@ function toolHtml(t, k) {
       } catch (_) { preview = t.result; }
     }
   }
-  preview = String(preview).replace(/\s+/g, " ");
-  let body = "";
-  if (t.open) {
-    body = `<div class="tool-call__label">${esc(tr("tool.arguments", "Arguments"))}</div><pre class="tool-call__pre">${esc(args || tr("tool.beingWritten", "(being written)"))}</pre>`;
-    if (t.result != null) {
-      body += `<div class="tool-call__label">${esc(t.ok ? tr("tool.result", "Result") : tr("tool.error", "Error"))}${t.chars ? ` · ${esc(tr("tool.chars", "{n} characters", {n: fmt(t.chars)}))}` : ""}` +
-              `${t.truncated ? esc(tr("tool.cut", ", cut for the model")) : ""}</div><pre class="tool-call__pre">${esc(t.result)}</pre>`;
-    }
-  }
-  const sources = (t.sources || []).map((source) => {
+  return String(preview).replace(/\s+/g, " ").slice(0, 200);
+}
+function toolSourcesHtml(t) {
+  return (t.sources || []).map((source) => {
     const url = StrataLocalTools.safeURL(source.url);
     return url ? `<a class="tool-source" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(source.title || new URL(url).hostname)}</a>` : "";
   }).join("");
+}
+function toolHtml(t, k) {
+  const [cls, labelOf] = TOOL_STATE[t.state] || ["", () => t.state];
+  const args = t.arguments == null ? "" : JSON.stringify(t.arguments, null, 2);
+  let body = "";
+  if (t.open) {
+    body = `<div class="tool-call__label" data-tool-arguments-label>${esc(tr("tool.arguments", "Arguments"))}</div><pre class="tool-call__pre" data-tool-arguments tabindex="0">${esc(args || tr("tool.beingWritten", "(being written)"))}</pre>`;
+    if (t.result != null) {
+      body += `<div class="tool-call__label" data-tool-result-label></div><pre class="tool-call__pre" data-tool-result tabindex="0">${esc(t.result)}</pre>`;
+    }
+  }
+  const sources = toolSourcesHtml(t);
   return `<details class="st-collapse tool-call" data-tool="${k}" data-state="${esc(t.state)}"${t.open ? " open" : ""}>` +
     `<summary>${icon("tool", "st-icon st-icon--sm")}<span class="tool-call__name" title="${esc(t.name || "")}">${esc(t.tool || t.name || "tool")}</span>` +
-    (t.server ? `<span class="muted small">${esc(t.server)}</span>` : "") +
-    `<span class="tool-call__preview muted">${esc(preview.slice(0, 200))}</span>` +
-    `<span class="st-badge st-badge--icon ${cls}">${statusIcon(t.state)}${esc(label)}</span>${t.ms != null && t.state !== "skipped" ? `<span class="muted small">${fmt(t.ms / 1000, 1)} s</span>` : ""}` +
+    `<span class="tool-call__server muted small"${t.server ? "" : " hidden"}>${esc(t.server || "")}</span>` +
+    `<span class="tool-call__preview muted">${esc(toolPreview(t, args))}</span>` +
+    `<span class="st-badge st-badge--icon ${cls}" data-tool-badge>${statusIcon(t.state)}${esc(labelOf())}</span><span class="tool-call__time muted small" hidden></span>` +
     `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body">${body}</div></details>` +
-    (sources ? `<div class="tool-sources" aria-label="${esc(tr("localTools.sources", "Sources"))}">${sources}</div>` : "");
+    `<div class="tool-sources" aria-label="${esc(tr("localTools.sources", "Sources"))}"${sources ? "" : " hidden"}>${sources}</div>`;
+}
+
+// A tool's long arguments/output keep their element, text node and reading
+// position while later tokens update the rest of the answer.
+function writeToolText(pre, value) {
+  value = String(value);
+  if (pre.textContent === value) return;
+  const top = pre.scrollTop, left = pre.scrollLeft, text = pre.firstChild;
+  const selection = window.getSelection();
+  const selected = selection && text && selection.anchorNode === text && selection.focusNode === text
+    ? {anchor: selection.anchorOffset, focus: selection.focusOffset} : null;
+  if (text?.nodeType === Node.TEXT_NODE && pre.childNodes.length === 1) {
+    if (value.startsWith(text.data)) text.appendData(value.slice(text.length));
+    else text.data = value;
+    if (selected) selection.setBaseAndExtent(text, Math.min(selected.anchor, value.length), text, Math.min(selected.focus, value.length));
+  } else pre.textContent = value;
+  pre.scrollTop = top; pre.scrollLeft = left;
+}
+function patchToolPart(part, t, k) {
+  const details = part.querySelector(".tool-call"), wasOpen = details.open, find = (selector) => part.querySelector(selector);
+  if (wasOpen && !t.open) part._toolScroll = [...part.querySelectorAll(".tool-call__pre")].map((pre) => [pre.scrollTop, pre.scrollLeft]);
+  details.dataset.tool = String(k); details.dataset.state = t.state;
+  if (details.open !== !!t.open) details.open = !!t.open;
+  const name = find(".tool-call__name"); name.textContent = t.tool || t.name || "tool"; name.title = t.name || "";
+  const server = find(".tool-call__server"); server.hidden = !t.server; server.textContent = t.server || "";
+  const args = t.arguments == null ? "" : JSON.stringify(t.arguments, null, 2);
+  const preview = toolPreview(t, args), previewNode = find(".tool-call__preview");
+  if (previewNode.textContent !== preview) previewNode.textContent = preview;
+  const [cls, labelOf] = TOOL_STATE[t.state] || ["", () => t.state], badge = find("[data-tool-badge]");
+  const badgeMarkup = statusIcon(t.state) + esc(labelOf());
+  badge.className = `st-badge st-badge--icon ${cls}`;
+  if (badge._statusMarkup !== badgeMarkup) {badge.innerHTML = badgeMarkup; badge._statusMarkup = badgeMarkup;}
+  const time = find(".tool-call__time"); time.hidden = t.ms == null || t.state === "skipped";
+  time.textContent = time.hidden ? "" : `${fmt(t.ms / 1000, 1)} s`;
+  if (t.open) {
+    const body = details.querySelector(".st-collapse__body");
+    if (!find("[data-tool-arguments]")) body.innerHTML = '<div class="tool-call__label" data-tool-arguments-label></div><pre class="tool-call__pre" data-tool-arguments tabindex="0"></pre>';
+    find("[data-tool-arguments-label]").textContent = tr("tool.arguments", "Arguments");
+    const argumentsPre = find("[data-tool-arguments]"); argumentsPre.setAttribute("aria-label", tr("tool.arguments", "Arguments"));
+    writeToolText(argumentsPre, args || tr("tool.beingWritten", "(being written)"));
+    if (t.result != null && !find("[data-tool-result]")) {
+      const label = document.createElement("div"); label.className = "tool-call__label"; label.dataset.toolResultLabel = "";
+      const pre = document.createElement("pre"); pre.className = "tool-call__pre"; pre.dataset.toolResult = ""; pre.tabIndex = 0;
+      body.append(label, pre);
+    }
+    const resultPre = find("[data-tool-result]"), resultLabel = find("[data-tool-result-label]");
+    if (resultPre) {
+      resultPre.hidden = resultLabel.hidden = t.result == null;
+      if (t.result != null) {
+        resultLabel.textContent = (t.ok ? tr("tool.result", "Result") : tr("tool.error", "Error")) +
+          (t.chars ? ` · ${tr("tool.chars", "{n} characters", {n: fmt(t.chars)})}` : "") + (t.truncated ? tr("tool.cut", ", cut for the model") : "");
+        resultPre.setAttribute("aria-label", t.ok ? tr("tool.result", "Result") : tr("tool.error", "Error"));
+        writeToolText(resultPre, t.result);
+      }
+    }
+    if (!wasOpen && part._toolScroll) part.querySelectorAll(".tool-call__pre").forEach((pre, index) => {
+      const saved = part._toolScroll[index]; if (saved) {pre.scrollTop = saved[0]; pre.scrollLeft = saved[1];}
+    });
+  }
+  const sources = find(".tool-sources"), sourceMarkup = toolSourcesHtml(t);
+  sources.hidden = !sourceMarkup; sources.setAttribute("aria-label", tr("localTools.sources", "Sources"));
+  if (sources._sourceMarkup !== sourceMarkup) {sources.innerHTML = sourceMarkup; sources._sourceMarkup = sourceMarkup;}
+  const media = find(".tool-media"), lang = StrataI18n.lang;
+  if (media._images !== t.images || media._files !== t.files || media._lang !== lang) {
+    media.innerHTML = toolImages(t); media._images = t.images; media._files = t.files; media._lang = lang;
+    hydrateToolImages(media);
+  }
 }
 // Raster tool results are same-origin cached files; credentials stay in request headers.
 const mediaBlobs = new Map();
@@ -1761,6 +1832,48 @@ function answerHtml(m) {
   });
   return html + answerMarkdown(m.text.slice(pos));
 }
+function renderAnswerBubble(bubble, m, streaming) {
+  const previous = bubble._answerParts || new Map(), next = new Map(), ordered = [];
+  const add = (key, make) => {
+    const part = previous.get(key) || make(); part.dataset.answerKey = key;
+    next.set(key, part); ordered.push(part); return part;
+  };
+  const markdownPart = (key, value) => {
+    const part = add(key, () => {const node = document.createElement("div"); node.className = "answer-part"; return node;});
+    const changed = part._text !== value || part._math !== settings.math || part._lang !== StrataI18n.lang;
+    if (changed) {part.innerHTML = answerMarkdown(value); part._text = value; part._math = settings.math; part._lang = StrataI18n.lang;}
+    if (changed || part._streaming !== streaming) {
+      part._streaming = streaming;
+      if (typeof StrataSyntax !== "undefined") StrataSyntax.hydrate(part, !!streaming);
+      if (settings.math) StrataMath.hydrate(part);
+      if (!streaming && typeof StrataDiagrams !== "undefined") StrataDiagrams.hydrate(part);
+      if (!streaming && settings.math && typeof StrataLatex !== "undefined") StrataLatex.hydrate(part, () => settings.math);
+      if (typeof StrataCodeRunner !== "undefined") StrataCodeRunner.hydrate(part, m, {streaming,
+        disabled: () => !!busy || modelSwitching, execute: (code, signal) => StrataLocalTools.executePython(code, {signal, headers}), onSave: saveCodeMessage});
+    }
+  };
+  let pos = 0, textKey = "text:start";
+  (m.tools || []).forEach((tool, index) => {
+    const at = Math.min(Math.max(tool.at || 0, pos), m.text.length);
+    markdownPart(textKey, m.text.slice(pos, at)); pos = at;
+    const toolKey = `tool:${tool.id ?? ""}:${index}`;
+    const part = add(toolKey, () => {
+      const node = document.createElement("div"); node.className = "tool-block";
+      node.innerHTML = toolHtml(tool, index) + '<div class="tool-media"></div>'; return node;
+    });
+    patchToolPart(part, tool, index); textKey = `text:after:${tool.id ?? ""}:${index}`;
+  });
+  markdownPart(textKey, m.text.slice(pos));
+  // insertBefore leaves already ordered tool nodes attached. Replacing the
+  // bubble, even with those same nodes, would reset focus and native scrolling.
+  let cursor = bubble.firstChild;
+  for (const part of ordered) {
+    if (part !== cursor) bubble.insertBefore(part, cursor);
+    cursor = part.nextSibling;
+  }
+  while (cursor) {const old = cursor; cursor = cursor.nextSibling; old.remove();}
+  bubble._answerParts = next;
+}
 // a tool event from the stream (the `strata_mcp` field of a chunk)
 function onTool(m, x) {
   if (x.event === "limit") { m.limit = x.max_rounds; return; }
@@ -1793,7 +1906,7 @@ function queueTerminalCursor() {
 function positionTerminalCursor() {
   const root = terminalCursorRoot;
   if (!root?.isConnected || !root.getClientRects().length) { terminalCursorElement?.remove(); return; }
-  const skip = 'button,svg,iframe,[hidden],[aria-hidden="true"],.st-code__head,.tool-call,.katex-mathml,.terminal-stream-cursor';
+  const skip = 'button,svg,iframe,[hidden],[aria-hidden="true"],.st-code__head,.tool-block,.tool-call,.katex-mathml,.terminal-stream-cursor';
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, {
     acceptNode(node) {
       const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
@@ -1858,6 +1971,7 @@ document.fonts?.ready.then(queueTerminalCursor);
 document.fonts?.addEventListener("loadingdone", queueTerminalCursor);
 
 function updateAssistant(el, m, streaming) {
+  const readingScroll = readingToolOutput ? $("chat-scroll").scrollTop : null;
   clearTerminalCursor(el);
   const activeStream = streaming && !m.error && !m.stopped;
   const summary = el.querySelector(".context-summary");
@@ -1893,14 +2007,7 @@ function updateAssistant(el, m, streaming) {
   } else if (!m.text && streaming && !(m.tools && m.tools.length)) {
     bubble.replaceChildren();
   } else {
-    bubble.innerHTML = answerHtml(m);
-    if (typeof StrataSyntax !== "undefined") StrataSyntax.hydrate(bubble, !!streaming);
-    hydrateToolImages(bubble);
-    if (settings.math) StrataMath.hydrate(bubble);
-    if (!streaming && typeof StrataDiagrams !== "undefined") StrataDiagrams.hydrate(bubble);
-    if (!streaming && settings.math && typeof StrataLatex !== "undefined") StrataLatex.hydrate(bubble, () => settings.math);
-    if (typeof StrataCodeRunner !== "undefined") StrataCodeRunner.hydrate(bubble, m, {streaming,
-      disabled: () => !!busy || modelSwitching, execute: (code, signal) => StrataLocalTools.executePython(code, {signal, headers}), onSave: saveCodeMessage});
+    renderAnswerBubble(bubble, m, !!streaming);
   }
   for (const button of bubble.querySelectorAll("[data-code-copy]")) button.disabled = !!streaming;
   if (activeStream && m.text) setTerminalCursor(bubble);
@@ -1908,6 +2015,7 @@ function updateAssistant(el, m, streaming) {
   el.querySelector(".meta-text").textContent = m.stats ? "" : m.meta || (streaming ? "" : m.stopped ? tr("chat.stopped", "Stopped") : "");
   el.querySelector("[data-msg-copy]").hidden = streaming || !m.text;
   renderTerminalStats(el, m, streaming);
+  if (readingScroll != null) $("chat-scroll").scrollTop = readingScroll;
 }
 function renderChat() {
   const chat = $("chat");
@@ -1924,7 +2032,7 @@ function renderChat() {
 // the view back after every wheel notch (a notch is about 100 px), so scrolling up during a long answer only worked by
 // dragging the scrollbar. Now the reader's own input lets go (wheel up, a finger or a key moving up, the scrollbar), and a
 // scroll back to the bottom follows again.
-let stickToBottom = true, lastReaderInput = 0;
+let stickToBottom = true, lastReaderInput = 0, readingToolOutput = false;
 const FOLLOW_SLACK = 24, FAR_AWAY = 400, INPUT_WINDOW_MS = 400;
 function followAfterScroll(distance, wasFollowing, msSinceInput) {
   if (distance <= FOLLOW_SLACK) return true;
@@ -1933,20 +2041,27 @@ function followAfterScroll(distance, wasFollowing, msSinceInput) {
 }
 function scrollDown(force) {
   const s = $("chat-scroll");
-  if (force) stickToBottom = true;
+  if (force) {stickToBottom = true; readingToolOutput = false;}
   if (stickToBottom) s.scrollTop = s.scrollHeight;
 }
 (function watchReader() {
   const s = $("chat-scroll");
   const touch = () => { lastReaderInput = Date.now(); };
-  s.addEventListener("wheel", (e) => { touch(); if (e.deltaY < 0 && s.scrollTop > 0) stickToBottom = false; }, {passive: true});
-  s.addEventListener("touchmove", touch, {passive: true});
-  s.addEventListener("pointerdown", touch, {passive: true});
+  const inspecting = (target) => !!target?.closest?.(".tool-call,.tool-sources,.tool-media,.st-code");
+  const inspect = (event) => {touch(); readingToolOutput = inspecting(event.target); if (readingToolOutput) stickToBottom = false;};
+  s.addEventListener("wheel", (e) => {
+    inspect(e);
+    if (readingToolOutput || e.deltaY < 0 && s.scrollTop > 0) stickToBottom = false;
+    else if (e.deltaY > 0 && s.scrollHeight - s.scrollTop - s.clientHeight <= FOLLOW_SLACK) stickToBottom = true;
+  }, {passive: true});
+  s.addEventListener("touchmove", inspect, {passive: true});
+  s.addEventListener("pointerdown", inspect, {passive: true});
   s.addEventListener("keydown", (e) => {
-    touch();
+    inspect(e);
     if (["PageUp", "ArrowUp", "Home"].includes(e.key) && e.target === s && s.scrollTop > 0) stickToBottom = false;
   });
   s.addEventListener("scroll", () => {
+    if (readingToolOutput) {stickToBottom = false; return;}
     stickToBottom = followAfterScroll(s.scrollHeight - s.scrollTop - s.clientHeight, stickToBottom, Date.now() - lastReaderInput);
   }, {passive: true});
 })();
@@ -2005,6 +2120,7 @@ $("chat").addEventListener("click", (e) => {
     const el = sum.closest(".st-msg"), m = messages[+el.dataset.i], t = m && m.tools && m.tools[+sum.parentElement.dataset.tool];
     if (!t) return;
     t.open = !t.open;
+    readingToolOutput = true; stickToBottom = false; lastReaderInput = Date.now();
     updateAssistant(el, m, !!busy && busy.msg === m);
   }
 });
@@ -2458,28 +2574,8 @@ $("input").addEventListener("keydown", (e) => {
 function autosize() { const t = $("input"); t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, innerHeight * 0.4)}px`; }
 $("input").addEventListener("input", autosize);
 
-// one chat, as before: New chat clears it, with an Undo (with the saved-chats list on, its own New chat button does this job)
-$("new-btn").onclick = () => {
-  if (busy || resourceOperation) { stillWriting(); return; }
-  if (panel) { closePanel(); }
-  clearUndo();
-  releasePending();
-  if (!messages.length && !$("input").value && !attachments.length) return;
-  const backup = messages, draft = saveComposerDraft(), prevId = chatId;
-  clearToolMedia();
-  messages = [];
-  chatId = H.newChat().id;
-  restoreComposerDraft();
-  const clearedId = chatId, clearedDraft = composerDraft;
-  saveChat();
-  renderChat();
-  toast("info", tr("chat.newToast", "New chat"), tr("chat.clearedToast", "The last one was cleared."), 6000, {label: tr("undo", "Undo"), run: () => {
-    if (listOn || chatId !== clearedId || composerDraft !== clearedDraft ||
-        busy || messages.length || $("input").value || attachments.length) return;
-    chatId = prevId;
-    messages = backup; restoreComposerDraft(draft); saveChat(); renderChat();
-  }});
-};
+// Both New chat buttons and the brand return to the unsent home draft.
+$("new-btn").onclick = startChat;
 $("export-btn").onclick = () => {
   if (!messages.length) { toast("info", tr("export.nothing", "Nothing to save yet")); return; }
   const tools = (m) => (m.tools || []).filter((t) => t.result != null).map((t) =>

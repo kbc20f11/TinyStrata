@@ -66,7 +66,8 @@ main { flex: 1; min-height: 0; display: flex; }
 .tool-call__label { font-size: var(--st-fs-xs); font-weight: var(--st-fw-medium); color: var(--st-ink-muted); margin: var(--st-s-2) 0 var(--st-s-1); }
 .tool-call__pre { margin: 0; padding: 10px 12px; max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
                   font: 400 12.5px/1.5 var(--st-font-mono); color: var(--st-ink-soft); background: var(--st-surface);
-                  border: 1px solid var(--st-line-soft); border-radius: var(--st-r-sm); }
+                 border: 1px solid var(--st-line-soft); border-radius: var(--st-r-sm); overscroll-behavior: contain; scrollbar-gutter: stable; }
+.st-code__execution pre { overscroll-behavior: contain; }
 
 .composer-wrap { flex: none; padding: 0 var(--st-s-6) var(--st-s-6); }
 .st-composer { max-width: min(100%, 1100px); margin: 0 auto; }

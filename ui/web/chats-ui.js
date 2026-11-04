@@ -12,6 +12,7 @@
 
 const H = StrataHistory;
 const untitled = () => tr("chat.untitled", "New chat");
+const titleOf = (c) => H.chatTitle(c, untitled(), tr("chat.attachmentTitle", "Attachment chat"));
 const node = (tag, cls, text) => {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -22,6 +23,11 @@ const node = (tag, cls, text) => {
 // ------------------------------------------------------------------ state
 let listOn = false;                  // the saved-chats list is on
 let chats = [], chat = null, chatId = "";
+let homeChat = null;                 // an unsent home draft is never a saved conversation
+function homePage() {
+  if (!homeChat || H.hasConversation(homeChat)) homeChat = H.newChat();
+  return homeChat;
+}
 // Unsent text and attachment contents belong to one chat. Keep them only for
 // this visit, outside the persisted chat records.
 const composerDrafts = new Map();
@@ -70,11 +76,19 @@ function saveChat() {
   if (!chat || chat.id !== chatId) {
     chat = chats.find((item) => item.id === chatId) || {...H.newChat(), id: chatId || H.newChat().id};
     chatId = chat.id;
-    if (!chats.includes(chat)) chats.push(chat);
   }
   chat.messages = messages;
+  const saved = chats.some((item) => item.id === chatId);
+  if (!saved && !H.hasConversation(chat)) {
+    store.set("chatId", "");
+    if (!listOn) store.set("chat", []);
+    else renderSidebar();
+    return;
+  }
+  if (!saved) chats.push(chat);
+  if (homeChat === chat && H.hasConversation(chat)) homeChat = null;
   chat.time = Date.now();
-  store.set("chatId", chatId);
+  store.set("chatId", H.hasConversation(chat) ? chatId : "");
   chatStore.put(chat);
   if (!listOn) store.set("chat", H.cleanMessages(messages));
   else renderSidebar();
@@ -86,30 +100,30 @@ function stillWriting() { toast("warn", tr("busy.stillWriting", "Still writing")
 // load the list is the list, so a fresh chat stays empty and the single chat of before ("strata.chat") is read once, when the
 // store is empty.
 async function openChats(fromScreen) {
-  const screenMessages = messages, screenDraft = fromScreen ? saveComposerDraft() : null;
+  const screenMessages = messages, screenChat = chat, screenDraft = fromScreen ? saveComposerDraft() : null;
   await chatStore.start();
   await chatStore.flush();
   chats = await chatStore.all();
   if (!chats.length && !fromScreen) {
     const old = store.get("chat", []);
-    if (old.length) {
+    if (H.hasConversation({messages: old})) {
       const c = {...H.newChat(), messages: old, time: old[old.length - 1].time || Date.now()};
       chats = [c];
       chatStore.put(c);                                // the original browser copy is retained
     }
   }
   if (fromScreen) {
-    chat = chats.find((c) => c.id === chatId) || H.newChat();
+    chat = chats.find((c) => c.id === chatId) || screenChat || homePage();
     chat.messages = screenMessages;
     composerDrafts.set(chat.id, screenDraft);
-  } else chat = chats.find((c) => c.id === store.get("chatId", "")) || chats[0] || H.newChat();
-  if (!chats.includes(chat)) chats.push(chat);
+  } else chat = chats.find((c) => c.id === store.get("chatId", "") && H.hasConversation(c)) || homePage();
+  if (H.hasConversation(chat) && !chats.some((c) => c.id === chat.id)) chats.push(chat);
   chatId = chat.id;
   setMessages(chat.messages);
   restoreComposerDraft(chatDraft(chat));
   if (fromScreen) {
-    store.set("chatId", chatId);
-    chatStore.put(chat);
+    store.set("chatId", H.hasConversation(chat) ? chatId : "");
+    if (H.hasConversation(chat)) chatStore.put(chat);
   }
 }
 async function setChatList(on, fromScreen) {
@@ -132,7 +146,7 @@ function groupName(key) {
           month: tr("group.month", "Previous 30 days"), older: tr("group.older", "Older")}[key];
 }
 function chatItem(c) {
-  const t = H.chatTitle(c, untitled());
+  const t = titleOf(c);
   const row = node("div", `chat-item${c.id === chatId ? " on" : ""}`);
   row.dataset.id = c.id;
   row.innerHTML = `<button class="chat-item__title" data-open-chat title="${esc(t)}">${esc(t)}</button>` +
@@ -145,7 +159,9 @@ function chatItem(c) {
 function renderSidebar() {
   if (!listOn) return;
   // the search reads every chat's message text, so the whole store is in memory after the first load
-  const list = H.filterChats(chats, sidebarQuery, untitled());
+  // Keep old empty records for revision/Undo recovery, outside the visible list.
+  const visible = chats.filter(H.hasConversation);
+  const list = H.filterChats(visible, sidebarQuery, untitled());
   const box = $("sidebar-list");
   box.innerHTML = "";
   if (!list.length) {
@@ -159,8 +175,8 @@ function renderSidebar() {
     }
   }
   $("sidebar-foot").textContent = chatStore.storage === "sqlite"
-    ? tr("sidebar.footSqlite", {one: "{n} chat · saved on this PC", other: "{n} chats · saved on this PC"}, {n: chats.length})
-    : tr("sidebar.foot", {one: "{n} chat · kept in this browser", other: "{n} chats · kept in this browser"}, {n: chats.length});
+    ? tr("sidebar.footSqlite", {one: "{n} chat · saved on this PC", other: "{n} chats · saved on this PC"}, {n: visible.length})
+    : tr("sidebar.foot", {one: "{n} chat · kept in this browser", other: "{n} chats · kept in this browser"}, {n: visible.length});
 }
 
 function showChat(c) {
@@ -169,8 +185,9 @@ function showChat(c) {
   clearUndo();
   chat = c; chatId = c.id; messages = c.messages;
   restoreComposerDraft(chatDraft(c));
-  store.set("chatId", chatId);
-  chatStore.put(chat);                   // renderChat renders the list, so the write here does not render it again
+  store.set("chatId", H.hasConversation(chat) ? chatId : "");
+  if (!H.hasConversation(chat) || !listOn) store.set("chat", H.cleanMessages(messages));
+  if (H.hasConversation(chat)) chatStore.put(chat);
   renderChat();
 }
 function openChat(id) {
@@ -182,17 +199,15 @@ function openChat(id) {
   showChat(c);
 }
 function startChat() {
-  if (busy || resourceOperation) { stillWriting(); return; }
-  if (!messages.length && !chat.parent && !$("input").value && !attachments.length && !pending) {
-    $("input").focus(); return;                        // already a truly empty chat
-  }
+  if (historyOperationBusy()) { stillWriting(); return false; }
   releasePending();
   closePanel();
-  const c = H.newChat();
-  chats.push(c);
-  showChat(c);
+  const c = homePage();
+  if (chat !== c) showChat(c);
+  store.set("chatId", "");
+  showTab("chat");
   $("input").focus();
-  toast("info", tr("chat.newToast", "New chat"), tr("chat.newToastText", "The one you were in is in the list on the left."));
+  return true;
 }
 function deleteChat(c) {
   if ((busy || resourceOperation) && c.id === chatId) { stillWriting(); return; }
@@ -205,12 +220,11 @@ function deleteChat(c) {
   if (wasOpen) {
     releasePending();
     closePanel();
-    const next = chats[0] || H.newChat();
-    if (!chats.includes(next)) chats.push(next);
+    const next = chats.find(H.hasConversation) || homePage();
     showChat(next);
   } else renderSidebar();
   composerDrafts.delete(c.id);
-  toast("info", tr("chat.deleted", "Chat deleted"), H.chatTitle(c, untitled()), 6000, {label: tr("undo", "Undo"), run: () => {
+  toast("info", tr("chat.deleted", "Chat deleted"), titleOf(c), 6000, {label: tr("undo", "Undo"), run: () => {
     if (chats.includes(c)) return;                  // already put back
     if (draft) composerDrafts.set(c.id, draft);
     chats.splice(Math.min(i, chats.length), 0, c);  // the display is sorted by time, so only the index matters
@@ -221,7 +235,7 @@ function deleteChat(c) {
 function renameChat(row, c) {
   const title = row.querySelector(".chat-item__title");
   const input = node("input", "st-input chat-item__input");
-  input.value = H.chatTitle(c, untitled());
+  input.value = titleOf(c);
   input.setAttribute("aria-label", tr("sidebar.nameFor", "Name for this chat"));
   title.replaceWith(input);
   input.focus(); input.select();
@@ -554,8 +568,8 @@ function branchHere(i) {
   const plan = H.rewind(messages, i);
   if (!plan) return false;
   closePanel();
-  const c = H.branch(chat, plan.keep, plan.keep.length, tr("branch.title", "Branch of {title}", {title: H.chatTitle(chat, untitled())}));
-  chats.push(c);
+  const c = H.branch(chat, plan.keep, plan.keep.length, tr("branch.title", "Branch of {title}", {title: titleOf(chat)}));
+  if (H.hasConversation(c)) chats.push(c);
   showChat(c);
   if (plan.draft) fillBox(plan.draft);
   $("input").focus();
@@ -567,6 +581,7 @@ function branchHere(i) {
 function initChats() {
   $("sidebar-toggle").onclick = () => setSidebar(!sidebarOpen, true);
   $("sidebar-new").onclick = startChat;
+  $("home-btn").onclick = startChat;
   $("sidebar-search").addEventListener("input", () => { sidebarQuery = $("sidebar-search").value; renderSidebar(); });
   $("sidebar-list").addEventListener("click", (e) => {
     // a click inside the rename field is caret placement, not a click on the row: the row's handler would open the chat,

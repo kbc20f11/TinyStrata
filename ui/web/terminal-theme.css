@@ -84,6 +84,8 @@ button, input, textarea, select { -webkit-tap-highlight-color: transparent; }
   text-shadow: 0 0 18px #46ed9f35;
 }
 .st-header__brand > svg, .st-header__brand > img { display: block; width: 26px; height: 26px; flex: none; }
+.st-header__brand { padding: 0; border: 0; background: transparent; text-align: left; cursor: pointer; }
+.st-header__brand:disabled { opacity: .65; cursor: default; }
 .st-header .st-tabs { margin-left: 0; }
 .st-tabs { background: transparent; border: 0; padding: 0; gap: 4px; }
 .st-tab {

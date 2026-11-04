@@ -16,11 +16,34 @@
   function newChat(now = Date.now(), rnd = Math.random()) {
     return {id: newChatId(now, rnd), title: "", time: now, messages: []};
   }
-  // the name in the list: what the user called it, else the first line of their first question, else the caller's word for "new"
-  function chatTitle(c, untitled = "New chat") {
-    if (c.title) return c.title;
-    const first = (c.messages.find((m) => m.role === "user") || {}).text || "";
-    return first.split("\n")[0].trim().slice(0, TITLE_MAX) || untitled;
+  const nonemptyText = (value) => typeof value === "string" && !!value.trim();
+  const items = (value) => Array.isArray(value) && value.length > 0;
+  const firstLine = (value) => typeof value === "string" ? value.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || "" : "";
+  const transcript = (c) => Array.isArray(c?.messages) ? c.messages : [];
+  // Presentation only: hiding an empty record must never delete it or alter its
+  // saved identity/revision (an edit or rewind may temporarily make it empty).
+  function hasConversation(c) {
+    return transcript(c).some((m) => m && ["user", "assistant"].includes(m.role) &&
+      (nonemptyText(m.text) || nonemptyText(m.reasoning) || items(m.images) || items(m.files) || items(m.tools) ||
+       nonemptyText(m.error) || (m.error && typeof m.error === "object" && Object.keys(m.error).length > 0)));
+  }
+  // The first meaningful question owns the automatic title. An attachment-only
+  // question keeps its filename when the user later sends a text follow-up.
+  function chatTitle(c, untitled = "New chat", attachmentTitle = "Attachment chat") {
+    if (nonemptyText(c?.title)) return c.title;
+    const messages = transcript(c);
+    const first = messages.find((m) => m && m.role === "user" &&
+      (nonemptyText(m.text) || items(m.images) || items(m.files)));
+    const line = firstLine(first?.text);
+    if (line) return line.slice(0, TITLE_MAX);
+    const attachments = first ? [...(Array.isArray(first.images) ? first.images : []),
+                                  ...(Array.isArray(first.files) ? first.files : [])] : [];
+    const named = attachments.map((item) => firstLine(item?.name)).find(Boolean);
+    if (named) return named.slice(0, TITLE_MAX);
+    if (attachments.length) return attachmentTitle;
+    const answer = messages.filter((m) => m && m.role === "assistant").map((m) => firstLine(m.text)).find(Boolean);
+    if (answer) return answer.slice(0, TITLE_MAX);
+    return untitled;
   }
 
   // pictures and files are kept as their names only: a data URL would fill the browser's storage
@@ -83,7 +106,7 @@
     return {...newChat(now, rnd), title, parent: {id: chat.id, title: chatTitle(chat)}, messages: copy};
   }
 
-  const api = {TITLE_MAX, newChat, chatTitle, cleanMessages, cleanChat, groupKey, filterChats, lostAttachments, draftOf, rewind,
+  const api = {TITLE_MAX, newChat, hasConversation, chatTitle, cleanMessages, cleanChat, groupKey, filterChats, lostAttachments, draftOf, rewind,
                regenerate, editAnswer, branch};
   root.StrataHistory = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

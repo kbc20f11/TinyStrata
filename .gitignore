@@ -57,6 +57,7 @@
 !/tests/ui-context-compaction.cjs
 !/tests/test_chat_token_count.py
 !/tests/ui-resource-dialogs.cjs
+!/tests/ui-homepage.cjs
 !/tests/test_expert_placement_control.py
 !/tests/test_expert_placement_geometry.py
 
