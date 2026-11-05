@@ -151,6 +151,8 @@ INT8 和 FP8 按交替顺序各独立启动 4 次，每次启动将 3 段输入�
 
 另见[参考 Basalt 的 CPU、Clover GPU 与检查点对照测试](benchmark/results/basalt-adoption-20261105.md#english)。这些测试使用单独控制的设置，不替代上方的历史基准表。
 
+[Clover GDN 融合测试](benchmark/results/gdn-chain-20261105.md#english)比较了重复的全 GPU 常驻测试与固定 Expert 预算的混合执行；Qwen 保留原有默认路径。
+
 ## 实测速度 — Gemma 4
 
 在同一台 Windows PC（64 GB 系统内存）上使用 Gemma 4 26B-A4B-it QAT Q4_0 及匹配的 QAT MTP 助手测量。图像编码器常驻 GPU，通过 API 进行测量，启用 MTP 3、CUDA Graph 及模型自身的默认思考和采样设置；上下文容量按各显存档位设置，输入分块及专家分配自动选择。

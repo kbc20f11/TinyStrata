@@ -151,6 +151,8 @@ INT8 et FP8 ont été mesurés en alternance avec quatre démarrages indépendan
 
 Les [comparaisons CPU, GPU Clover et checkpoints inspirées de Basalt](benchmark/results/basalt-adoption-20261105.md#english) utilisent des réglages contrôlés distincts et ne remplacent pas les tableaux de mesures historiques.
 
+Les [mesures de fusion GDN de Clover](benchmark/results/gdn-chain-20261105.md#english) comparent plusieurs exécutions entièrement sur GPU et un mode hybride à budget Expert fixe ; Qwen conserve son chemin par défaut.
+
 ## Vitesse mesurée — Gemma 4
 
 Mesuré sur le même PC Windows avec 64 GB de RAM, Gemma 4 26B-A4B-it QAT Q4_0 et son assistant MTP QAT correspondant. L’encodeur d’images est resté sur GPU pendant les requêtes par API. MTP 3, les CUDA Graphs et les valeurs de raisonnement et d’échantillonnage propres au modèle étaient activés ; la capacité de contexte était fixée selon la classe de VRAM, tandis que les blocs d’entrée et la répartition des experts étaient automatiques.

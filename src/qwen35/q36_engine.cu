@@ -27,6 +27,7 @@
 #include "q36_kernels.cuh"
 #if !defined(__HIPCC__) && !defined(STRATA_USE_HIP)
 #include "q36_pair.cuh"
+#include "q36_gdn_chain.cuh"
 #endif
 #include "clover_kernels.cuh"
 #include "clover_diffusion.cuh"
@@ -1922,6 +1923,11 @@ struct Engine {
 #endif
     }();
     long long q8_pair_dispatches = 0;
+#if !defined(__HIPCC__) && !defined(STRATA_USE_HIP)
+    q36g::Plan gdn_chain_plan;
+#endif
+    bool gdn_chain_enabled = false;
+    long long gdn_chain_dispatches = 0;
     bool fast_k = std::getenv("STRATA_Q36_OLD_KERNELS") == nullptr;
     bool verify_k = std::getenv("STRATA_Q36_VERIFY") != nullptr;
     float* vbuf = nullptr;                       // verify scratch
@@ -1984,6 +1990,76 @@ struct Engine {
             mmq_ref(b, input, vbuf, T);
             verify_cmp("q8_pair second", yb, vbuf, size_t(T) * b.n_out);
         }
+        return true;
+#endif
+    }
+    bool gdn_chain_format(const Layer& L, int T) const {
+#if defined(__HIPCC__) || defined(STRATA_USE_HIP)
+        (void) L; (void) T;
+        return false;
+#else
+        const auto& g = m->g;
+        if (!fast_k || verify_k || L.attn || clover_preview || T < 1 || T > 4 ||
+            g.n_embd != 2048 || g.ssm_k_heads != 16 || g.ssm_v_heads != 32 ||
+            g.ssm_state_size != 128 || g.ssm_d_conv != 4 || g.ssm_conv_channels != 8192 ||
+            g.ssm_value_dim != 4096 || (L.qkv.type != 8 && L.qkv.type != 14) ||
+            L.zg.type != L.qkv.type || L.ssm_out.type != L.qkv.type ||
+            L.qkv.n_in != 2048 || L.qkv.n_out != 8192 || L.zg.n_in != 2048 || L.zg.n_out != 4096 ||
+            L.ssm_out.n_in != 4096 || L.ssm_out.n_out != 2048)
+            return false;
+        if (L.qkv.type == 8 && K::native_q8_0_packed_enabled() &&
+            (K::native_q8_0_packed_eligible(L.qkv.n_in, L.qkv.n_out) ||
+             K::native_q8_0_packed_eligible(L.zg.n_in, L.zg.n_out) ||
+             K::native_q8_0_packed_eligible(L.ssm_out.n_in, L.ssm_out.n_out)))
+            return false;
+        return true;
+#endif
+    }
+    int gdn_chain_eligible_layers() const {
+        int n = 0;
+        for (const Layer& L : m->layers) n += gdn_chain_format(L, 1);
+        return n;
+    }
+    void configure_gdn_chain() {
+#if !defined(__HIPCC__) && !defined(STRATA_USE_HIP)
+        const char* value = std::getenv("TINYSTRATA_Q36_GDN_CHAIN");
+        const bool automatic = value == nullptr;
+        if (!(automatic ? m->clover : std::strcmp(value, "1") == 0) || gpu_cc / 10 != 12) return;
+        int max_blocks = 0;
+        if (const char* v = std::getenv("TINYSTRATA_Q36_GDN_BLOCKS")) max_blocks = std::atoi(v);
+        q36g::Args shape;
+        bool found = false;
+        for (const Layer& L : m->layers)
+            if (gdn_chain_format(L, 1) && (!automatic || L.qkv.type == 8)) {
+                shape.type = L.qkv.type; found = true; break;
+            }
+        if (!found) return;
+        const auto status = q36g::prepare(gdn_chain_plan, shape, max_blocks);
+        if (status == cudaErrorNotSupported || status == cudaErrorMemoryAllocation) { (void) cudaGetLastError(); return; }
+        CK(status);
+        gdn_chain_enabled = true;
+#endif
+    }
+    bool gdn_chain(const Layer& L, size_t li, int T, bool verify,
+                   float* qkv_b, float* hc_b, float* al_b, float* be_b) {
+#if defined(__HIPCC__) || defined(STRATA_USE_HIP)
+        (void) L; (void) li; (void) T; (void) verify;
+        (void) qkv_b; (void) hc_b; (void) al_b; (void) be_b;
+        return false;
+#else
+        if (!gdn_chain_enabled || !gdn_chain_format(L, T)) return false;
+        q36g::Args a;
+        a.type = L.qkv.type; a.T = T; a.write_state = !verify;
+        a.wqkv = L.qkv.d; a.wz = L.zg.d; a.wo = L.ssm_out.d;
+        a.input = h; a.input_q = (const q36k::QB*) xq;
+        a.wa = L.alpha; a.wb = L.beta; a.dt = L.dt; a.ssm_a = L.ssm_a;
+        a.conv_w = L.conv; a.norm = L.ssm_norm;
+        a.hist = conv[li]; a.state = S[li];
+        a.qkv = qkv_b; a.z = z; a.alpha = al_b; a.beta = be_b; a.hc = hc_b;
+        a.gdn_y = gdn_y; a.out_q = (q36k::QB*) q8; a.out = y; a.eps = m->eps;
+        if (!q36g::supported(gdn_chain_plan, a)) return false;
+        CK(q36g::launch(gdn_chain_plan, a, st));
+        ++gdn_chain_dispatches;
         return true;
 #endif
     }
@@ -2294,6 +2370,7 @@ struct Engine {
             float* al_b = verify ? v_alpha[li] : alpha;
             float* be_b = verify ? v_beta[li] : beta;
             prep_in(T);
+            if (!gdn_chain(L, li, T, verify, qkv_b, hc_b, al_b, be_b)) {
             if (!q8_pair(L.qkv, L.zg, xq, qkv_b, z, T)) {
                 apply(L.qkv, xq, qkv_b, T);
                 apply(L.zg, xq, z, T);
@@ -2341,6 +2418,7 @@ struct Engine {
             }
             }
             mm(L.ssm_out, gdn_y, y, T);
+            }
         } else {
             prep_in(T);
             apply(L.wq, xq, qg, T);
@@ -3262,6 +3340,7 @@ struct Engine {
                     slots, total_experts(), bytes, bytes >> 20, arena);
         if (kv_page_pool) std::printf("INFO hip_vmm_spare_bytes=%zu\n", kv_page_pool->bytes());
         if (q8_pair_enabled) std::printf("INFO q36_q8_pair_dispatches=%lld\n", q8_pair_dispatches);
+        if (gdn_chain_enabled) std::printf("INFO q36_gdn_chain_dispatches=%lld\n", gdn_chain_dispatches);
     }
 
     void shrink_att(size_t floats) {
@@ -4429,6 +4508,17 @@ int serve(Engine& E) {
                 E.clover_accept.c_str(), (double) E.clover_accept_ratio, (double) E.clover_accept_delta,
                 E.clover_draft_penalty_gpu ? 1 : 0, E.clover_gpu_exact_verify ? 1 : 0, E.clover_query_tile);
     E.print_kv_info();
+    std::printf("INFO q36_gdn_chain=%d q36_gdn_chain_eligible_layers=%d\n",
+                E.gdn_chain_enabled ? 1 : 0, E.gdn_chain_eligible_layers());
+#if !defined(__HIPCC__) && !defined(STRATA_USE_HIP)
+    if (E.gdn_chain_enabled)
+        std::printf("INFO q36_gdn_q8_blocks1=%d q36_gdn_q8_blocks4=%d q36_gdn_q6_blocks1=%d q36_gdn_q6_blocks4=%d "
+                    "q36_gdn_q8_regs1=%d q36_gdn_q8_regs4=%d q36_gdn_q6_regs1=%d q36_gdn_q6_regs4=%d\n",
+                    E.gdn_chain_plan.blocks[0][0], E.gdn_chain_plan.blocks[0][3],
+                    E.gdn_chain_plan.blocks[1][0], E.gdn_chain_plan.blocks[1][3],
+                    E.gdn_chain_plan.registers[0][0], E.gdn_chain_plan.registers[0][3],
+                    E.gdn_chain_plan.registers[1][0], E.gdn_chain_plan.registers[1][3]);
+#endif
     kv_usage.publish(0, true);
 #if defined(STRATA_Q36_CPU_POOL)
     if (E.pool) std::printf("INFO cpu_workers=%d cpu_threads=%d\n", E.pool->workers(),
@@ -5445,6 +5535,7 @@ int strata::qwen35::run(int argc, char** argv) {
     E.mtp_d = m.has_mtp ? mtp_d : 0;
     E.configure_auto_mmvq_il();
     E.configure_auto_main_mmq();
+    E.configure_gdn_chain();
     if (warm) E.warmup();
     if (serve_mode) {
         try { return serve(E); }
