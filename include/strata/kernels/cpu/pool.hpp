@@ -148,8 +148,9 @@ public:
     /// Evaluate native GGUF experts in parallel row phases.
     void run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n);
     static constexpr int kMaxSplitMulti = 96;
-    /// run_split_multi's phases, accumulated ms: gate/up rows, the intermediate quantization, down rows.
+    /// Accumulated phase time; a fused batch is timed as one operation.
     double ms_multi_gu = 0, ms_multi_q = 0, ms_multi_down = 0;
+    double ms_multi_fused = 0;
     int64_t multi_bytes = 0;
 
     /// Total `_mm_pause` iterations spent waiting, over all workers, is no longer counted - see the note on the
@@ -195,6 +196,7 @@ private:
     /// The host's waits, bounded by `kStall`.
     void wait_parked(const char* what);
     void wait_done(int n);
+    void wait_native_ready(int expert);
     /// Bump `epoch_`, and wake the workers that went to sleep.  Every publish goes through here.
     void publish();
 
@@ -236,7 +238,7 @@ private:
     std::condition_variable sleep_cv_;
     std::chrono::microseconds spin_before_sleep_{kSpinBeforeSleep};
     std::vector<std::thread> threads_;
-    // Native row phases: 5 = gate/up, 6 = down.
+    // Native row phases: 5 = gate/up, 6 = down, 8 = dependent gate/up and down tasks.
     int mode_ = 0;
     ExpertJobMulti* mjobs_ = nullptr;
     int64_t mrows_ = 0;     // rows of the current multi phase across all its experts (n * FF, then n * H)
@@ -246,6 +248,13 @@ private:
         alignas(64) uint8_t hq[MAXT][kNativeHBytes];   // plan v0.3 P6: native down activations
     };
     const NativeFmt* nfmt_ = nullptr;
+    struct alignas(64) FusedExpert {
+        std::atomic<int> gu_left{0};
+        std::atomic<bool> ready{false};
+    };
+    std::unique_ptr<FusedExpert[]> fused_;
+    int fused_n_ = 0, fused_gu_parts_ = 1, fused_down_parts_ = 1;
+    bool fused_native_ = true;
     std::vector<SplitBufMulti> split_multi_;
     PoolAffinity affinity_ = PoolAffinity::All;
     CpuTopology topo_;

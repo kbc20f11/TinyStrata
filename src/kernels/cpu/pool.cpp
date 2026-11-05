@@ -1,4 +1,6 @@
 // src/kernels/cpu/pool.cpp - P2.S3: the CPU expert pool.  Read pool.hpp first; it explains the protocol.
+// Native phase fusion adapted from jesdga95/basalt (MIT), src/kernels/cpu/pool.cpp
+// at bbf2f5bb783adc5ffe5b49043f82c9399313bb46. Copyright (c) 2026 Jesús Gulfo.
 #include "strata/kernels/cpu/pool.hpp"
 #include "strata/core/progress.hpp"
 #include "strata/platform/aux_cpus.hpp"
@@ -477,6 +479,8 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
     if (tasks < 0 || tasks > kMaxTasks) throw std::invalid_argument("expert pool tasks must be in 0..4096");
     if (const char* e = std::getenv("STRATA_POOL_SPIN_US"))   // a test knob; see kSpinBeforeSleep
         spin_before_sleep_ = std::chrono::microseconds((std::max)(0, std::atoi(e)));
+    // Diagnostic A/B control; the row kernels and activation policy are shared.
+    if (const char* e = std::getenv("STRATA_POOL_FUSED")) fused_native_ = *e != '0';
     if (n_workers > 0) {
         n_ = n_workers;
     } else if (topo_.is_hybrid && affinity_ != PoolAffinity::All) {
@@ -491,6 +495,7 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
     g_diag_pool.store(this);
     strata::core::diag_pool_fn().store(&diag_active_pool);
     split_multi_.resize((size_t) kMaxSplitMulti);
+    fused_.reset(new FusedExpert[(size_t) kMaxSplitMulti]);
     threads_.reserve((size_t) n_);
     for (int i = 0; i < n_; ++i) {
         const int core = pin ? (i < (int) topo_.worker_cores.size() ? topo_.worker_cores[(size_t) i] : -1) : -1;
@@ -660,6 +665,26 @@ void ExpertPool::wait_done(int n) {
     }
 }
 
+void ExpertPool::wait_native_ready(int expert) {
+    uint32_t spins = 0, seen = 0;
+    bool armed = false;
+    std::chrono::steady_clock::time_point t0{};
+    while (!fused_[(size_t) expert].ready.load(std::memory_order_acquire)) {
+        _mm_pause();
+        if ((++spins & 1023u) != 0) continue;
+        const auto now = std::chrono::steady_clock::now();
+        const uint32_t completed = done_.load(std::memory_order_relaxed);
+        if (!armed || completed != seen) { armed = true; t0 = now; seen = completed; }
+        else if (now - t0 > kStall) {
+            std::fprintf(stderr, "strata: the CPU expert pool stalled waiting for expert %d gate/up rows "
+                                 "(%u of %d tasks done) - stopping the engine\n", expert, completed, njobs_);
+            strata::core::release_gpu_waits(stderr);
+            std::fflush(stderr);
+            std::abort();
+        }
+    }
+}
+
 void ExpertPool::drain(int id, uint32_t epoch) {
     for (;;) {
         const int ci = claim(epoch);
@@ -667,6 +692,36 @@ void ExpertPool::drain(int id, uint32_t epoch) {
         const uint32_t i = (uint32_t) ci;
         if (id >= 0) wstate_[(size_t) id].store(ci, std::memory_order_relaxed);
         else { hstate_.store(ci, std::memory_order_relaxed); hstate_ms_.store(now_ms(), std::memory_order_relaxed); }
+        if (mode_ == 8) {
+            const int gu_tasks = fused_n_ * fused_gu_parts_;
+            if (ci < gu_tasks) {
+                const int e = ci / fused_gu_parts_, part = ci % fused_gu_parts_;
+                const int r0 = (int) (nfmt_->n_ff * part / fused_gu_parts_);
+                const int r1 = (int) (nfmt_->n_ff * (part + 1) / fused_gu_parts_);
+                SplitBufMulti& sb = split_multi_[(size_t) e];
+                float* ff[MAXT];
+                for (int t = 0; t < mjobs_[e].nt; ++t) ff[t] = sb.ff[t];
+                native_gu_rows(*nfmt_, mjobs_[e].blob, mjobs_[e].nact, mjobs_[e].nt, ff, r0, r1);
+                FusedExpert& state = fused_[(size_t) e];
+                if (state.gu_left.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                    for (int t = 0; t < mjobs_[e].nt; ++t) native_quant_h(*nfmt_, sb.ff[t], sb.hq[t]);
+                    state.ready.store(true, std::memory_order_release);
+                }
+            } else {
+                const int down = ci - gu_tasks;
+                const int e = down / fused_down_parts_, part = down % fused_down_parts_;
+                // Down tasks are claimed after all gate/up tasks, so only already-running work is awaited.
+                if (!fused_[(size_t) e].ready.load(std::memory_order_acquire)) wait_native_ready(e);
+                const int r0 = (int) (nfmt_->n_embd * part / fused_down_parts_);
+                const int r1 = (int) (nfmt_->n_embd * (part + 1) / fused_down_parts_);
+                SplitBufMulti& sb = split_multi_[(size_t) e];
+                const void* hq[MAXT];
+                for (int t = 0; t < mjobs_[e].nt; ++t) hq[t] = sb.hq[t];
+                native_down_rows(*nfmt_, mjobs_[e].blob, hq, mjobs_[e].nt, mjobs_[e].out, r0, r1);
+            }
+            done_.fetch_add(1, std::memory_order_release);
+            continue;
+        }
         const int per = mode_ == 5 ? (int) nfmt_->n_ff : (int) nfmt_->n_embd;
         const int64_t g0 = mrows_ * (int64_t) i / mtasks_, g1 = mrows_ * (int64_t) (i + 1) / mtasks_;
         for (int64_t r = g0; r < g1;) {
@@ -712,6 +767,22 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
         const int nb = (std::min)(kMaxSplitMulti, n - b0);
         mjobs_ = jobs + b0;
         nfmt_ = &f;
+        // A lone expert or participant has no independent work to overlap.
+        if (fused_native_ && nb > 1 && n_ + (host_works_ ? 1 : 0) > 1) {
+            const auto a = std::chrono::steady_clock::now();
+            const double gu_share = (double) (2 * f.up_off) / (double) (2 * f.up_off + f.d_row * (size_t) f.n_embd);
+            const int target = 2 * phase_tasks((int64_t) nb * (f.n_ff + f.n_embd));
+            fused_n_ = nb;
+            fused_gu_parts_ = (std::min)((int) f.n_ff, (std::max)(1, (int) std::lround(target * gu_share / nb)));
+            fused_down_parts_ = (std::min)((int) f.n_embd, (std::max)(1, (int) std::lround(target * (1.0 - gu_share) / nb)));
+            for (int e = 0; e < nb; ++e) {
+                fused_[(size_t) e].gu_left.store(fused_gu_parts_, std::memory_order_relaxed);
+                fused_[(size_t) e].ready.store(false, std::memory_order_relaxed);
+            }
+            run_phase(8, nb * (fused_gu_parts_ + fused_down_parts_));
+            ms_multi_fused += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a).count();
+            continue;
+        }
         mrows_ = (int64_t) nb * f.n_ff;
         mtasks_ = phase_tasks(mrows_);
         const auto a = std::chrono::steady_clock::now();

@@ -127,3 +127,16 @@ TinyStrata's native GDN, MTP, image and staging lifetimes.
 Gemma's configurable CUDA host upload chunk size follows the memory-sizing
 approach in VecSzn/PolyStrata f2ce72b6720f4bfa722fd5ac3821789cb610f2c3 (MIT),
 with TinyStrata's measured 256 MiB default and the existing two-buffer lifetime.
+
+Native CPU Expert phase fusion adapts jesdga95/basalt
+(https://github.com/jesdga95/basalt), src/kernels/cpu/pool.cpp and
+include/basalt/kernels/cpu/pool.hpp at
+bbf2f5bb783adc5ffe5b49043f82c9399313bb46 (MIT).
+Copyright (c) 2026 Jesús Gulfo. The MIT license terms are preserved in LICENSE.
+TinyStrata retains its per-row arithmetic, bounded scheduling and small-job
+fallbacks.
+
+The CUDA paired Q8_0 GDN projection schedule in src/qwen35/q36_pair.cuh was
+independently implemented after consulting Basalt's docs/unified-kernel.md
+at the same commit. TinyStrata retains its existing Q8_0 dot-product arithmetic
+and uses one CUDA launch for the independent qkv and z projections.

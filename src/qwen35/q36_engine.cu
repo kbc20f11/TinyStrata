@@ -25,6 +25,9 @@
 #include "strata/prefill/moe_mmq.hpp"
 #include "strata/qwen35/engine.hpp"
 #include "q36_kernels.cuh"
+#if !defined(__HIPCC__) && !defined(STRATA_USE_HIP)
+#include "q36_pair.cuh"
+#endif
 #include "clover_kernels.cuh"
 #include "clover_diffusion.cuh"
 #include "strata/qwen35/clover_decode.hpp"
@@ -1782,6 +1785,9 @@ struct Engine {
     struct TurnState {
         std::vector<uint8_t> bytes;
         int64_t pos = 0;
+        // Capture overwrites the entire payload. Keep its size as well as its
+        // capacity so invalidating a turn does not zero-fill it on the next save.
+        void invalidate() { pos = 0; }
     };
     void save_turn(TurnState& saved) {
         const auto& g = m->g;
@@ -1907,6 +1913,15 @@ struct Engine {
     /// x [T][n] -> its q8_1 image (T contiguous columns: one vector of T * n), for every matrix that reads x.
     void quant(const float* xin, int n, int T, void* q) { K::native_quantize_q8_1(xin, q, n * T, 1, st); }
     // ---- decode kernels of this engine (q36_kernels.cuh), each the old kernel's bits (STRATA_Q36_VERIFY=1 compares)
+    bool q8_pair_enabled = [] {
+#if defined(__HIPCC__) || defined(STRATA_USE_HIP)
+        return false;
+#else
+        const char* value = std::getenv("TINYSTRATA_Q36_Q8_PAIR");
+        return value && std::strcmp(value, "1") == 0;
+#endif
+    }();
+    long long q8_pair_dispatches = 0;
     bool fast_k = std::getenv("STRATA_Q36_OLD_KERNELS") == nullptr;
     bool verify_k = std::getenv("STRATA_Q36_VERIFY") != nullptr;
     float* vbuf = nullptr;                       // verify scratch
@@ -1926,6 +1941,51 @@ struct Engine {
                 std::fprintf(stderr, "tinystrata VERIFY MISMATCH %s%s: first at %zu of %zu: new %g old %g (bits %08x %08x)\n", what,
                              tag.c_str(), i, n, (double) ha[i], (double) hb[i], *(unsigned*) &ha[i], *(unsigned*) &hb[i]);
         }
+    }
+    bool can_q8_pair(const Mat& a, const Mat& b, int T) const {
+#if defined(__HIPCC__) || defined(STRATA_USE_HIP)
+        (void) a; (void) b; (void) T;
+        return false;
+#else
+        if (!fast_k || a.type != 8 || b.type != 8 || T < 1 || T > 8 ||
+            a.n_in != b.n_in || a.n_in <= 0 || a.n_in > 2048 || a.n_in % 32 || a.n_out <= 0 || b.n_out <= 0)
+            return false;
+        if (K::native_q8_0_packed_enabled() &&
+            (K::native_q8_0_packed_eligible(a.n_in, a.n_out) || K::native_q8_0_packed_eligible(b.n_in, b.n_out)))
+            return false;
+        return true;
+#endif
+    }
+    int q8_pair_eligible_layers() const {
+        int eligible = 0;
+        for (const Layer& layer : m->layers)
+            eligible += !layer.attn && can_q8_pair(layer.qkv, layer.zg, 1);
+        return eligible;
+    }
+    bool q8_pair(const Mat& a, const Mat& b, const void* input, float* ya, float* yb, int T) {
+#if defined(__HIPCC__) || defined(STRATA_USE_HIP)
+        (void) a; (void) b; (void) input; (void) ya; (void) yb; (void) T;
+        return false;
+#else
+        if (!q8_pair_enabled || !can_q8_pair(a, b, T)) return false;
+        const int nb = a.n_in / 32;
+#define Q36_PAIR(NCV) \
+    case NCV: \
+        if (nb <= 32) q36k::launch_q8_rows_pair<NCV, 1>(a.d, b.d, input, ya, yb, nb, a.n_out, b.n_out, st); \
+        else q36k::launch_q8_rows_pair<NCV, 2>(a.d, b.d, input, ya, yb, nb, a.n_out, b.n_out, st); \
+        break;
+        switch (T) { Q36_PAIR(1) Q36_PAIR(2) Q36_PAIR(3) Q36_PAIR(4) Q36_PAIR(5) Q36_PAIR(6) Q36_PAIR(7) Q36_PAIR(8) }
+#undef Q36_PAIR
+        ++q8_pair_dispatches;
+        if (verify_k) {
+            if (!vbuf) CK(cudaMalloc((void**) &vbuf, size_t(8) * std::max<int64_t>(16384, std::max(m->g.n_vocab, m->g.n_ff_shexp)) * sizeof(float)));
+            mmq_ref(a, input, vbuf, T);
+            verify_cmp("q8_pair first", ya, vbuf, size_t(T) * a.n_out);
+            mmq_ref(b, input, vbuf, T);
+            verify_cmp("q8_pair second", yb, vbuf, size_t(T) * b.n_out);
+        }
+        return true;
+#endif
     }
     /// A Q8_0 matrix that is not on the packed decode kernel (the shared expert, attention k / v: fewer than 2048
     /// rows) for T <= 8 columns: one warp per row (q36k::k_q8_rows) in place of the 4-warp block of
@@ -2234,8 +2294,10 @@ struct Engine {
             float* al_b = verify ? v_alpha[li] : alpha;
             float* be_b = verify ? v_beta[li] : beta;
             prep_in(T);
-            apply(L.qkv, xq, qkv_b, T);
-            apply(L.zg, xq, z, T);
+            if (!q8_pair(L.qkv, L.zg, xq, qkv_b, z, T)) {
+                apply(L.qkv, xq, qkv_b, T);
+                apply(L.zg, xq, z, T);
+            }
             if (T <= kGemmT || (m->clover && T <= verify_capacity)) {
                 k_gdn_ab<<<dim3(rows8(2 * HV), T), kThreads, 0, st>>>(L.alpha, L.beta, h, L.dt, L.ssm_a, al_b, be_b, N,
                                                                       HV);
@@ -3199,6 +3261,7 @@ struct Engine {
                     kv_grow ? 1 : 0, kv_logical_bytes, kv_mapped_bytes(), (long long) kv_committed_rows,
                     slots, total_experts(), bytes, bytes >> 20, arena);
         if (kv_page_pool) std::printf("INFO hip_vmm_spare_bytes=%zu\n", kv_page_pool->bytes());
+        if (q8_pair_enabled) std::printf("INFO q36_q8_pair_dispatches=%lld\n", q8_pair_dispatches);
     }
 
     void shrink_att(size_t floats) {
@@ -4352,7 +4415,7 @@ int serve(Engine& E) {
                 "expert_arena_bytes=%zu expert_auto=%d vram_free_bytes=%zu vram_cuda_free_bytes=%zu "
                 "vram_physical_free_bytes=%zu vram_free_source=%s vram_reserve_mib=%zu mtp=%d "
                 "kv_auto=%d context_auto=%d gpu_cc=%d vision=%d chunk=%d q36_mmvq_il=%d q36_mmvq_il_auto=%d "
-                "q36_main_mmq=%d q36_main_mmq_auto=%d q36_mtp_mmq=%d q36_mmq_min_rows=%d q36_mmq_auto_workspace_bytes=%zu q36_int8_fdec=%d clover_draft=%d "
+                "q36_main_mmq=%d q36_main_mmq_auto=%d q36_mtp_mmq=%d q36_mmq_min_rows=%d q36_mmq_auto_workspace_bytes=%zu q36_int8_fdec=%d q36_q8_pair=%d q36_q8_pair_eligible_layers=%d clover_draft=%d "
                 "clover_mode=%s clover_block_size=%d clover_threshold=%.9g "
                 "clover_accept=%s clover_accept_ratio=%.9g clover_accept_delta=%.9g clover_draft_penalty_gpu=%d clover_gpu_exact_verify=%d clover_query_tile=%d\n",
                 E.kv_name(), expert_slots, E.total_experts(), expert_bytes >> 20, expert_bytes, arena_bytes, E.expert_auto ? 1 : 0,
@@ -4361,7 +4424,7 @@ int serve(Engine& E) {
                 E.kv_auto ? 1 : 0, E.context_auto ? 1 : 0, E.gpu_cc, E.vision_enabled ? 1 : 0, E.tmax,
                 E.mmvq_il_enabled ? 1 : 0, E.mmvq_il_auto ? 1 : 0,
                 E.use_mmq ? 1 : 0, E.auto_main_mmq_selected ? 1 : 0, E.use_mmq && E.mtp_mmq ? 1 : 0, E.mmq_min_t,
-                E.auto_main_mmq_workspace, E.int8_fdec_enabled ? 1 : 0, E.clover_draft,
+                E.auto_main_mmq_workspace, E.int8_fdec_enabled ? 1 : 0, E.q8_pair_enabled ? 1 : 0, E.q8_pair_eligible_layers(), E.clover_draft,
                 E.clover_mode.c_str(), E.clover_block_size, (double) E.clover_threshold,
                 E.clover_accept.c_str(), (double) E.clover_accept_ratio, (double) E.clover_accept_delta,
                 E.clover_draft_penalty_gpu ? 1 : 0, E.clover_gpu_exact_verify ? 1 : 0, E.clover_query_tile);
@@ -4598,7 +4661,7 @@ int serve(Engine& E) {
             E.reset();
             live.clear();
             turn_ids.clear();
-            turn_state.bytes.clear();
+            turn_state.invalidate();
             kv_usage.publish(0, true);
             E.trim_kv_for_request((int64_t) ids.size() + 64);
         }
@@ -4651,7 +4714,7 @@ int serve(Engine& E) {
                     E.load_turn(turn_state);
                     live = turn_ids;
                 } else {
-                    E.reset(); live.clear(); turn_ids.clear(); turn_state.bytes.clear();
+                    E.reset(); live.clear(); turn_ids.clear(); turn_state.invalidate();
                     E.clear_images();
                 }
             }
@@ -5247,6 +5310,8 @@ int strata::qwen35::run(int argc, char** argv) {
     CK(cudaGetDevice(&dev));
     CK(cudaGetDeviceProperties(&prop, dev));
     E.gpu_cc = prop.major * 10 + prop.minor;
+    if (std::getenv("TINYSTRATA_Q36_Q8_PAIR") == nullptr)
+        E.q8_pair_enabled = m.clover && prop.major == 12;
 #endif
     if (E.kv_auto) {
         const bool shape = m.g.head_dim == 256 && m.g.n_head == 8 * m.g.n_head_kv;

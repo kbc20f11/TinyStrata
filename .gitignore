@@ -46,6 +46,8 @@
 !/tests/test_benchmark_profiles.py
 !/tests/q36-chunk-policy.cpp
 !/tests/native-conversations.cpp
+!/tests/native-expert-pool.cpp
+!/tests/q36-q8-pair.cu
 !/tests/q36-int8-fdec-reference.cu
 !/tests/q36-prefill-cancel.py
 !/tests/test_ui_chat_history.py

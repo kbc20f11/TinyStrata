@@ -149,6 +149,8 @@ Los mismos tres textos se ejecutaron dos veces por configuración FP8/INT8 con l
 
 INT8 y FP8 se midieron en orden alterno con cuatro inicios independientes por formato, ejecutando las tres entradas dos veces por inicio y generando 128 tokens por solicitud; los detalles están en la [comparación directa](benchmark/results/qwen-kv-direct-20261103.md).
 
+Las [comparaciones de CPU, GPU de Clover y checkpoints basadas en Basalt](benchmark/results/basalt-adoption-20261105.md#english) usan ajustes controlados distintos y no sustituyen las tablas de mediciones históricas.
+
 ## Velocidad medida — Gemma 4
 
 Medido en el mismo PC Windows con 64 GB de RAM, Gemma 4 26B-A4B-it QAT Q4_0 y el asistente MTP QAT correspondiente. El codificador de imágenes permaneció en la GPU durante las solicitudes por API. Se activaron MTP 3, CUDA Graphs y los valores predeterminados de razonamiento y muestreo del modelo; el contexto se fijó según la clase de VRAM, mientras que los bloques de entrada y la distribución de expertos se eligieron automáticamente.

@@ -149,6 +149,8 @@ Dieselben drei Eingabetexte wurden je zweimal pro FP8-/INT8-Konfiguration mit de
 
 INT8 und FP8 wurden in wechselnder Reihenfolge mit jeweils vier unabhängigen Starts gemessen, wobei jeder Start die drei Eingaben je zweimal mit 128 Ausgabetoken pro Anfrage verarbeitete; Einzelheiten stehen im [direkten Vergleich](benchmark/results/qwen-kv-direct-20261103.md).
 
+Die [Basalt-basierten Vergleiche für CPU, Clover-GPU und Checkpoints](benchmark/results/basalt-adoption-20261105.md#english) verwenden gesonderte kontrollierte Einstellungen und ersetzen die historischen Benchmark-Tabellen nicht.
+
 ## Gemessene Geschwindigkeit — Gemma 4
 
 Gemessen auf demselben Windows-PC mit 64 GB Arbeitsspeicher, Gemma 4 26B-A4B-it QAT Q4_0 und dem passenden QAT-MTP-Assistenten. Bei den API-Anfragen blieb der Bildencoder auf der GPU. MTP 3, CUDA Graphs sowie die modellspezifischen Thinking- und Sampling-Standardwerte waren aktiv; die Kontextkapazität wurde entsprechend der VRAM-Klasse festgelegt, Prompt-Chunks und Expertenplatzierung wurden automatisch gewählt.

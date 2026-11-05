@@ -167,6 +167,8 @@ Each of the same three input texts was run twice per FP8/INT8 configuration, gen
 
 INT8 and FP8 were measured in alternating groups with four independent starts per format, each start running the three inputs twice and generating 128 tokens per request; see the [direct comparison](benchmark/results/qwen-kv-direct-20261103.md) for details.
 
+[Basalt-based CPU, Clover GPU and checkpoint comparisons](benchmark/results/basalt-adoption-20261105.md#english) use separate controlled settings; they do not replace the historical benchmark tables.
+
 ## Measured speed — Gemma 4
 
 Measured on the same Windows PC with 64 GB of system RAM, using Gemma 4 26B-A4B-it QAT Q4_0 and its matching QAT MTP assistant. The image encoder stayed on the GPU during API requests. MTP 3, CUDA Graphs and the model-specific thinking/sampling defaults were enabled; context capacity was set for each VRAM class; prompt chunks and Expert placement were automatic.
