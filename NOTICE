@@ -148,3 +148,14 @@ retains its existing projection, convolution and recurrent arithmetic.
 The new header preserves the GGML authors' copyright, the pinned llama.cpp
 3cf03257f219afbe7334045ff7c6a06ac68c627d attribution for Q6_K dot arithmetic,
 and the complete MIT notice; see also third_party/ggml/LICENSE.
+
+The eager hybrid CPU compact-result combine in src/qwen35/q36_engine.cu and
+src/qwen35/q36_kernels.cuh was independently implemented after consulting
+Basalt's docs/unified-kernel.md and src/kernels/cuda/dec_moe.cuh at
+bbf2f5bb783adc5ffe5b49043f82c9399313bb46 (MIT), credited above. TinyStrata
+retains its existing FP32 Expert results, weighted combine, normalization and
+activation-quantization arithmetic; only result storage and scheduling change.
+The manual empirical CPU-worker probe in benchmark/probe.py was independently
+implemented after consulting Basalt's docs/probe.md at the same commit. It
+measures candidate worker counts and reports recommendations without changing
+saved model profiles or universal defaults.

@@ -289,6 +289,57 @@ __global__ void __launch_bounds__(1024) k_moe_out_small(float* x, const float* p
     }
 }
 
+/// Eager hybrid decode only: the exact k_moe_out_small arithmetic with the
+/// CPU-produced FP32 rows addressed directly from their compact upload. The
+/// row map is -1 for a GPU entry, otherwise that entry's unique packed CPU row.
+/// The legacy kernel stays separate so all-GPU and mapped Graph paths keep
+/// their original generated code and indexed output/flag storage.
+__global__ void __launch_bounds__(1024) k_moe_out_cpu_small(float* x, const float* parts, const float* cpu, const int32_t* row_of_entry,
+                                                        const int32_t* prow, const float* wts,
+                                                        int K_, const float* shared, const float* sgate, int sg_stride,
+                                                        const float* wn, float* h, int n, float eps, QB* hq = nullptr) {
+    __shared__ float vv[2048];
+    __shared__ float sh[256];
+    __shared__ const float* pk[16];
+    const int t = blockIdx.x;
+    float* xr = x + (size_t) t * n;
+    if (threadIdx.x < K_) {
+        const int entry = t * K_ + threadIdx.x;
+        const int row = row_of_entry[entry];
+        pk[threadIdx.x] = row >= 0 ? cpu + (size_t) row * n
+                                  : parts + (size_t) (prow ? prow[entry] : entry) * n;
+    }
+    __syncthreads();
+    const float* wr = wts + (size_t) t * K_;
+    const float gs = sigm(sgate[(size_t) t * sg_stride]);
+    for (int i = threadIdx.x; i < n; i += 1024) {
+        float acc = wr[0] * pk[0][i];
+        for (int k = 1; k < K_; ++k) acc = fmaf(wr[k], pk[k][i], acc);
+        acc += gs * shared[(size_t) t * n + i];
+        const float v = xr[i] + acc;
+        xr[i] = v;
+        vv[i] = v;
+    }
+    if (wn == nullptr) return;
+    __syncthreads();
+    if (threadIdx.x < 256) {
+        float s = 0.f;
+        for (int i = threadIdx.x; i < n; i += 256) s += vv[i] * vv[i];
+        sh[threadIdx.x] = s;
+    }
+    __syncthreads();
+    for (int s = 128; s > 0; s >>= 1) {
+        if ((int) threadIdx.x < s) sh[threadIdx.x] += sh[threadIdx.x + s];
+        __syncthreads();
+    }
+    const float r = rsqrtf(sh[0] / (float) n + eps);
+    for (int i = threadIdx.x; i < n; i += 1024) {
+        const float hv = __fmul_rn(__fmul_rn(vv[i], r), wn[i]);
+        h[(size_t) t * n + i] = hv;
+        if (hq) q8_store(hq + (size_t) t * (n >> 5), i, ((volatile float*) h)[(size_t) t * n + i], threadIdx.x & 31);
+    }
+}
+
 /// k_group / k_group_hy for n_ent <= 64 entries: one block of 64 threads ranks each entry by (expert id, entry) in
 /// parallel instead of one thread walking all the experts; the same group / entry arrays.  HY: only the entries whose
 /// expert has a VRAM slot (slot_of >= 0), the group's blob at blobs + slot * blob.

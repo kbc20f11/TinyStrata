@@ -171,6 +171,9 @@ INT8 と FP8 を交互に各 4 回独立起動し、各起動で 3 入力を 2 �
 
 [CloverのGDN融合の計測](benchmark/results/gdn-chain-20261105.md#日本語)では、全GPU常駐とExpert予算固定のハイブリッド経路を比較しています。Qwenの既定経路は維持します。
 
+[ハイブリッド実行のCPU結果統合と、実測に基づくワーカー数の調整](benchmark/results/basalt-remaining-20261105.md#日本語)
+も掲載しています。過去のベンチマーク表はそのまま残しています。
+
 ## 実測速度 — Gemma 4
 
 同じ Windows PC（システム RAM 64 GB）で、Gemma 4 26B-A4B-it QAT Q4_0 と対応する QAT MTP アシスタントを使って計測しました。画像エンコーダを GPU に常駐させた状態で API を使用し、MTP 3・CUDA Graph・モデルごとの既定の思考とサンプリングを有効にし、コンテキスト容量は各 VRAM クラスに合わせ、入力チャンクとエキスパート配置は自動選択しています。

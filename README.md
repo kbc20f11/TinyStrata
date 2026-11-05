@@ -171,6 +171,9 @@ INT8 and FP8 were measured in alternating groups with four independent starts pe
 
 [Clover GDN chain measurements](benchmark/results/gdn-chain-20261105.md#english) cover repeated full-GPU and fixed-budget hybrid comparisons; Qwen retains its existing default path.
 
+[Hybrid CPU result merging and measured worker tuning](benchmark/results/basalt-remaining-20261105.md#english)
+are documented separately; the historical benchmark tables remain unchanged.
+
 ## Measured speed — Gemma 4
 
 Measured on the same Windows PC with 64 GB of system RAM, using Gemma 4 26B-A4B-it QAT Q4_0 and its matching QAT MTP assistant. The image encoder stayed on the GPU during API requests. MTP 3, CUDA Graphs and the model-specific thinking/sampling defaults were enabled; context capacity was set for each VRAM class; prompt chunks and Expert placement were automatic.

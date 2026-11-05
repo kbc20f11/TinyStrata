@@ -44,11 +44,13 @@
 !/tests/test_responses_timings.py
 !/tests/test_parking_settings.py
 !/tests/test_benchmark_profiles.py
+!/tests/test_benchmark_probe.py
 !/tests/q36-chunk-policy.cpp
 !/tests/native-conversations.cpp
 !/tests/native-expert-pool.cpp
 !/tests/q36-q8-pair.cu
 !/tests/q36-gdn-chain.cu
+!/tests/q36-cpu-combine.cu
 !/tests/q36-int8-fdec-reference.cu
 !/tests/q36-prefill-cancel.py
 !/tests/test_ui_chat_history.py
@@ -68,6 +70,7 @@
 /benchmark/**
 !/benchmark/README.md
 !/benchmark/run.py
+!/benchmark/probe.py
 !/benchmark/cases.json
 !/benchmark/image.png
 !/benchmark/results/

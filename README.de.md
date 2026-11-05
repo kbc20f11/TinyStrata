@@ -153,6 +153,9 @@ Die [Basalt-basierten Vergleiche für CPU, Clover-GPU und Checkpoints](benchmark
 
 Die [Messungen zur Clover-GDN-Fusion](benchmark/results/gdn-chain-20261105.md#english) vergleichen wiederholt vollständige GPU-Ausführung und Hybridbetrieb mit festem Expert-Budget; Qwens Standardpfad bleibt erhalten.
 
+[Zusammenführung der CPU-Ergebnisse im Hybridbetrieb und Abstimmung der Worker-Zahl anhand von Messungen](benchmark/results/basalt-remaining-20261105.md#english)
+sind gesondert dokumentiert; die historischen Benchmark-Tabellen bleiben unverändert.
+
 ## Gemessene Geschwindigkeit — Gemma 4
 
 Gemessen auf demselben Windows-PC mit 64 GB Arbeitsspeicher, Gemma 4 26B-A4B-it QAT Q4_0 und dem passenden QAT-MTP-Assistenten. Bei den API-Anfragen blieb der Bildencoder auf der GPU. MTP 3, CUDA Graphs sowie die modellspezifischen Thinking- und Sampling-Standardwerte waren aktiv; die Kontextkapazität wurde entsprechend der VRAM-Klasse festgelegt, Prompt-Chunks und Expertenplatzierung wurden automatisch gewählt.

@@ -71,6 +71,20 @@ For a longer Clover comparison, add **`--include-64k`**:
 
 This opt-in extension adds one fresh **65,536-token input including the chat template**, with the existing **32-token output limit**, after the six short-generation requests and the 4K/16K requests on each start. It keeps the warm-up, inputs, sampler, seed, thinking and default four starts unchanged. Startup context must hold at least **65,568 tokens**; otherwise measurement stops before any generation request. Results are nonstandard, carry a **`-64k` protocol suffix** and `include_64k: true`, and report 64K input processing plus generation after 64K using actual output counts. The 16K cache snapshot stays at the 16K boundary; a separate 64K snapshot records Expert cache and physically mapped KV. Without this flag, the v1 workload and report fields remain unchanged. The option requires `--model clover`.
 
+### CPU worker probe (diagnostic)
+
+Stop the regular API first, then use [probe.py](probe.py) for Qwen or Clover:
+
+```powershell
+& $python .\benchmark\probe.py --model clover
+```
+
+The probe preserves the saved profile's native arguments and tuning environment, including Expert layout and input chunk, except the worker count and explicit command-line overrides. It uses a controlled temperature-0 sampler, starts only its own benchmark services, and never saves a new application setting. Counts mean **background workers plus one participating host**: `--cpu-threads 7` uses eight CPU threads. If every Expert is GPU resident, it reports that worker tuning does not apply.
+
+Candidates are powers of two, half the observed automatic count, and that count itself. Mirrored screens choose the fewest workers within 2% of the best timing only when the gain exceeds baseline variation and a 3% floor. A manual recommendation also requires fresh ABBA and BAAB confirmations using three short prompts and exact 4K/16K inputs, matching output/reasoning hashes, native counts and Expert byte capacity, with no material long-input regression. Results use **`tinystrata-worker-probe-v1`**, not standard v1; a printed `--cpu-threads N` applies only to the recorded model and conditions.
+
+`--prepare-only --default-workers N` writes a bounded plan without starting services. `--expert-gib 4` explicitly tests a 4-GiB Expert budget; otherwise the profile's budget is preserved. `--chunk N` fixes one chunk size. This tool does not search chunk sizes or implement a fractional CPU/GPU prefill scheduler.
+
 ### Common configuration
 
 Use the project's fixed model files: Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS, Google Gemma 4 26B-A4B-it QAT Q4_0 with its matching vision projector and QAT MTP assistant, LiquidAI LFM2.5-24B-A2B Q4_K_M, and [AtomicChat Clover-35B-A3B-Preview IQ3_XXS](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf) (`Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf`; Expert gate/up IQ3_XXS, down IQ3_S). Keep older Clover Q4_0 measurements labeled separately; they do not represent this IQ3_XXS profile. Record the actual model and binary hashes, TinyStrata version/commit, GPU/VRAM, CPU, system RAM, OS and driver version with a submission.
@@ -203,6 +217,20 @@ Clover の長文比較には **`--include-64k`** を追加できます。
 ```
 
 各起動で、短文生成 6 回・4K・16K の後に、**テンプレート込みで正確に 65,536 入力トークン**、既存の**出力上限 32 トークン**の新規入力を 1 回追加します。ウォームアップ・入力本文・サンプラー・seed・思考設定・既定の 4 回起動は同じです。起動時のコンテキスト容量が **65,568 トークン**未満なら、生成リクエストを送る前に停止します。結果は標準 v1 と区別し、プロトコル名に **`-64k`**、メタデータに `include_64k: true` を付け、64K の入力処理速度と入力後の生成速度を実出力数で集計します。16K 時点のキャッシュ記録は維持し、64K 後の Expert キャッシュ・実際に割り当てた KV 領域も別途記録します。フラグなしでは v1 の測定内容と報告項目を変更しません。`--model clover` の場合だけ指定できます。
+
+### CPU ワーカー数の調査（診断用）
+
+通常の API を停止してから、Qwen または Clover を [probe.py](probe.py) で調べます。
+
+```powershell
+& $python .\benchmark\probe.py --model clover
+```
+
+ワーカー数と明示したオプションを除き、保存済みプロファイルの native 引数・調整用環境変数・Expert レイアウト・入力チャンクを維持します。サンプリングは比較用の温度 0 とし、専用サービスだけを起動・終了します。設定は自動保存しません。数値は **バックグラウンドワーカー数**で、呼び出し元も計算するため `--cpu-threads 7` は合計 8 スレッドです。全 Expert が GPU に収まっている場合は、調査対象となる CPU 経路がないと表示します。
+
+候補は 2 の累乗、自動選択数の半分、自動選択数です。順序を反転した選別試験で、最速の計時から 2% 以内にある最小の数を選びます。改善は基準値のばらつきと最低 3% を上回る必要があります。短文 3 種類と正確な 4K／16K 入力による新しい ABBA／BAAB 確認で、回答・思考のハッシュ、native の各トークン数、Expert の実容量が一致し、長文で明確に悪化しない場合だけ手動変更用の `--cpu-threads N` を提案します。結果は標準 v1 とは別の **`tinystrata-worker-probe-v1`** で、提案は記録したモデル・条件に限ります。
+
+`--prepare-only --default-workers N` はサービスを起動せずに計画を保存します。`--expert-gib 4` は Expert の予算を明示的に 4 GiB にします。省略時はプロファイルの予算を維持します。`--chunk N` は 1 つのチャンクサイズを固定するだけで、チャンク探索や入力処理の CPU／GPU 割合調整は行いません。
 
 ### 共通設定
 

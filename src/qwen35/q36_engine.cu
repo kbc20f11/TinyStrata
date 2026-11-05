@@ -1367,6 +1367,11 @@ struct Engine {
 #endif
     float *h_h = nullptr, *cpu_out = nullptr, *ecpu = nullptr;
     int32_t *h_ids = nullptr, *h_miss = nullptr, *d_miss = nullptr, *h_cnt = nullptr;
+    // Eager hybrid decode: compact CPU rows are consumed by the combine
+    // directly; mapped Graph results retain their indexed output/flag layout.
+    bool cpu_compact_enabled = false, cpu_compact_pending = false;
+    long long cpu_compact_calls = 0, cpu_compact_rows = 0, cpu_compact_merges_avoided = 0;
+    unsigned long long cpu_compact_upload_bytes = 0, cpu_compact_unpacked_bytes = 0;
     uint8_t* acts = nullptr;   // per token: its quantized activation (kNativeActBytes)
     cudaEvent_t ev_route = nullptr;
     uint8_t* stage[2] = {};
@@ -2307,6 +2312,22 @@ struct Engine {
     void moe_end(int T, const int32_t* prow, const float* shared, const float* sgate, const float* wn, float* hout, int sgs = 1) {
         const int N = (int) m->g.n_embd, Kp = (int) m->top_k;
         const bool small = fast_k && T >= 1 && decode_rows(T) && N > 0 && N <= 2048 && N % 256 == 0 && Kp > 0 && Kp <= 15;
+        if (cpu_compact_pending) {
+            // The pack predicate below guarantees this exact combine contract.
+            // No legacy fallback can read unmerged CPU entries after packing.
+            if (!small || verify_k || prow || N != 2048 || Kp != 8 || T > 8) {
+                std::fprintf(stderr, "tinystrata: compact CPU combine contract changed\n");
+                std::exit(1);
+            }
+            const bool mkq = wn != nullptr && hout == h;
+            q36k::k_moe_out_cpu_small<<<T, 1024, 0, st>>>(x, eparts, ecpu, d_miss, prow, ewts, Kp, shared, sgate,
+                sgs, wn, hout, N, m->eps, mkq ? (q36k::QB*) xq : nullptr);
+            cpu_compact_pending = false;
+            ++cpu_compact_calls;
+            ++cpu_compact_merges_avoided;
+            xq_ready = mkq;
+            return;
+        }
         if (small && verify_k) {
             if (!vx_) {
                 CK(cudaMalloc((void**) &vx_, (size_t) verify_capacity * m->g.n_embd * 4));
@@ -2359,6 +2380,7 @@ struct Engine {
     /// `verify`: a verify window - the GDN state is read, not written (commit() writes it for the kept rows).
     void layer(const Layer& L, size_t li, int T, int64_t p0, const int32_t* dpos, bool graph_mode, bool verify,
                const float* wn, float* hout) {
+        cpu_compact_pending = false;
         const auto& g = m->g;
         const int N = (int) g.n_embd, Kp = (int) m->top_k, FF = (int) g.n_ff, FS = (int) g.n_ff_shexp;
         const int HK = (int) g.ssm_k_heads, HV = (int) g.ssm_v_heads, D = (int) g.ssm_state_size;
@@ -2823,6 +2845,7 @@ struct Engine {
     /// rows uploaded and merged into the entries' rows.
     void moe_hybrid_cpu(size_t li, int T, bool graph_service = false) {
 #if defined(STRATA_Q36_CPU_POOL)
+        if (!graph_service) cpu_compact_pending = false;
         namespace C = strata::kernels::cpu;
         const auto& g = m->g;
         const int N = (int) g.n_embd, Kp = (int) m->top_k;
@@ -2855,6 +2878,8 @@ struct Engine {
         int n_miss = 0;
         std::map<int, size_t> open;   // expert -> its job with room
         const bool defer = rows_deferred && li < m->layers.size();
+        const bool compact = cpu_compact_enabled && !graph_service && !recording_hybrid &&
+            fast_k && !verify_k && !clover_preview && T >= 1 && T <= 8 && N == 2048 && Kp == 8;
         if (defer) {
             if (row_ids.size() < m->layers.size()) row_ids.resize(m->layers.size());
             row_ids[li].assign(host_ids, host_ids + n_ent);
@@ -2862,8 +2887,10 @@ struct Engine {
         for (int e = 0; e < n_ent; ++e) {
             const int x = host_ids[e];
             if (!defer) H.score[(size_t) x] += 1.0;
-            host_miss[e] = H.slot_of[(size_t) x] < 0;
-            if (!host_miss[e]) continue;
+            const bool miss = H.slot_of[(size_t) x] < 0;
+            host_miss[e] = compact ? (miss ? n_miss : -1) : int(miss);
+            if (!miss) continue;
+            const int result_row = compact ? n_miss : e;
             ++n_miss;
             const int t = e / Kp;
             if (!quantized[(size_t) t]) {
@@ -2879,7 +2906,7 @@ struct Engine {
             }
             C::ExpertJobMulti& j = jobs[it->second];
             j.nact[j.nt] = acts + (size_t) t * C::kNativeActBytes;
-            j.out[j.nt] = host_cpu + (size_t) e * N;
+            j.out[j.nt] = host_cpu + (size_t) result_row * N;
             ++j.nt;
         }
         hy_cpu += n_miss;
@@ -2888,9 +2915,15 @@ struct Engine {
         pool->run_split_multi_native(H.fmt, jobs.data(), (int) jobs.size());
         hy_cpu_ms += ms_since(t0);
         if (graph_service) return; // the captured GPU wait/merge consumes mapped results
-        CK(cudaMemcpyAsync(ecpu, cpu_out, (size_t) n_ent * N * 4, cudaMemcpyHostToDevice, st));
+        const int rows = compact ? n_miss : n_ent;
+        CK(cudaMemcpyAsync(ecpu, cpu_out, (size_t) rows * N * 4, cudaMemcpyHostToDevice, st));
         CK(cudaMemcpyAsync(d_miss, h_miss, (size_t) n_ent * 4, cudaMemcpyHostToDevice, st));
-        k_merge_cpu<<<n_ent, kThreads, 0, st>>>(eparts, ecpu, d_miss, N);
+        if (compact) {
+            cpu_compact_pending = true;
+            cpu_compact_rows += n_miss;
+            cpu_compact_upload_bytes += (unsigned long long) (rows * N + n_ent) * 4;
+            cpu_compact_unpacked_bytes += (unsigned long long) (n_ent * N + n_ent) * 4;
+        } else k_merge_cpu<<<n_ent, kThreads, 0, st>>>(eparts, ecpu, d_miss, N);
 #else
         (void) li;
         (void) T;
@@ -3341,6 +3374,10 @@ struct Engine {
         if (kv_page_pool) std::printf("INFO hip_vmm_spare_bytes=%zu\n", kv_page_pool->bytes());
         if (q8_pair_enabled) std::printf("INFO q36_q8_pair_dispatches=%lld\n", q8_pair_dispatches);
         if (gdn_chain_enabled) std::printf("INFO q36_gdn_chain_dispatches=%lld\n", gdn_chain_dispatches);
+        std::printf("INFO q36_cpu_compact=%d q36_cpu_compact_calls=%lld q36_cpu_compact_rows=%lld "
+                    "q36_cpu_compact_upload_bytes=%llu q36_cpu_compact_unpacked_bytes=%llu "
+                    "q36_cpu_compact_merges_avoided=%lld\n", cpu_compact_enabled ? 1 : 0, cpu_compact_calls,
+                    cpu_compact_rows, cpu_compact_upload_bytes, cpu_compact_unpacked_bytes, cpu_compact_merges_avoided);
     }
 
     void shrink_att(size_t floats) {
@@ -5400,6 +5437,9 @@ int strata::qwen35::run(int argc, char** argv) {
     CK(cudaGetDevice(&dev));
     CK(cudaGetDeviceProperties(&prop, dev));
     E.gpu_cc = prop.major * 10 + prop.minor;
+    // Measured CUDA Blackwell path; explicit0 keeps the legacy merge.
+    const char* compact = std::getenv("TINYSTRATA_Q36_CPU_COMPACT");
+    E.cpu_compact_enabled = prop.major == 12 && (!compact || std::strcmp(compact, "1") == 0);
     if (std::getenv("TINYSTRATA_Q36_Q8_PAIR") == nullptr)
         E.q8_pair_enabled = m.clover && prop.major == 12;
 #endif
