@@ -41,13 +41,13 @@ struct Fixture {
     std::vector<C::ExpertJobMulti> jobs;
     std::vector<float> actual, expected;
 
-    Fixture(int gu_type, int down_type, int experts, int max_tokens)
+    Fixture(int gu_type, int down_type, int experts, int max_tokens, unsigned seed = 12345)
         : width(max_tokens), activations((size_t) experts * max_tokens), jobs(experts),
           actual((size_t) experts * max_tokens * 2048, -123.375f), expected(actual) {
         std::string error;
         require(C::native_fmt(gu_type, down_type, 2048, 512, format, error), error.c_str());
         weights.resize(format.bytes);
-        std::mt19937 random(12345);
+        std::mt19937 random(seed);
         std::normal_distribution<float> normal(0.f, .018f);
         std::vector<float> input(2048 * 512), importance(2048, 1.f);
         for (int projection = 0; projection < 3; ++projection) {
@@ -88,6 +88,8 @@ struct Fixture {
         }
     }
 
+    void reset() { std::fill(actual.begin(), actual.end(), -123.375f); }
+
     void check(int experts) const {
         for (int expert = 0; expert < experts; ++expert) {
             const size_t start = (size_t) expert * width * 2048;
@@ -99,23 +101,71 @@ struct Fixture {
                     require(actual[start + token * 2048 + row] == -123.375f,
                             "pool wrote outside an expert's token count");
         }
+        // Poison every call, then also inspect jobs not submitted: a late old-batch writer must not be hidden
+        // by the previous call's already-correct output or by checking only the requested prefix.
+        for (size_t i = (size_t) experts * width * 2048; i < actual.size(); ++i)
+            require(actual[i] == -123.375f, "pool wrote an unsubmitted expert");
     }
 };
 
 int exercise(Fixture& fixture, int workers, bool host_works, int tasks, const char* spin) {
     int checks = 0;
-    for (bool fused : {false, true}) {
+    for (int park : {1, 0, 2}) for (bool fused : {false, true}) {
         environment("STRATA_POOL_FUSED", fused ? "1" : "0");
+        environment("STRATA_POOL_PARK_BARRIER", std::to_string(park));
         environment("STRATA_POOL_SPIN_US", spin);
         C::ExpertPool pool(workers, false, host_works, C::PoolAffinity::All, tasks);
-        pool.run_split_multi_native(fixture.format, fixture.jobs.data(), 0);
-        pool.run_split_multi_native(fixture.format, fixture.jobs.data(), -1);
+        require(pool.park_barrier_mode() == park && pool.park_barrier() == (park != 0), "pool selected the wrong completion policy");
+        fixture.reset();
+        pool.run_split_multi_native(fixture.format, nullptr, 0);
+        pool.run_split_multi_native(fixture.format, nullptr, -1);
+        fixture.check(0);
+        require(pool.completed_phases() == 0, "empty submissions published a phase");
         for (int iteration = 0; iteration < 32; ++iteration) {
             if (iteration % 8 == 0) std::this_thread::sleep_for(std::chrono::milliseconds(25));
             const int count = iteration % 2 ? (int) fixture.jobs.size() : 1 + iteration % fixture.jobs.size();
+            fixture.reset();
+            const uint64_t before = pool.completed_phases();
             pool.run_split_multi_native(fixture.format, fixture.jobs.data(), count);
+            require(pool.completed_phases() > before, "native batch did not complete a phase");
             fixture.check(count);
             ++checks;
+        }
+    }
+    return checks;
+}
+
+int lifecycle_stress(Fixture& first, Fixture& second) {
+    int checks = 0;
+    for (int park : {1, 0, 2}) for (bool fused : {false, true}) for (bool host : {false, true}) {
+        environment("STRATA_POOL_PARK_BARRIER", std::to_string(park));
+        environment("STRATA_POOL_FUSED", fused ? "1" : "0");
+        for (int cycle = 0; cycle < 8; ++cycle) {
+            environment("STRATA_POOL_SPIN_US", cycle % 2 ? "0" : "20000");
+            // Start with work immediately: some newly created workers can wake only after a host-drained batch.
+            // Destroy immediately after the final checked batch: no implicit re-park wait is added by the test.
+            C::ExpertPool pool(3, false, host, C::PoolAffinity::All, cycle % 2 ? 1 : 0);
+            require(pool.park_barrier_mode() == park && pool.park_barrier() == (park != 0), "lifecycle pool selected the wrong completion policy");
+            require(pool.completed_phases() == 0, "new pool already has completed phases");
+            for (int iteration = 0; iteration < 6; ++iteration) {
+                Fixture& fixture = iteration % 2 ? second : first;
+                const int count = iteration % 3 == 0 ? 1 : iteration % 3 == 1 ? 3 : (int) fixture.jobs.size();
+                fixture.reset();
+                const uint64_t before = pool.completed_phases();
+                {
+                    // A fresh descriptor array dies as soon as run returns, exercising its promised lifetime.
+                    auto jobs = fixture.jobs;
+                    pool.run_split_multi_native(fixture.format, jobs.data(), count);
+                }
+                require(pool.completed_phases() > before, "lifecycle batch did not complete a phase");
+                fixture.check(count);
+                ++checks;
+                const uint64_t completed = pool.completed_phases();
+                pool.run_split_multi_native(fixture.format, nullptr, 0);
+                pool.run_split_multi_native(fixture.format, nullptr, -1);
+                require(pool.completed_phases() == completed, "empty submissions changed the phase count");
+                if (iteration == 2 && cycle % 2) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
         }
     }
     return checks;
@@ -140,7 +190,9 @@ int main(int argc, char** argv) {
         checks += exercise(auto_grain, 3, true, 0, "0");
         Fixture one_worker(22, 21, 7, 4);
         checks += exercise(one_worker, 1, false, 0, "0");
-        std::printf("PASS native expert pool: %d batches, MT%d, serial/legacy/fused bitwise parity\n", checks, mt);
+        Fixture alternate(18, 21, 7, 2, 98765);
+        checks += lifecycle_stress(auto_grain, alternate);
+        std::printf("PASS native expert pool: %d batches, MT%d, serial/legacy/fused and park/epoch bitwise parity\n", checks, mt);
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "native expert pool: %s\n", error.what());

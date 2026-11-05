@@ -1,18 +1,24 @@
 // CPU expert pool for native GGUF experts.
-// THE COMPLETION PROTOCOL, because this is where a pool usually goes wrong.  `run()` waits for `done == n`
-// AND for every worker to PARK.  Waiting only for `done` is not enough: a worker can still be inside the
-// drain loop after its last `done` increment, and the host resetting `head` underneath it would let that
-// worker claim a job from the NEXT batch before the next batch has been published.
+// THE COMPLETION PROTOCOL: each claim carries its batch epoch.  `head` is one 64-bit word containing
+// epoch | njobs | index; a CAS only succeeds for the epoch the worker woke for.  Drain reads the batch's
+// non-atomic description only AFTER a successful claim, and publishes done with release ordering AFTER its
+// last payload access.  The host waits for all completions with acquire ordering before changing that
+// description or reusing its buffers.  A worker still in the old drain may then touch only the atomic claim
+// word and its own diagnostics/park state: it cannot claim a job from the new epoch.
 //
-// **AND `parked` IS NOT ENOUGH EITHER (issue #29).**  A worker that went to sleep (after `kSpinBeforeSleep`) is
+// `STRATA_POOL_PARK_BARRIER=1` (initial default/reference) additionally waits for every worker to park before
+// and after each phase.  Explicit 0 tests completion-only handoff, following Basalt's epoch protocol; 2 keeps
+// only the before-publish park barrier, allowing re-park to overlap the consumer of completed outputs.
+// These policies do not change row arithmetic, task grain, participants, or bounded done/readiness watchdogs. Calls on one
+// pool are serialized by its owner; destruction joins every worker before any batch storage is destroyed.
+//
+// **PARKED ALONE IS NOT ENOUGH (issue #29).**  A worker that went to sleep (after `kSpinBeforeSleep`) is
 // still counted as parked when it wakes, so for a moment after it has seen a new epoch the host believes it is
 // idle.  On a card with most experts in VRAM the workers sleep in the middle of a request, tiny batches finish
 // before a sleeper is awake, and that moment comes round constantly: a late worker could claim from the NEXT
 // batch while the host was still writing it, run a job twice, or add to `done` after the host had reset it -
-// and `done != n` then never ended, with the GPU waiting on the pool forever.  So every claim carries its
-// batch: `head` is one 64-bit word `epoch | njobs | index`, a claim is a CAS that only succeeds for the epoch
-// the worker woke for, and a late worker's claim simply fails.  A claim that succeeds belongs to the current
-// batch, whose description the host cannot change until that job's `done` has landed.
+// and `done != n` then never ended, with the GPU waiting on the pool forever.  The epoch-tagged claim, not
+// the extra park barrier, prevents that race.  A late worker's stale claim simply fails.
 #pragma once
 
 #include "strata/kernels/cpu/native_expert.hpp"
@@ -138,6 +144,12 @@ public:
     /// Whether the host thread also drains.  Reported at startup, because "the engine adapts to the machine it
     /// is on" is only true if the engine says which adaptation it took.
     bool host_works() const { return host_works_; }
+    /// Compatibility query: true when any extra park barrier is enabled (modes 1 or 2).
+    bool park_barrier() const { return park_barrier_mode_ != 0; }
+    /// Diagnostic policy: 0 completion-only, 1 before+after (reference), 2 before-only.
+    int park_barrier_mode() const { return park_barrier_mode_; }
+    /// Host-owned diagnostic; read between phases on the calling thread, not concurrently with run().
+    uint64_t completed_phases() const { return completed_phases_; }
 
     bool is_hybrid() const { return topo_.is_hybrid; }
     int p_cores() const { return topo_.p_cores; }
@@ -202,6 +214,8 @@ private:
 
     int n_ = 0;
     bool host_works_ = true;
+    int park_barrier_mode_ = 1; // Diagnostic candidates: STRATA_POOL_PARK_BARRIER=0 or 2; unknown values keep 1.
+    uint64_t completed_phases_ = 0;
     int njobs_ = 0;
     // `run()`'s three phases, accumulated.  Host-thread only; see `phase_ms`.
     double ms_wait_park_ = 0.0;

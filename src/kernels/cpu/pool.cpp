@@ -1,5 +1,5 @@
 // src/kernels/cpu/pool.cpp - P2.S3: the CPU expert pool.  Read pool.hpp first; it explains the protocol.
-// Native phase fusion adapted from jesdga95/basalt (MIT), src/kernels/cpu/pool.cpp
+// Native phase fusion and epoch completion handoff adapted from jesdga95/basalt (MIT), src/kernels/cpu/pool.cpp
 // at bbf2f5bb783adc5ffe5b49043f82c9399313bb46. Copyright (c) 2026 Jesús Gulfo.
 #include "strata/kernels/cpu/pool.hpp"
 #include "strata/core/progress.hpp"
@@ -17,6 +17,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 
 #if defined(_WIN32)
@@ -481,6 +482,11 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
         spin_before_sleep_ = std::chrono::microseconds((std::max)(0, std::atoi(e)));
     // Diagnostic A/B control; the row kernels and activation policy are shared.
     if (const char* e = std::getenv("STRATA_POOL_FUSED")) fused_native_ = *e != '0';
+    if (const char* e = std::getenv("STRATA_POOL_PARK_BARRIER"))
+        park_barrier_mode_ = std::strcmp(e, "0") == 0 ? 0 : std::strcmp(e, "2") == 0 ? 2 : 1;
+    std::fprintf(stderr, "strata: CPU expert pool pool_park_barrier=%d (%s)\n", park_barrier_mode_,
+                 park_barrier_mode_ == 0 ? "epoch completion handoff" :
+                 park_barrier_mode_ == 2 ? "before-only park handoff" : "reference park handoff");
     if (n_workers > 0) {
         n_ = n_workers;
     } else if (topo_.is_hybrid && affinity_ != PoolAffinity::All) {
@@ -531,8 +537,9 @@ void ExpertPool::publish() {
 
 void ExpertPool::worker(int id) {
     uint32_t seen = 0;
-    // ARRIVE at the park before the first wait, so `parked_ == n_` is true from construction.  Counting only
-    // on the RETURN from a drain leaves `parked_` at 0 until each worker has finished one batch, and the first
+    // ARRIVE at the park before the first wait, so the reference handoff can observe `parked_ == n_`.
+    // Completion-only handoff may publish before this worker starts: it sees the epoch and claims only that batch.
+    // Counting only on the RETURN from a drain leaves `parked_` at 0 until each worker has finished one batch, and the first
     // `run()` - which waits for `parked_ == n_` before publishing - then deadlocks.  It deadlocks on the very
     // first call, which is the good case; a version that deadlocked on the second would be far worse.
     parked_.fetch_add(1, std::memory_order_acq_rel);
@@ -689,6 +696,8 @@ void ExpertPool::drain(int id, uint32_t epoch) {
     for (;;) {
         const int ci = claim(epoch);
         if (ci < 0) break;
+        // No non-atomic batch metadata is read before this epoch-matching acquire claim.  Each task's release
+        // increment of done_ is its final payload access; after it only this claim/diagnostics may be touched.
         const uint32_t i = (uint32_t) ci;
         if (id >= 0) wstate_[(size_t) id].store(ci, std::memory_order_relaxed);
         else { hstate_.store(ci, std::memory_order_relaxed); hstate_ms_.store(now_ms(), std::memory_order_relaxed); }
@@ -744,13 +753,16 @@ void ExpertPool::drain(int id, uint32_t epoch) {
 }
 
 void ExpertPool::run_phase(int mode, int n_tasks) {
-    wait_parked("before a phase");
+    if (park_barrier_mode_ != 0) wait_parked("before a phase");
     mode_ = mode;
     njobs_ = n_tasks;
     const uint32_t e = begin_batch(n_tasks);
     if (host_works_) drain(-1, e);
     wait_done(n_tasks);
-    wait_parked("after a phase");
+    ++completed_phases_;
+    // All payload accesses (including per-expert readiness/quantization) precede their release completion.
+    // Old drains can still be parking, but their epoch-tagged claims cannot read the next phase's metadata.
+    if (park_barrier_mode_ == 1) wait_parked("after a phase");
     hstate_.store(kIdle, std::memory_order_relaxed);
     hstate_ms_.store(now_ms(), std::memory_order_relaxed);
 }
