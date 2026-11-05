@@ -3330,14 +3330,6 @@ struct Engine {
         // by startup planning; the selection never changes mid-forward.
         stage_buffers = stage_buffers_preferred;
         if (try_stage_loan()) return true;
-        if (stage_buffers_requested == 0 && stage_buffers == 2 && !stage_loan_failed) {
-            // try_stage_loan returned every partial stage mapping and restored
-            // the exact original Expert cache before a smaller attempt begins.
-            stage_buffers = 1;
-            ++stage_single_fallbacks;
-            std::fprintf(stderr, "tinystrata: retrying native staging with one buffer after returning the pair loan\n");
-            if (try_stage_loan()) return true;
-        }
         std::fprintf(stderr, "tinystrata: optional stage loan unavailable; this prompt uses the CPU/GPU path\n");
         return false;
     }
