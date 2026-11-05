@@ -156,6 +156,9 @@ Las [mediciones de la fusión GDN de Clover](benchmark/results/gdn-chain-2026110
 [La integración de resultados de CPU en modo híbrido y el ajuste del número de hilos basado en mediciones](benchmark/results/basalt-remaining-20261105.md#english)
 se documentan por separado; las tablas históricas se conservan.
 
+[La selección de búferes temporales según la VRAM disponible](benchmark/results/portable-hybrid-20261105.md#english)
+se documenta con mediciones controladas independientes.
+
 ## Velocidad medida — Gemma 4
 
 Medido en el mismo PC Windows con 64 GB de RAM, Gemma 4 26B-A4B-it QAT Q4_0 y el asistente MTP QAT correspondiente. El codificador de imágenes permaneció en la GPU durante las solicitudes por API. Se activaron MTP 3, CUDA Graphs y los valores predeterminados de razonamiento y muestreo del modelo; el contexto se fijó según la clase de VRAM, mientras que los bloques de entrada y la distribución de expertos se eligieron automáticamente.

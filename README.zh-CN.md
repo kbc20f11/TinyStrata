@@ -156,6 +156,9 @@ INT8 和 FP8 按交替顺序各独立启动 4 次，每次启动将 3 段输入�
 [混合执行中的 CPU 结果合并和基于实测的工作线程调优](benchmark/results/basalt-remaining-20261105.md#english)
 另有说明，历史基准表保持不变。
 
+[显存受限时的暂存缓冲区选择](benchmark/results/portable-hybrid-20261105.md#english)
+另有独立的对照测试说明。
+
 ## 实测速度 — Gemma 4
 
 在同一台 Windows PC（64 GB 系统内存）上使用 Gemma 4 26B-A4B-it QAT Q4_0 及匹配的 QAT MTP 助手测量。图像编码器常驻 GPU，通过 API 进行测量，启用 MTP 3、CUDA Graph 及模型自身的默认思考和采样设置；上下文容量按各显存档位设置，输入分块及专家分配自动选择。
