@@ -2,10 +2,29 @@
 // projection pairing; arithmetic remains q36k::q8_row_dot (see q36_kernels.cuh).
 #pragma once
 
-#if defined(__CUDACC__) && !defined(__HIPCC__)
+#if defined(__CUDACC__) || defined(__HIPCC__)
 #include "q36_kernels.cuh"
+#include <cstdlib>
+#include <cstring>
 
 namespace q36k {
+inline int q8_pair_max_warps() {
+#if defined(__HIPCC__) || defined(STRATA_USE_HIP)
+    // Both projections share one HIP grid. Keep its normal total at 1024
+    // warps, matching the existing single-projection large-grid bound.
+    // The diagnostic override is per projection and is read only once.
+    static const int limit = [] {
+        const char* value = std::getenv("TINYSTRATA_Q36_Q8_PAIR_MAX_WARPS");
+        if (value && std::strcmp(value, "256") == 0) return 256;
+        if (value && std::strcmp(value, "1024") == 0) return 1024;
+        return 512;
+    }();
+    return limit;
+#else
+    return 1024;
+#endif
+}
+
 template <int NC, int NJ>
 __global__ void __launch_bounds__(256) k_q8_rows_pair(const uint8_t* __restrict__ wa,
                                                      const uint8_t* __restrict__ wb,
@@ -33,7 +52,8 @@ inline void launch_q8_rows_pair(const void* wa, const void* wb, const void* x,
                                 float* ya, float* yb, int nb, int na, int nb_out,
                                 cudaStream_t stream) {
     const int maximum = na > nb_out ? na : nb_out;
-    const int rows = maximum < 1024 ? maximum : 1024;
+    const int limit = q8_pair_max_warps();
+    const int rows = maximum < limit ? maximum : limit;
     k_q8_rows_pair<NC, NJ><<<dim3(unsigned((rows + 7) / 8), 2), 256, 0, stream>>>(
         static_cast<const uint8_t*>(wa), static_cast<const uint8_t*>(wb),
         static_cast<const QB*>(x), ya, yb, nb, na, nb_out);

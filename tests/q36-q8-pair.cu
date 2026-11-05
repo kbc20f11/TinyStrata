@@ -1,11 +1,12 @@
 // Bitwise paired GDN projections against the existing separate Q8_0 kernels,
 // with a sampled CPU FP64 oracle. No model files or test framework are needed.
 // CUDA: nvcc -std=c++20 -O2 --use_fast_math -Iinclude -Isrc/qwen35 tests/q36-q8-pair.cu -o q36-q8-pair
+// HIP: use q36_q8_pair_test, with the engine's normal HIP arithmetic flags.
 // Add the GPU architecture flag for the device being tested. Optional --bench
 // prints eager timings and Graph ABBA timings; run outside other GPU work.
 #include <cstdio>
-#if !defined(__CUDACC__) || defined(__HIPCC__)
-int main() { std::puts("SKIP: paired projection regression requires CUDA"); return 0; }
+#if !defined(__CUDACC__) && !defined(__HIPCC__)
+int main() { std::puts("SKIP: paired projection regression requires CUDA or HIP"); return 77; }
 #else
 #include "q36_pair.cuh"
 #include <algorithm>
@@ -14,6 +15,12 @@ int main() { std::puts("SKIP: paired projection regression requires CUDA"); retu
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+
+#if defined(__HIPCC__)
+constexpr auto CAPTURE_MODE=hipStreamCaptureModeGlobal;
+#else
+constexpr auto CAPTURE_MODE=cudaStreamCaptureModeGlobal;
+#endif
 
 #define CK(call) do { const auto error=(call); if(error!=cudaSuccess) { std::fprintf(stderr,"%s:%d %s\n",__FILE__,__LINE__,cudaGetErrorString(error));std::exit(2); } } while(0)
 struct Q80 { half d; int8_t q[32]; };
@@ -106,7 +113,7 @@ int main(int argc,char** argv) {
             if(shape.a==8192 && (nc==1||nc==4||nc==8)) {
                 cudaGraph_t graphs[2]{};cudaGraphExec_t executables[2]{};
                 for(int mode=0;mode<2;++mode) {
-                    CK(cudaStreamBeginCapture(s,cudaStreamCaptureModeGlobal));
+                    CK(cudaStreamBeginCapture(s,CAPTURE_MODE));
                     dispatch(mode!=0,nc,a.p,b.p,x.p,(float*)(mode ? ya.p : ra.p),(float*)(mode ? yb.p : rb.p),nb,shape.a,shape.b,s);
                     CK(cudaStreamEndCapture(s,&graphs[mode]));CK(cudaGraphInstantiate(&executables[mode],graphs[mode],nullptr,nullptr,0));
                 }

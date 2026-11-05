@@ -1,10 +1,10 @@
 // Exact eager CPU-row compact combine against the unchanged scatter+combine.
 // Independent poisoned inputs/outputs, CPU FP64 weighted oracle, Graph replay.
-// Compile with the engine's arithmetic flags (--use_fast_math in current CMake).
+// Compile with the engine's arithmetic flags (CUDA fast math, normal HIP math).
 // Optional --bench reports device-only warm Graph ABBA, excluding host uploads.
 #include <cstdio>
-#if !defined(__CUDACC__) || defined(__HIPCC__)
-int main() { std::puts("SKIP: compact CPU combine requires CUDA"); return 77; }
+#if !defined(__CUDACC__) && !defined(__HIPCC__)
+int main() { std::puts("SKIP: compact CPU combine requires CUDA or HIP"); return 77; }
 #else
 #include "q36_kernels.cuh"
 #include <algorithm>
@@ -17,6 +17,11 @@ int main() { std::puts("SKIP: compact CPU combine requires CUDA"); return 77; }
 #define CK(call) do { const auto e=(call); if(e!=cudaSuccess) { std::fprintf(stderr,"%s:%d %s\n",__FILE__,__LINE__,cudaGetErrorString(e));std::exit(2); } } while(0)
 constexpr int N=2048, TOP=8, MAXT=8, ENTRIES=MAXT*TOP, GUARD=16;
 constexpr float EPS=1e-6f;
+#if defined(__HIPCC__)
+constexpr auto CAPTURE_MODE=hipStreamCaptureModeGlobal;
+#else
+constexpr auto CAPTURE_MODE=cudaStreamCaptureModeGlobal;
+#endif
 struct Device {
     void* p=nullptr; size_t bytes;
     explicit Device(size_t n):bytes(n) { CK(cudaMalloc(&p,n)); }
@@ -119,14 +124,20 @@ int main(int argc,char** argv) {
     CK(cudaMemcpy(in.weights.p,weights.data(),weights.size()*4,cudaMemcpyHostToDevice));
     CK(cudaMemcpy(in.sg.p,gates.data(),gates.size()*4,cudaMemcpyHostToDevice));
     int checks=0;double max_cpu_abs=0;
-    for(int T:{1,2,3,4,8})for(int count=0;count<=TOP;++count)for(int pattern=0;pattern<3;++pattern) {
+    for(int T=1;T<=MAXT;++T)for(int count=0;count<=TOP;++count)for(int pattern=0;pattern<4;++pattern) {
+        // One extra case mixes empty, full and partial CPU rows across tokens,
+        // exercising packed offsets which uniform per-token miss counts miss.
+        // It does not need repeating for every uniform-count case.
+        if(pattern==3&&count!=0)continue;
         const int entries=T*TOP,sg_stride=pattern==1?257:1;
         std::vector<int32_t> flags(entries),map(entries,-1);std::vector<float> parts(gpu.begin(),gpu.begin()+size_t(entries)*N);
         int missed=0;
         for(int e=0;e<entries;++e) {
             const int t=e/TOP,k=e%TOP;
             const int perm=pattern==0?k:pattern==1?(k+t)%TOP:(3*k+5*t)%TOP;
-            flags[e]=perm<count;
+            constexpr int irregular_counts[MAXT]={0,TOP,1,TOP-1,2,TOP-2,3,TOP-3};
+            const int token_count=pattern==3?irregular_counts[t]:count;
+            flags[e]=perm<token_count;
             if(flags[e]) {
                 map[e]=missed;std::memcpy(packed.data()+size_t(missed)*N,cpu.data()+size_t(e)*N,N*4);
                 std::memset(parts.data()+size_t(e)*N,0xff,N*4);++missed;
@@ -161,7 +172,7 @@ int main(int argc,char** argv) {
             }
             cudaGraph_t graphs[2]{};cudaGraphExec_t exec[2]{};
             for(int arm=0;arm<2;++arm) {
-                CK(cudaStreamBeginCapture(s,cudaStreamCaptureModeGlobal));launch(arm!=0,arm?cand:ref,in,T,mode,sg_stride,s);
+                CK(cudaStreamBeginCapture(s,CAPTURE_MODE));launch(arm!=0,arm?cand:ref,in,T,mode,sg_stride,s);
                 CK(cudaStreamEndCapture(s,&graphs[arm]));CK(cudaGraphInstantiate(&exec[arm],graphs[arm],nullptr,nullptr,0));
             }
             for(int replay=0;replay<3;++replay) {

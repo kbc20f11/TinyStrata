@@ -25,8 +25,8 @@
 #include "strata/prefill/moe_mmq.hpp"
 #include "strata/qwen35/engine.hpp"
 #include "q36_kernels.cuh"
-#if !defined(__HIPCC__) && !defined(STRATA_USE_HIP)
 #include "q36_pair.cuh"
+#if !defined(__HIPCC__) && !defined(STRATA_USE_HIP)
 #include "q36_gdn_chain.cuh"
 #endif
 #include "clover_kernels.cuh"
@@ -1932,12 +1932,10 @@ struct Engine {
     void quant(const float* xin, int n, int T, void* q) { K::native_quantize_q8_1(xin, q, n * T, 1, st); }
     // ---- decode kernels of this engine (q36_kernels.cuh), each the old kernel's bits (STRATA_Q36_VERIFY=1 compares)
     bool q8_pair_enabled = [] {
-#if defined(__HIPCC__) || defined(STRATA_USE_HIP)
-        return false;
-#else
+        // HIP requires an explicit choice: paired-grid performance varies with
+        // the device and number of verification rows. CUDA defaults are set below.
         const char* value = std::getenv("TINYSTRATA_Q36_Q8_PAIR");
         return value && std::strcmp(value, "1") == 0;
-#endif
     }();
     long long q8_pair_dispatches = 0;
 #if !defined(__HIPCC__) && !defined(STRATA_USE_HIP)
@@ -1966,10 +1964,6 @@ struct Engine {
         }
     }
     bool can_q8_pair(const Mat& a, const Mat& b, int T) const {
-#if defined(__HIPCC__) || defined(STRATA_USE_HIP)
-        (void) a; (void) b; (void) T;
-        return false;
-#else
         if (!fast_k || a.type != 8 || b.type != 8 || T < 1 || T > 8 ||
             a.n_in != b.n_in || a.n_in <= 0 || a.n_in > 2048 || a.n_in % 32 || a.n_out <= 0 || b.n_out <= 0)
             return false;
@@ -1977,7 +1971,6 @@ struct Engine {
             (K::native_q8_0_packed_eligible(a.n_in, a.n_out) || K::native_q8_0_packed_eligible(b.n_in, b.n_out)))
             return false;
         return true;
-#endif
     }
     int q8_pair_eligible_layers() const {
         int eligible = 0;
@@ -1986,10 +1979,6 @@ struct Engine {
         return eligible;
     }
     bool q8_pair(const Mat& a, const Mat& b, const void* input, float* ya, float* yb, int T) {
-#if defined(__HIPCC__) || defined(STRATA_USE_HIP)
-        (void) a; (void) b; (void) input; (void) ya; (void) yb; (void) T;
-        return false;
-#else
         if (!q8_pair_enabled || !can_q8_pair(a, b, T)) return false;
         const int nb = a.n_in / 32;
 #define Q36_PAIR(NCV) \
@@ -2008,7 +1997,6 @@ struct Engine {
             verify_cmp("q8_pair second", yb, vbuf, size_t(T) * b.n_out);
         }
         return true;
-#endif
     }
     bool gdn_chain_format(const Layer& L, int T) const {
 #if defined(__HIPCC__) || defined(STRATA_USE_HIP)
@@ -5538,7 +5526,13 @@ int strata::qwen35::run(int argc, char** argv) {
     E.kv_grow = kv_grow;
     E.context_auto = context_auto;
     E.kv_auto = kv_format == P::kAutomaticKv;
-#if !defined(__HIPCC__)
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
+    // Same eager combine arithmetic with fewer CPU upload rows and no scatter
+    // launch. Shape/graph eligibility is checked at dispatch; explicit0 keeps
+    // the original merge for a paired measurement or a driver-specific fallback.
+    const char* compact = std::getenv("TINYSTRATA_Q36_CPU_COMPACT");
+    E.cpu_compact_enabled = !compact || std::strcmp(compact, "1") == 0;
+#else
     int dev = 0;
     cudaDeviceProp prop{};
     CK(cudaGetDevice(&dev));
