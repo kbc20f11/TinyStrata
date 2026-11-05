@@ -159,3 +159,10 @@ The manual empirical CPU-worker probe in benchmark/probe.py was independently
 implemented after consulting Basalt's docs/probe.md at the same commit. It
 measures candidate worker counts and reports recommendations without changing
 saved model profiles or universal defaults.
+
+Learned Expert ranking persistence and prompt-frequency seeding adapt Basalt's
+src/core/expert_cache.cpp, src/program/serve/tier_profile.cpp and
+src/program/serve/tiers.cpp at bbf2f5bb783adc5ffe5b49043f82c9399313bb46 (MIT),
+credited above. TinyStrata binds rankings to the loaded model/layout identity,
+uses current per-layer capacities, and collects completed prompt statistics
+separately from accepted decode routing. No cached activations are serialized.

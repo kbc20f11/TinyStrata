@@ -40,6 +40,8 @@
 #include "strata/qwen35/environment_policy.hpp"
 #include "strata/qwen35/chunk_policy.hpp"
 #include "strata/qwen35/cache_policy.hpp"
+#include "strata/qwen35/expert_profile.hpp"
+#include "strata/qwen35/topic_policy.hpp"
 #include "strata/qwen35/speculative_sampling.hpp"
 #include "strata/qwen35/vision.hpp"
 #include "strata/qwen35/kv_grow.hpp"
@@ -78,6 +80,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -96,6 +100,7 @@ namespace A = strata::qwen35::attention;
 namespace MMQ = strata::prefill::mmq;
 namespace P = strata::qwen35::environment_policy;
 namespace V = strata::qwen35::vision;
+namespace EP = strata::qwen35::expert_profile;
 
 #define CK(x)                                                                                                          \
     do {                                                                                                               \
@@ -1198,6 +1203,52 @@ template <class T> T* dalloc_t(size_t n) {
     return p;
 }
 
+EP::Identity expert_artifact_identity(const Model& model) {
+    // A cache-hint identity, not a full weight checksum. Bind every shard's
+    // metadata and sampled content, plus the actual loaded quantized layout.
+    uint64_t hash = 1469598103934665603ull;
+    const auto mix = [&](const void* data, size_t bytes) {
+        const auto* p = (const unsigned char*) data;
+        for (size_t i = 0; i < bytes; ++i) { hash ^= p[i]; hash *= 1099511628211ull; }
+    };
+    const auto text = [&](const std::string& value) { mix(value.data(), value.size()); const char zero = 0; mix(&zero, 1); };
+    for (size_t i = 0; i < model.file->size(); ++i) {
+        const auto& shard = model.file->shard(i);
+        const auto path = std::filesystem::absolute(std::filesystem::path(shard.path())).lexically_normal();
+        const auto changed = std::filesystem::last_write_time(path);
+        const auto utf8 = path.generic_u8string();
+        text(std::string(utf8.begin(), utf8.end())); text(std::to_string(shard.file_size()));
+        text(std::to_string(changed.time_since_epoch().count()));
+        std::ifstream file(path, std::ios::binary);
+        if (!file || std::filesystem::file_size(path) != shard.file_size())
+            throw std::runtime_error("cannot fingerprint model shard");
+        constexpr uint64_t sample_bytes = 65536;
+        std::array<char, sample_bytes> buffer{};
+        const uint64_t count = std::min(sample_bytes, shard.file_size());
+        for (uint64_t offset : {uint64_t(0), (shard.file_size() - count) / 3,
+                                (shard.file_size() - count) * 2 / 3, shard.file_size() - count}) {
+            file.seekg((std::streamoff) offset);
+            if (!file.read(buffer.data(), (std::streamsize) count))
+                throw std::runtime_error("cannot fingerprint model content");
+            mix(buffer.data(), (size_t) count);
+        }
+        if (std::filesystem::last_write_time(path) != changed)
+            throw std::runtime_error("model changed during fingerprinting");
+    }
+    char key[32]; std::snprintf(key, sizeof(key), "%016llx", (unsigned long long) hash);
+    EP::Identity result;
+    result.model = "stat-content-v1:" + std::string(key);
+    result.layers = (uint32_t) (model.layers.size() + (model.has_mtp ? 1 : 0));
+    result.experts = (uint32_t) model.g.n_expert;
+    result.layout = std::to_string(model.g.n_embd) + ":" + std::to_string(model.g.n_ff) + ":" + std::to_string(model.top_k);
+    for (size_t i = 0; i < result.layers; ++i) {
+        const Layer& layer = i < model.layers.size() ? model.layers[i] : model.mtp;
+        result.layout += ";" + std::to_string(layer.L.gu_type) + ":" + std::to_string(layer.L.d_type) +
+                         ":" + std::to_string(layer.L.bytes) + ":" + std::to_string(layer.stride);
+    }
+    return result;
+}
+
 struct Engine {
     const Model* m = nullptr;
     cudaStream_t st = nullptr;
@@ -1339,12 +1390,23 @@ struct Engine {
     struct Hy {
         std::vector<int> slot_of, exp_in_slot;
         std::vector<double> score;   // routing counts, halved at each rebalance
+        std::vector<double> heat;
+        std::vector<uint64_t> prompt_hist;
         int32_t* slot_of_d = nullptr;
 #if defined(STRATA_Q36_CPU_POOL)
         strata::kernels::cpu::NativeFmt fmt;
 #endif
     };
     std::vector<Hy> hy;
+    EP::Identity expert_identity;
+    EP::Profile expert_prior;
+    std::filesystem::path expert_profile_path;
+    bool expert_profile_loaded = false, expert_profile_dirty = false;
+    bool expert_topic = false, expert_prompt_active = false;
+    unsigned long long expert_profile_applied = 0, expert_profile_saves = 0, expert_topic_seeds = 0;
+    unsigned long long expert_topic_new = 0;
+    unsigned long long expert_prompt_read = 0, expert_prompt_entries = 0;
+    double expert_profile_save_ms = 0;
     bool fair_rebalance = false, fair_rebalance_reported = false;
     size_t rebalance_next_layer = 0;
     int hybrid_t = 32;
@@ -1401,16 +1463,79 @@ struct Engine {
     static constexpr int kRebalanceEvery = 32;
     bool rows_deferred = false;          // set while a decode step or a verify window runs
     std::vector<std::vector<int32_t>> row_ids;   // [main layer][row * top_k + k] of the last such call
+    void count_expert(size_t li, size_t e, uint64_t hits = 1) {
+        Hy& H = hy[li];
+        if (expert_prompt_active) {
+            if (!strata::qwen35::topic_policy::record(H.prompt_hist, e, hits))
+                throw std::runtime_error("Expert prompt histogram overflow");
+            if (!expert_topic) H.score[e] += (double) hits;
+        } else H.score[e] += (double) hits;
+        if (!expert_profile_path.empty() && !warming && !expert_prompt_active) {
+            H.heat[e] += (double) hits;
+            expert_profile_dirty = true;
+        }
+    }
+    void begin_expert_prompt() {
+        expert_prompt_read = expert_prompt_entries = 0;
+        expert_prompt_active = !warming && !hy.empty() && (expert_topic || !expert_profile_path.empty());
+        if (expert_prompt_active)
+            for (Hy& H : hy) std::fill(H.prompt_hist.begin(), H.prompt_hist.end(), uint64_t(0));
+    }
+    void finish_expert_prompt(int64_t read, bool complete) {
+        if (!expert_prompt_active) return;
+        expert_prompt_active = false;
+        if (!complete || read <= 0) return;
+        expert_prompt_read = (unsigned long long) read;
+        for (Hy& H : hy) {
+            for (uint64_t hits : H.prompt_hist) expert_prompt_entries += hits;
+            if (!expert_profile_path.empty()) {
+                const double scale = 64.0 / (double) read;
+                for (size_t e = 0; e < H.heat.size(); ++e) H.heat[e] += scale * (double) H.prompt_hist[e];
+                expert_profile_dirty = true;
+            }
+            if (expert_topic) {
+                strata::qwen35::topic_policy::SeedStats stats;
+                if (!strata::qwen35::topic_policy::seed_prompt(H.score, H.prompt_hist, (uint64_t) read,
+                                                             H.slot_of, {}, &stats))
+                    throw std::runtime_error("invalid Expert topic statistics");
+                expert_topic_new += stats.nonresident_seeded;
+            }
+        }
+        if (expert_topic) {
+            ++expert_topic_seeds;
+            rebalance(hybrid_swaps_after_prompt);
+        }
+    }
+    void save_expert_profile() noexcept {
+        if (!expert_profile_dirty || expert_profile_path.empty() || hy.empty() || warming) return;
+        try {
+            std::vector<std::vector<double>> heat;
+            EP::Order resident;
+            for (const Hy& H : hy) { heat.push_back(H.heat); resident.emplace_back(H.exp_in_slot.begin(), H.exp_in_slot.end()); }
+            EP::Profile profile;
+            std::string error;
+            const auto start = Clock::now();
+            if (EP::rank(expert_identity, heat, resident, expert_prior.order, profile, error) &&
+                EP::save(expert_profile_path, profile, error)) {
+                expert_prior = std::move(profile);
+                expert_profile_dirty = false;
+                ++expert_profile_saves;
+            } else std::fprintf(stderr, "tinystrata: Expert profile not saved: %s\n", error.c_str());
+            expert_profile_save_ms += ms_since(start);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "tinystrata: Expert profile not saved: %s\n", e.what());
+        }
+    }
     void count_rows(int n) {
         const int Kp = (int) m->top_k;
         for (size_t li = 0; li < row_ids.size() && li < hy.size(); ++li)
             if (!row_ids[li].empty())
-                for (int e = 0; e < n * Kp; ++e) hy[li].score[(size_t) row_ids[li][(size_t) e]] += 1.0;
+                for (int e = 0; e < n * Kp; ++e) count_expert(li, (size_t) row_ids[li][(size_t) e]);
     }
     void after_rows(int n) {   // a decode step / verify window kept n rows: count them, rebalance at the boundary
         if (!m->hybrid) return;
         count_rows(n);
-        if (pos % kRebalanceEvery == 0) {
+        if (pos % kRebalanceEvery == 0 && !(expert_prompt_active && expert_topic)) {
             CK(cudaStreamSynchronize(st));
             rebalance(8);
         }
@@ -1451,6 +1576,10 @@ struct Engine {
         if (const char* value = std::getenv("TINYSTRATA_Q36_FAIR_REBALANCE"))
             fair_rebalance = std::strcmp(value, "0") != 0;
 #endif
+        if (expert_topic) {
+            const char* fairness = std::getenv("TINYSTRATA_Q36_FAIR_REBALANCE");
+            fair_rebalance = !fairness || std::strcmp(fairness, "0") != 0;
+        }
         const size_t T = (size_t) tmax, N = (size_t) g.n_embd, Kp = (size_t) m->top_k, FF = (size_t) g.n_ff;
         const size_t C = (size_t) g.ssm_conv_channels;
         CK(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking));
@@ -2635,7 +2764,7 @@ struct Engine {
             if (lhy(li)) CK(cudaMemcpyAsync(h_cnt + li * g.n_expert, rcnt, (size_t) ne * 4, cudaMemcpyDeviceToHost, st));
             CK(cudaStreamSynchronize(st));
             if (lhy(li))
-                for (int x = 0; x < ne; ++x) hy[li].score[(size_t) x] += h_cnt[li * g.n_expert + x];
+                for (int x = 0; x < ne; ++x) count_expert(li, (size_t) x, (uint64_t) h_cnt[li * g.n_expert + x]);
             const int64_t maxr = hpin[10];
             const uint8_t* wbase = lhy(li) ? stream_take((int) li) : L.blobs;
             MMQ::quantize(h, ent_tok, mq_x, L.L.gu_type, N, N, n_ent, st);
@@ -2669,7 +2798,7 @@ struct Engine {
             if (native_stream_rows) {
                 stream_done();   // the next layer may overwrite this buffer only after the native products finish
                 CK(cudaEventSynchronize(ev_route));
-                for (int64_t e = 0; e < n_ent; ++e) hy[li].score[(size_t) h_ids[e]] += 1.0;
+                for (int64_t e = 0; e < n_ent; ++e) count_expert(li, (size_t) h_ids[e]);
                 hy_gpu += n_ent;
             }
         }
@@ -2886,7 +3015,7 @@ struct Engine {
         }
         for (int e = 0; e < n_ent; ++e) {
             const int x = host_ids[e];
-            if (!defer) H.score[(size_t) x] += 1.0;
+            if (!defer) count_expert(li, (size_t) x);
             const bool miss = H.slot_of[(size_t) x] < 0;
             host_miss[e] = compact ? (miss ? n_miss : -1) : int(miss);
             if (!miss) continue;
@@ -3418,6 +3547,13 @@ struct Engine {
                     "q36_cpu_compact_upload_bytes=%llu q36_cpu_compact_unpacked_bytes=%llu "
                     "q36_cpu_compact_merges_avoided=%lld\n", cpu_compact_enabled ? 1 : 0, cpu_compact_calls,
                     cpu_compact_rows, cpu_compact_upload_bytes, cpu_compact_unpacked_bytes, cpu_compact_merges_avoided);
+        std::printf("INFO q36_expert_profile=%d q36_expert_profile_loaded=%d q36_expert_profile_applied=%llu "
+                    "q36_expert_profile_saves=%llu q36_expert_profile_save_ms=%.3f "
+                    "q36_expert_topic=%d q36_expert_topic_seeds=%llu q36_expert_topic_new=%llu "
+                    "q36_expert_prompt_read=%llu q36_expert_prompt_entries=%llu\n",
+                    expert_profile_path.empty() ? 0 : 1, expert_profile_loaded ? 1 : 0, expert_profile_applied,
+                    expert_profile_saves, expert_profile_save_ms, expert_topic ? 1 : 0, expert_topic_seeds, expert_topic_new,
+                    expert_prompt_read, expert_prompt_entries);
     }
 
     void shrink_att(size_t floats) {
@@ -3582,7 +3718,15 @@ struct Engine {
             CK(cudaMemcpyAsync(tok_m, hpin + 16, (size_t) T * 4, cudaMemcpyHostToDevice, st));
             CK(cudaMemcpyAsync(pos0_m, hpin + 1, 4, cudaMemcpyHostToDevice, st));
             CK(cudaMemcpyAsync(mtp_seed(), hmain, (size_t) T * N * 4, cudaMemcpyDeviceToDevice, st));
-            forward_mtp(T, pos - T, mtp_seed(), false, false);
+            {
+                // Repair belongs to the accepted old prefix, not this prompt.
+                struct RestoreCollection {
+                    bool& flag; bool previous;
+                    ~RestoreCollection() { flag = previous; }
+                } restore{expert_prompt_active, expert_prompt_active};
+                expert_prompt_active = false;
+                forward_mtp(T, pos - T, mtp_seed(), false, false);
+            }
             CK(cudaStreamSynchronize(st));
         }
         mtp_pending.clear();
@@ -3666,7 +3810,8 @@ struct Engine {
             on_chunk(consumed);
         }
         finish_stage_loan(); // includes allocation, transfer and restoration time in prompt_ms
-        if (m->hybrid && consumed == n && (!cancel || !cancel->load())) rebalance(hybrid_swaps_after_prompt);
+        if (m->hybrid && consumed == n && (!cancel || !cancel->load()) &&
+            !(expert_prompt_active && expert_topic)) rebalance(hybrid_swaps_after_prompt);
         return consumed;
     }
     int hybrid_swaps_after_prompt = 2048;
@@ -4342,6 +4487,10 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     }
     size_t off = 0;
     E.hy.resize(all.size());
+    for (Engine::Hy& H : E.hy) {
+        H.heat.assign((size_t) ne, 0.0);
+        H.prompt_hist.assign((size_t) ne, 0);
+    }
     if (E.grow_hybrid) {
         E.expert_ranges.resize(all.size());
         E.grow_max_slots.assign(all.size(), S);
@@ -4357,6 +4506,10 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
                 CK(cudaMemcpy(L.blobs + (size_t) e * L.stride, blob.data(), L.L.bytes, cudaMemcpyHostToDevice));
             }
             L.n_slots = (int) ne;
+            Engine::Hy& H = E.hy[li];
+            H.score.assign((size_t) ne, 0.0);
+            H.slot_of.resize((size_t) ne); H.exp_in_slot.resize((size_t) ne);
+            for (int e = 0; e < ne; ++e) H.slot_of[(size_t) e] = H.exp_in_slot[(size_t) e] = e;
             continue;
         }
         L.hblobs = arena + off;
@@ -4364,6 +4517,23 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         std::memset(L.hblobs, 0, L.stride * (size_t) ne + kMmqTail);
         for (int64_t e = 0; e < ne; ++e) expert_blob(L, e, L.hblobs + (size_t) e * L.stride);
         L.n_slots = S;
+        // Fully resident kernels address blobs by Expert ID without a slot map.
+        const bool learned_slots = E.expert_profile_loaded && S < ne;
+        std::vector<int> initial((size_t) S);
+        for (int s = 0; s < S; ++s)
+            initial[(size_t) s] = learned_slots ? E.expert_prior.order[li][(size_t) s] : s;
+        const auto fill_slots = [&]() {
+            if (S <= 0) return;
+            if (!learned_slots)
+                CK(cudaMemcpyAsync(L.blobs, L.hblobs, L.stride * (size_t) S, cudaMemcpyHostToDevice, E.st));
+            else {
+                for (int s = 0; s < S; ++s)
+                    CK(cudaMemcpyAsync(L.blobs + (size_t) s * L.stride,
+                                       L.hblobs + (size_t) initial[(size_t) s] * L.stride,
+                                       L.stride, cudaMemcpyHostToDevice, E.st));
+                E.expert_profile_applied += (size_t) S;
+            }
+        };
         if (E.grow_hybrid) {
             auto r = std::make_unique<strata::qwen35::kv_grow::Range>(E.kv_page_pool.get());
             if (!r->reserve(L.stride * (size_t) ne + kMmqTail) ||
@@ -4373,18 +4543,18 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
             }
             L.blobs = (uint8_t*) r->base();
             E.expert_ranges[li] = std::move(r);
-            if (S > 0) CK(cudaMemcpyAsync(L.blobs, L.hblobs, L.stride * (size_t) S, cudaMemcpyHostToDevice, E.st));
+            fill_slots();
         } else if (S > 0) {
             CK(cudaMalloc(&L.blobs, L.stride * (size_t) S + kMmqTail));
             CK(cudaMemset(L.blobs, 0, L.stride * (size_t) S + kMmqTail));
-            CK(cudaMemcpy(L.blobs, L.hblobs, L.stride * (size_t) S, cudaMemcpyHostToDevice));
+            fill_slots();
         }
         Engine::Hy& H = E.hy[li];
         H.slot_of.assign((size_t) ne, -1);
         H.exp_in_slot.assign((size_t) S, 0);
         for (int s = 0; s < S; ++s) {
-            H.slot_of[(size_t) s] = s;
-            H.exp_in_slot[(size_t) s] = s;
+            H.slot_of[(size_t) initial[(size_t) s]] = s;
+            H.exp_in_slot[(size_t) s] = initial[(size_t) s];
         }
         H.score.assign((size_t) ne, 0.0);
         CK(cudaMalloc(&H.slot_of_d, (size_t) ne * 4));
@@ -4903,6 +5073,8 @@ int serve(Engine& E) {
                         (double) done / std::max(1e-9, ms_since(t0) / 1000.0));
             std::fflush(stdout);
         };
+        const long long expert_cpu_start = E.hy_cpu, expert_gpu_start = E.hy_gpu, expert_swaps_start = E.hy_swaps;
+        E.begin_expert_prompt();
         int64_t read = 0;
         if (checkpoint && turn_at > (int64_t) reuse && turn_at < (int64_t) ids.size()) {
             const int64_t before = turn_at - (int64_t) reuse;
@@ -4921,6 +5093,18 @@ int serve(Engine& E) {
                           [&](int64_t done) { progress(before + done); }, smp.needs_logits(), request_clover_mode != "diffusion", &stop);
             }
         } else read = E.process(ids.data() + reuse, fresh, progress, smp.needs_logits(), request_clover_mode != "diffusion", &stop);
+        E.finish_expert_prompt(read, read == fresh && !stop.load());
+        const long long prompt_cpu_entries = E.hy_cpu - expert_cpu_start;
+        const long long prompt_gpu_entries = E.hy_gpu - expert_gpu_start;
+        const long long prompt_swaps = E.hy_swaps - expert_swaps_start;
+        const auto expert_phase_info = [&]() {
+            std::printf("INFO q36_prompt_cpu_entries=%lld q36_prompt_gpu_entries=%lld q36_prompt_swaps=%lld "
+                        "q36_decode_cpu_entries=%lld q36_decode_gpu_entries=%lld q36_decode_swaps=%lld\n",
+                        prompt_cpu_entries, prompt_gpu_entries, prompt_swaps,
+                        E.hy_cpu - expert_cpu_start - prompt_cpu_entries,
+                        E.hy_gpu - expert_gpu_start - prompt_gpu_entries,
+                        E.hy_swaps - expert_swaps_start - prompt_swaps);
+        };
         if (E.pos != (int64_t) reuse + read) throw std::runtime_error("prefill position does not match its committed prefix");
         live.insert(live.end(), ids.begin() + (std::ptrdiff_t) reuse, ids.begin() + (std::ptrdiff_t) E.pos);
         kv_usage.publish((int64_t) live.size(), true);
@@ -4943,6 +5127,7 @@ int serve(Engine& E) {
             kv_usage.publish((int64_t) live.size(), true);
             std::fprintf(stderr, "tinystrata: prefill cancelled after %lld new tokens; %zu committed tokens retained\n",
                          (long long) read, live.size());
+            expert_phase_info();
             E.print_kv_info();
             std::printf("DONE 0 %zu %.1f 0 cancel 0 0 %zu 0 0 0 0 0.0 %lld 0\n",
                         ids.size(), prompt_ms, reuse, (long long) read);
@@ -5238,6 +5423,8 @@ int serve(Engine& E) {
                         E.clover_preview_cpu_entries, E.clover_preview_gpu_entries, E.clover_preview_cpu_ms,
                         E.clover_preview_wmma_calls, E.clover_preview_simt_calls,
                         E.clover_query_tile, E.clover_query_shared_calls);
+        E.save_expert_profile();
+        expert_phase_info();
         E.print_kv_info();
         std::printf("DONE %lld %zu %.1f %.1f %s %lld %lld %zu 0 0 0 0 0.0 %lld 0\n", produced, ids.size(), prompt_ms,
                     decode_ms, finish, accepted, offered, reuse, (long long) fresh);
@@ -5249,6 +5436,16 @@ int serve(Engine& E) {
 
 int strata::qwen35::run(int argc, char** argv) {
     std::string model, tokens, force, dump_full;
+    std::filesystem::path expert_profile, expert_profile_dir;
+#if defined(_WIN32)
+    if (const wchar_t* value = _wgetenv(L"TINYSTRATA_Q36_EXPERT_PROFILE")) expert_profile = value;
+    if (const wchar_t* value = _wgetenv(L"TINYSTRATA_Q36_EXPERT_PROFILE_DIR")) expert_profile_dir = value;
+#else
+    if (const char* value = std::getenv("TINYSTRATA_Q36_EXPERT_PROFILE")) expert_profile = value;
+    if (const char* value = std::getenv("TINYSTRATA_Q36_EXPERT_PROFILE_DIR")) expert_profile_dir = value;
+#endif
+    bool expert_topic = false;
+    if (const char* value = std::getenv("TINYSTRATA_Q36_EXPERT_TOPIC")) expert_topic = std::strcmp(value, "1") == 0;
     int ctx = 0, chunk = 0, n_gen = 64, bench_pp = 0, bench_tg = 0, mtp_d = 0, cpu_threads = 0, hybrid_rows = 128;
     int clover_draft = -1;
     std::string clover_mode;
@@ -5298,6 +5495,8 @@ int strata::qwen35::run(int argc, char** argv) {
                         "  --clover-accept-delta P  Entropy acceptance multiplier in [0,1] (default: 0.6)\n"
                         "  --expert-vram auto|GiB   Routed expert budget (default: available VRAM)\n"
                         "  --expert-slots N         Resident expert slots per layer\n"
+                        "  --expert-profile P|off   Restore/save learned Expert rankings at P\n"
+                        "  --expert-topic-cache 0|1 Normalize prompt frequency for topic adaptation\n"
                         "  --vram-reserve-mib N     Override automatic VRAM reserve (default: 768, near-fit: 256)\n"
                         "  --cpu-threads N          CPU expert workers\n"
                         "  --hybrid-rows N          CPU/GPU batch threshold (default: 128)\n"
@@ -5402,6 +5601,17 @@ int strata::qwen35::run(int argc, char** argv) {
             }
             (a == "--clover-accept-ratio" ? clover_accept_ratio : clover_accept_delta) = parsed;
             clover_diffusion_option = true;
+        }
+        else if (a == "--expert-profile") {
+            expert_profile = next();
+            expert_profile_dir.clear();
+        }
+        else if (a == "--expert-topic-cache") {
+            const std::string value = next();
+            if (value != "0" && value != "1") {
+                std::fprintf(stderr, "tinystrata: --expert-topic-cache takes 0 or 1\n"); return 2;
+            }
+            expert_topic = value == "1";
         }
         else if (a == "--expert-vram") {
             const std::string v = next();
@@ -5511,6 +5721,29 @@ int strata::qwen35::run(int argc, char** argv) {
                      context_memory.cuda_total / 1073741824.0, ctx,
                      context_memory.free / 1073741824.0, context_memory.source());
     Engine E;
+    E.expert_topic = expert_topic;
+    if (expert_profile == "off") { expert_profile.clear(); expert_profile_dir.clear(); }
+    if (!expert_profile.empty() || !expert_profile_dir.empty()) {
+        try {
+            E.expert_identity = expert_artifact_identity(m);
+            if (expert_profile.empty()) {
+                uint64_t key = 1469598103934665603ull;
+                const std::string identity = E.expert_identity.model + E.expert_identity.layout;
+                for (unsigned char c : identity) { key ^= c; key *= 1099511628211ull; }
+                char name[40]; std::snprintf(name, sizeof(name), "%016llx.rank", (unsigned long long) key);
+                expert_profile = expert_profile_dir / name;
+            }
+            E.expert_profile_path = expert_profile;
+            std::string error;
+            E.expert_profile_loaded = EP::load(expert_profile, E.expert_identity, E.expert_prior, error);
+            if (E.expert_profile_loaded) std::fprintf(stderr, "tinystrata: learned Expert profile loaded\n");
+            else if (std::filesystem::exists(expert_profile))
+                std::fprintf(stderr, "tinystrata: Expert profile ignored: %s\n", error.c_str());
+        } catch (const std::exception& error) {
+            E.expert_profile_path.clear();
+            std::fprintf(stderr, "tinystrata: Expert profile unavailable: %s\n", error.what());
+        }
+    }
     E.clover_draft = m.clover ? clover_draft : 0;
     E.clover_mode = m.clover ? clover_mode : "causal";
     E.clover_block_size = clover_block_size;
@@ -5661,6 +5894,7 @@ int strata::qwen35::run(int argc, char** argv) {
     struct Report {
         Engine& E;
         ~Report() {
+            E.save_expert_profile();
             if (E.verify_k) std::fprintf(stderr, "tinystrata VERIFY: %lld comparisons, %lld mismatches\n", E.v_calls, E.v_bad);
             if (E.verify_k)
                 for (const auto& kv : E.v_by)

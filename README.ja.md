@@ -310,6 +310,20 @@ CUDA の Gemma/LFM は、同じモデル内のチャット復帰用キャッシ�
 
 明示的な設定は自動選択より優先され、既存の手動設定も引き続き有効です。たとえば、`run-api.bat --kv-type int8` は INT8 に固定し、`run-api.bat --kv-type auto --max-context auto --expert-vram auto` は KV、コンテキスト、エキスパート配置を自動設定に戻します。
 
+### エキスパート配置の学習 — Qwen3.6 / Clover
+
+通常の Qwen・Clover の API 構成では、学習したエキスパートの順位をエンジンログと同じフォルダの `expert-profiles` に自動保存し、新しい入力の使用頻度から話題の変化に追従します。読み込み時の配置数は、現在のエキスパート容量設定と空き VRAM から決めます。保存時の GPU の配置数には固定しません。モデルファイルの属性・内容サンプルの識別子と量子化レイアウトが一致する場合だけ再利用します。無効・読み込み不能なファイルは通常の初期配置に戻り、読み取り専用などで保存に失敗しても、推論と既存の保存ファイルは維持します。
+
+この配置ファイルに保存するのはエキスパートの順位だけです。プロンプト・中間活性・KV は含めず、モデルが選んだエキスパートも省略しません。配置が変わると CPU／GPU の丸め方によって生成トークンが変わる場合があり、同一出力は保証しません。
+
+native 実行ファイルを直接使う場合は、`--expert-profile PATH --expert-topic-cache 1` で明示的に有効化し、`--expert-profile off --expert-topic-cache 0` で両方を無効にできます。ランチャー／API では、次のプロセス環境変数か、設定の `env` に同じ値を指定してください。
+
+```powershell
+$env:TINYSTRATA_Q36_EXPERT_PROFILE = 'off'
+$env:TINYSTRATA_Q36_EXPERT_TOPIC = '0'
+.\run-api.bat
+```
+
 ## API サーバー
 
 TinyStrata は OpenAI 互換の Chat Completions（`/v1/chat/completions`）と Responses（`/v1/responses`）API、および Anthropic 互換の Messages API（`/v1/messages`）を提供し、ストリーミング生成にも対応しています。オプションの TinyStrata UI、API クライアント、外部のフロントエンドから利用できます。

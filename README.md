@@ -310,6 +310,20 @@ Gemma/LFM can retain bounded same-model chat snapshots on CUDA: **1024/512 MiB**
 
 Explicit settings override automatic choices, and existing manually selected settings remain in effect. For example, `run-api.bat --kv-type int8` fixes INT8; `run-api.bat --kv-type auto --max-context auto --expert-vram auto` restores automatic KV, context and Expert placement.
 
+### Learned Expert placement — Qwen3.6 / Clover
+
+The normal Qwen and Clover API configurations automatically save learned Expert rankings in `expert-profiles` beside the engine log and use the new prompt's routing frequencies to adapt to topic changes. Each load sizes the cache from the current Expert budget and available VRAM; saved rankings do not impose the previous GPU's slot count. Profiles must match the model-file metadata/sampled-content fingerprint and quantized layout. Invalid or unreadable profiles use ordinary initial placement; a failed save, including a read-only destination, leaves inference usable and the previous profile intact.
+
+These profile files contain only Expert rankings, with no serialized prompts, activations or KV; no model-selected Expert is skipped. Changing residency can change CPU/GPU rounding and generated tokens, so identical output is not guaranteed.
+
+Direct native execution is opt-in with `--expert-profile PATH --expert-topic-cache 1`; `--expert-profile off --expert-topic-cache 0` disables both features. For the launcher/API, set these process environment overrides, or the same values in the configuration's `env` object:
+
+```powershell
+$env:TINYSTRATA_Q36_EXPERT_PROFILE = 'off'
+$env:TINYSTRATA_Q36_EXPERT_TOPIC = '0'
+.\run-api.bat
+```
+
 ## API server
 
 TinyStrata provides OpenAI-compatible Chat Completions (`/v1/chat/completions`) and Responses (`/v1/responses`) APIs and an Anthropic-compatible Messages API (`/v1/messages`), including streamed generation. Use the optional TinyStrata UI, an API client or an external frontend.

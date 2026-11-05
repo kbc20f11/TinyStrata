@@ -2894,6 +2894,12 @@ def child_env(cfg: dict) -> dict:
     """The engine's environment: the CUDA libraries setup installed (pip's nvidia packages, or the toolkit that
     compiled it) first on the library search path."""
     env = dict(os.environ)
+    if cfg.get("arch") in ("qwen35moe", "clover_moe") and cfg.get("log"):
+        # Rankings belong to managed runtime state, independently of current
+        # VRAM capacity. Native identity separates model artifacts and layouts.
+        env.setdefault("TINYSTRATA_Q36_EXPERT_PROFILE_DIR",
+                       str(Path(cfg["log"]).expanduser().resolve().parent / "expert-profiles"))
+        env.setdefault("TINYSTRATA_Q36_EXPERT_TOPIC", "1")
     if hip_visible(cfg) and cfg.get("backend") == "hip":   # AMD: numbered as HIP numbers them (hip_visible)
         env["HIP_VISIBLE_DEVICES"] = ",".join(str(i) for i in hip_visible(cfg))
     elif gpu_list(cfg):                              # issue #51: the GPU(s) to run on, numbered as nvidia-smi does; CUDA's
