@@ -81,6 +81,10 @@ foreach ($header in @($entrypointCoreHeader, $entrypointUiHeader)) {
     foreach ($architecture in @('gfx', 'gfx1200;', 'gfx1200;;gfx1201', 'not-gpu')) {
         Assert-EntrypointThrows { Invoke-EntrypointHeader -Header $header -Invocation Call -Arguments @{ HipArchitectures = $architecture } } 'malformed architecture rejected'
     }
+    foreach ($family in @('tiel', 'tiel-coder')) {
+        $result = Invoke-EntrypointHeader -Header $header -Invocation Call -Arguments @{ ModelFamily = $family; CheckOnly = $true }
+        Assert-Entrypoint ($result.Reached -and $result.ModelFamily -eq $family) 'Tiel family and alias bind in both installers'
+    }
     foreach ($invalid in @(@{ Backend = 'vulkan' }, @{ ModelFamily = 'other' }, @{ Port = 65536 }, @{ UiPort = 0 })) {
         Assert-EntrypointThrows { Invoke-EntrypointHeader -Header $header -Invocation Call -Arguments $invalid } 'other ValidateSet/Range rejects invalid explicit input'
     }
@@ -140,6 +144,14 @@ Assert-Entrypoint ($result.Forwarded.Backend -eq 'hip' -and $result.Forwarded.Mo
 $readinessTokens = $null
 $readinessErrors = $null
 $readinessAst = [System.Management.Automation.Language.Parser]::ParseFile($entrypointCorePath, [ref]$readinessTokens, [ref]$readinessErrors)
+$familyFunction = $readinessAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-TinyStrataModelFamily' }, $true)
+if (-not $familyFunction) { throw 'Installer family helper is missing.' }
+Invoke-Expression $familyFunction.Extent.Text
+foreach ($family in @('tiel', 'tiel-coder')) {
+    $selected = Get-TinyStrataModelFamily -Name $family
+    Assert-Entrypoint ($selected.Name -eq 'tiel' -and $selected.ConfigFile -eq 'config-tiel-coder.json' -and $selected.StateFile -eq 'server-state-tiel-coder.json') 'Tiel installer has independent config and state'
+    Assert-Entrypoint ($selected.NativeFile -eq 'tinystrata.exe' -and $selected.Port -eq 18084) 'Tiel reuses the Qwen engine with a separate standalone port'
+}
 $readinessFunction = $readinessAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Test-TinyStrataInferenceReady' }, $true)
 if (-not $readinessFunction) { throw 'Installer readiness helper is missing.' }
 Invoke-Expression $readinessFunction.Extent.Text

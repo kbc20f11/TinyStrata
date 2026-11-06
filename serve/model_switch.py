@@ -632,10 +632,13 @@ class ModelSwitcher:
     def _downloader(self, model):
         if model in self._downloads:
             return self._downloads[model]
-        from serve.model_download import FixedGemma4BundleDownloader, FixedModelBundleDownloader, FixedModelDownloader, manifest_for_arch, FIXED_MMPROJ
+        from serve.model_download import (FixedGemma4BundleDownloader, FixedModelBundleDownloader, FixedModelDownloader,
+                                          manifest_for_arch, projector_for_arch)
         from serve.model_setup import model_path
         profile = self.profiles.get(model)
         cfg = profile.config
+        artifact = manifest_for_arch(profile.arch, profile.id)
+        projector_artifact = projector_for_arch(profile.arch, profile.id)
         existing = model_path(cfg)
         directory = cfg['download_dir']
 
@@ -650,11 +653,11 @@ class ModelSwitcher:
             manager = FixedModelBundleDownloader(directory, on_ready=prepared,
                                                  existing_paths=(existing,) if existing is not None else (),
                                                  projector_paths=(Path(projector),) if projector else (),
-                                                 _manifests=(manifest_for_arch('clover_moe'), FIXED_MMPROJ))
+                                                 _manifests=(artifact, projector_artifact))
         elif profile.arch in ('lfm2moe', 'clover_moe'):
             manager = FixedModelDownloader(directory, on_ready=prepared,
                                            existing_paths=(existing,) if existing is not None else (),
-                                           _manifest=manifest_for_arch(profile.arch))
+                                           _manifest=artifact)
         elif profile.arch == 'gemma4':
             projector = (cfg.get('vision') or {}).get('mmproj') or cfg.get('vision_mmproj')
             assistant = cfg.get('draft_model')
@@ -666,7 +669,8 @@ class ModelSwitcher:
             projector = (cfg.get('vision') or {}).get('mmproj') or cfg.get('vision_mmproj')
             manager = FixedModelBundleDownloader(directory, on_ready=prepared,
                                                  existing_paths=(existing,) if existing is not None else (),
-                                                 projector_paths=(Path(projector),) if projector else ())
+                                                 projector_paths=(Path(projector),) if projector else (),
+                                                 _manifests=(artifact, projector_artifact))
         self._downloads[model] = manager
         return manager
 

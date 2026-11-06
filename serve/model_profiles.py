@@ -19,6 +19,14 @@ _MODELS = {
     "lfm2.5-24b-a2b": "lfm2moe",
     "gemma-4-26b-a4b-it": "gemma4",
     "clover-35b-a3b-preview": "clover_moe",
+    "tiel-coder-35b-a3b": "qwen35moe",
+}
+_PROFILE_FILES = {
+    "qwen3.6-35b-a3b": ("config.json", "config-qwen36.json"),
+    "lfm2.5-24b-a2b": ("config-lfm2.json", "config-lfm2-profile.json"),
+    "gemma-4-26b-a4b-it": ("config-gemma4.json", "config-gemma4-profile.json"),
+    "clover-35b-a3b-preview": ("config-clover.json", "config-clover-profile.json"),
+    "tiel-coder-35b-a3b": ("config-tiel-coder.json", "config-tiel-coder-profile.json"),
 }
 # TinyStrata engine ceilings, not automatically allocated KV capacities. Clover's
 # 256K capacity extends its official 128K limit; general long-context quality is unverified.
@@ -31,6 +39,7 @@ _ALIASES = {
     "gemma4": "gemma-4-26b-a4b-it", "gemma-4": "gemma-4-26b-a4b-it",
     "gemma4-26b-a4b": "gemma-4-26b-a4b-it", "gemma4-26b-a4b-it": "gemma-4-26b-a4b-it",
     "clover": "clover-35b-a3b-preview", "clover_moe": "clover-35b-a3b-preview",
+    "tiel": "tiel-coder-35b-a3b", "tiel-coder": "tiel-coder-35b-a3b",
 }
 
 
@@ -54,16 +63,16 @@ class ModelProfiles:
         current_arch = cfg.get("arch", "qwen35moe")
         if current_arch not in _MODELS.values():
             raise ValueError(f"Unsupported model profile architecture: {current_arch}")
-        self.current_id = next(name for name, arch in _MODELS.items() if arch == current_arch)
+        self.current_id = self._configured_model(cfg)
         self._hardware = {key: deepcopy(cfg[key]) for key in ("gpu", "hip_ordinal", "backend", "lib_dirs") if key in cfg}
         self._engine = model_setup.resolve_executable(cfg)
         self._profiles = {self.current_id: ModelProfile(self.current_id, current_arch, current_path, deepcopy(cfg))}
         for name, arch in _MODELS.items():
             if name == self.current_id:
                 continue
-            path = self._profile_path(current_path.parent, arch, current_path)
+            path = self._profile_path(current_path.parent, arch, current_path, name)
             loaded = config.load(path) if path.is_file() else self._defaults(name, arch)
-            self._check_arch(path, loaded, arch)
+            self._check_arch(path, loaded, arch, name)
             self._profiles[name] = ModelProfile(name, arch, path, loaded)
         # Both configured download directories and model folders can contain
         # the other pinned artifact. Look only for its exact fixed filename.
@@ -94,26 +103,50 @@ class ModelProfiles:
             return _ALIASES[key]
         raise ValueError(f"Unknown TinyStrata model: {name!r}")
 
-    @staticmethod
-    def _check_arch(path: Path, cfg: dict, arch: str) -> None:
+    @classmethod
+    def _configured_model(cls, cfg: dict) -> str:
+        """Model identity is independent of its shared native architecture.
+
+        Old configs, including custom API names, retain the original family
+        default. A recognized explicit model name must agree with its engine.
+        """
+        arch = cfg.get("arch", "qwen35moe")
+        try:
+            selected = cls.resolve(cfg.get("model_name"))
+        except ValueError:
+            selected = next((name for name, family in _MODELS.items() if family == arch), None)
+        if selected is None or _MODELS[selected] != arch:
+            raise ValueError("The configured model name belongs to another model architecture")
+        return selected
+
+    @classmethod
+    def _check_arch(cls, path: Path, cfg: dict, arch: str, model: str | None = None) -> None:
         if cfg.get("arch", "qwen35moe") != arch:
             raise ValueError(f"Model profile {path.name} belongs to another model family")
+        if model is not None and cls._configured_model(cfg) != model:
+            raise ValueError(f"Model profile {path.name} belongs to another model")
 
     @staticmethod
-    def _profile_path(parent: Path, arch: str, current: Path) -> Path:
-        names = {"qwen35moe": ("config.json", "config-qwen36.json"),
-                 "lfm2moe": ("config-lfm2.json", "config-lfm2-profile.json"),
-                 "gemma4": ("config-gemma4.json", "config-gemma4-profile.json"),
-                 "clover_moe": ("config-clover.json", "config-clover-profile.json")}[arch]
+    def _profile_path(parent: Path, arch: str, current: Path, model: str | None = None) -> Path:
+        selected = model or next(name for name, family in _MODELS.items() if family == arch)
+        names = _PROFILE_FILES[selected]
         for filename in names:
             path = parent / filename
             if path == current:
                 continue
             if not path.exists():
                 return path
-            if path.is_file() and config.load(path).get("arch", "qwen35moe") == arch:
-                return path
-        raise ValueError(f"No separate configuration path is available for {arch}")
+            if path.is_file():
+                loaded = config.load(path)
+                if loaded.get("arch", "qwen35moe") != arch:
+                    continue
+                try:
+                    actual = ModelProfiles._configured_model(loaded)
+                except ValueError:
+                    continue
+                if actual == selected:
+                    return path
+        raise ValueError(f"No separate configuration path is available for {selected}")
 
     def _defaults(self, name: str, arch: str) -> dict:
         args = ["--max-context", "auto", "--kv-type", "auto", "--chunk", "auto"]
@@ -132,7 +165,7 @@ class ModelProfiles:
 
     def _settings(self, cfg: dict, profile: ModelProfile) -> dict:
         from serve.backend import configure_backend
-        self._check_arch(profile.path, cfg, profile.arch)
+        self._check_arch(profile.path, cfg, profile.arch, profile.id)
         source = deepcopy(cfg)
         # All profiles in one API process share the same device/runtime. A saved
         # CUDA profile must not switch an AMD installation back to CUDA.
@@ -158,12 +191,20 @@ class ModelProfiles:
                 source["vision_exe"] = str(sibling.with_name("tinystrata-vision" + sibling.suffix))
         source.setdefault("arch", profile.arch)
         source.setdefault("model_name", profile.id)
+        # Normalize supported aliases while retaining historical custom API names.
+        try:
+            self.resolve(source["model_name"])
+        except ValueError:
+            pass
+        else:
+            source["model_name"] = profile.id
         # Resolve verified legacy managed provenance before decode-policy
         # migration; explicit local model selections are never inferred as stock.
         source = model_setup.migrate_managed_clover_model(source, profile.path)
         result, _ = tinyconfig.migrate_settings(source)
         selected = model_setup.model_path(result)
-        managed = profile.path.parent / "model-files" / manifest_for_arch(profile.arch).filename
+        artifact = manifest_for_arch(profile.arch, profile.id)
+        managed = profile.path.parent / "model-files" / artifact.filename
         local_clover = (profile.arch == "clover_moe" and selected is not None and
                         (result.get("model_source") == "local" or
                          (result.get("model_source") != "managed" and selected != managed.resolve())))
@@ -174,10 +215,10 @@ class ModelProfiles:
             directory = Path(result["download_dir"]).expanduser()
             if not directory.is_absolute():
                 directory = Path(result.get("cwd") or model_setup.ROOT) / directory
-            candidates.append(directory / manifest_for_arch(profile.arch).filename)
+            candidates.append(directory / artifact.filename)
         result = model_setup.shared_library_dirs(model_setup.configure_download(result, profile.path))
         candidates += [model_setup.model_path(result)]
-        candidates += [directory / manifest_for_arch(profile.arch).filename for directory in self._directories]
+        candidates += [directory / artifact.filename for directory in self._directories]
         if local_clover:
             # A missing custom model must not silently become the fixed model.
             candidates = [selected]
@@ -237,7 +278,7 @@ class ModelProfiles:
     def update(self, name: str, cfg: dict, *, save: bool = False) -> ModelProfile:
         """Update the controller's profile cache; optionally persist that profile."""
         current = self.get(name)
-        self._check_arch(current.path, cfg, current.arch)
+        self._check_arch(current.path, cfg, current.arch, current.id)
         profile = ModelProfile(current.id, current.arch, current.path, deepcopy(cfg))
         if save:
             model_setup.save_settings(profile.path, profile.config)

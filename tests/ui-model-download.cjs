@@ -8,7 +8,7 @@ const source=fs.readFileSync(path.join(webDirectory,'app.js'),'utf8');
 const sectionStart=source.indexOf('let modelCatalog ='),sectionEnd=source.indexOf('$("composer-effort").onchange');
 assert(sectionStart>=0&&sectionEnd>sectionStart,'Model controls section not found in app.js');
 const snippet=source.slice(sectionStart,sectionEnd);
-const IDS=['qwen3.6-35b-a3b','gemma-4-26b-a4b-it','lfm2.5-24b-a2b','clover-35b-a3b-preview'];
+const IDS=['qwen3.6-35b-a3b','gemma-4-26b-a4b-it','lfm2.5-24b-a2b','clover-35b-a3b-preview','tiel-coder-35b-a3b'];
 let checks=0;
 function ok(value,label){assert(value,label);checks++;}
 function fixture(saved=[]){
@@ -122,6 +122,14 @@ async function workerRegressions(){
  ok(!events.has('fetch'),'retirement worker cannot continue returning cached health responses');
 }
 (async()=>{
+ const html=fs.readFileSync(path.join(webDirectory,'index.html'),'utf8');
+ ok(html.includes('<option value="tiel-coder-35b-a3b">Tiel Coder</option>'),'composer includes the fifth model under its own identity');
+ let tiel=fixture();tiel.t.controls();
+ ok(tiel.element('composer-model').options.find(o=>o.value===IDS[4]).textContent.startsWith('Tiel Coder'),'Tiel has its own readable model label');
+ await tiel.t.open(IDS[4]);let tielFlow=tiel.t.flows.get(IDS[4]);await tiel.t.start(tielFlow);
+ ok(posts(tiel,'v1/model/download')[0].body.model===IDS[4]&&tiel.ctx.health.model===IDS[0],'Tiel download targets Tiel while Qwen remains active');
+ Object.assign(tiel.backend.jobs[IDS[4]],{state:'ready',can_cancel:false,progress:1,bytes_downloaded:100});await tiel.t.poll(tielFlow);await drain();
+ ok(posts(tiel,'v1/model/switch')[0].body.model===IDS[4]&&tiel.ctx.health.model===IDS[4],'ready Tiel switches by model identity');
  let f=fixture();f.t.controls();
  ok(f.element('composer-model').options.every(o=>!o.disabled),'uninstalled catalog options are selectable');
  await f.t.open(IDS[1]);

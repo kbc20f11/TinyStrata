@@ -18,8 +18,10 @@ APP_ID = "tinystrata-ui"
 PROFILES = {"qwen36": ("qwen3.6-35b-a3b", "config.json"),
             "gemma4": ("gemma-4-26b-a4b-it", "config-gemma4.json"),
             "lfm2": ("lfm2.5-24b-a2b", "config-lfm2.json"),
-            "clover": ("clover-35b-a3b-preview", "config-clover.json")}
+            "clover": ("clover-35b-a3b-preview", "config-clover.json"),
+            "tiel": ("tiel-coder-35b-a3b", "config-tiel-coder.json")}
 MODELS = {model: family for family, (model, _) in PROFILES.items()}
+FAMILY_ALIASES = {"tiel-coder": "tiel"}
 
 
 def backend_revision(source):
@@ -202,9 +204,10 @@ class Launcher:
             settings = {}
         self.api_port = port_number(args.api_port if args.api_port is not None else settings.get("api_port", 18080))
         self.port = port_number(args.port if args.port is not None else settings.get("port", 3000))
-        self.family = args.model_family or settings.get("model_family", "qwen36")
+        selected_family = args.model_family or settings.get("model_family", "qwen36")
+        self.family = FAMILY_ALIASES.get(selected_family, selected_family)
         if self.family not in PROFILES:
-            raise ValueError("Unknown saved model family; specify --model-family qwen36, gemma4, lfm2 or clover")
+            raise ValueError("Unknown saved model family; specify --model-family qwen36, gemma4, lfm2, clover or tiel")
         if self.api_port == self.port:
             raise ValueError("The UI and API must use different ports")
         self.python = self.runtime / ".venv" / "Scripts" / "python.exe"
@@ -264,7 +267,8 @@ class Launcher:
 
     def save_api_process(self, process, config):
         name = {"qwen36": "server-state.json", "gemma4": "server-state-gemma4.json",
-                "lfm2": "server-state-lfm2.json", "clover": "server-state-clover.json"}[self.family]
+                "lfm2": "server-state-lfm2.json", "clover": "server-state-clover.json",
+                "tiel": "server-state-tiel-coder.json"}[self.family]
         target = self.runtime / name
         temporary = target.with_name(f"{target.name}.{os.getpid()}.tmp")
         values = {"pid": process.pid, "started": process_started(process.pid),
@@ -414,7 +418,7 @@ def main():
     parser.add_argument("--work-dir", type=Path, help="state directory (default: source directory's sibling ending in -work)")
     parser.add_argument("--api-port", type=port_number, help="API port (default: saved selection or 18080)")
     parser.add_argument("--port", type=port_number, help="UI port (default: saved selection or 3000)")
-    parser.add_argument("--model-family", choices=tuple(PROFILES), help="model for a new API (default: saved selection or qwen36)")
+    parser.add_argument("--model-family", choices=(*PROFILES, *FAMILY_ALIASES), help="model for a new API (default: saved selection or qwen36)")
     parser.add_argument("--no-browser", action="store_true", help="do not open the browser")
     parser.add_argument("--no-api-start", action="store_true", help="require an existing healthy API; never start it or force model loading")
     parser.add_argument("--configure-only", action="store_true", help="save selections without starting services or opening the browser")

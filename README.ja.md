@@ -22,7 +22,7 @@ TinyStrata は Strata を基盤に、限られた VRAM でも 30B 級の MoE モ
 
 ## 対象モデル
 
-一般的なグラフィックボードを搭載した PC での速度・省メモリ性・回答品質のバランスを重視し、[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) を既定のモデルとしています。比較的小さな MoE モデルに注力し、**Gemma 4 26B-A4B-it、LFM2.5-24B-A2B、Clover-35B-A3B-Preview にも対応しています**。
+一般的なグラフィックボードを搭載した PC での速度・省メモリ性・回答品質のバランスを重視し、[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) を既定のモデルとしています。比較的小さな MoE モデルに注力し、**Gemma 4 26B-A4B-it、LFM2.5-24B-A2B、Clover-35B-A3B-Preview、Tiel Coder 35B-A3B にも対応しています**。
 
 **Qwen3.6-35B-A3B UD-IQ3_XXS** は、固定版の [Unsloth MTP GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf) を使います。ダウンロードは 2 ファイル、合計約 **15.0 GB** です。MTP の重みを含む言語モデルが **14.1 GB**、ビジョンプロジェクタ（`mmproj-F16.gguf`）が **0.9 GB** です。
 
@@ -34,15 +34,17 @@ TinyStrata は Strata を基盤に、限られた VRAM でも 30B 級の MoE モ
 
 管理対象の Clover プロファイルは、ドラフトを使わない因果生成 D0・INT8 KV（`--clover-mode causal --clover-draft 0 --kv-type int8`）と MT1（`STRATA_IQ_MT_MIN=1`）を既定とします。exact 自己投機 D3 は任意で選べます（`--clover-mode self-spec --clover-draft 3 --clover-accept exact`）。有効にする前に、使う環境で因果生成との速度を比較してください。画像エンコーダは既定で GPU に常駐し、`--vision cpu` で CPU、`--vision no` で無効にできます。画像入力は因果生成と exact 自己投機に対応し、ブロック拡散・閾値採用には `--vision no` が必要です。LowConfidence 方式のブロック拡散と閾値による近似採用は、明示的に選ぶ実験的な機能です。[生成方式の設定](benchmark/README.md#日本語)を参照してください。
 
-Qwen・Gemma・Clover・LFM はいずれも、空き VRAM に合わせたエキスパートキャッシュ、システム RAM を使った CPU でのエキスパート計算、入力時の重みのストリーミング、CUDA Graph に対応しています。共通の API と起動中のモデル切り替えを利用でき、設定はモデルごとに保存します。モデルが選んだエキスパートは省略しません。また、最大コンテキスト容量を変えずに、会話の長さに応じて KV の物理メモリを自動で増やせます。
+**Tiel Coder 35B-A3B UD-IQ3_XXS** は、Ornith-1.5 を基にした [Tiel の MTP GGUF](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP) を使います。本体は **13.601 GB**、専用の Ornith ビジョンプロジェクタは **0.903 GB**、合計 **14.503 GB** です。専用の tokenizer と Sharp chat template を保持し、Qwen35MoE の実行経路を共有しながらモデル設定を分けて保存します。チャットのモデル選択で **Tiel Coder** を選ぶか、`run-api.bat --model-family tiel` で起動できます。単独プロファイルのポートは **18084**、設定は `config-tiel-coder.json` です。サンプリングの既定は作者の指定に合わせた `temperature 1.0`、`top_p 0.95`、`top_k 20` で、作者のコーディング評価では温度 **0.6** を使っています。MTP の既定は **3** です。`--mtp 0` で無効に、`--mtp 1` で短いドラフトに変更できます。
 
-| 機能 | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) |
-| --- | --- | --- | --- | --- |
-| 最大コンテキスト | 256K | 256K | 128K | 256K（拡張） |
-| 画像入力 | 対応（画像エンコーダは既定で GPU 常駐） | 対応（画像エンコーダは既定で GPU 常駐） | なし | 対応（TinyStrata 拡張・既定で GPU 常駐） |
-| MTP | 3 | 3 | なし | なし（exact 自己投機 D3 は任意選択） |
-| KV 形式 | FP32 / INT8 / ネイティブ FP8 | FP16 / INT8 / ネイティブ FP8（実験的） | FP16 / INT8 / ネイティブ FP8 | FP32 / INT8 / ネイティブ FP8 |
-| KV の自動選択（既定） | FP8 → INT8 | INT8 | FP8 → INT8 | INT8 |
+Qwen・Gemma・Clover・LFM・Tiel Coder はいずれも、空き VRAM に合わせたエキスパートキャッシュ、システム RAM を使った CPU でのエキスパート計算、入力時の重みのストリーミング、CUDA Graph に対応しています。共通の API と起動中のモデル切り替えを利用でき、設定はモデルごとに保存します。モデルが選んだエキスパートは省略しません。また、最大コンテキスト容量を変えずに、会話の長さに応じて KV の物理メモリを自動で増やせます。
+
+| 機能 | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) | [Tiel Coder](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP) |
+| --- | --- | --- | --- | --- | --- |
+| 最大コンテキスト | 256K | 256K | 128K | 256K（拡張） | 256K |
+| 画像入力 | 対応（画像エンコーダは既定で GPU 常駐） | 対応（画像エンコーダは既定で GPU 常駐） | なし | 対応（TinyStrata 拡張・既定で GPU 常駐） | 対応（画像エンコーダは既定で GPU 常駐） |
+| MTP | 3 | 3 | なし | なし（exact 自己投機 D3 は任意選択） | 3 |
+| KV 形式 | FP32 / INT8 / ネイティブ FP8 | FP16 / INT8 / ネイティブ FP8（実験的） | FP16 / INT8 / ネイティブ FP8 | FP32 / INT8 / ネイティブ FP8 | FP32 / INT8 / ネイティブ FP8 |
+| KV の自動選択（既定） | FP8 → INT8 | INT8 | FP8 → INT8 | INT8 | FP8 → INT8 |
 
 Clover の画像入力は TinyStrata の拡張で、公式 Clover の機能ではありません。
 
@@ -52,13 +54,13 @@ Gemma の既定は INT8 です。ネイティブ FP8 は実験的な機能で、
 
 **コンテキスト容量の自動選択**は、下表のように GPU の総 VRAM を基準とし、空き VRAM はエキスパートキャッシュの容量に反映されます。`--max-context N` を指定した場合は、その値を優先します。
 
-| GPU の総 VRAM（目安） | Qwen3.6 / Gemma 4 / Clover | LFM2.5 |
+| GPU の総 VRAM（目安） | Qwen3.6 / Gemma 4 / Clover / Tiel Coder | LFM2.5 |
 | --- | ---: | ---: |
 | 8 GB | 64K | 64K |
 | 12 GB | 128K | 128K |
 | 16 GB 以上 | 256K | 128K |
 
-ドライバーによる容量表示の差を見込んでいるため、16 GB の GPU が 15.x GiB と表示されても、Qwen・Gemma では 256K が選択されます。
+ドライバーによる容量表示の差を見込んでいるため、16 GB の GPU が 15.x GiB と表示されても、Qwen・Gemma・Clover・Tiel Coder では 256K が選択されます。
 
 <details>
 <summary>追加モデルの実行ファイルがない場合の手動ビルド</summary>
@@ -106,7 +108,7 @@ API のみの構成では `run-api.bat` を使います。
 
 ### UI の検索・Python 実行・チャット保存
 
-入力欄の **チャット設定** の隣にある **ウェブ検索** のチェックボックスで、4 モデル共通のウェブ検索を切り替えます。検索サービス・API キー・同時実行数はチャット設定で指定します。Python 実行はモデルが必要としたときにいつでも利用できます。生成が完了した Python コードブロックは、**Pythonを実行**ボタンから手動でも実行できます。
+入力欄の **チャット設定** の隣にある **ウェブ検索** のチェックボックスで、対応モデル共通のウェブ検索を切り替えます。検索サービス・API キー・同時実行数はチャット設定で指定します。Python 実行はモデルが必要としたときにいつでも利用できます。生成が完了した Python コードブロックは、**Pythonを実行**ボタンから手動でも実行できます。
 
 - **検索：** DDGS はキー不要で、既定では同時実行数 1、開始間隔は最低 2 秒です。Brave は API キーが必要で、既定では同時実行数 1、開始間隔は最低 1.1 秒とし、レート制限ヘッダーにも従います。同じ検索の結果は 5 分間キャッシュし、1 回の回答につき検索は最大 3 回です。検索プロバイダー・キー・同時実行数は UI サーバーが全モデルで共通管理します。キーは Windows DPAPI で保護し、ブラウザへ返しません。
 - **Python：** Pyodide を使い、隔離したブラウザの iframe・Worker 内で標準ライブラリのコードを実行します。実行は 10 秒までで、ネットワーク・ホストのファイル・シェル・`pip` は利用できません。初回のみ、バージョンを固定して SHA-256 で検証する約 **13.5 MB** のランタイムを Git 管理外の作業ディレクトリへダウンロードし、以後は再利用します。
@@ -149,6 +151,8 @@ Invoke-RestMethod "$api/v1/model/switch"
 初めから Gemma で起動する場合は `run-api.bat --model-family gemma4` を実行します。既定の API アドレスは `http://127.0.0.1:18082/v1` です。LFM を使う場合は、上のダウンロード・進捗確認・切り替えリクエストの `gemma-4-26b-a4b-it` を `lfm2.5-24b-a2b` に置き換えるか、`run-api.bat --model-family lfm2`（既定の API アドレス `http://127.0.0.1:18081/v1`）で起動してください。
 
 Clover を使う場合は、同じダウンロード・進捗確認・切り替えリクエストで `clover-35b-a3b-preview` を指定します。起動中の API のポートは変わりません。
+
+Tiel Coder は、同じリクエストで `tiel-coder-35b-a3b` を指定します。Qwen と実行アーキテクチャを共有しますが、本体・projector・tokenizer・設定は別々に管理します。
 
 `GET /v1/model/switch` で `state` が `ready` になるまで確認してください。Qwen に戻す場合は、同じ切り替えリクエストに `{"model":"qwen3.6-35b-a3b"}` を指定します。ダウンロード・切り替えの開始時は `202`、生成中の切り替え要求は `409` を返すので、生成終了後に再試行してください。切り替え中の推論リクエストは `503` になります。ポートと認証設定はそのままです。モデルの選択は今回の起動中だけ有効で、再起動時はランチャーで選んだモデルを使用します。
 
@@ -260,7 +264,7 @@ INT8 KV、各条件で API を 4 回独立に起動し、交互に計測しま�
 
 | 目的とハードウェア | プロジェクト |
 | --- | --- |
-| 一般的なグラフィックボードを搭載した、**VRAM が 8–24 GB、システム RAM が 32 GB 以下**の **Windows** PC で、Qwen3.6 / Gemma 4 / LFM2.5 / Clover を使いたい。 | TinyStrata（**Windows 専用**、開発中） |
+| 一般的なグラフィックボードを搭載した、**VRAM が 8–24 GB、システム RAM が 32 GB 以下**の **Windows** PC で、Qwen3.6 / Gemma 4 / LFM2.5 / Clover / Tiel Coder を使いたい。 | TinyStrata（**Windows 専用**、開発中） |
 | **RTX 3060 クラス以上の GPU** と **64 GB 以上のシステム RAM** の両方を備えている。 | [Strata（上流プロジェクト）](https://github.com/Niko1221/Strata) をお勧めします。 |
 | **生成状況をリアルタイム表示するチャット UI** を使いたい。 | TinyStrata の [UI ありインストーラー](install-ui.ps1)。 |
 
@@ -310,9 +314,9 @@ CUDA の Gemma/LFM は、同じモデル内のチャット復帰用キャッシ�
 
 明示的な設定は自動選択より優先され、既存の手動設定も引き続き有効です。たとえば、`run-api.bat --kv-type int8` は INT8 に固定し、`run-api.bat --kv-type auto --max-context auto --expert-vram auto` は KV、コンテキスト、エキスパート配置を自動設定に戻します。
 
-### エキスパート配置の学習 — Qwen3.6 / Clover
+### エキスパート配置の学習 — Qwen3.6 / Clover / Tiel Coder
 
-通常の Qwen・Clover の API 構成では、学習したエキスパートの順位をエンジンログと同じフォルダの `expert-profiles` に自動保存し、新しい入力の使用頻度から話題の変化に追従します。読み込み時の配置数は、現在のエキスパート容量設定と空き VRAM から決めます。保存時の GPU の配置数には固定しません。モデルファイルの属性・内容サンプルの識別子と量子化レイアウトが一致する場合だけ再利用します。無効・読み込み不能なファイルは通常の初期配置に戻り、読み取り専用などで保存に失敗しても、推論と既存の保存ファイルは維持します。
+通常の Qwen・Clover・Tiel Coder の API 構成では、学習したエキスパートの順位をエンジンログと同じフォルダの `expert-profiles` に自動保存し、新しい入力の使用頻度から話題の変化に追従します。読み込み時の配置数は、現在のエキスパート容量設定と空き VRAM から決めます。保存時の GPU の配置数には固定しません。モデルファイルの属性・内容サンプルの識別子と量子化レイアウトが一致する場合だけ再利用します。無効・読み込み不能なファイルは通常の初期配置に戻り、読み取り専用などで保存に失敗しても、推論と既存の保存ファイルは維持します。
 
 この配置ファイルに保存するのはエキスパートの順位だけです。プロンプト・中間活性・KV は含めず、モデルが選んだエキスパートも省略しません。配置が変わると CPU／GPU の丸め方によって生成トークンが変わる場合があり、同一出力は保証しません。
 

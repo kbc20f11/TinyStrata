@@ -44,6 +44,26 @@ FIXED_MMPROJ = _Manifest(
     f"https://huggingface.co/{MODEL_REPO}/resolve/{MODEL_REVISION}/{MMPROJ_FILENAME}?download=true",
 )
 
+# Tiel uses the qwen35moe engine, but its own trained Ornith MTP head,
+# Sharp template/tokenizer and Ornith vision projector. Model identity must
+# stay separate from architecture; do not substitute Qwen's managed files.
+TIEL_MODEL_REPO = "peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP"
+TIEL_MODEL_REVISION = "bb5f3f441849fc24c2d9037c310bc995404bfa0c"
+TIEL_MODEL_FILENAME = "Tiel-Coder-35B-A3B-MTP-UD-IQ3_XXS.gguf"
+TIEL_MODEL_SIZE = 13_600_579_424
+TIEL_MODEL_SHA256 = "a4d8ffc7f030466c67db289543871a8f9e6d5340241b300c09fbaf16642273ca"
+FIXED_TIEL_MODEL = _Manifest(
+    TIEL_MODEL_REPO, TIEL_MODEL_REVISION, TIEL_MODEL_FILENAME, TIEL_MODEL_SIZE, TIEL_MODEL_SHA256,
+    f"https://huggingface.co/{TIEL_MODEL_REPO}/resolve/{TIEL_MODEL_REVISION}/{TIEL_MODEL_FILENAME}?download=true",
+)
+TIEL_MMPROJ_FILENAME = "mmproj-BF16.gguf"
+TIEL_MMPROJ_SIZE = 902_822_016
+TIEL_MMPROJ_SHA256 = "d9ce31026d1cb1f3f8d5152e2e2a014d9d2b302b6c93a7dc07bb0a0487f52837"
+FIXED_TIEL_MMPROJ = _Manifest(
+    TIEL_MODEL_REPO, TIEL_MODEL_REVISION, TIEL_MMPROJ_FILENAME, TIEL_MMPROJ_SIZE, TIEL_MMPROJ_SHA256,
+    f"https://huggingface.co/{TIEL_MODEL_REPO}/resolve/{TIEL_MODEL_REVISION}/{TIEL_MMPROJ_FILENAME}?download=true",
+)
+
 LFM2_MODEL_REPO = "LiquidAI/LFM2.5-24B-A2B-GGUF"
 LFM2_MODEL_REVISION = "0912d33141f77e10705345a6732bfd83f0252fdc"
 LFM2_MODEL_FILENAME = "LFM2.5-24B-A2B-Q4_K_M.gguf"
@@ -107,8 +127,16 @@ FIXED_GEMMA4_ASSISTANT = _Manifest(
 )
 
 
-def manifest_for_arch(arch: str = "qwen35moe") -> _Manifest:
+def is_tiel_model(model_name: str | None) -> bool:
+    return isinstance(model_name, str) and model_name.strip().lower() in ("tiel", "tiel-coder", "tiel-coder-35b-a3b")
+
+
+def manifest_for_arch(arch: str = "qwen35moe", model_name: str | None = None) -> _Manifest:
     """Resolve a supported model family to a fixed, trusted artifact."""
+    if is_tiel_model(model_name):
+        if arch != "qwen35moe":
+            raise ValueError("Tiel Coder requires the qwen35moe architecture")
+        return FIXED_TIEL_MODEL
     if arch == "qwen35moe":
         return FIXED_MODEL
     if arch == "lfm2moe":
@@ -117,6 +145,20 @@ def manifest_for_arch(arch: str = "qwen35moe") -> _Manifest:
         return FIXED_GEMMA4_MODEL
     if arch == "clover_moe":
         return FIXED_CLOVER_MODEL
+    raise ValueError(f"Unsupported TinyStrata model architecture: {arch}")
+
+
+def projector_for_arch(arch: str = "qwen35moe", model_name: str | None = None) -> _Manifest | None:
+    """The projector belonging to the selected model, not just its engine."""
+    if is_tiel_model(model_name):
+        manifest_for_arch(arch, model_name)
+        return FIXED_TIEL_MMPROJ
+    if arch == "gemma4":
+        return FIXED_GEMMA4_MMPROJ
+    if arch in ("qwen35moe", "clover_moe"):
+        return FIXED_MMPROJ
+    if arch == "lfm2moe":
+        return None
     raise ValueError(f"Unsupported TinyStrata model architecture: {arch}")
 
 

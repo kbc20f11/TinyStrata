@@ -22,7 +22,7 @@ TinyStrata automatically selects inference and memory settings for your hardware
 
 ## Model focus
 
-[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) remains the default model, with a balance of speed, memory efficiency and answer quality for PCs with mainstream graphics cards. TinyStrata focuses on compact MoE models and also supports **Gemma 4 26B-A4B-it, LFM2.5-24B-A2B and Clover-35B-A3B-Preview**.
+[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) remains the default model, with a balance of speed, memory efficiency and answer quality for PCs with mainstream graphics cards. TinyStrata focuses on compact MoE models and also supports **Gemma 4 26B-A4B-it, LFM2.5-24B-A2B, Clover-35B-A3B-Preview and Tiel Coder 35B-A3B**.
 
 **Qwen3.6-35B-A3B UD-IQ3_XXS** uses the fixed [Unsloth MTP GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf). The two downloads total about **15.0 GB**: language model including MTP weights **14.1 GB**, and vision projector (`mmproj-F16.gguf`) **0.9 GB**.
 
@@ -34,15 +34,17 @@ TinyStrata automatically selects inference and memory settings for your hardware
 
 Managed Clover profiles default to causal decoding without drafts, D0, with INT8 KV (`--clover-mode causal --clover-draft 0 --kv-type int8`) and MT1 (`STRATA_IQ_MT_MIN=1`). Exact self-speculation D3 remains optional (`--clover-mode self-spec --clover-draft 3 --clover-accept exact`); compare it with causal decoding on your hardware before enabling it. The image encoder stays on the GPU by default; `--vision cpu` and `--vision no` select CPU encoding or disable it. Vision supports causal or exact self-speculative decoding; diffusion and threshold acceptance require `--vision no`. LowConfidence block diffusion and approximate threshold acceptance remain experimental opt-ins; see the [decoding options](benchmark/README.md#english).
 
+**Tiel Coder 35B-A3B UD-IQ3_XXS** uses the [Tiel MTP GGUF](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP), based on Ornith-1.5. The model is **13.601 GB**, with its own **0.903 GB** Ornith vision projector (**14.503 GB** total), tokenizer and Sharp chat template. It shares the Qwen35MoE engine while keeping separate model settings. Select **Tiel Coder** in the chat's model dropdown or use `run-api.bat --model-family tiel`; its standalone profile uses port **18084** and `config-tiel-coder.json`. Sampling follows the author's `temperature 1.0`, `top_p 0.95`, `top_k 20`; temperature **0.6** is the author's coding setting. MTP defaults to **3**; `--mtp 0` disables it and `--mtp 1` selects a shorter draft.
+
 The Qwen, Gemma and LFM engines use an automatic VRAM Expert cache, CPU Expert computation from system RAM, prompt weight streaming and CUDA Graphs. They share the same API and support live model switching, with settings saved separately for each model. Selected Experts are not omitted. They also support automatic physical KV growth without changing the maximum context capacity.
 
-| Feature | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) |
-| --- | --- | --- | --- | --- |
-| Maximum context | 256K | 256K | 128K | 256K (extension) |
-| Image input | Yes; GPU-resident encoder by default | Yes; GPU-resident encoder by default | No | Yes (TinyStrata extension; GPU-resident encoder by default) |
-| MTP | 3 | 3 | No | No (exact self-spec D3 optional) |
-| KV formats | FP32 / INT8 / native FP8 | FP16 / INT8 / native FP8 (experimental) | FP16 / INT8 / native FP8 | FP32 / INT8 / native FP8 |
-| Automatic KV (default) | FP8 → INT8 | INT8 | FP8 → INT8 | INT8 |
+| Feature | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) | [Tiel Coder](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP) |
+| --- | --- | --- | --- | --- | --- |
+| Maximum context | 256K | 256K | 128K | 256K (extension) | 256K |
+| Image input | Yes; GPU-resident encoder by default | Yes; GPU-resident encoder by default | No | Yes (TinyStrata extension; GPU-resident encoder by default) | Yes; GPU-resident encoder by default |
+| MTP | 3 | 3 | No | No (exact self-spec D3 optional) | 3 |
+| KV formats | FP32 / INT8 / native FP8 | FP16 / INT8 / native FP8 (experimental) | FP16 / INT8 / native FP8 | FP32 / INT8 / native FP8 | FP32 / INT8 / native FP8 |
+| Automatic KV (default) | FP8 → INT8 | INT8 | FP8 → INT8 | INT8 | FP8 → INT8 |
 
 Image input for Clover is a TinyStrata extension, not an official Clover capability.
 
@@ -52,13 +54,13 @@ Gemma uses INT8 by default. Native FP8 is experimental and can be selected expli
 
 **Automatic context capacity** uses the GPU’s total VRAM as shown below; available free VRAM determines the Expert cache size. An explicit `--max-context N` takes priority.
 
-| Total VRAM (examples) | Qwen3.6 / Gemma 4 / Clover | LFM2.5 |
+| Total VRAM (examples) | Qwen3.6 / Gemma 4 / Clover / Tiel Coder | LFM2.5 |
 | --- | ---: | ---: |
 | 8 GB | 64K | 64K |
 | 12 GB | 128K | 128K |
 | 16 GB or more | 256K | 128K |
 
-Capacity classes allow for driver reporting differences, so a 16 GB card reported as 15.x GiB still selects 256K for Qwen, Gemma and Clover.
+Capacity classes allow for driver reporting differences, so a 16 GB card reported as 15.x GiB still selects 256K for Qwen, Gemma, Clover and Tiel Coder.
 
 <details>
 <summary>Build additional model engines manually if an executable is missing</summary>
@@ -106,7 +108,7 @@ For the API-only installation, use `run-api.bat`:
 
 ### UI search, Python and saved chats
 
-Use the **Web search** checkbox beside **Chat settings** in the composer to enable web search for any of the four models. Configure the search provider, API key and concurrency in Chat settings. Python execution is always available when the model needs it; completed Python code blocks also have a **Run Python** button for manual execution.
+Use the **Web search** checkbox beside **Chat settings** in the composer to enable web search for any supported model. Configure the search provider, API key and concurrency in Chat settings. Python execution is always available when the model needs it; completed Python code blocks also have a **Run Python** button for manual execution.
 
 - **Search:** DDGS needs no key and defaults to one concurrent search with at least 2 seconds between starts. Brave needs an API key and defaults to one concurrent search with at least 1.1 seconds between starts; rate-limit headers are respected. Queries are cached for 5 minutes, with at most 3 searches per reply. Provider, key and concurrency settings are shared across models by the UI server; keys are protected with Windows DPAPI and are not returned to the browser.
 - **Python:** standard-library code runs in an isolated browser iframe/worker using Pyodide, with a 10-second execution limit and no network, host filesystem, shell or `pip` access. First use downloads a pinned, SHA-256-verified runtime of about **13.5 MB** into the work directory, outside Git; later runs reuse it.
@@ -149,6 +151,8 @@ Invoke-RestMethod "$api/v1/model/switch"
 To start directly with Gemma, run `run-api.bat --model-family gemma4`; its default API address is `http://127.0.0.1:18082/v1`. For LFM, replace `gemma-4-26b-a4b-it` in the download, progress and switch requests above with `lfm2.5-24b-a2b`, or start it with `run-api.bat --model-family lfm2` (default API address `http://127.0.0.1:18081/v1`).
 
 For Clover, use `clover-35b-a3b-preview` in the same download, progress and switch requests. The running API's port stays unchanged.
+
+For Tiel Coder, use `tiel-coder-35b-a3b` in those requests. Its model, projector, tokenizer and settings remain separate from Qwen even though both use the same engine architecture.
 
 Poll `GET /v1/model/switch` until `state` is `ready`. To return to Qwen, send the same switch request with `{"model":"qwen3.6-35b-a3b"}`. Starting a download or switch returns `202`; a switch during generation returns `409`, so retry after generation finishes. Inference during switching returns `503`. The port and authentication stay unchanged. Selection lasts for the current server session; restarting uses the model selected by the launcher.
 
@@ -260,7 +264,7 @@ INT8 KV; four independent API starts per profile in interleaved order. Short gen
 
 | Your goal and hardware                                                                                                                       | Project                                                               |
 | -------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| You want Qwen3.6 / Gemma 4 / LFM2.5 / Clover inference on a **Windows** PC with a mainstream graphics card, **8–24 GB of VRAM and 32 GB of system RAM or less**. | TinyStrata (**Windows only**, under development)                      |
+| You want Qwen3.6 / Gemma 4 / LFM2.5 / Clover / Tiel Coder inference on a **Windows** PC with a mainstream graphics card, **8–24 GB of VRAM and 32 GB of system RAM or less**. | TinyStrata (**Windows only**, under development)                      |
 | You have both **an RTX 3060-class GPU or better** and **64 GB of system RAM or more**.                                                        | We recommend [Strata (upstream)](https://github.com/Niko1221/Strata). |
 | You want a **chat UI with live generation statistics**. | TinyStrata with the [optional UI installer](install-ui.ps1). |
 
@@ -310,9 +314,9 @@ Gemma/LFM can retain bounded same-model chat snapshots on CUDA: **1024/512 MiB**
 
 Explicit settings override automatic choices, and existing manually selected settings remain in effect. For example, `run-api.bat --kv-type int8` fixes INT8; `run-api.bat --kv-type auto --max-context auto --expert-vram auto` restores automatic KV, context and Expert placement.
 
-### Learned Expert placement — Qwen3.6 / Clover
+### Learned Expert placement — Qwen3.6 / Clover / Tiel Coder
 
-The normal Qwen and Clover API configurations automatically save learned Expert rankings in `expert-profiles` beside the engine log and use the new prompt's routing frequencies to adapt to topic changes. Each load sizes the cache from the current Expert budget and available VRAM; saved rankings do not impose the previous GPU's slot count. Profiles must match the model-file metadata/sampled-content fingerprint and quantized layout. Invalid or unreadable profiles use ordinary initial placement; a failed save, including a read-only destination, leaves inference usable and the previous profile intact.
+The normal Qwen, Clover and Tiel Coder API configurations automatically save learned Expert rankings in `expert-profiles` beside the engine log and use the new prompt's routing frequencies to adapt to topic changes. Each load sizes the cache from the current Expert budget and available VRAM; saved rankings do not impose the previous GPU's slot count. Profiles must match the model-file metadata/sampled-content fingerprint and quantized layout. Invalid or unreadable profiles use ordinary initial placement; a failed save, including a read-only destination, leaves inference usable and the previous profile intact.
 
 These profile files contain only Expert rankings, with no serialized prompts, activations or KV; no model-selected Expert is skipped. Changing residency can change CPU/GPU rounding and generated tokens, so identical output is not guaranteed.
 

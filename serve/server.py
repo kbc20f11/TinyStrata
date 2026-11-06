@@ -6804,7 +6804,8 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
     A bad value refuses to start the server (a typo'd config should not quietly change sampling); unknown keys
     are named at startup and ignored."""
     out = {}
-    from serve.tinyconfig import DEFAULT_SAMPLING, LFM2_SAMPLING, GEMMA4_SAMPLING, CLOVER_SAMPLING
+    from serve.tinyconfig import DEFAULT_SAMPLING, LFM2_SAMPLING, GEMMA4_SAMPLING, CLOVER_SAMPLING, TIEL_SAMPLING
+    from serve.model_download import is_tiel_model
     block = dict(cfg.get("sampling") or {})
     for alias, canon in SAMPLING_ALIASES.items():      # #1819: llama.cpp's names for the same two fields
         if block.get(alias) is not None:
@@ -6814,6 +6815,8 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
             block[canon] = block.pop(alias)
     defaults = {"lfm2moe": LFM2_SAMPLING, "gemma4": GEMMA4_SAMPLING,
                 "clover_moe": CLOVER_SAMPLING}.get(cfg.get("arch"), DEFAULT_SAMPLING)
+    if is_tiel_model(cfg.get("model_name")):
+        defaults = TIEL_SAMPLING
     block = {**defaults, **{key: value for key, value in block.items() if value is not None}}
     for key, value in block.items():
         if value is None:
@@ -6952,13 +6955,16 @@ FAMILY_MODEL_NAMES = {"qwen35moe": "qwen3.6-35b-a3b", "lfm2moe": "lfm2.5-24b-a2b
 
 def default_model_name(cfg: dict) -> str:
     """The configured API name, or TinyStrata's Qwen3.6 model name."""
+    from serve.model_download import is_tiel_model
+    if is_tiel_model(cfg.get("model_name")):
+        return "tiel-coder-35b-a3b"
     return cfg.get("model_name") or FAMILY_MODEL_NAMES.get(cfg.get("arch", "qwen35moe"), FAMILY_MODEL_NAMES["qwen35moe"])
 
 
 def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
     """Install the fixed GGUF and image projector before publishing inference readiness."""
     from serve.model_download import (FixedModelBundleDownloader, FixedModelDownloader,
-                                      FixedGemma4BundleDownloader, manifest_for_arch, FIXED_MMPROJ)
+                                      FixedGemma4BundleDownloader, manifest_for_arch, projector_for_arch)
     from serve.model_setup import model_path, prepare_installed_model, resolve_executable, save_settings
 
     existing = model_path(cfg)
@@ -6970,7 +6976,7 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
         if svc.stopping.is_set() or getattr(svc.downloads, "closed", False):
             raise RuntimeError("the API is stopping")
         if svc.models is not None:
-            original = svc.models.profiles.resolve(cfg.get("arch", "qwen35moe"))
+            original = svc.models.profiles.current_id
             if svc.models.active_id != original:
                 # This manager can outlive its initial model selection. An
                 # inactive download prepares files only, never the live Service.
@@ -7088,16 +7094,19 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
         svc.downloads = FixedModelBundleDownloader(directory, on_ready=activate,
                     existing_paths=(existing,) if existing is not None else (),
                     projector_paths=(Path(projector),) if projector else (),
-                    _manifests=(manifest_for_arch("clover_moe"), FIXED_MMPROJ))
+                    _manifests=(manifest_for_arch("clover_moe", cfg.get("model_name")),
+                                projector_for_arch("clover_moe", cfg.get("model_name"))))
     elif cfg.get("arch") in ("lfm2moe", "clover_moe"):
         svc.downloads = FixedModelDownloader(directory, on_ready=activate,
                                              existing_paths=(existing,) if existing is not None else (),
-                                             _manifest=manifest_for_arch(cfg["arch"]))
+                                             _manifest=manifest_for_arch(cfg["arch"], cfg.get("model_name")))
     else:
-        projector = (cfg.get("vision") or {}).get("mmproj")
+        projector = (cfg.get("vision") or {}).get("mmproj") or cfg.get("vision_mmproj")
         svc.downloads = FixedModelBundleDownloader(directory, on_ready=activate,
                                                    existing_paths=(existing,) if existing is not None else (),
-                                                   projector_paths=(Path(projector),) if projector else ())
+                                                   projector_paths=(Path(projector),) if projector else (),
+                                                   _manifests=(manifest_for_arch(cfg.get("arch", "qwen35moe"), cfg.get("model_name")),
+                                                               projector_for_arch(cfg.get("arch", "qwen35moe"), cfg.get("model_name"))))
     return svc.downloads
 
 

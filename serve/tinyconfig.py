@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 from serve import config
+from serve.model_download import is_tiel_model
 
 MEMORY_POLICY_VERSION = 1
 VISION_POLICY_VERSION = 1
@@ -23,6 +24,8 @@ GEMMA4_SAMPLING = {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0,
                    "presence_penalty": 0.0, "repetition_penalty": 1.0}
 CLOVER_SAMPLING = {"temperature": 0.0, "top_p": 1.0, "top_k": 64, "min_p": 0.0,
                    "presence_penalty": 0.9, "frequency_penalty": 0.0, "repetition_penalty": 1.05}
+TIEL_SAMPLING = {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0,
+                 "presence_penalty": 0.0, "frequency_penalty": 0.0, "repetition_penalty": 1.0}
 MODEL_NAMES = {"qwen35moe": "qwen3.6-35b-a3b", "lfm2moe": "lfm2.5-24b-a2b",
                "gemma4": "gemma-4-26b-a4b-it", "clover_moe": "clover-35b-a3b-preview"}
 
@@ -134,11 +137,14 @@ def migrate_generation_settings(cfg: dict) -> tuple[dict, bool]:
     if sampling is not None and not isinstance(sampling, dict):
         raise ValueError("sampling must be an object")
     sampling = dict(sampling or {})
-    if cfg.get("arch", "qwen35moe") == "qwen35moe" and cfg.get("generation_policy_version") != GENERATION_POLICY_VERSION and \
+    if cfg.get("arch", "qwen35moe") == "qwen35moe" and not is_tiel_model(cfg.get("model_name")) and \
+            cfg.get("generation_policy_version") != GENERATION_POLICY_VERSION and \
             sampling == {"temperature": 0}:
         sampling = {}
     defaults = dict({"lfm2moe": LFM2_SAMPLING, "gemma4": GEMMA4_SAMPLING,
                      "clover_moe": CLOVER_SAMPLING}.get(cfg.get("arch"), DEFAULT_SAMPLING))
+    if is_tiel_model(cfg.get("model_name")):
+        defaults = dict(TIEL_SAMPLING)
     # Preserve the upstream spelling as well as the canonical spelling.
     if sampling.get("repeat_penalty") is not None:
         defaults.pop("repetition_penalty")

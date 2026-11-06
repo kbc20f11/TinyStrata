@@ -68,6 +68,7 @@
 !/tests/q36-expert-profile.cpp
 !/tests/q36-topic-policy.cpp
 !/tests/test_expert_learning_environment.py
+!/tests/test_model_profile_identity.py
 
 # Only build/runtime sources and the fixed public benchmark inputs belong here.
 /benchmark/**

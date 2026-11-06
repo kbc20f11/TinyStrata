@@ -28,6 +28,33 @@ class LauncherUpgradeTests(unittest.TestCase):
         args = argparse.Namespace(api_port=9, port=19191, model_family="clover")
         self.launcher = launch.Launcher(args, self.source, self.work)
 
+    def test_tiel_family_alias_has_independent_model_and_config(self):
+        for selected in ("tiel", "tiel-coder"):
+            args = argparse.Namespace(api_port=9, port=19191, model_family=selected)
+            launcher = launch.Launcher(args, self.source, self.work)
+            self.assertEqual(launcher.family, "tiel")
+            self.assertEqual(launch.PROFILES[launcher.family], ("tiel-coder-35b-a3b", "config-tiel-coder.json"))
+            launcher.save_settings()
+            self.assertEqual(launch.read_json(launcher.state_dir / "settings.json")["model_family"], "tiel")
+
+    def test_existing_tiel_api_is_followed_by_model_identity(self):
+        health = {"status": "ok", "service": "strata", "model": "tiel-coder-35b-a3b", "loaded": True}
+        with mock.patch.object(launch, "port_occupied", return_value=True), \
+             mock.patch.object(launch, "request_json", return_value=health), \
+             mock.patch.object(self.launcher, "spawn") as spawn:
+            self.launcher.ensure_api()
+        self.assertEqual(self.launcher.family, "tiel")
+        spawn.assert_not_called()
+
+    def test_tiel_process_state_is_separate_from_qwen(self):
+        self.launcher.family = "tiel"
+        config = self.launcher.runtime / ".tinystrata" / "config-tiel-coder.json"
+        with mock.patch.object(launch, "process_started", return_value="created"):
+            self.launcher.save_api_process(argparse.Namespace(pid=123), config)
+        state = launch.read_json(self.launcher.runtime / "server-state-tiel-coder.json")
+        self.assertEqual(state["config"], str(config))
+        self.assertFalse((self.launcher.runtime / "server-state.json").exists())
+
     def test_owned_current_backend_reused_without_process_action(self):
         with mock.patch.object(self.launcher, "existing_ui", return_value={"pid": 42}), \
              mock.patch.object(self.launcher, "current_ui", return_value=True), \

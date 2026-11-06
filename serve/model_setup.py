@@ -24,7 +24,8 @@ def model_architecture(path: str | Path) -> str:
 
 def shared_library_dirs(cfg: dict) -> dict:
     """Reuse a matching installed GPU runtime for another model config."""
-    if cfg.get("arch") not in ("lfm2moe", "gemma4", "clover_moe") or "lib_dirs" in cfg:
+    if (cfg.get("arch") not in ("lfm2moe", "gemma4", "clover_moe") and
+            cfg.get("model_name") != "tiel-coder-35b-a3b") or "lib_dirs" in cfg:
         return cfg
     work = ROOT.with_name(ROOT.name + "-work")
     directories = []
@@ -163,7 +164,8 @@ def configure_download(cfg: dict, config_path: str | Path) -> dict:
     directory = Path(config_path).expanduser().resolve().parent / "model-files"
     new["download_dir"] = str(directory)
     if "--model" not in new["args"]:
-        new["args"].extend(("--model", str(directory / manifest_for_arch(cfg.get("arch", "qwen35moe")).filename)))
+        artifact = manifest_for_arch(cfg.get("arch", "qwen35moe"), cfg.get("model_name"))
+        new["args"].extend(("--model", str(directory / artifact.filename)))
         if cfg.get("arch") == "clover_moe":
             new["model_source"] = "managed"
     return new
@@ -197,7 +199,7 @@ def configure_vision(cfg: dict, model: Path, *, projector: Path | None = None,
     A GPU encoder starts and warms before the language engine, so its weights
     and workspace are included in the free-VRAM budget. Off needs no assets.
     """
-    from serve.model_download import FIXED_GEMMA4_MMPROJ, FIXED_MMPROJ
+    from serve.model_download import projector_for_arch
     from serve.tinyconfig import VISION_POLICY_VERSION, check_vision_options, disable_vision
 
     mode = check_vision_options(cfg)
@@ -213,7 +215,9 @@ def configure_vision(cfg: dict, model: Path, *, projector: Path | None = None,
         new["vision_mmproj"] = previous["mmproj"]
     if mode == "no":
         return disable_vision(new)
-    artifact = FIXED_GEMMA4_MMPROJ if cfg.get("arch") == "gemma4" else FIXED_MMPROJ
+    artifact = projector_for_arch(cfg.get("arch", "qwen35moe"), cfg.get("model_name"))
+    if artifact is None:
+        raise ValueError("This model has no supported image projector")
     projector = Path(new.get("vision_mmproj") or Path(cfg["download_dir"]) / artifact.filename)
     encoder = resolve_vision_executable(new)
     valid = projector.is_file() and projector.stat().st_size == artifact.size
@@ -306,8 +310,10 @@ def prepare_installed_model(cfg: dict, config_path: str | Path, model_path: str 
     args = new["args"]
     args[args.index("--model") + 1] = str(model)
     new["tokenizer"] = str(tokenizer)
-    new["log"] = str(path.parent / {"lfm2moe": "engine-lfm2.log", "gemma4": "engine-gemma4.log",
-                                    "clover_moe": "engine-clover.log"}.get(actual_arch, "engine.log"))
+    log_name = ("engine-tiel-coder.log" if cfg.get("model_name") == "tiel-coder-35b-a3b" else
+                {"lfm2moe": "engine-lfm2.log", "gemma4": "engine-gemma4.log",
+                 "clover_moe": "engine-clover.log"}.get(actual_arch, "engine.log"))
+    new["log"] = str(path.parent / log_name)
     exe = resolve_executable(new)
     if exe is not None:
         new["exe"] = str(exe)
