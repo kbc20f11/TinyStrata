@@ -71,6 +71,16 @@ For a longer Clover comparison, add **`--include-64k`**:
 
 This opt-in extension adds one fresh **65,536-token input including the chat template**, with the existing **32-token output limit**, after the six short-generation requests and the 4K/16K requests on each start. It keeps the warm-up, inputs, sampler, seed, thinking and default four starts unchanged. Startup context must hold at least **65,568 tokens**; otherwise measurement stops before any generation request. Results are nonstandard, carry a **`-64k` protocol suffix** and `include_64k: true`, and report 64K input processing plus generation after 64K using actual output counts. The 16K cache snapshot stays at the 16K boundary; a separate 64K snapshot records Expert cache and physically mapped KV. Without this flag, the v1 workload and report fields remain unchanged. The option requires `--model clover`.
 
+### Clover repetition lookup (optional)
+
+The launcher and API support `--clover-lookup N` / `clover_lookup: N`, with **0–7** as the maximum number of proposed tokens; this is not the suffix-match length. **0/off remains the default.** Use causal D0 and temperature **0**; images are supported. For example, from a source checkout:
+
+```powershell
+& $python .\run.py --model-family clover --clover-mode causal --clover-draft 0 --clover-lookup 3
+```
+
+Lookup copies candidate continuations already present in the prompt/history. The full causal model verifies them with the same generation penalties. Matches shorter than **8 tokens** are internally capped at **3 proposals**; requested widths **4–7** require a match of at least **8 tokens**. It uses no D3 preview, Expert skipping or threshold acceptance. Count only emitted output tokens; rejected proposals add work, not output. Compare **3** and **7** with lookup disabled on your own workload; gains depend on how much can be copied. The standard v1 runner does not enable lookup; [lookup measurements](results/clover-lookup-20261107.md) are separate experiments. Floating-point batching can change near-tied choices, so matching token IDs on the tested fixtures is evidence for those fixtures, not a universal bitwise-equivalence guarantee.
+
 ### CPU worker probe (diagnostic)
 
 Stop the regular API first, then use [probe.py](probe.py) for Qwen or Clover:
@@ -217,6 +227,16 @@ Clover の長文比較には **`--include-64k`** を追加できます。
 ```
 
 各起動で、短文生成 6 回・4K・16K の後に、**テンプレート込みで正確に 65,536 入力トークン**、既存の**出力上限 32 トークン**の新規入力を 1 回追加します。ウォームアップ・入力本文・サンプラー・seed・思考設定・既定の 4 回起動は同じです。起動時のコンテキスト容量が **65,568 トークン**未満なら、生成リクエストを送る前に停止します。結果は標準 v1 と区別し、プロトコル名に **`-64k`**、メタデータに `include_64k: true` を付け、64K の入力処理速度と入力後の生成速度を実出力数で集計します。16K 時点のキャッシュ記録は維持し、64K 後の Expert キャッシュ・実際に割り当てた KV 領域も別途記録します。フラグなしでは v1 の測定内容と報告項目を変更しません。`--model clover` の場合だけ指定できます。
+
+### Clover の反復 lookup（任意）
+
+ランチャーの `--clover-lookup N`／API の `clover_lookup: N` は、提案するトークン数の上限 **0～7** を指定します。一致を探す suffix の長さではありません。**既定は 0（無効）のまま**です。因果 D0・温度 **0** が必要で、画像にも対応します。ソースのチェックアウトから起動する例：
+
+```powershell
+& $python .\run.py --model-family clover --clover-mode causal --clover-draft 0 --clover-lookup 3
+```
+
+入力・履歴にある続きをコピーして候補とし、同じ生成ペナルティを適用した因果モデル全体で検証します。一致区間が **8 トークン未満**なら内部で**最大 3 トークン**に抑え、指定した幅 **4～7** を使うには **8 トークン以上**の一致が必要です。D3 の preview・Expert の省略・閾値採用は使いません。出力には実際に返したトークンだけを数え、不採用の提案は処理時間に含めます。コピーできる内容によって効果が変わるため、使う入力で無効時と **3**・**7** を比較してください。標準 v1 は lookup を有効にせず、[lookup の測定](results/clover-lookup-20261107.md)は別の実験として扱います。浮動小数点演算のバッチ化で僅差の候補が変わる可能性があるため、検証入力でのトークン ID 一致を、すべての入力でのビット一致保証とはしません。
 
 ### CPU ワーカー数の調査（診断用）
 

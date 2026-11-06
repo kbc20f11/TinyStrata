@@ -236,6 +236,9 @@ install(FILES third_party/licenses/FlashInfer-BSD-3-Clause.txt DESTINATION share
 add_executable(q36_chunk_policy_test EXCLUDE_FROM_ALL tests/q36-chunk-policy.cpp)
 target_include_directories(q36_chunk_policy_test PRIVATE include)
 
+add_executable(q36_suffix_lookup_test EXCLUDE_FROM_ALL tests/q36-suffix-lookup.cpp)
+target_include_directories(q36_suffix_lookup_test PRIVATE include)
+
 if(STRATA_ENABLE_CUDA)
   add_executable(q36_gdn_chain_test EXCLUDE_FROM_ALL tests/q36-gdn-chain.cu)
   target_include_directories(q36_gdn_chain_test PRIVATE include src/qwen35)

@@ -32,6 +32,7 @@
 #include "clover_kernels.cuh"
 #include "clover_diffusion.cuh"
 #include "strata/qwen35/clover_decode.hpp"
+#include "strata/qwen35/suffix_lookup.hpp"
 #include "strata/qwen35/clover_diffusion.hpp"
 #include "strata/qwen35/attention.cuh"
 #include "strata/qwen35/clover_attention.cuh"
@@ -1306,6 +1307,7 @@ struct Engine {
     static constexpr int kVerify = 32;
     int verify_capacity = 8;
     int clover_draft = 0;
+    int clover_lookup = 0;
     std::string clover_mode = "causal";
     int clover_block_size = 32;
     float clover_threshold = 0.95f;
@@ -1462,6 +1464,7 @@ struct Engine {
     // window never steps over one), so plain and speculative decoding see the same slot tables at every position
     static constexpr int kRebalanceEvery = 32;
     bool rows_deferred = false;          // set while a decode step or a verify window runs
+    bool lookup_verifying = false;
     std::vector<std::vector<int32_t>> row_ids;   // [main layer][row * top_k + k] of the last such call
     void count_expert(size_t li, size_t e, uint64_t hits = 1) {
         Hy& H = hy[li];
@@ -3006,6 +3009,9 @@ struct Engine {
         std::vector<char> quantized((size_t) T, 0);
         int n_miss = 0;
         std::map<int, size_t> open;   // expert -> its job with room
+        // A user may keep the original singleton GGML dot (MT_MIN > 1).
+        // Lookup must not switch that arithmetic merely by grouping proposals.
+        const bool singleton = lookup_verifying && C::native_gu_mt_min(H.fmt.gu_type) > 1;
         const bool defer = rows_deferred && li < m->layers.size();
         const bool compact = cpu_compact_enabled && !graph_service && !recording_hybrid &&
             fast_k && !verify_k && !clover_preview && T >= 1 && T <= 8 && N == 2048 && Kp == 8;
@@ -3027,7 +3033,7 @@ struct Engine {
                 quantized[(size_t) t] = 1;
             }
             auto it = open.find(x);
-            if (it == open.end() || jobs[it->second].nt == C::MAXT) {
+            if (it == open.end() || jobs[it->second].nt == C::MAXT || singleton) {
                 C::ExpertJobMulti j;
                 j.blob = L.hblobs + (size_t) x * L.stride;
                 jobs.push_back(j);
@@ -3870,6 +3876,34 @@ struct Engine {
             }
         }
         CK(cudaStreamSynchronize(st));
+    }
+
+    // External lookup guesses have no preview forward. Verification writes
+    // scratch recurrent rows; only the exact accepted causal prefix commits.
+    template <class Verify>
+    int clover_lookup_step_with(int anchor, const std::vector<int32_t>& drafts,
+                                int32_t* picks, Verify verify) {
+        const int T = (int) drafts.size() + 1;
+        if (drafts.empty() || T > verify_capacity || pos + T > ctx)
+            throw std::invalid_argument("Invalid Clover lookup window");
+        ensure_kv(pos + T);
+        CK(cudaStreamSynchronize(st));
+        hpin[1] = (int32_t) pos;
+        hpin[16] = anchor;
+        std::copy(drafts.begin(), drafts.end(), hpin + 17);
+        CK(cudaMemcpyAsync(tok, hpin + 16, (size_t) T * sizeof(int32_t), cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(pos0, hpin + 1, sizeof(int32_t), cudaMemcpyHostToDevice, st));
+        rows_deferred = lookup_verifying = true;
+        try { forward(T, pos, T, false, true); }
+        catch (...) { rows_deferred = lookup_verifying = false; throw; }
+        rows_deferred = lookup_verifying = false;
+        const int accepted = verify(T, drafts, picks);
+        commit(accepted + 1);
+        CK(cudaMemcpyAsync(hlast, hmain + (size_t) accepted * m->g.n_embd,
+                           (size_t) m->g.n_embd * sizeof(float), cudaMemcpyDeviceToDevice, st));
+        pos += accepted + 1;
+        after_rows(accepted + 1);
+        return accepted;
     }
 
     // Clover drafts with the SAME model, without an MTP head. Preview has its
@@ -4797,7 +4831,7 @@ int serve(Engine& E) {
                 "vram_physical_free_bytes=%zu vram_free_source=%s vram_reserve_mib=%zu mtp=%d "
                 "kv_auto=%d context_auto=%d gpu_cc=%d vision=%d chunk=%d q36_mmvq_il=%d q36_mmvq_il_auto=%d "
                 "q36_main_mmq=%d q36_main_mmq_auto=%d q36_mtp_mmq=%d q36_mmq_min_rows=%d q36_mmq_auto_workspace_bytes=%zu q36_int8_fdec=%d q36_q8_pair=%d q36_q8_pair_eligible_layers=%d clover_draft=%d "
-                "clover_mode=%s clover_block_size=%d clover_threshold=%.9g "
+                "clover_lookup=%d clover_mode=%s clover_block_size=%d clover_threshold=%.9g "
                 "clover_accept=%s clover_accept_ratio=%.9g clover_accept_delta=%.9g clover_draft_penalty_gpu=%d clover_gpu_exact_verify=%d clover_query_tile=%d\n",
                 E.kv_name(), expert_slots, E.total_experts(), expert_bytes >> 20, expert_bytes, arena_bytes, E.expert_auto ? 1 : 0,
                 memory.free, memory.cuda_free, memory.physical ? memory.physical_free : memory.cuda_free,
@@ -4806,7 +4840,7 @@ int serve(Engine& E) {
                 E.mmvq_il_enabled ? 1 : 0, E.mmvq_il_auto ? 1 : 0,
                 E.use_mmq ? 1 : 0, E.auto_main_mmq_selected ? 1 : 0, E.use_mmq && E.mtp_mmq ? 1 : 0, E.mmq_min_t,
                 E.auto_main_mmq_workspace, E.int8_fdec_enabled ? 1 : 0, E.q8_pair_enabled ? 1 : 0, E.q8_pair_eligible_layers(), E.clover_draft,
-                E.clover_mode.c_str(), E.clover_block_size, (double) E.clover_threshold,
+                E.clover_lookup, E.clover_mode.c_str(), E.clover_block_size, (double) E.clover_threshold,
                 E.clover_accept.c_str(), (double) E.clover_accept_ratio, (double) E.clover_accept_delta,
                 E.clover_draft_penalty_gpu ? 1 : 0, E.clover_gpu_exact_verify ? 1 : 0, E.clover_query_tile);
     E.print_kv_info();
@@ -4890,6 +4924,7 @@ int serve(Engine& E) {
         // reloading weights or changing the configured default. The benchmark
         // harness uses this native-protocol key to compare the same cache.
         int request_clover_draft = E.clover_draft;
+        int request_clover_lookup = E.clover_lookup;
         std::string request_clover_mode = E.clover_mode;
         int request_clover_block = E.clover_block_size;
         float request_clover_threshold = E.clover_threshold;
@@ -4918,6 +4953,11 @@ int serve(Engine& E) {
             else if (key == "seed") smp.seed = std::strtoull(v, nullptr, 10);
             else if (key == "turn_at") turn_at = std::strtoll(v, nullptr, 10);
             else if (key == "ckpt") checkpoint = std::atoi(v) != 0;
+            else if (key == "clover_lookup") {
+                char* end = nullptr;
+                const long parsed = std::strtol(v, &end, 10);
+                request_clover_lookup = end == v || *end || parsed < 0 || parsed > 7 ? -1 : (int) parsed;
+            }
             else if (key == "clover_draft" && E.m->clover) {
                 request_draft_explicit = true;
                 char* end = nullptr;
@@ -4956,10 +4996,20 @@ int serve(Engine& E) {
             request_clover_mode = request_clover_draft > 0 ? "self-spec" : "causal";
         if (request_mode_explicit && !request_draft_explicit)
             request_clover_draft = request_clover_mode == "self-spec" ? std::max(1, E.clover_draft ? E.clover_draft : 4) : 0;
+        if (request_clover_lookup < 0 || (request_clover_lookup > 0 &&
+            (!E.m->clover || request_clover_mode != "causal" || request_clover_draft != 0 ||
+             !std::isfinite(smp.temperature) || smp.temperature != 0.f))) {
+            std::printf("ERR clover_lookup takes 0 .. 7 and requires Clover causal, zero self drafts and temperature=0\n");
+            std::fflush(stdout); continue;
+        }
         if ((request_clover_mode != "causal" && request_clover_mode != "self-spec" && request_clover_mode != "diffusion") ||
             (request_clover_mode == "self-spec") != (request_clover_draft > 0) ||
             request_clover_block < 1 || request_clover_threshold < 0) {
             std::printf("ERR invalid Clover generation mode, block size, threshold or drafts\n"); std::fflush(stdout); continue;
+        }
+        if (request_clover_lookup > 0 && (size_t) E.ctx + 64 > strata::qwen35::SuffixLookup::kMaxCapacity) {
+            std::printf("ERR clover_lookup supports context capacities below 1048513 tokens\n");
+            std::fflush(stdout); continue;
         }
         // A client may override a managed greedy/self-spec default with a
         // temperature or a causal request. Inherit exact verification there;
@@ -5134,10 +5184,19 @@ int serve(Engine& E) {
             std::fflush(stdout);
             continue;
         }
+        const auto d0 = Clock::now(); // include request-local lookup indexing
         std::mt19937_64 rng(smp.seed);
         std::vector<int32_t> hist = E.m->clover ? std::vector<int32_t>{} : ids;
-        const auto d0 = Clock::now();
+        // Response penalties stay response-only. Lookup history is local to
+        // this request, including its current prompt and actually emitted IDs.
+        std::unique_ptr<strata::qwen35::SuffixLookup> lookup;
+        if (request_clover_lookup > 0) {
+            lookup = std::make_unique<strata::qwen35::SuffixLookup>(3, 64,
+                (size_t) E.ctx + 64);
+            lookup->rebuild(ids.data(), ids.size());
+        }
         long long produced = 0, offered = 0, accepted = 0;
+        long long lookup_rounds = 0, lookup_fallbacks = 0;
         const char* finish = "length";
         E.clover_blocks = E.clover_passes = 0;
         E.clover_preview_ms = E.clover_replay_ms = 0;
@@ -5242,7 +5301,7 @@ int serve(Engine& E) {
         const bool threshold_spec = request_clover_mode == "self-spec" && request_clover_accept == "threshold";
         const bool gpu_spec_drafts = request_clover_mode == "self-spec" &&
             (threshold_spec || E.clover_draft_penalty_gpu);
-        const bool gpu_exact_spec = request_clover_mode == "self-spec" &&
+        const bool gpu_exact_spec = (request_clover_mode == "self-spec" || lookup) &&
             request_clover_accept == "exact" && smp.temperature == 0.f && E.clover_gpu_exact_verify;
         const bool gpu_spec_counts = gpu_spec_drafts || gpu_exact_spec;
         strata::qwen35::clover_diffusion_gpu::Controls spec_controls;
@@ -5267,6 +5326,7 @@ int serve(Engine& E) {
                 std::fflush(stdout);
                 ++produced;
                 hist.push_back(t);
+                if (lookup) lookup->append(t);
                 if (gpu_spec_counts && t >= 0 && t < E.m->g.n_vocab) ++spec_counts[(size_t) t];
                 if (is_eos(t)) { finish = "stop"; return false; }
                 if (produced >= max_new) return false;
@@ -5278,12 +5338,33 @@ int serve(Engine& E) {
                 E.main_hybrid ? Engine::kRebalanceEvery - E.pos % Engine::kRebalanceEvery - 1 : request_clover_draft);
             const auto clover_plan = strata::qwen35::clover_decode::plan(request_clover_draft, E.pos, E.ctx,
                 std::max(0, clover_budget));
-            if (clover_plan) {
+            int lookup_count = 0;
+            if (lookup) {
+                // Ordinary process(1) reserves 64 KV rows ahead and may move
+                // Experts between CPU and GPU when that reserve grows. Do not
+                // batch across that maintenance point: take the same causal
+                // step there so lookup cannot change the arithmetic route early.
+                const int64_t before_growth = E.kv_grow && E.kv_committed_rows < E.ctx
+                    ? E.kv_committed_rows - E.pos - 65 : request_clover_lookup;
+                const int budget = (int) std::min<long long>(request_clover_lookup,
+                    std::min<long long>(before_growth, std::min<long long>(E.verify_capacity - 1, std::min<long long>(E.ctx - E.pos - 1,
+                    std::min<long long>(max_new - produced - 1,
+                        E.main_hybrid ? Engine::kRebalanceEvery - E.pos % Engine::kRebalanceEvery - 1 : request_clover_lookup)))));
+                drafts.resize((size_t) std::max(0, budget));
+                lookup_count = lookup->propose(std::max(0, budget), drafts.data());
+                // Short common phrases often have an unrelated continuation.
+                // Wider windows pay off for copying a substantial shared span;
+                // the suffix length changes proposal cost, never acceptance.
+                if (lookup->last_match() < 8) lookup_count = std::min(lookup_count, 3);
+                drafts.resize((size_t) lookup_count);
+                if (lookup_count) ++lookup_rounds;
+                else ++lookup_fallbacks;
+            }
+            if (clover_plan || lookup_count > 0) {
                 if (gpu_spec_counts)
                     CK(cudaMemcpyAsync(E.clover_counts, spec_counts.data(), spec_counts.size() * sizeof(int64_t), cudaMemcpyHostToDevice, E.st));
                 std::vector<int32_t> row_history = hist;
-                const int a = E.clover_step_with(nx, clover_plan, drafts, picks,
-                    [&](int T, const std::vector<int32_t>& proposed, int32_t* selected) {
+                auto verify = [&](int T, const std::vector<int32_t>& proposed, int32_t* selected) {
                         if (threshold_spec) {
                             namespace CD = strata::qwen35::clover_decode;
                             std::vector<int32_t> candidates(proposed);
@@ -5342,7 +5423,11 @@ int serve(Engine& E) {
                                           verify_rows.data() + (size_t) (row + 1) * E.m->g.n_vocab);
                                 return sample(lg, smp, row_history, rng);
                             }, [&](int token) { return is_eos(token) || stop.load(); });
-                    }, gpu_spec_drafts ? &spec_controls : nullptr, (int64_t) hist.size());
+                    };
+                const int a = lookup_count > 0
+                    ? E.clover_lookup_step_with(nx, drafts, picks, verify)
+                    : E.clover_step_with(nx, clover_plan, drafts, picks, verify,
+                        gpu_spec_drafts ? &spec_controls : nullptr, (int64_t) hist.size());
                 offered += (long long) drafts.size(); accepted += a;
                 live.push_back(nx);
                 live.insert(live.end(), drafts.begin(), drafts.begin() + a);
@@ -5406,7 +5491,9 @@ int serve(Engine& E) {
         }
         const double decode_ms = ms_since(d0);
         kv_usage.publish((int64_t) live.size(), true);
-        if (E.m->clover)
+        if (E.m->clover) {
+            std::printf("INFO clover_last_lookup=%d clover_lookup_rounds=%lld clover_lookup_fallbacks=%lld\n",
+                        request_clover_lookup, lookup_rounds, lookup_fallbacks);
             std::printf("INFO clover_last_mode=%s clover_last_block_size=%d clover_last_threshold=%.9g "
                          "clover_last_accept=%s clover_last_accept_ratio=%.9g clover_last_accept_delta=%.9g "
                          "clover_last_draft_penalty_gpu=%d clover_last_gpu_exact_verify=%d "
@@ -5423,6 +5510,7 @@ int serve(Engine& E) {
                         E.clover_preview_cpu_entries, E.clover_preview_gpu_entries, E.clover_preview_cpu_ms,
                         E.clover_preview_wmma_calls, E.clover_preview_simt_calls,
                         E.clover_query_tile, E.clover_query_shared_calls);
+        }
         E.save_expert_profile();
         expert_phase_info();
         E.print_kv_info();
@@ -5448,6 +5536,7 @@ int strata::qwen35::run(int argc, char** argv) {
     if (const char* value = std::getenv("TINYSTRATA_Q36_EXPERT_TOPIC")) expert_topic = std::strcmp(value, "1") == 0;
     int ctx = 0, chunk = 0, n_gen = 64, bench_pp = 0, bench_tg = 0, mtp_d = 0, cpu_threads = 0, hybrid_rows = 128;
     int clover_draft = -1;
+    int clover_lookup = 0;
     std::string clover_mode;
     int clover_block_size = 32;
     float clover_threshold = 0.95f;
@@ -5488,6 +5577,7 @@ int strata::qwen35::run(int argc, char** argv) {
                         "  --mtp N                  MTP drafts, 0..7 (default: 0)\n"
                         "  --clover-mode MODE       Clover: causal (default), self-spec, diffusion\n"
                         "  --clover-draft N         Legacy self drafts, 0..31 (0: causal, positive: self-spec)\n"
+                        "  --clover-lookup N        Exact suffix lookup drafts, 0..7 (default: 0; causal greedy only)\n"
                         "  --clover-block-size N    Diffusion width: 1,2,4,8,16,32 (default: 32)\n"
                         "  --clover-threshold P     LowConfidence threshold in [0,1] (default: 0.95)\n"
                         "  --clover-accept MODE     Self-spec acceptance: exact (default), threshold (approximate, greedy only)\n"
@@ -5549,6 +5639,15 @@ int strata::qwen35::run(int argc, char** argv) {
             const std::string v = next();
             if (!v.empty() && std::isdigit((unsigned char) v[0])) mtp_d = std::atoi(v.c_str());
             else { std::fprintf(stderr, "tinystrata: --mtp requires a number of drafts\n"); return 2; }
+        }
+        else if (a == "--clover-lookup") {
+            const std::string value = next();
+            char* end = nullptr;
+            const long parsed = std::strtol(value.c_str(), &end, 10);
+            if (end == value.c_str() || *end || parsed < 0 || parsed > 7) {
+                std::fprintf(stderr, "tinystrata: --clover-lookup takes 0 .. 7\n"); return 2;
+            }
+            clover_lookup = (int) parsed;
         }
         else if (a == "--clover-draft") {
             const std::string value = next();
@@ -5688,6 +5787,9 @@ int strata::qwen35::run(int argc, char** argv) {
             clover_mode = clover_draft > 0 ? "self-spec" : "causal";
         if (clover_mode == "self-spec" && clover_draft < 0) clover_draft = 4;
         if (clover_draft < 0) clover_draft = 0;
+        if (clover_lookup > 0 && (clover_mode != "causal" || clover_draft != 0 || !serve_mode)) {
+            std::fprintf(stderr, "tinystrata: --clover-lookup requires --serve and causal mode without self drafts\n"); return 2;
+        }
         if ((clover_mode == "self-spec") != (clover_draft > 0)) {
             std::fprintf(stderr, "tinystrata: self-spec requires positive --clover-draft; other modes require zero drafts\n"); return 2;
         }
@@ -5712,7 +5814,7 @@ int strata::qwen35::run(int argc, char** argv) {
         if (!serve_mode && clover_mode != "causal") {
             std::fprintf(stderr, "tinystrata: Clover diffusion/self-spec use --serve or the API; numerical --tokens tools use --clover-mode causal\n"); return 2;
         }
-    } else if (clover_draft > 0 || clover_diffusion_option) {
+    } else if (clover_draft > 0 || clover_lookup > 0 || clover_diffusion_option) {
         std::fprintf(stderr, "tinystrata: --clover-* options require a Clover model\n"); return 2;
     }
     if (context_auto)
@@ -5745,6 +5847,7 @@ int strata::qwen35::run(int argc, char** argv) {
         }
     }
     E.clover_draft = m.clover ? clover_draft : 0;
+    E.clover_lookup = m.clover ? clover_lookup : 0;
     E.clover_mode = m.clover ? clover_mode : "causal";
     E.clover_block_size = clover_block_size;
     E.clover_threshold = clover_threshold;

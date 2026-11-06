@@ -16,6 +16,7 @@ ENGINE_OPTIONS = {
     "vram_reserve_mib": ("--vram-reserve-mib", 0, None, True),
     "mtp": ("--mtp", 0, 7, True),
     "clover_draft": ("--clover-draft", 0, 31, True),
+    "clover_lookup": ("--clover-lookup", 0, 7, True),
     "clover_mode": ("--clover-mode", ("causal", "self-spec", "diffusion")),
     "clover_block_size": ("--clover-block-size", 1, 32, True),
     "clover_threshold": ("--clover-threshold", 0, 1, False),
@@ -52,6 +53,11 @@ def check(key: str, value, cfg: dict):
         raise ValueError(f"{key}: conversation parking settings are supported only by Gemma 4 and LFM2.5")
     if value is None:
         return None
+    if key == "clover_lookup":
+        if cfg.get("arch") not in (None, "clover_moe"):
+            raise ValueError("clover_lookup: this option requires a Clover model")
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("clover_lookup: expected a whole number")
     spec = ENGINE_OPTIONS[key]
     if isinstance(spec[1], tuple):
         if value not in spec[1]:
@@ -85,7 +91,7 @@ def clover_mode(cfg: dict) -> str:
     return "self-spec" if draft is not None and draft > 0 else "causal"
 
 
-CLOVER_REQUEST_KEYS = ("clover_mode", "clover_draft", "clover_block_size", "clover_threshold",
+CLOVER_REQUEST_KEYS = ("clover_mode", "clover_draft", "clover_lookup", "clover_block_size", "clover_threshold",
                        "clover_accept", "clover_accept_ratio", "clover_accept_delta")
 
 
@@ -100,7 +106,7 @@ def clover_request_options(req: dict | None) -> dict:
         value = (req or {}).get(key)
         if value is None:
             continue
-        if key in ("clover_draft", "clover_block_size") and \
+        if key in ("clover_draft", "clover_lookup", "clover_block_size") and \
                 (isinstance(value, bool) or not isinstance(value, int)):
             raise ValueError(f"{key}: expected a whole number")
         try:

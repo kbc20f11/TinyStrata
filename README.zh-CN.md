@@ -36,6 +36,8 @@ TinyStrata 会根据你的硬件自动选择推理和内存设置，因此无需
 
 托管的 Clover 配置默认使用不带草稿的因果生成 D0、INT8 KV（`--clover-mode causal --clover-draft 0 --kv-type int8`）和 MT1（`STRATA_IQ_MT_MIN=1`）。exact 自投机 D3 仍可显式选择（`--clover-mode self-spec --clover-draft 3 --clover-accept exact`）；启用前请在自己的硬件上与因果生成比较速度。图像编码器默认常驻 GPU；`--vision cpu` 使用 CPU，`--vision no` 关闭图像功能。Vision 支持因果生成或 exact 自投机；块扩散和阈值接受需要 `--vision no`。LowConfidence 块扩散和近似阈值接受仍为需显式启用的实验性选项，参见[解码设置](benchmark/README.md#english)。
 
+Clover 还提供可选的重复片段 lookup：`--clover-lookup N` 指定最多提议 **0–7 个 token**，**默认 0（关闭）**。它复制输入或历史中已有的后续片段，再由完整的因果模型应用相同惩罚进行验证。需要因果 D0 和温度 0，支持图像。请在自己的任务中比较 **3** 和 **7**；参见[测量结果与一致性验证范围](benchmark/results/clover-lookup-20261107.md)。 匹配片段不足 8 个 token 时最多提议 3 个；提议 4–7 个需要至少匹配 8 个 token。
+
 Qwen、Gemma 和 LFM 引擎均支持根据空闲显存自动调整的专家缓存、利用系统 RAM 的 CPU 专家计算、输入阶段权重流式传输及 CUDA Graph。它们使用相同的 API，支持运行中切换模型，并分别保存各模型的设置。不省略模型选中的专家。还支持按实际序列长度自动扩展 KV 物理内存，最大上下文容量保持不变。
 
 | 功能 | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) |

@@ -58,6 +58,12 @@ include/strata/core/host_graph_launch.hpp at the base commit listed above (MIT).
 TinyStrata adds native-expert miss merging, multi-token replay service and a
 persistent launch worker. Original copyright and MIT license are retained.
 
+Clover's optional exact suffix lookup drafter adapts the bounded prompt/history
+lookup in VecSzn/PolyStrata, include/strata/spec/suffix_drafter.hpp and
+src/spec/suffix_drafter.cpp at a82999fd60c2b6b3dbfb3924df60f8ff756c4371
+(MIT). It proposes existing token continuations; TinyStrata verifies them with
+the full causal model and preserves response-only generation penalties.
+
 Qwen3.6 native-server consumed-history tracking follows Strata Flash-Next's
 src/program/generate.cpp at the base commit listed above (MIT), recording the
 whole committed speculative prefix before emitting a potentially shorter reply.

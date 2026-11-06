@@ -36,6 +36,8 @@ TinyStrata は Strata を基盤に、限られた VRAM でも 30B 級の MoE モ
 
 管理対象の Clover プロファイルは、ドラフトを使わない因果生成 D0・INT8 KV（`--clover-mode causal --clover-draft 0 --kv-type int8`）と MT1（`STRATA_IQ_MT_MIN=1`）を既定とします。exact 自己投機 D3 は任意で選べます（`--clover-mode self-spec --clover-draft 3 --clover-accept exact`）。有効にする前に、使う環境で因果生成との速度を比較してください。画像エンコーダは既定で GPU に常駐し、`--vision cpu` で CPU、`--vision no` で無効にできます。画像入力は因果生成と exact 自己投機に対応し、ブロック拡散・閾値採用には `--vision no` が必要です。LowConfidence 方式のブロック拡散と閾値による近似採用は、明示的に選ぶ実験的な機能です。[生成方式の設定](benchmark/README.md#日本語)を参照してください。
 
+Clover では反復 lookup も任意で使えます。`--clover-lookup N` は提案するトークン数の上限 **0～7** を指定し、**既定は 0（無効）**です。入力・履歴にある続きをコピーして候補とし、同じペナルティを適用した因果モデル全体で検証します。因果 D0・温度 0 が必要で、画像にも対応します。使う入力で **3**・**7** を試してください。[測定結果と一致検証の範囲](benchmark/results/clover-lookup-20261107.md)を参照してください。 一致区間が 8 トークン未満なら提案は最大 3 トークンに抑え、4～7 トークンの提案には 8 トークン以上の一致が必要です。
+
 **Tiel Coder 35B-A3B UD-IQ3_XXS** は、Ornith-1.5 を基にした [Tiel の MTP GGUF](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP) を使います。本体は **13.601 GB**、専用の Ornith ビジョンプロジェクタは **0.903 GB**、合計 **14.503 GB** です。専用の tokenizer と Sharp chat template を保持し、Qwen35MoE の実行経路を共有しながらモデル設定を分けて保存します。チャットのモデル選択で **Tiel Coder** を選ぶか、`run-api.bat --model-family tiel` で起動できます。単独プロファイルのポートは **18084**、設定は `config-tiel-coder.json` です。サンプリングの既定は作者の指定に合わせた `temperature 1.0`、`top_p 0.95`、`top_k 20` で、作者のコーディング評価では温度 **0.6** を使っています。MTP の既定は **3** です。`--mtp 0` で無効に、`--mtp 1` で短いドラフトに変更できます。
 
 Qwen・Gemma・Clover・LFM・Tiel Coder はいずれも、空き VRAM に合わせたエキスパートキャッシュ、システム RAM を使った CPU でのエキスパート計算、入力時の重みのストリーミング、CUDA Graph に対応しています。共通の API と起動中のモデル切り替えを利用でき、設定はモデルごとに保存します。モデルが選んだエキスパートは省略しません。また、最大コンテキスト容量を変えずに、会話の長さに応じて KV の物理メモリを自動で増やせます。

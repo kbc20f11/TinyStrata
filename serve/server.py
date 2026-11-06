@@ -4125,16 +4125,24 @@ class Service:
         if (mode == "self-spec") != (draft > 0):
             raise ValueError("clover_mode: self-spec requires positive clover_draft; other modes require zero drafts")
         settings = {"clover_mode": mode, "clover_draft": draft}
-        for key, default in (("clover_block_size", 32), ("clover_threshold", 0.95), ("clover_accept", "exact"),
+        for key, default in (("clover_lookup", 0), ("clover_block_size", 32), ("clover_threshold", 0.95), ("clover_accept", "exact"),
                              ("clover_accept_ratio", 0.9), ("clover_accept_delta", 0.6)):
             value = options.get(key, info.get(key, config.value_of(cfg, key)))
             # Native INFO carries floating point values as strings.
             if isinstance(value, str) and key not in ("clover_mode", "clover_accept"):
                 try:
-                    value = float(value)
+                    value = int(value) if key == "clover_lookup" else float(value)
                 except ValueError:
                     pass
             settings[key] = config.check(key, default if value is None else value, {})
+        if settings["clover_lookup"]:
+            if mode != "causal" or draft != 0:
+                raise ValueError("clover_lookup: requires Clover causal mode with zero drafts")
+            temperature = (req or {}).get("temperature")
+            if temperature is None:
+                temperature = self.shared.get("temperature", self.sampling_defaults.get("temperature", 0.0))
+            if isinstance(temperature, bool) or not isinstance(temperature, (int, float)) or temperature != 0:
+                raise ValueError("clover_lookup: requires temperature 0")
         if settings["clover_accept"] == "threshold":
             temperature = (req or {}).get("temperature")
             if temperature is None:

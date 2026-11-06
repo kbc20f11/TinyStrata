@@ -74,6 +74,8 @@
 !/tests/test_tool_closing_tags_stream.py
 !/tests/native-q5-offset.cu
 !/tests/native-iq-packed-bytes.cu
+!/tests/q36-suffix-lookup.cpp
+!/tests/test_clover_lookup_options.py
 
 # Only build/runtime sources and the fixed public benchmark inputs belong here.
 /benchmark/**

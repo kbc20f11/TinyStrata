@@ -146,7 +146,7 @@ def prepare(a) -> tuple[dict, Path]:
     if getattr(a, "vision_tokens", None) is not None:
         cfg["vision_tokens"] = a.vision_tokens
     for key in ("max_context", "kv_type", "mtp", "expert_vram", "vram_reserve_mib", "chunk", "clover_draft",
-                "clover_mode", "clover_block_size", "clover_threshold", "clover_accept",
+                "clover_mode", "clover_lookup", "clover_block_size", "clover_threshold", "clover_accept",
                 "clover_accept_ratio", "clover_accept_delta") + config.CONVERSATION_CACHE_KEYS:
         value = getattr(a, key, None)
         if value is not None:
@@ -248,6 +248,8 @@ def main() -> int:
     ap.add_argument("--mtp", type=int)
     ap.add_argument("--clover-draft", type=int, metavar="N",
                     help="legacy Clover self-speculative draft tokens, 0-31; 0 selects causal, positive values self-spec")
+    ap.add_argument("--clover-lookup", type=int, metavar="N",
+                    help="opt-in exact repetition lookup, 0-7 proposed tokens (default: 0/off); Clover causal and temperature 0 only")
     ap.add_argument("--clover-mode", choices=("causal", "self-spec", "diffusion"),
                     help="Clover generation mode (default: saved profile; fresh profiles use causal D0, INT8 KV and MT1); "
                          "self-spec D3 and native LowConfidence diffusion are opt-in alternatives")

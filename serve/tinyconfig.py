@@ -308,7 +308,7 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         raise ValueError("args must be a list of engine argument strings")
     values = {"--model", "--draft-model", "--max-context", "--kv-type", "--chunk", "--mtp", "--expert-vram",
               "--expert-slots", "--cpu-threads", "--hybrid-rows", "--vram-reserve-mib", "--clover-draft",
-              "--clover-mode", "--clover-block-size", "--clover-threshold", "--clover-accept",
+               "--clover-mode", "--clover-lookup", "--clover-block-size", "--clover-threshold", "--clover-accept",
               "--clover-accept-ratio", "--clover-accept-delta"}
     values.update(config.ENGINE_OPTIONS[key][0] for key in config.CONVERSATION_CACHE_KEYS)
     switches = {"--no-graph", "--no-warmup", "--hybrid-graph", "--no-hybrid-graph", "--vision",
@@ -331,7 +331,7 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
     if len(seen.intersection({"--kv-grow", "--kv-whole", "--no-kv-grow"})) > 1:
         raise ValueError("Choose only one KV allocation mode: --kv-grow or --kv-whole")
     for key in ("kv_type", "max_context", "expert_vram", "vram_reserve_mib", "mtp", "chunk", "clover_draft",
-                "clover_mode", "clover_block_size", "clover_threshold", "clover_accept",
+                "clover_mode", "clover_lookup", "clover_block_size", "clover_threshold", "clover_accept",
                 "clover_accept_ratio", "clover_accept_delta") + config.CONVERSATION_CACHE_KEYS:
         value = config.value_of(cfg, key)
         if value is not None:
@@ -371,6 +371,14 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
             raise ValueError("--clover-draft greater than zero requires --clover-mode self-spec")
         if mode == "self-spec" and draft == 0:
             raise ValueError("--clover-mode self-spec requires 1..31 draft tokens, or omit --clover-draft")
+        if config.value_of(cfg, "clover_lookup"):
+            if mode != "causal" or draft not in (None, 0):
+                raise ValueError("--clover-lookup requires Clover causal mode with zero drafts")
+            temperature = (cfg.get("sampling") or {}).get("temperature", CLOVER_SAMPLING["temperature"])
+            if temperature is None:
+                temperature = CLOVER_SAMPLING["temperature"]
+            if isinstance(temperature, bool) or not isinstance(temperature, (int, float)) or temperature != 0:
+                raise ValueError("--clover-lookup requires sampling.temperature 0")
         if config.value_of(cfg, "clover_accept") == "threshold" and mode != "self-spec":
             raise ValueError("--clover-accept threshold requires --clover-mode self-spec")
         if config.value_of(cfg, "clover_accept") == "threshold":
