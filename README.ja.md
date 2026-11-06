@@ -175,6 +175,8 @@ INT8 と FP8 を交互に各 4 回独立起動し、各起動で 3 入力を 2 �
 
 [Basalt を参考にした CPU 処理・Clover GPU・チェックポイントの比較](benchmark/results/basalt-adoption-20261105.md#日本語)も掲載しています。Expert 予算などを制御した対照実験で、上の通常ベンチ表とは別条件です。
 
+[Basaltの過去コミットの追加検証](benchmark/results/basalt-history-20261107.md#日本語)に、バイト読み出し・CPU停止監視の修正、見送った待機削減案、Radeonでの対照計測を記録しています。大幅な高速化を示す結果ではありません。
+
 [CloverのGDN融合の計測](benchmark/results/gdn-chain-20261105.md#日本語)では、全GPU常駐とExpert予算固定のハイブリッド経路を比較しています。Qwenの既定経路は維持します。
 
 [ハイブリッド実行のCPU結果統合と、実測に基づくワーカー数の調整](benchmark/results/basalt-remaining-20261105.md#日本語)

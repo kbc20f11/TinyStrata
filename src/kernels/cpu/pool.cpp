@@ -1,6 +1,7 @@
 // src/kernels/cpu/pool.cpp - P2.S3: the CPU expert pool.  Read pool.hpp first; it explains the protocol.
 // Native phase fusion adapted from jesdga95/basalt (MIT), src/kernels/cpu/pool.cpp
 // at bbf2f5bb783adc5ffe5b49043f82c9399313bb46. Copyright (c) 2026 Jesús Gulfo.
+// Stall-clock arming adapted from Basalt 2c4a0eb678265f0c5a473cdabfc808577dcaa6f5 (MIT).
 #include "strata/kernels/cpu/pool.hpp"
 #include "strata/core/progress.hpp"
 #include "strata/platform/aux_cpus.hpp"
@@ -625,12 +626,13 @@ void ExpertPool::wait_parked(const char* what) {
     hstate_.store(kWaitParked, std::memory_order_relaxed);
     hstate_ms_.store(now_ms(), std::memory_order_relaxed);
     uint32_t spins = 0;
+    bool armed = false;
     std::chrono::steady_clock::time_point t0{};
     while (parked_.load(std::memory_order_acquire) != (uint32_t) n_) {
         _mm_pause();
         if ((++spins & 1023u) != 0) continue;
         const auto now = std::chrono::steady_clock::now();
-        if (spins == 1024u) t0 = now;
+        if (!armed) { armed = true; t0 = now; }
         else if (now - t0 > kStall) {
             std::fprintf(stderr, "strata: the CPU expert pool stalled %s (%u of %d workers parked) - stopping the engine "
                                  "so the server can start it again (issue #29)\n",
@@ -646,6 +648,7 @@ void ExpertPool::wait_done(int n) {
     hstate_.store(kWaitDone, std::memory_order_relaxed);
     hstate_ms_.store(now_ms(), std::memory_order_relaxed);
     uint32_t spins = 0, seen = 0;
+    bool armed = false;
     std::chrono::steady_clock::time_point t0{};
     for (;;) {
         const uint32_t d = done_.load(std::memory_order_acquire);
@@ -653,7 +656,7 @@ void ExpertPool::wait_done(int n) {
         _mm_pause();
         if ((++spins & 1023u) != 0) continue;
         const auto now = std::chrono::steady_clock::now();
-        if (spins == 1024u || d != seen) { t0 = now; seen = d; }     // progress restarts the clock
+        if (!armed || d != seen) { armed = true; t0 = now; seen = d; }     // progress restarts the clock
         else if (now - t0 > kStall) {
             std::fprintf(stderr, "strata: the CPU expert pool stalled: %u of %d jobs done, %u of %d workers parked - "
                                  "stopping the engine so the server can start it again (issue #29)\n",

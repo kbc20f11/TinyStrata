@@ -39,11 +39,13 @@ struct Fixture {
     std::vector<unsigned char> weights;
     std::vector<Activation> activations;
     std::vector<C::ExpertJobMulti> jobs;
-    std::vector<float> actual, expected;
+    std::vector<float> actual;
+    std::vector<std::vector<float>> expected_by_nt;
 
     Fixture(int gu_type, int down_type, int experts, int max_tokens)
         : width(max_tokens), activations((size_t) experts * max_tokens), jobs(experts),
-          actual((size_t) experts * max_tokens * 2048, -123.375f), expected(actual) {
+          actual((size_t) experts * max_tokens * 2048, -123.375f),
+          expected_by_nt(max_tokens, actual) {
         std::string error;
         require(C::native_fmt(gu_type, down_type, 2048, 512, format, error), error.c_str());
         weights.resize(format.bytes);
@@ -73,31 +75,59 @@ struct Fixture {
         std::vector<unsigned char> quantized((size_t) max_tokens * C::kNativeHBytes);
         for (int expert = 0; expert < experts; ++expert) {
             const auto& job = jobs[expert];
-            float* ff[C::MAXT];
-            float* out[C::MAXT];
-            const void* hq[C::MAXT];
-            for (int token = 0; token < job.nt; ++token) {
-                ff[token] = hidden.data() + token * 512;
-                hq[token] = quantized.data() + token * C::kNativeHBytes;
-                out[token] = expected.data() + ((size_t) expert * max_tokens + token) * 2048;
+            // The exact token count selects the native single/multi-token arithmetic under MT_MIN=2.
+            for (int count = 1; count <= job.nt; ++count) {
+                float* ff[C::MAXT];
+                float* out[C::MAXT];
+                const void* hq[C::MAXT];
+                for (int token = 0; token < count; ++token) {
+                    ff[token] = hidden.data() + token * 512;
+                    hq[token] = quantized.data() + token * C::kNativeHBytes;
+                    out[token] = expected_by_nt[count - 1].data() +
+                                 ((size_t) expert * max_tokens + token) * 2048;
+                }
+                C::native_gu_rows(format, job.blob, job.nact, count, ff, 0, 512);
+                for (int token = 0; token < count; ++token)
+                    C::native_quant_h(format, ff[token], quantized.data() + token * C::kNativeHBytes);
+                C::native_down_rows(format, job.blob, hq, count, out, 0, 2048);
             }
-            C::native_gu_rows(format, job.blob, job.nact, job.nt, ff, 0, 512);
-            for (int token = 0; token < job.nt; ++token)
-                C::native_quant_h(format, ff[token], quantized.data() + token * C::kNativeHBytes);
-            C::native_down_rows(format, job.blob, hq, job.nt, out, 0, 2048);
         }
     }
 
-    void check(int experts) const {
-        for (int expert = 0; expert < experts; ++expert) {
+    void check(int experts, const std::string& context = {}) const {
+        for (int expert = 0; expert < (int) jobs.size(); ++expert) {
             const size_t start = (size_t) expert * width * 2048;
-            require(std::memcmp(actual.data() + start, expected.data() + start,
-                                (size_t) jobs[expert].nt * 2048 * sizeof(float)) == 0,
-                    "pool output differs from serial native expert rows");
-            for (int token = jobs[expert].nt; token < width; ++token)
-                for (int row = 0; row < 2048; ++row)
-                    require(actual[start + token * 2048 + row] == -123.375f,
-                            "pool wrote outside an expert's token count");
+            const int tokens = expert < experts ? jobs[expert].nt : 0;
+            const auto& expected = expected_by_nt[tokens ? tokens - 1 : 0];
+            if (std::memcmp(actual.data() + start, expected.data() + start,
+                            (size_t) tokens * 2048 * sizeof(float)) != 0) {
+                size_t first = 0, mismatches = 0;
+                double max_error = 0;
+                for (size_t i = 0; i < (size_t) tokens * 2048; ++i) {
+                    if (std::memcmp(&actual[start + i], &expected[start + i], sizeof(float)) == 0) continue;
+                    if (!mismatches++) first = i;
+                    max_error = std::max(max_error, std::fabs((double) actual[start + i] - expected[start + i]));
+                }
+                char error[768];
+                std::snprintf(error, sizeof error,
+                              "pool output differs: gu=%d down=%d width=%d experts=%d expert=%d nt=%d token=%zu "
+                              "element=%zu actual=%.9g expected=%.9g max_abs_error=%.9g mismatches=%zu; %s",
+                              format.gu_type, format.d_type, width, experts, expert, tokens, first / 2048,
+                              first % 2048, actual[start + first], expected[start + first], max_error, mismatches,
+                              context.c_str());
+                throw std::runtime_error(error);
+            }
+            for (int token = tokens; token < width; ++token)
+                for (int row = 0; row < 2048; ++row) {
+                    if (actual[start + token * 2048 + row] == -123.375f) continue;
+                    char error[768];
+                    std::snprintf(error, sizeof error,
+                                  "pool wrote outside token count: gu=%d down=%d width=%d experts=%d expert=%d "
+                                  "nt=%d token=%d element=%d actual=%.9g; %s", format.gu_type, format.d_type,
+                                  width, experts, expert, tokens, token, row, actual[start + token * 2048 + row],
+                                  context.c_str());
+                    throw std::runtime_error(error);
+                }
         }
     }
 };
@@ -108,13 +138,42 @@ int exercise(Fixture& fixture, int workers, bool host_works, int tasks, const ch
         environment("STRATA_POOL_FUSED", fused ? "1" : "0");
         environment("STRATA_POOL_SPIN_US", spin);
         C::ExpertPool pool(workers, false, host_works, C::PoolAffinity::All, tasks);
+        std::fill(fixture.actual.begin(), fixture.actual.end(), -123.375f);
         pool.run_split_multi_native(fixture.format, fixture.jobs.data(), 0);
         pool.run_split_multi_native(fixture.format, fixture.jobs.data(), -1);
+        fixture.check(0);
         for (int iteration = 0; iteration < 32; ++iteration) {
             if (iteration % 8 == 0) std::this_thread::sleep_for(std::chrono::milliseconds(25));
             const int count = iteration % 2 ? (int) fixture.jobs.size() : 1 + iteration % fixture.jobs.size();
+            std::fill(fixture.actual.begin(), fixture.actual.end(), -123.375f);
+            for (int expert = 0; expert < (int) fixture.jobs.size(); ++expert)
+                fixture.jobs[expert].nt = 1 + iteration % (1 + expert % fixture.width);
             pool.run_split_multi_native(fixture.format, fixture.jobs.data(), count);
-            fixture.check(count);
+            fixture.check(count, "exercise workers=" + std::to_string(workers) + " host=" +
+                                    std::to_string(host_works) + " tasks=" + std::to_string(tasks) +
+                                    " fused=" + std::to_string(fused) + " spin=" + spin +
+                                    " iteration=" + std::to_string(iteration));
+            ++checks;
+        }
+    }
+    return checks;
+}
+
+int alternate(Fixture& a, Fixture& b, int workers) {
+    int checks = 0;
+    for (bool fused : {false, true}) {
+        environment("STRATA_POOL_FUSED", fused ? "1" : "0");
+        environment("STRATA_POOL_SPIN_US", "0");
+        // Without host draining, even the smallest batch must be claimed by a worker.
+        C::ExpertPool pool(workers, false, false, C::PoolAffinity::All, 127);
+        for (int iteration = 0; iteration < 64; ++iteration) {
+            Fixture& fixture = iteration % 2 ? a : b;
+            if (iteration % 16 == 0) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            const int count = 1 + iteration % fixture.jobs.size();
+            std::fill(fixture.actual.begin(), fixture.actual.end(), -123.375f);
+            pool.run_split_multi_native(fixture.format, fixture.jobs.data(), count);
+            fixture.check(count, "alternate workers=" + std::to_string(workers) +
+                                    " fused=" + std::to_string(fused) + " iteration=" + std::to_string(iteration));
             ++checks;
         }
     }
@@ -126,6 +185,8 @@ int main(int argc, char** argv) {
     try {
         const int mt = argc > 1 ? std::atoi(argv[1]) : 2;
         require(mt == 1 || mt == 2, "expected native expert token policy 1 or 2");
+        const int workers = argc > 2 ? std::atoi(argv[2]) : 12;
+        require(workers >= 1 && workers <= 64, "expected stress worker count in 1..64");
         environment("STRATA_IQ_MT_MIN", std::to_string(mt));
         int checks = 0;
         // The routed-expert format pairs of the pinned Qwen and Clover files,
@@ -140,7 +201,10 @@ int main(int argc, char** argv) {
         checks += exercise(auto_grain, 3, true, 0, "0");
         Fixture one_worker(22, 21, 7, 4);
         checks += exercise(one_worker, 1, false, 0, "0");
-        std::printf("PASS native expert pool: %d batches, MT%d, serial/legacy/fused bitwise parity\n", checks, mt);
+        Fixture mixed(2, 2, 7, 8);
+        checks += alternate(one_worker, mixed, workers);
+        std::printf("PASS native expert pool: %d batches, MT%d, stress_workers=%d, "
+                    "serial/legacy/fused bitwise parity\n", checks, mt, workers);
         return 0;
     } catch (const std::exception& error) {
         std::fprintf(stderr, "native expert pool: %s\n", error.what());

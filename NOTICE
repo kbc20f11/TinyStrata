@@ -179,3 +179,12 @@ tool arguments adapt Niko1221/Strata commits
 49b880c01f55a248d0485b6cd244ae053191d928 and
 3bbf0f399e2a1b3d38642eca4342721fc7994201 (MIT), preserving literal closing
 tags inside tool argument values.
+
+Packed-register byte extraction in src/kernels/cuda/iq_kernels.cu and
+include/strata/kernels/packed_byte.hpp adapts jesdga95/basalt commits
+5bdb6c61ff99247899515c378856f49728e4a69b,
+f83263da69e4e03145da3006e145b820836a6db3 and
+dbc515818ec5b74014efbbc69e4c42958a03414d (MIT), credited above.
+The CPU pool's one-time stall-clock arming adapts Basalt commit
+2c4a0eb678265f0c5a473cdabfc808577dcaa6f5 (MIT). TinyStrata retains
+its atomic claim/completion protocol, park waits, arithmetic and stall diagnostics.

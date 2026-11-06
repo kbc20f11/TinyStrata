@@ -175,6 +175,8 @@ INT8 and FP8 were measured in alternating groups with four independent starts pe
 
 [Basalt-based CPU, Clover GPU and checkpoint comparisons](benchmark/results/basalt-adoption-20261105.md#english) use separate controlled settings; they do not replace the historical benchmark tables.
 
+[Further Basalt history review](benchmark/results/basalt-history-20261107.md#english) records packed-byte and CPU-watchdog fixes, the rejected scheduling candidate, and Radeon development comparisons without a headline speedup claim.
+
 [Clover GDN chain measurements](benchmark/results/gdn-chain-20261105.md#english) cover repeated full-GPU and fixed-budget hybrid comparisons; Qwen retains its existing default path.
 
 [Hybrid CPU result merging and measured worker tuning](benchmark/results/basalt-remaining-20261105.md#english)
