@@ -6,6 +6,8 @@
 
 **NVIDIA-GPUs ab der Ampere-Generation (CUDA) und AMD-RDNA-4-GPUs (HIP/ROCm) werden unterstützt.**
 
+**Einschränkung der AMD-Bildausgabe:** Bei AMD-Prozessoren mit integrierter Grafik und einer separaten Radeon für die Inferenz muss der Monitor **vor dem Windows-Start an die Radeon angeschlossen sein**. Die Bildausgabe über das Mainboard bzw. die integrierte GPU wird vorerst nicht unterstützt: Ein anderer Nutzer meldete Neustarts des gesamten PCs, die wir auf unserem Testsystem reproduziert haben. Ein Umstecken nach dem Start verhinderte das erneute Auftreten nicht. Die Ursache ist ungeklärt; siehe [Issue #10](https://github.com/kbc20f11/TinyStrata/issues/10).
+
 ## Warum wir TinyStrata entwickeln
 
 Angesichts steigender Preise für PC-Komponenten wird es für viele Menschen immer schwieriger, einen High-End-PC zusammenzustellen.

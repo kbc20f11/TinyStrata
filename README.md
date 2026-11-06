@@ -6,6 +6,8 @@
 
 **NVIDIA Ampere and newer GPUs (CUDA) and AMD RDNA 4 GPUs (HIP/ROCm) are supported.**
 
+**AMD display limitation:** With AMD integrated graphics and a separate Radeon inference GPU, connect the monitor to the Radeon card **before starting Windows**. Motherboard/integrated-GPU display output is temporarily unsupported: another user reported whole-PC restarts and we reproduced them on our validation machine. Moving the cable after boot did not prevent recurrence. The cause remains unknown; see [issue #10](https://github.com/kbc20f11/TinyStrata/issues/10).
+
 ## Why we are building TinyStrata
 
 With PC component prices rising, putting together a high-end PC is increasingly out of reach for many people.

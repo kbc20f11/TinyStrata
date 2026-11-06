@@ -6,6 +6,8 @@
 
 **支持 NVIDIA Ampere 及更新架构的 GPU（CUDA）和 AMD RDNA 4 GPU（HIP/ROCm）。**
 
+**AMD 显示输出限制：** 同时使用 AMD 核显和独立 Radeon 显卡进行推理时，请在 **启动 Windows 之前将显示器连接到 Radeon 显卡**。暂不支持使用主板或核显的显示输出：已有其他用户报告整机重启，我们也在验证机上复现了该现象。系统启动后再更换接口仍未能防止故障再次发生。原因尚未确定，详见 [Issue #10](https://github.com/kbc20f11/TinyStrata/issues/10)。
+
 ## 为什么开发 TinyStrata？
 
 随着 PC 配件价格上涨，组装一台高端 PC 对许多人来说正变得越来越难。

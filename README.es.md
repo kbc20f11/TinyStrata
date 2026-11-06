@@ -6,6 +6,8 @@
 
 **Se admiten GPU NVIDIA de la generación Ampere o posterior (CUDA) y GPU AMD RDNA 4 (HIP/ROCm).**
 
+**Limitación de la salida de vídeo AMD:** Si utiliza gráficos integrados AMD y una Radeon independiente para la inferencia, conecte el monitor a la Radeon **antes de iniciar Windows**. Por ahora no se admite la salida de vídeo de la placa base o de la GPU integrada: otro usuario notificó reinicios completos del PC y los reprodujimos en nuestro equipo de pruebas. Cambiar el cable después del arranque no evitó que se repitieran. La causa sigue sin conocerse; consulte la [incidencia n.º 10](https://github.com/kbc20f11/TinyStrata/issues/10).
+
 ## ¿Por qué desarrollamos TinyStrata?
 
 Con el aumento de los precios de los componentes, montar un PC de gama alta está cada vez más fuera del alcance de muchas personas.

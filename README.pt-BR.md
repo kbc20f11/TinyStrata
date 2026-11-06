@@ -6,6 +6,8 @@
 
 **Há suporte a GPUs NVIDIA da geração Ampere ou posterior (CUDA) e a GPUs AMD RDNA 4 (HIP/ROCm).**
 
+**Limitação da saída de vídeo AMD:** Ao usar gráficos integrados AMD e uma Radeon separada para inferência, conecte o monitor à Radeon **antes de iniciar o Windows**. A saída de vídeo da placa-mãe ou da GPU integrada está temporariamente sem suporte: outro usuário relatou reinicializações completas do PC, que reproduzimos em nossa máquina de validação. Trocar o cabo após a inicialização não impediu uma nova ocorrência. A causa permanece desconhecida; consulte a [issue nº 10](https://github.com/kbc20f11/TinyStrata/issues/10).
+
 ## Por que desenvolvemos o TinyStrata?
 
 Com o aumento dos preços dos componentes, montar um PC de ponta está cada vez mais fora do alcance de muitas pessoas.

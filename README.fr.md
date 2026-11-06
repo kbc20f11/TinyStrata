@@ -6,6 +6,8 @@
 
 **Les GPU NVIDIA de génération Ampere ou plus récente (CUDA) et les GPU AMD RDNA 4 (HIP/ROCm) sont pris en charge.**
 
+**Limitation de l’affichage AMD :** Avec un GPU intégré AMD et une Radeon distincte pour l’inférence, branchez l’écran sur la Radeon **avant de démarrer Windows**. La sortie vidéo de la carte mère ou du GPU intégré n’est temporairement pas prise en charge : un autre utilisateur a signalé des redémarrages complets du PC, que nous avons reproduits sur notre machine de validation. Déplacer le câble après le démarrage n’a pas empêché une nouvelle panne. La cause reste inconnue ; voir [l’issue nº 10](https://github.com/kbc20f11/TinyStrata/issues/10).
+
 ## Pourquoi nous développons TinyStrata
 
 Avec la hausse des prix des composants PC, assembler un PC haut de gamme devient de plus en plus difficile pour beaucoup de personnes.
