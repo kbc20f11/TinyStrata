@@ -31,18 +31,27 @@ def call_text(value):
 class QuotedCallValues(unittest.TestCase):
     def test_long_value_waits_for_closing_tag_before_structural_walk(self):
         for stream in (False, True):
-            parser = OutputParser(thinking=False, stream_tools=stream)
             with patch.object(frontend, "call_end", wraps=frontend.call_end) as walk:
                 for _ in range(2):
-                    parser.feed("<tool_call><function=write><parameter=text>")
+                    parser = OutputParser(thinking=False, stream_tools=stream)
+                    events = parser.feed("<tool_call><function=write><parameter=text>")
                     before = walk.call_count
                     for _ in range(100):
-                        parser.feed("abcdefgh")
+                        events.extend(parser.feed("abcdefgh"))
                     self.assertEqual(walk.call_count, before)
                     for char in "</parameter></function></tool_call>":
-                        parser.feed(char)
+                        events.extend(parser.feed(char))
                     self.assertEqual(walk.call_count, before + 1)
+                    # A closed call waits for possible literal closing tags in its value until the turn ends.
+                    self.assertFalse(any(event.kind == "tool_call" for event in events))
+                    events.extend(parser.finish())
+                    self.assertEqual(walk.call_count, before + 2)
                     self.assertEqual(parser._call_end_checked, 0)
+                    self.assertEqual([event.call.arguments for event in events if event.kind == "tool_call"],
+                                     [{"text": "abcdefgh" * 100}])
+                    if stream:
+                        self.assertEqual(json.loads("".join(e.text for e in events if e.kind == "tool_args")),
+                                         {"text": "abcdefgh" * 100})
 
     def test_values_are_exact_whole_streamed_and_chunked(self):
         for label, value in VALUES.items():

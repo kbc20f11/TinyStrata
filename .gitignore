@@ -69,6 +69,10 @@
 !/tests/q36-topic-policy.cpp
 !/tests/test_expert_learning_environment.py
 !/tests/test_model_profile_identity.py
+!/tests/test_native_stdout_decode.py
+!/tests/test_tokenizer_pre_patterns.py
+!/tests/test_tool_closing_tags_stream.py
+!/tests/native-q5-offset.cu
 
 # Only build/runtime sources and the fixed public benchmark inputs belong here.
 /benchmark/**

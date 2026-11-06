@@ -61,6 +61,19 @@ QWEN35_PATTERN = (
     r"|\s+"
 )
 
+# Qwen2/Qwen3's declared `qwen2` pre-tokenizer differs at combining marks.
+# Adapted from aflin/momoe tools/strata_tokenizer.py at
+# 7304c605a65d30484294946c079b733dbe18179d (MIT); LLAMA_VOCAB_PRE_TYPE_QWEN2.
+QWEN2_PATTERN = (
+    r"(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])"
+    r"|[^\r\n\p{L}\p{N}]?\p{L}+"
+    r"|\p{N}"
+    r"| ?[^\s\p{L}\p{N}]+[\r\n]*"
+    r"|\s*[\r\n]+"
+    r"|\s+(?!\S)"
+    r"|\s+"
+)
+
 # LFM2 uses llama.cpp's LLAMA3 pre-tokenizer and whole-piece vocabulary lookup.
 # Adapted from PolyStrata tools/strata_tokenizer.py at 26e4cb5df7996edfb5ff549a63b82d8581e1e658 (MIT).
 LFM2_PATTERN = (
@@ -78,6 +91,8 @@ LFM2_PATTERN = (
 # at 51dc242725d9e64e791146f1d13133d5faedb0ce (MIT); merges may contain newlines.
 GEMMA4_PATTERN = r"[^\n]+|\n+"
 SPACE = "\u2581"
+PRE_PATTERNS = {"qwen35": QWEN35_PATTERN, "qwen2": QWEN2_PATTERN,
+                "lfm2": LFM2_PATTERN, "gemma4": GEMMA4_PATTERN}
 
 
 class Tokenizer:
@@ -85,6 +100,9 @@ class Tokenizer:
                  pre: str = "qwen35", special_ids: dict[str, int] | None = None, *,
                  add_bos_token: bool | None = None, add_eos_token: bool = False,
                  ignore_merges: bool | None = None):
+        if not isinstance(pre, str) or pre not in PRE_PATTERNS:
+            raise ValueError("Unsupported pre-tokenizer %r; expected one of %s"
+                             % (pre, ", ".join(PRE_PATTERNS)))
         self.tokens = tokens
         self.pre = pre
         self.raw = pre == "gemma4"
@@ -95,7 +113,7 @@ class Tokenizer:
         self.add_bos_token = pre == "lfm2" if add_bos_token is None else bool(add_bos_token)
         self.add_eos_token = bool(add_eos_token)
         self.ignore_merges = pre == "lfm2" if ignore_merges is None else bool(ignore_merges)
-        self.pre_pattern = GEMMA4_PATTERN if self.raw else LFM2_PATTERN if pre == "lfm2" else QWEN35_PATTERN
+        self.pre_pattern = PRE_PATTERNS[pre]
         self.template_tokens = {name: tokens[index] for name, index in
                                 (("bos_token", self.bos_token_id), ("eos_token", self.eos_token_id))
                                 if isinstance(index, int) and 0 <= index < len(tokens)}
@@ -404,9 +422,10 @@ class Tokenizer:
 # ------------------------------------------------------------------ the pack's tokenizer/ directory
 def extract(gguf_path, out_dir) -> dict:
     """Write the tokenizer into `<out_dir>/tokenizer/` so the engine never opens the weight shards for it."""
+    # Reject unsupported tokenizer metadata before creating or replacing cache files.
+    tk = Tokenizer.from_gguf(gguf_path)
     out = pathlib.Path(out_dir) / "tokenizer"
     out.mkdir(parents=True, exist_ok=True)
-    tk = Tokenizer.from_gguf(gguf_path)
     cfg = {
         "model": "gemma4" if tk.raw else "gpt2",
         "pre": tk.pre,
@@ -420,6 +439,7 @@ def extract(gguf_path, out_dir) -> dict:
         "pre_pattern": tk.pre_pattern,
         "pre_pattern_source": "llama.cpp src/llama-vocab.cpp (LLAMA_VOCAB_PRE_TYPE_GEMMA4)" if tk.raw
                               else "llama.cpp src/llama-vocab.cpp (LLAMA_VOCAB_PRE_TYPE_LLAMA3)" if tk.pre == "lfm2"
+                              else "llama.cpp src/llama-vocab.cpp (LLAMA_VOCAB_PRE_TYPE_QWEN2)" if tk.pre == "qwen2"
                               else ".ref/llama.cpp src/llama-vocab.cpp L396 (LLAMA_VOCAB_PRE_TYPE_QWEN35)",
         "ignore_merges": tk.ignore_merges,
     }

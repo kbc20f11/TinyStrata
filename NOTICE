@@ -166,3 +166,16 @@ src/program/serve/tiers.cpp at bbf2f5bb783adc5ffe5b49043f82c9399313bb46 (MIT),
 credited above. TinyStrata binds rankings to the loaded model/layout identity,
 uses current per-layer capacities, and collects completed prompt statistics
 separately from accepted decode routing. No cached activations are serialized.
+
+The Q5_0 GPU Expert-dot offset correction follows Niko1221/Strata commit
+aa678f10d0e51ac17d301c75cbb6b80783437e8b (MIT), using the quantized
+activation sum consistently with the integer products.
+The resilient native/Vision UTF-8 subprocess readers follow jesdga95/basalt
+commit 09f785308d88d1c8cdcb3711e8ca68bff8468d0f (MIT).
+The explicit Qwen2 pre-tokenizer pattern and unsupported-pattern validation
+follow aflin/momoe commit 7304c605a65d30484294946c079b733dbe18179d (MIT).
+The bounded closing-tag lookahead and final-boundary handling for streamed
+tool arguments adapt Niko1221/Strata commits
+49b880c01f55a248d0485b6cd244ae053191d928 and
+3bbf0f399e2a1b3d38642eca4342721fc7994201 (MIT), preserving literal closing
+tags inside tool argument values.
