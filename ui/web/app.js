@@ -1661,7 +1661,7 @@ function renderTerminalStats(el, m, streaming) {
     if (p && terminalNumber(p.processed) && terminalNumber(p.total)) status += ` · ${fmt(p.processed)} / ${fmt(p.total)} tok`;
     phase._clockPrefix = status + " · ";
     status = phase._clockPrefix + terminalSeconds(s.elapsedMs || 0, true);
-  } else if (active && m.reasoning && !m.text) status = terminalWord("thinking");
+  } else if (active && busy.outputPhase === "reasoning" && !m.error && !m.stopped) status = terminalWord("thinking");
   else if (m.error) status = terminalWord("error");
   else if (m.stopped) status = terminalWord(m.interrupted ? "interrupted" : "stopped");
   phase.hidden = !status;
@@ -1922,7 +1922,83 @@ function answerHtml(m) {
   });
   return html + answerMarkdown(m.text.slice(pos));
 }
-function renderAnswerBubble(bubble, m, streaming) {
+// Reasoning chronology: keep the canonical strings and saved tool offsets.
+// Unknown legacy offsets retain the old single thought panel; never guess a
+// boundary, lose text or splice a saved transcript to make it look ordered.
+function reasoningTimeline(m) {
+  if (!Array.isArray(m.tools) || !m.tools.length) return null;
+  const text = typeof m.text === "string" ? m.text : "", reasoning = typeof m.reasoning === "string" ? m.reasoning : "";
+  let at = 0, rat = 0;
+  for (const tool of m.tools) {
+    if (!tool || !Number.isSafeInteger(tool.at) || tool.at < at || tool.at > text.length ||
+        !Number.isSafeInteger(tool.rat) || tool.rat < rat || tool.rat > reasoning.length) return null;
+    at = tool.at; rat = tool.rat;
+  }
+  const parts = [];
+  let textPos = 0, thoughtPos = 0, anchor = "start";
+  const before = (textEnd, thoughtEnd) => {
+    if (reasoning.slice(thoughtPos, thoughtEnd).trim())
+      parts.push({kind: "reasoning", key: `reasoning:${anchor}`, start: thoughtPos, end: thoughtEnd});
+    if (textEnd > textPos) parts.push({kind: "text", key: `text:${anchor}`, start: textPos, end: textEnd});
+    textPos = textEnd; thoughtPos = thoughtEnd;
+  };
+  m.tools.forEach((tool, index) => {
+    before(tool.at, tool.rat);
+    parts.push({kind: "tool", key: `tool:${tool.id ?? ""}:${index}`, tool, index});
+    anchor = `after:${tool.id ?? ""}:${index}`;
+  });
+  before(text.length, reasoning.length);
+  return parts;
+}
+function reasoningActive(m, streaming) {
+  return !!(streaming && busy?.msg === m && busy.outputPhase === "reasoning" && !m.error && !m.stopped);
+}
+function reasoningText(m, details) {
+  const text = typeof m.reasoning === "string" ? m.reasoning : "";
+  if (details.dataset.reasoningSegment == null) return text;
+  const start = Number(details.dataset.reasoningStart), end = Number(details.dataset.reasoningEnd);
+  if (!Number.isSafeInteger(start) || start < 0 || !Number.isSafeInteger(end) || end < start || end > text.length) return "";
+  const value = text.slice(start, end);
+  // The UI inserts this one separator before a post-tool thought. Keep its
+  // canonical offsets, but do not render it as two empty lines in a new panel.
+  return start > 0 && value.startsWith("\n\n") ? value.slice(2) : value;
+}
+function writeReasoningText(body, value) {
+  let node = body._reasoningText;
+  if (!node || node.parentNode !== body) {
+    node = body.childNodes.length === 1 && body.firstChild.nodeType === 3 ? body.firstChild : document.createTextNode("");
+    if (node.parentNode !== body) body.appendChild(node);
+    body._reasoningText = node;
+  }
+  if (node.data === value) return;
+  const top = body.scrollTop, left = body.scrollLeft;
+  const selection = typeof window !== "undefined" ? window.getSelection?.() : null;
+  const selected = selection && selection.anchorNode === node && selection.focusNode === node
+    ? {anchor: selection.anchorOffset, focus: selection.focusOffset} : null;
+  if (value.startsWith(node.data)) node.appendData(value.slice(node.data.length));
+  else node.data = value;
+  if (selected) selection.setBaseAndExtent(node, Math.min(selected.anchor, value.length), node, Math.min(selected.focus, value.length));
+  body.scrollTop = top; body.scrollLeft = left;
+}
+function patchReasoningPart(details, m, start, end, active, segmented) {
+  if (segmented) {
+    details.dataset.reasoningStart = String(start); details.dataset.reasoningEnd = String(end);
+  } else {
+    delete details.dataset.reasoningSegment;
+    delete details.dataset.reasoningStart; delete details.dataset.reasoningEnd;
+  }
+  details.dataset.reasoningActive = String(!!active);
+  details.hidden = !m.reasoning || end <= start;
+  const title = details.querySelector(".think-title"), body = details.querySelector(".thinking");
+  const label = active ? tr("think.now", "Thinking…") : !segmented && m.thinkSecs != null
+    ? tr("think.for", "Thought for {s} s", {s: fmt(m.thinkSecs, 1)}) : tr("think.done", "Thoughts");
+  if (title.textContent !== label) title.textContent = label;
+  if (active && settings.show && !details.dataset.touched && !details.open) { details._auto = true; details.open = true; }
+  if (!active && details.open && !details.dataset.touched) { details._auto = true; details.open = false; }
+  if (details.open) { writeReasoningText(body, reasoningText(m, details)); delete body.dataset.pending; }
+  else body.dataset.pending = "1";
+}
+function renderAnswerBubble(bubble, m, streaming, timeline = null, primaryThought = null) {
   const previous = bubble._answerParts || new Map(), next = new Map(), ordered = [];
   const add = (key, make) => {
     const part = previous.get(key) || make(); part.dataset.answerKey = key;
@@ -1942,18 +2018,43 @@ function renderAnswerBubble(bubble, m, streaming) {
         disabled: () => !!busy || modelSwitching, execute: (code, signal) => StrataLocalTools.executePython(code, {signal, headers}), onSave: saveCodeMessage});
     }
   };
-  let pos = 0, textKey = "text:start";
-  (m.tools || []).forEach((tool, index) => {
-    const at = Math.min(Math.max(tool.at || 0, pos), m.text.length);
-    markdownPart(textKey, m.text.slice(pos, at)); pos = at;
-    const toolKey = `tool:${tool.id ?? ""}:${index}`;
-    const part = add(toolKey, () => {
+  const toolPart = (tool, index, key) => {
+    const part = add(key, () => {
       const node = document.createElement("div"); node.className = "tool-block";
       node.innerHTML = toolHtml(tool, index) + '<div class="tool-media"></div>'; return node;
     });
-    patchToolPart(part, tool, index); textKey = `text:after:${tool.id ?? ""}:${index}`;
-  });
-  markdownPart(textKey, m.text.slice(pos));
+    patchToolPart(part, tool, index);
+  };
+  if (timeline) {
+    const last = m.tools[m.tools.length - 1], tailKey = `reasoning:after:${last.id ?? ""}:${m.tools.length - 1}`;
+    for (const item of timeline) {
+      if (item.kind === "text") markdownPart(item.key, m.text.slice(item.start, item.end));
+      else if (item.kind === "tool") toolPart(item.tool, item.index, item.key);
+      else {
+        const details = add(item.key, () => {
+          if (item.key === "reasoning:start" && primaryThought) return primaryThought;
+          const node = document.createElement("details"); node.className = "st-collapse think";
+          node.innerHTML = `<summary>${icon("thinking", "st-icon st-icon--sm")}<span class="think-title"></span>` +
+            `${icon("chevron", "st-icon st-icon--sm st-chev")}</summary><div class="st-collapse__body thinking"></div>`;
+          return node;
+        });
+        details.dataset.reasoningSegment = item.key;
+        patchReasoningPart(details, m, item.start, item.end, reasoningActive(m, streaming) && item.key === tailKey, true);
+      }
+    }
+    if (m.error) {
+      const error = add("error", () => { const node = document.createElement("div"); node.className = "msg-error"; return node; });
+      if (error.textContent !== m.error) error.textContent = m.error;
+    }
+  } else {
+    let pos = 0, textKey = "text:start";
+    (m.tools || []).forEach((tool, index) => {
+      const at = Math.min(Math.max(tool.at || 0, pos), m.text.length);
+      markdownPart(textKey, m.text.slice(pos, at)); pos = at;
+      toolPart(tool, index, `tool:${tool.id ?? ""}:${index}`); textKey = `text:after:${tool.id ?? ""}:${index}`;
+    });
+    markdownPart(textKey, m.text.slice(pos));
+  }
   // insertBefore leaves already ordered tool nodes attached. Replacing the
   // bubble, even with those same nodes, would reset focus and native scrolling.
   let cursor = bubble.firstChild;
@@ -1967,6 +2068,7 @@ function renderAnswerBubble(bubble, m, streaming) {
 // a tool event from the stream (the `strata_mcp` field of a chunk)
 function onTool(m, x) {
   if (x.event === "limit") { m.limit = x.max_rounds; return; }
+  if (busy?.msg === m) busy.outputPhase = "tool";
   m.tools = m.tools || [];
   let t = m.tools.find((y) => y.id === x.id);
   if (!t) { t = {id: x.id, name: x.name, at: m.text.length, rat: m.reasoning.length, state: "writing"}; m.tools.push(t); }
@@ -2062,6 +2164,11 @@ document.fonts?.addEventListener("loadingdone", queueTerminalCursor);
 
 function updateAssistant(el, m, streaming) {
   const readingScroll = readingToolOutput ? $("chat-scroll").scrollTop : null;
+  // Reparenting the first thought into its timeline can reset native selection
+  // even when its exact details/Text nodes survive. Restore those same nodes.
+  const selection = typeof window !== "undefined" ? window.getSelection?.() : null;
+  const selected = selection && el.contains(selection.anchorNode) && el.contains(selection.focusNode)
+    ? {anchor: selection.anchorNode, anchorOffset: selection.anchorOffset, focus: selection.focusNode, focusOffset: selection.focusOffset} : null;
   clearTerminalCursor(el);
   const activeStream = streaming && !m.error && !m.stopped;
   const summary = el.querySelector(".context-summary");
@@ -2072,39 +2179,41 @@ function updateAssistant(el, m, streaming) {
     summary.querySelector(".st-collapse__body").textContent = m.compaction.summary;
     summary.setAttribute("aria-label", tr("context.summary", "Conversation summary"));
   }
-  const det = el.querySelector("details.think");
-  if (m.reasoning) {
-    det.hidden = false;
-    const thinkingNow = streaming && !m.text;
-    el.querySelector(".think-title").textContent = thinkingNow ? tr("think.now", "Thinking…") :
-      m.thinkSecs != null ? tr("think.for", "Thought for {s} s", {s: fmt(m.thinkSecs, 1)}) : tr("think.done", "Thoughts");
-    const body = el.querySelector(".thinking");
-    if (det.open || thinkingNow) body.textContent = m.reasoning;
-    else body.dataset.pending = "1";
-    // open while it streams (if wanted), closed once the answer starts - unless the user toggled it themselves
-    if (thinkingNow && settings.show && !det.dataset.touched && !det.open) { det._auto = true; det.open = true; }
-    if (!thinkingNow && det.open && !det.dataset.touched) { det._auto = true; det.open = false; }
-  }
+  const det = el._primaryThought || (el._primaryThought = el.querySelector("details.think"));
+  const timeline = reasoningTimeline(m), thinkingNow = reasoningActive(m, streaming);
   const bubble = el.querySelector(".st-bubble");
+  if (timeline) det.hidden = true;
+  else {
+    // The first panel may have been moved into a timeline. Restoring an old or
+    // invalid-offset message keeps all its reasoning in this same panel.
+    if (det.parentNode !== el) el.insertBefore(det, el.querySelector(".context-summary"));
+    patchReasoningPart(det, m, 0, (m.reasoning || "").length, thinkingNow, false);
+  }
   bubble.classList.remove("cursor");
   // The whole answer must finish before code can be copied, even when a fence
   // has already closed. Hide the reserved button slot while streaming: its
   // SVG is rebuilt with each chunk and can otherwise flash as it reloads.
   bubble.dataset.streaming = String(!!streaming);
-  if (m.error) {
+  if (m.error && !timeline) {
     bubble.innerHTML = `<div class="msg-error"></div>`;
     bubble.firstChild.textContent = m.error;
   } else if (!m.text && streaming && !(m.tools && m.tools.length)) {
     bubble.replaceChildren();
   } else {
-    renderAnswerBubble(bubble, m, !!streaming);
+    renderAnswerBubble(bubble, m, !!streaming, timeline, det);
   }
   for (const button of bubble.querySelectorAll("[data-code-copy]")) button.disabled = !!streaming;
-  if (activeStream && m.text) setTerminalCursor(bubble);
-  else if (activeStream && m.reasoning && det.open) setTerminalCursor(el.querySelector(".thinking"));
+  const activeThought = timeline ? bubble.querySelector('details.think[data-reasoning-active="true"]') : det;
+  if (thinkingNow) { if (activeThought?.open) setTerminalCursor(activeThought.querySelector(".thinking")); }
+  else if (activeStream && busy?.msg === m && busy.outputPhase === "content" && m.text) setTerminalCursor(bubble);
   el.querySelector(".meta-text").textContent = m.stats ? "" : m.meta || (streaming ? "" : m.stopped ? tr("chat.stopped", "Stopped") : "");
   el.querySelector("[data-msg-copy]").hidden = streaming || !m.text;
   renderTerminalStats(el, m, streaming);
+  if (selected && selected.anchor.isConnected && selected.focus.isConnected) {
+    const limit = (node) => node.nodeType === 3 ? node.length : node.childNodes.length;
+    selection.setBaseAndExtent(selected.anchor, Math.min(selected.anchorOffset, limit(selected.anchor)),
+                               selected.focus, Math.min(selected.focusOffset, limit(selected.focus)));
+  }
   if (readingScroll != null) $("chat-scroll").scrollTop = readingScroll;
 }
 function renderChat() {
@@ -2137,7 +2246,7 @@ function scrollDown(force) {
 (function watchReader() {
   const s = $("chat-scroll");
   const touch = () => { lastReaderInput = Date.now(); };
-  const inspecting = (target) => !!target?.closest?.(".tool-call,.tool-sources,.tool-media,.st-code");
+  const inspecting = (target) => !!target?.closest?.(".tool-call,.tool-sources,.tool-media,.st-code,.think");
   const inspect = (event) => {touch(); readingToolOutput = inspecting(event.target); if (readingToolOutput) stickToBottom = false;};
   s.addEventListener("wheel", (e) => {
     inspect(e);
@@ -2221,9 +2330,9 @@ $("chat").addEventListener("toggle", (e) => {
   d._auto = false;
   if (!automatic) d.dataset.touched = "1";
   const body = d.querySelector(".thinking");
-  if (d.open && body.dataset.pending) { body.textContent = messages[+d.closest(".st-msg").dataset.i].reasoning; delete body.dataset.pending; }
+  if (d.open && body.dataset.pending) { writeReasoningText(body, reasoningText(messages[+d.closest(".st-msg").dataset.i], d)); delete body.dataset.pending; }
   const m = messages[+d.closest(".st-msg").dataset.i];
-  if (busy?.msg === m && !m.text && m.reasoning && !m.error && !m.stopped) {
+  if (reasoningActive(m, true) && d.dataset.reasoningActive === "true") {
     clearTerminalCursor(d.closest(".st-msg"));
     if (d.open) setTerminalCursor(body);
   }
@@ -2490,7 +2599,7 @@ async function generateReply() {
     return el;
   };
   const controller = new AbortController();
-  busy = {controller, msg: m, cut: false, cutAfterTool: false, element: el, startedMono: performance.now()};
+  busy = {controller, msg: m, cut: false, cutAfterTool: false, element: el, startedMono: performance.now(), outputPhase: "preparing"};
   const stopStatsClock = startTerminalClock(busy);
   setBusy(true);
   paintLive();
@@ -2526,6 +2635,7 @@ async function generateReply() {
     let roundUsage = null, roundTimings = null, finishReason = null, streamComplete = false;
     const cumulative = StrataLocalTools.combined(completedRounds);
     terminalBeginRound(m.stats, round, cumulative.usage?.completion_tokens ?? cumulative.timings?.predicted_n ?? 0);
+    busy.outputPhase = "preparing";
     const r = await fetch("v1/chat/completions", {method: "POST", headers: headers(true), body: JSON.stringify(body),
                                                    signal: controller.signal});
     if (!r.ok) {
@@ -2576,12 +2686,14 @@ async function generateReply() {
           m.stats.firstTokenMs = Math.max(0, performance.now() - busy.startedMono);
         const lastTool = m.tools && m.tools.length ? m.tools[m.tools.length - 1] : null;   // a new round after a tool
         if (d.reasoning_content) {
+          busy.outputPhase = "reasoning";
           if (!firstAt) firstAt = performance.now();
           if (!thinkStart) thinkStart = performance.now();
           if (lastTool && m.reasoning && lastTool.rat === m.reasoning.length) m.reasoning += "\n\n";
           m.reasoning += d.reasoning_content;
         }
         if (d.content) {
+          busy.outputPhase = "content";
           if (!firstAt) firstAt = performance.now();
           if (thinkStart && m.thinkSecs == null) m.thinkSecs = (performance.now() - thinkStart) / 1000;
           if (lastTool && m.text && lastTool.at === m.text.length) m.text += "\n\n";
