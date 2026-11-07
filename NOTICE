@@ -199,3 +199,13 @@ dbc515818ec5b74014efbbc69e4c42958a03414d (MIT), credited above.
 The CPU pool's one-time stall-clock arming adapts Basalt commit
 2c4a0eb678265f0c5a473cdabfc808577dcaa6f5 (MIT). TinyStrata retains
 its atomic claim/completion protocol, park waits, arithmetic and stall diagnostics.
+
+Model identification artwork in ui/web/model-logos is copied from the
+official Qwen, Gemma, Liquid AI and DiffuSpace sources recorded, with exact
+SHA-256 identities, in ui/web/model-logos/PROVENANCE.json. The Gemma icon
+comes from google-deepmind/gemma under Apache-2.0; its license is included
+in ui/web/model-logos/gemma-LICENSE.txt. Other brand artwork has no separate
+asset license supplied by its source; the respective owners retain their
+copyright and trademark rights. These identification marks do not imply
+endorsement and are not relicensed as TinyStrata artwork. Tiel uses the
+existing generic layer glyph, not an invented provider/model logo.

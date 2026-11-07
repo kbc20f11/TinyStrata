@@ -124,13 +124,14 @@ for (const button of $("theme-options").children) {
 
 let tab = "chat";
 function showTab(name) {
-  tab = ["chat", "images", "monitor", "about"].includes(name) ? name : "chat";
+  tab = ["chat", "images", "models", "monitor", "about"].includes(name) ? name : "chat";
   for (const b of document.querySelectorAll(".st-tab")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
-  for (const v of ["chat", "images", "monitor", "about"]) $(`view-${v}`).hidden = v !== tab;
+  for (const v of ["chat", "images", "models", "monitor", "about"]) $(`view-${v}`).hidden = v !== tab;
   if (tab === "images") $("img-prompt").focus();
   if (location.hash.slice(1) !== tab) history.replaceState(null, "", tab === "chat" ? location.pathname : `#${tab}`);
   if (tab === "chat") $("input").focus();
   if (tab === "monitor") loadMcp();
+  if (tab === "models") { renderModelLibrary(); refreshModelCatalog(); }
   // This local frontend targets TinyStrata, which has no upstream /config editor.
   if (tab === "about") $("cfg-card").hidden = true;
   if (lastMetrics) render(lastMetrics);
@@ -1061,12 +1062,158 @@ let attachments = [];                 // {name, url}
 let busy = null;                      // {controller, msg, cut, cutAfterTool}
 let pending = null;                   // a message parked while an answer is written: {text, images, files, mode}
 let modelCatalog = [], modelCatalogTick = 0, modelCatalogLoading = false;
+let modelCatalogEpoch = 0, modelCatalogReloadRequested = false;
 let modelSwitchAvailable = false, modelSwitching = false, modelSwitchTimer = null;
 let modelSwitchTarget = null, modelSwitchDownload = null;
 let modelSelectionSerial = 0;
 const modelDownloads = new Map();
 let modelDownloadDialogTarget = null, modelDownloadsRecovered = false;
 const modelNames = {"qwen3.6-35b-a3b": "Qwen3.6", "gemma-4-26b-a4b-it": "Gemma 4", "lfm2.5-24b-a2b": "LFM2.5", "clover-35b-a3b-preview": "Clover", "tiel-coder-35b-a3b": "Tiel Coder"};
+let modelDeleteTarget = null, modelDeleting = null, modelDeleteError = "";
+function modelIsSelectable(row) {
+  return row.installed === true && row.management?.complete !== false;
+}
+function activeModelNeedsDownload() {
+  if (!modelSwitchAvailable) return false;
+  const row = modelCatalog.find((item) => item.active === true) || modelCatalog.find((item) => item.id === health.model);
+  // Unknown legacy/catalog state stays usable. Only authoritative missing
+  // files block chat, whose backend may otherwise download on first request.
+  return !!row && typeof row.installed === "boolean" && !modelIsSelectable(row);
+}
+function syncComposerInput(on = !!busy) {
+  const missing = activeModelNeedsDownload();
+  $("send-btn").disabled = missing || modelSwitching || !!resourceOperation || (on && !parksWhileBusy()) || !!panel;
+  $("input").disabled = missing || modelSwitching || !!resourceOperation || !!panel;
+  $("input").placeholder = resourceOperation === "placement" ? tr("resources.applying", "Reloading model…")
+    : resourceOperation === "compact" ? tr("resources.compacting", "Summarizing earlier conversation…")
+    : modelSwitching ? tr("model.switching", "Switching model…")
+    : missing ? tr("models.downloadRequired", "Download a model to chat") : tr("composer.placeholder", "Talk to TinyStrata");
+  $("composer-hint").textContent = panel ? tr("composer.finishOpen", "Save or cancel what is open above to continue")
+    : modelSwitching ? tr("model.switching", "Switching model…") : missing ? "" : on ? busyHint() : tr("composer.newline", "Shift+Enter: new line");
+}
+function syncModelOptions(select) {
+  const rows = modelCatalog.filter(modelIsSelectable);
+  const wanted = new Set(rows.map((row) => row.id));
+  for (const option of [...select.options]) if (!wanted.has(option.value)) option.remove();
+  for (const row of rows) {
+    let option = [...select.options].find((item) => item.value === row.id);
+    if (!option) { option = document.createElement("option"); option.value = row.id; select.appendChild(option); }
+    const label = modelNames[row.id] || row.id;
+    if (option.textContent !== label) option.textContent = label;
+    option.disabled = false;
+  }
+}
+function modelLibraryText(node, value) { if (node.textContent !== value) node.textContent = value; }
+function modelLibraryRow(id) {
+  const list = $("model-library-list");
+  if (!list._modelRows) list._modelRows = new Map();
+  if (list._modelRows.has(id)) return list._modelRows.get(id);
+  const el = document.createElement("div"); el.className = "model-library-row"; el.dataset.model = id; el.setAttribute("role", "listitem");
+  // This markup is created once. Polling only patches existing text and state.
+  el.innerHTML = '<img class="model-library-icon" alt="" aria-hidden="true"><div class="model-library-info"><strong></strong><p></p></div><div class="model-library-state"><span></span><progress max="100" hidden></progress></div><span class="model-library-size"></span><div class="model-library-actions"><button type="button" class="st-btn st-btn--secondary model-library-download"></button><button type="button" class="st-btn st-btn--secondary model-library-cancel"></button><button type="button" class="st-btn st-btn--secondary model-library-delete"></button></div>';
+  const row = {el, image: el.querySelector("img"), name: el.querySelector("strong"), description: el.querySelector("p"),
+    status: el.querySelector(".model-library-state span"), progress: el.querySelector("progress"), size: el.querySelector(".model-library-size"),
+    download: el.querySelector(".model-library-download"), cancel: el.querySelector(".model-library-cancel"), remove: el.querySelector(".model-library-delete")};
+  row.download.onclick = () => openModelDownload(id);
+  row.cancel.onclick = () => cancelModelDownload(modelDownloads.get(id));
+  row.remove.onclick = () => openModelDelete(id);
+  list._modelRows.set(id, row); list.appendChild(el); return row;
+}
+function renderModelLibrary() {
+  const list = $("model-library-list");
+  if (!list) return;
+  const metadata = typeof StrataModelLibrary !== "undefined" ? StrataModelLibrary.MODELS : [];
+  const ids = [...new Set([...metadata.map((item) => item.id), ...modelCatalog.map((item) => item.id)])];
+  for (const id of ids) {
+    const item = modelCatalog.find((value) => value.id === id), management = item?.management;
+    const info = typeof StrataModelLibrary !== "undefined" ? StrataModelLibrary.describe(id, StrataI18n.lang) : null;
+    const row = modelLibraryRow(id), flow = modelDownloads.get(id);
+    const active = item?.active === true || health.model === id, transferring = flow && downloadIsActive(flow);
+    const name = info?.name || modelNames[id] || id;
+    modelLibraryText(row.name, name);
+    modelLibraryText(row.description, info ? tr(info.descriptionKey, info.descriptionFallback) : "");
+    const source = info?.iconSrc || info?.iconHref || "web/model-icons.svg";
+    if (row.image.getAttribute("src") !== source) row.image.setAttribute("src", source);
+    let state = !item ? tr("models.unavailable", "Unavailable")
+      : item.installed && management?.complete === false ? tr("models.incomplete", "Incomplete")
+      : item.installed === false ? tr("model.notInstalled", "Not downloaded") : active ? tr("models.inUse", "In use")
+      : item.installed ? tr("models.installed", "Downloaded") : tr("model.notInstalled", "Not downloaded");
+    if (transferring) {
+      const key = {verifying: ["model.downloadVerifying", "Verifying files"], cancelling: ["model.downloadCancelling", "Cancelling"],
+        recovering: ["models.reconnecting", "Reconnecting"], loading: ["model.downloadLoading", "Preparing for use"]}[flow.stage];
+      state = key ? tr(...key) : tr("model.downloadDownloading", "Downloading");
+    } else if (flow?.stage === "error") state = tr("models.failed", "Download failed");
+    else if (flow?.stage === "cancelled" && !item?.installed) state = tr("models.paused", "Paused");
+    if (modelDeleting === id) state = tr("models.deleting", "Deleting…");
+    const fraction = transferring && Number.isFinite(flow.job?.progress) && flow.job.total_bytes > 0 ? Math.max(0, Math.min(1, flow.job.progress)) : null;
+    modelLibraryText(row.status, state + (fraction != null ? ` · ${fmt(fraction * 100, 1)}%` : ""));
+    row.progress.hidden = !transferring;
+    if (fraction == null) row.progress.removeAttribute("value");
+    else if (+row.progress.value !== fraction * 100) row.progress.value = fraction * 100;
+    row.progress.setAttribute("aria-label", `${name}: ${state}`);
+    const bytes = item?.installed ? management?.disk_bytes : management?.download_bytes;
+    modelLibraryText(row.size, Number.isFinite(bytes) && bytes > 0 ? downloadSize(bytes) : "–");
+    row.download.hidden = !!item?.installed && management?.complete !== false && !transferring;
+    row.download.disabled = !item || !!modelDeleting || (!transferring && management?.can_download !== true);
+    modelLibraryText(row.download, transferring ? tr("models.progress", "Progress") : item?.installed && management?.complete === false ? tr("models.repair", "Repair")
+      : flow?.stage === "cancelled" ? tr("models.resume", "Resume") : tr("models.download", "Download"));
+    row.cancel.hidden = !transferring || flow.job?.can_cancel !== true;
+    row.cancel.disabled = !!flow?.requestBusy || !!flow?.cancelRequested;
+    modelLibraryText(row.cancel, tr("cancel", "Cancel"));
+    row.remove.hidden = !item?.installed && !(management?.disk_bytes > 0);
+    row.remove.disabled = !management?.can_delete || active || !!modelDeleting || !!transferring || modelOperationBusy();
+    modelLibraryText(row.remove, tr("models.delete", "Delete"));
+    row.remove.title = active ? tr("models.inUse", "In use") : !management?.can_delete && management?.source === "local" ? tr("models.local", "Local model") : "";
+    row.el.dataset.active = String(active);
+  }
+  for (const [id, row] of list._modelRows || []) if (!ids.includes(id)) { row.el.remove(); list._modelRows.delete(id); }
+}
+function renderModelDelete() {
+  const row = modelCatalog.find((item) => item.id === modelDeleteTarget);
+  if (!row) return;
+  $("model-delete-title").textContent = tr("models.deleteTitle", "Delete {model}?", {model: modelNames[row.id] || row.id});
+  const bytes = row.management?.reclaimable_bytes;
+  $("model-delete-size").textContent = Number.isFinite(bytes) ? downloadSize(bytes) : "";
+  $("model-delete-error").textContent = modelDeleteError;
+  $("model-delete-error").hidden = !modelDeleteError;
+  $("model-delete-cancel").disabled = !!modelDeleting;
+  $("model-delete-confirm").disabled = !!modelDeleting || !row.management?.can_delete || row.active || health.model === row.id || modelOperationBusy();
+  $("model-delete-confirm").textContent = modelDeleting ? tr("models.deleting", "Deleting…") : tr("models.delete", "Delete");
+}
+function openModelDelete(id) {
+  const row = modelCatalog.find((item) => item.id === id);
+  if (!row?.management?.can_delete || row.active || health.model === id || modelDeleting || modelOperationBusy()) return;
+  modelDeleteTarget = id; modelDeleteError = ""; renderModelDelete(); $("model-delete-dialog").showModal();
+}
+function dismissModelDelete() {
+  if (modelDeleting) return;
+  $("model-delete-dialog").close(); modelDeleteTarget = null; modelDeleteError = "";
+}
+async function deleteModel() {
+  const target = modelDeleteTarget, row = modelCatalog.find((item) => item.id === target);
+  if (!row?.management?.can_delete || row.active || health.model === target || modelDeleting || modelOperationBusy()) return;
+  modelDeleting = target; modelDeleteError = ""; renderModelDelete(); renderModelLibrary(); syncComposerControls();
+  try {
+    const result = await modelControl("v1/model/delete", {method: "POST", body: JSON.stringify({model: target})});
+    if (!Array.isArray(result.catalog)) throw new Error("Invalid model catalog");
+    // A read begun before this mutation must not resurrect the removed model.
+    modelCatalogEpoch++;
+    modelCatalog = result.catalog;
+    const flow = modelDownloads.get(target); if (flow) clearTimeout(flow.timer);
+    modelDownloads.delete(target); saveModelDownloads();
+    modelDeleting = null; dismissModelDelete();
+  } catch (error) {
+    modelDeleteError = error.message || String(error);
+    // A filesystem error can follow partial deletion. Re-read availability,
+    // never repeat the destructive POST automatically.
+    modelCatalogEpoch++;
+    await refreshModelCatalog();
+  }
+  finally { modelDeleting = null; renderModelDelete(); renderModelLibrary(); syncComposerControls(); }
+}
+$("model-delete-cancel").onclick = dismissModelDelete;
+$("model-delete-confirm").onclick = deleteModel;
+$("model-delete-dialog").oncancel = (event) => { event.preventDefault(); dismissModelDelete(); };
 function canUseModelImages(rows = messages, extra = []) {
   if (health.images || (!extra.some((image) => image.url) && !rows.some((m) => (m.images || []).some((image) => image.url)))) return true;
   toast("warn", tr("model.noVision", "This model does not support images. Start a text-only chat or choose a vision model."), "", 7000);
@@ -1081,17 +1228,11 @@ function syncComposerControls() {
   $("composer").setAttribute("aria-busy", String(modelSwitching));
   const select = $("composer-model");
   const locked = modelOperationBusy();
-  select.disabled = !modelSwitchAvailable || locked;
+  select.disabled = !modelSwitchAvailable || locked || !!modelDeleting;
   select.title = !modelSwitchAvailable ? tr("model.catalogUnavailable", "Model switching is unavailable.")
     : locked ? tr("model.switchBusy", "Wait for the current reply or operation to finish.") : "";
-  for (const option of select.options) {
-    const item = modelCatalog.find((row) => row.id === option.value);
-    option.disabled = !item;
-    const transfer = modelDownloads.get(option.value);
-    option.textContent = (modelNames[option.value] || option.value) +
-      (transfer && downloadIsActive(transfer) ? ` · ${tr("model.downloadInProgress", "Downloading")}`
-        : item && !item.installed && !item.active ? ` · ${tr("model.notInstalled", "Not downloaded")}` : "");
-  }
+  syncModelOptions(select);
+  if (!select.options.length) select.disabled = true;
   // Keep the requested selection visible until the server finishes switching.
   if (!modelSwitching && [...select.options].some((option) => option.value === health.model)) select.value = health.model;
   $("composer-effort").value = effortForModel();
@@ -1102,6 +1243,7 @@ function syncComposerControls() {
   noThinking.disabled = health.model === "lfm2.5-24b-a2b";
   noThinking.title = noThinking.disabled ? tr("model.thinkingRequired", "This model requires thinking.") : "";
   for (const b of $("s-thinking").children) b.disabled = b.dataset.v === "none" && health.model === "lfm2.5-24b-a2b";
+  syncComposerInput();
 }
 async function modelControl(path, options = {}) {
   const r = await fetch(path, {cache: "no-store", signal: AbortSignal.timeout(15000),
@@ -1125,7 +1267,7 @@ function modelOperationBusy() {
 function downloadSize(bytes) { return `${fmt(bytes / 1e9, 2)} GB`; }
 function saveModelDownloads() {
   store.set("model-downloads", [...modelDownloads.values()].filter((flow) =>
-    flow.confirmed && !["done", "cancelled"].includes(flow.stage)).map((flow) => ({model: flow.target, switchWhenReady: flow.autoSwitch})));
+    flow.confirmed && !["ready", "done", "cancelled"].includes(flow.stage)).map((flow) => ({model: flow.target})));
 }
 function clearDownloadSwitchIntents(except = null) {
   for (const flow of modelDownloads.values()) if (flow !== except) {
@@ -1145,6 +1287,7 @@ function scheduleModelDownload(flow, delay = 1000) {
   flow.timer = setTimeout(() => pollModelDownload(flow), delay);
 }
 function renderModelDownload() {
+  renderModelLibrary();
   const flow = modelDownloads.get(modelDownloadDialogTarget);
   if (!flow) return;
   const name = modelNames[flow.target] || flow.target;
@@ -1160,9 +1303,9 @@ function renderModelDownload() {
   }[state] || ["model.downloadTitle", "{model} download"];
   $("model-download-title").textContent = tr(...title, {model: name});
   const description = state === "confirm" ? tr("model.downloadConfirm",
-    "Download {model}? TinyStrata will switch to it when the download finishes.", {model: name})
+    "Download {model}?", {model: name})
     : downloadIsActive(flow) && !flow.cancelRequested ? tr("model.downloadBackground",
-      "The download continues when you close this window. Check progress from the model selector.") : "";
+      "The download continues in the background. Check progress under Models.") : "";
   $("model-download-description").textContent = description +
     (state === "confirm" && Number.isFinite(job.total_bytes) && job.total_bytes > 0
       ? " " + tr("model.downloadSize", "Download size: {size}", {size: downloadSize(job.total_bytes)}) : "");
@@ -1175,10 +1318,10 @@ function renderModelDownload() {
     loading: ["model.downloadLoading", "Preparing for use"],
     recovering: ["model.downloadReconnect", "Connection interrupted. Checking download status again…"],
     cancelling: ["model.downloadCancelling", "Cancelling"],
-    waiting: ["model.downloadWaiting", "Download complete. Waiting for the current operation before switching…"],
+    waiting: ["model.downloadReady", "Model files are ready."],
     ready: ["model.downloadReady", "Model files are ready."],
     switching: ["model.switching", "Switching model…"],
-    done: ["model.switched", "Model switched"],
+    done: ["model.downloadReady", "Model files are ready."],
     error: ["model.downloadFailed", "The model download failed."],
     blocked: ["model.downloadBusy", "A model operation is running. Wait for it to finish."],
     cancelled: ["model.downloadCancelled", "Download cancelled. Downloaded files are kept so you can resume."]
@@ -1202,12 +1345,12 @@ function renderModelDownload() {
   $("model-download-dismiss").textContent = state === "confirm" ? tr("cancel", "Cancel")
     : downloadIsActive(flow) && !flow.cancelRequested ? tr("model.downloadContinue", "Continue in background") : tr("close", "Close");
   const action = $("model-download-action");
-  action.hidden = state === "done" || state === "switching" || (downloadIsActive(flow) && flow.confirmed);
+  action.hidden = ["ready", "waiting", "done", "switching"].includes(state) || (downloadIsActive(flow) && flow.confirmed);
   action.disabled = flow.requestBusy || flow.pollBusy || (["ready", "waiting"].includes(state) && modelOperationBusy());
   action.textContent = state === "cancelled" ? tr("model.downloadResume", "Resume download")
     : ["ready", "waiting"].includes(state) ? tr("model.downloadSwitch", "Switch model")
     : ["error", "cancelled", "blocked"].includes(state) ? tr("model.downloadRetry", "Retry / resume")
-    : tr("model.downloadStart", "Download and switch");
+    : tr("model.downloadStart", "Download");
   const cancel = $("model-download-cancel");
   cancel.hidden = job.can_cancel !== true || !["downloading", "verifying", "cancelling", "recovering"].includes(state);
   cancel.disabled = flow.requestBusy;
@@ -1239,20 +1382,6 @@ function downloadFailure(flow, error) {
   renderModelDownload();
   if (modelDownloadDialogTarget !== flow.target) toast("error", tr("model.downloadFailed", "The model download failed."), flow.error, 7000);
 }
-async function downloadCanSwitch(flow) {
-  if (!flow.autoSwitch || flow.cancelRequested) return;
-  const dialog = $("model-download-dialog");
-  if (modelOperationBusy() || (dialog.open && modelDownloadDialogTarget !== flow.target) ||
-      [...modelDownloads.values()].some((other) => other !== flow && downloadIsActive(other))) {
-    flow.stage = "waiting";
-    renderModelDownload();
-    scheduleModelDownload(flow);
-    return;
-  }
-  flow.stage = "switching";
-  renderModelDownload();
-  await requestModelSwitch(flow.target, flow);
-}
 async function acceptDownloadStatus(flow, job, {confirmation = false} = {}) {
   if (modelDownloads.get(flow.target) !== flow) return;
   if (!job || job.model_id !== flow.target || !["idle", "downloading", "verifying", "loading", "ready", "cancelled", "error"].includes(job.state)) throw new Error("Invalid model download status");
@@ -1265,8 +1394,10 @@ async function acceptDownloadStatus(flow, job, {confirmation = false} = {}) {
     flow.autoSwitch = false;
     saveModelDownloads();
   } else if (job.state === "ready") {
+    modelCatalogEpoch++;
     await refreshModelCatalog();
-    await downloadCanSwitch(flow);
+    flow.autoSwitch = false;
+    saveModelDownloads();
   } else if (job.state === "idle") {
     // A timed-out POST may never have arrived. A read-only poll must never
     // silently turn into a new download request.
@@ -1278,7 +1409,7 @@ async function acceptDownloadStatus(flow, job, {confirmation = false} = {}) {
 async function pollModelDownload(flow) {
   clearTimeout(flow.timer);
   if (flow.pollBusy || flow.requestBusy || modelDownloads.get(flow.target) !== flow) return;
-  if (["ready", "waiting"].includes(flow.stage)) { await downloadCanSwitch(flow); return; }
+  if (["ready", "waiting", "done", "cancelled", "error"].includes(flow.stage)) return;
   flow.pollBusy = true;
   try {
     const job = await modelControl(`v1/model/download?model=${encodeURIComponent(flow.target)}`);
@@ -1297,7 +1428,7 @@ async function startModelDownload(flow) {
   if (flow.requestBusy || flow.pollBusy) return;
   clearDownloadSwitchIntents(flow);
   flow.confirmed = true;
-  flow.autoSwitch = true;
+  flow.autoSwitch = false;
   flow.cancelRequested = false;
   flow.requestBusy = true;
   flow.stage = "checking";
@@ -1358,7 +1489,7 @@ async function recoverModelDownloads() {
   modelDownloadsRecovered = true;
   const saved = store.get("model-downloads", []);
   const intents = new Map((Array.isArray(saved) ? saved : []).filter((row) => row && typeof row.model === "string")
-    .map((row) => [row.model, row.switchWhenReady === true]));
+    .map((row) => [row.model, false]));
   const rows = [...modelCatalog];
   const results = await Promise.allSettled(rows.map(async (row) => ({target: row.id,
     job: await modelControl(`v1/model/download?model=${encodeURIComponent(row.id)}`)})));
@@ -1378,7 +1509,7 @@ async function recoverModelDownloads() {
     const flow = downloadFlow(target);
     flow.confirmed = intents.has(target); flow.autoSwitch = intents.get(target) === true;
     await acceptDownloadStatus(flow, job);
-    if (flow.confirmed && flow.stage !== "done") showModelDownload(flow);
+    // Recovered transfers stay in Models; never switch models or steal focus.
   }
   saveModelDownloads();
   syncComposerControls();
@@ -1388,19 +1519,17 @@ $("model-download-dialog").oncancel = (event) => { event.preventDefault(); dismi
 $("model-download-action").onclick = async () => {
   const flow = modelDownloads.get(modelDownloadDialogTarget);
   if (!flow || flow.requestBusy || flow.pollBusy) return;
-  if (["ready", "waiting"].includes(flow.stage)) {
-    clearDownloadSwitchIntents(flow);
-    flow.cancelRequested = false;
-    flow.autoSwitch = true; flow.confirmed = true; saveModelDownloads();
-    await downloadCanSwitch(flow);
-  } else await startModelDownload(flow);
+  if (["ready", "waiting", "done"].includes(flow.stage)) dismissModelDownload();
+  else await startModelDownload(flow);
 };
 $("model-download-cancel").onclick = () => cancelModelDownload(modelDownloads.get(modelDownloadDialogTarget));
 async function refreshModelCatalog() {
-  if (modelCatalogLoading) return;
+  if (modelCatalogLoading) { modelCatalogReloadRequested = true; return; }
   modelCatalogLoading = true;
+  const epoch = modelCatalogEpoch;
   try {
     const data = await modelControl("v1/models");
+    if (epoch !== modelCatalogEpoch) return;
     modelCatalog = Array.isArray(data.data) ? data.data : [];
     modelSwitchAvailable = modelCatalog.some((row) => typeof row.installed === "boolean");
     const active = modelCatalog.find((row) => row.active);
@@ -1416,6 +1545,8 @@ async function refreshModelCatalog() {
   } finally {
     modelCatalogLoading = false;
     syncComposerControls();
+    renderModelLibrary();
+    if (modelCatalogReloadRequested) { modelCatalogReloadRequested = false; refreshModelCatalog(); }
   }
   if (modelSwitchAvailable) recoverModelDownloads();
 }
@@ -1446,16 +1577,7 @@ async function pollModelSwitch() {
     await refreshModelCatalog();
     if (!succeeded) {
       toast("error", tr("model.switchFailed", "Model switch failed"), state.error || tr("model.downloadBusy", "A model operation is running. Wait for it to finish."), 8000);
-      // Catalog availability covers the main GGUF only. After an API restart,
-      // an interrupted Vision/assistant bundle has an idle download manager.
-      // Offer the normal confirmation instead of trapping it in switch errors.
-      if (target && /not installed|projector.*missing|assistant.*missing|download.*(?:model bundle|before switching|support first)/i.test(state.error || "")) {
-        const repair = downloadFlow(target);
-        repair.stage = "confirm"; repair.confirmed = false; repair.autoSwitch = false;
-        repair.cancelRequested = false; repair.error = state.error;
-        saveModelDownloads();
-        await openModelDownload(target);
-      }
+
     } else toast("success", tr("model.switched", "Model switched"), modelNames[health.model] || health.model);
   } catch (e) {
     // A disconnected POST may already have started the switch. Keep sends blocked
@@ -1504,38 +1626,11 @@ async function requestModelSwitch(target, flow = null) {
   pollModelSwitch();
 }
 $("composer-model").onchange = async () => {
-  const selection = ++modelSelectionSerial;
   const target = $("composer-model").value;
-  if (!target) return;
-  const existing = modelDownloads.get(target);
-  if (existing && !["done", "confirm"].includes(existing.stage)) {
-    syncComposerControls(); showModelDownload(existing); return;
-  }
-  if (target === health.model) return;
-  if (modelOperationBusy()) {
-    syncComposerControls();
-    toast("warn", tr("model.busy", "Model is busy"), tr("model.switchBusy", "Wait for the current reply or operation to finish."));
-    return;
-  }
-  const row = modelCatalog.find((item) => item.id === target);
+  const row = modelCatalog.find((item) => item.id === target && modelIsSelectable(item));
   syncComposerControls();
-  if (!row) return;
-  if (!row.installed) { await openModelDownload(target); return; }
-  clearDownloadSwitchIntents();
-  // installed only describes the main GGUF, not a complete Gemma/Vision bundle.
-  try {
-    const job = await modelControl(`v1/model/download?model=${encodeURIComponent(target)}`);
-    if (selection !== modelSelectionSerial) return;
-    if (["downloading", "verifying", "loading", "cancelled", "error"].includes(job.state)) {
-      const flow = downloadFlow(target);
-      if (["downloading", "verifying", "loading"].includes(job.state)) await acceptDownloadStatus(flow, job);
-      else { flow.stage = "confirm"; flow.job = job; }
-      showModelDownload(flow);
-      return;
-    }
-  } catch (error) {
-    toast("error", tr("model.switchFailed", "Model switch failed"), error.message, 7000); return;
-  }
+  if (!row || target === health.model || modelOperationBusy() || modelDeleting) return;
+  // Model selection only switches installed files. Downloads belong to Models.
   await requestModelSwitch(target);
 };
 $("composer-effort").onchange = async () => {
@@ -2546,15 +2641,7 @@ function busyHint() {
 const parksWhileBusy = () => settings.whileBusy === "queue" || settings.whileBusy === "interject";
 function setBusy(on) {
   $("stop-btn").hidden = !on;
-  $("send-btn").disabled = modelSwitching || !!resourceOperation || (on && !parksWhileBusy()) || !!panel;
-  $("input").disabled = modelSwitching || !!resourceOperation || !!panel;
-  $("input").placeholder = resourceOperation === "placement" ? tr("resources.applying", "Reloading model…")
-                                         : resourceOperation === "compact" ? tr("resources.compacting", "Summarizing earlier conversation…")
-                                         : modelSwitching ? tr("model.switching", "Switching model…")
-                                         : tr("composer.placeholder", "Talk to TinyStrata");
-  $("composer-hint").textContent = panel ? tr("composer.finishOpen", "Save or cancel what is open above to continue")
-                                         : modelSwitching ? tr("model.switching", "Switching model…")
-                                         : on ? busyHint() : tr("composer.newline", "Shift+Enter: new line");
+  syncComposerInput(on);
   syncActions();                                      // the answer being written has no history controls
   $("s-list").disabled = !!busy || !!resourceOperation || !!panel; // the list changes the messages on the screen
   $("s-compact").disabled = !!busy || !!resourceOperation || !!panel;
@@ -2644,7 +2731,7 @@ function settlePending(cut, finished) {
 
 // the message box (or a parked message, `payload`) becomes a user turn and a reply is asked for
 async function send(payload) {
-  if (modelSwitching || resourceOperation) return;
+  if (modelSwitching || resourceOperation || activeModelNeedsDownload()) return;
   const own = !payload;
   const p = payload || {text: $("input").value.trim(), images: attachments.filter((a) => a.kind !== "file"),
                         files: attachments.filter((a) => a.kind === "file")};
@@ -2665,7 +2752,7 @@ async function send(payload) {
 }
 // an answer for the messages as they are: the last one is a user turn
 async function generateReply() {
-  if (modelSwitching || resourceOperation) return;
+  if (modelSwitching || resourceOperation || activeModelNeedsDownload()) return;
   const m = {role: "assistant", text: "", reasoning: "", model: health.model, time: Date.now(),
              stats: {startedAt: Date.now(), elapsedMs: 0, firstTokenMs: null}};
   messages.push(m);
@@ -3172,6 +3259,7 @@ function showLanguage() {
   renderChat();
   setBusy(!!busy);
   renderModelDownload();
+  renderModelDelete();
   renderLocalToolStatus();
   if (lastMetrics) render(lastMetrics);
 }

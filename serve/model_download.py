@@ -229,6 +229,12 @@ class FixedModelDownloader:
         with self._lock:
             return self._closed
 
+    @property
+    def running(self) -> bool:
+        """Include worker cleanup/activation, not just the displayed phase."""
+        with self._lock:
+            return self._thread is not None and self._thread.is_alive()
+
     def start(self) -> dict:
         with self._lock:
             if self._closed or self._state == "ready" or self._state in self._ACTIVE:

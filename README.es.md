@@ -102,6 +102,8 @@ Para la instalación de solo API, usa `run-api.bat`:
 
 ### Búsqueda y Python en la UI
 
+En la pestaña **Modelos** puedes descargar modelos o eliminar sus archivos descargados. El selector del chat solo muestra modelos instalados. La eliminación requiere confirmación. Cambia a otro modelo antes de eliminar el activo. Se conservan los archivos compartidos que necesita otro modelo.
+
 En una UI nueva, la búsqueda web está **activada por defecto** y usa **DDGS sin clave API** si no hay un proveedor guardado. Desmarca **Búsqueda web**, junto a **Ajustes del chat**, para desactivarla; este navegador conserva la elección después de reiniciar para todos los modelos compatibles. Se mantienen las preferencias de activación, el proveedor y las claves API ya guardados. El proveedor, la clave API y la concurrencia se configuran en esos ajustes. La ejecución de Python en el entorno aislado está siempre disponible cuando el modelo la necesita. Los bloques Python terminados también se pueden ejecutar manualmente con **Ejecutar Python**.
 
 ### Compactación automática del contexto

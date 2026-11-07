@@ -1,0 +1,30 @@
+.view--models { overflow-y: auto; }
+.model-library { width: min(1100px, 100%); margin: 0 auto; padding: 36px 28px; }
+.model-library h1 { margin: 0 0 24px; font-size: 24px; color: var(--st-ink); }
+.model-library-list { border: 1px solid var(--st-line); background: var(--st-surface); }
+.model-library-row { display: grid; grid-template-columns: 38px minmax(150px, 1fr) minmax(96px, auto) 78px auto; gap: 20px; align-items: center; padding: 22px 24px; }
+.model-library-row + .model-library-row { border-top: 1px solid var(--st-line-soft); }
+.model-library-icon { width: 34px; height: 34px; box-sizing: border-box; padding: 3px; object-fit: contain; background: #fff; border-radius: 6px; }
+.model-library-info { min-width: 0; }
+.model-library-info strong { font-size: 16px; font-weight: 600; }
+.model-library-info p { margin: 5px 0 0; color: var(--st-ink-muted); font-size: 12px; line-height: 1.5; }
+.model-library-state { display: grid; gap: 8px; min-width: 0; color: var(--st-ink-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.model-library-row[data-active="true"] .model-library-state { color: var(--st-accent-text); }
+.model-library-state progress { width: 100%; height: 5px; accent-color: var(--st-accent); }
+.model-library-size { color: var(--st-ink-muted); font: 12px var(--st-font-mono); white-space: nowrap; text-align: end; }
+.model-library-actions { display: flex; gap: 8px; justify-content: end; }
+.model-library-actions .st-btn { min-height: 36px; padding: 6px 12px; font-size: 12px; white-space: nowrap; }
+.model-library-error { color: var(--st-danger-text); }
+@media (max-width: 850px) {
+  .model-library-row { grid-template-columns: 34px minmax(110px, 1fr) auto; gap: 12px 16px; padding: 18px; }
+  .model-library-state { grid-column: 2; grid-row: 2; }
+  .model-library-size { grid-column: 3; grid-row: 2; }
+  .model-library-actions { grid-column: 3; grid-row: 1; flex-wrap: wrap; }
+}
+@media (max-width: 520px) {
+  .model-library { padding: 24px 14px; }
+  .model-library-row { grid-template-columns: 28px minmax(0, 1fr); padding: 16px 14px; }
+  .model-library-icon { width: 28px; height: 28px; }
+  .model-library-size { grid-column: 2; grid-row: 3; text-align: start; }
+  .model-library-actions { grid-column: 2; grid-row: 4; justify-content: start; }
+}

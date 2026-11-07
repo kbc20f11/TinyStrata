@@ -79,6 +79,7 @@
 !/tests/q36-topic-policy.cpp
 !/tests/test_expert_learning_environment.py
 !/tests/test_model_profile_identity.py
+!/tests/test_model_library.py
 !/tests/test_native_stdout_decode.py
 !/tests/test_tokenizer_pre_patterns.py
 !/tests/test_tool_closing_tags_stream.py
@@ -143,6 +144,8 @@
 !/ui/python-runtime-LICENSE.txt
 !/ui/python-runtime-NOTICES.txt
 !/ui/web/
+!/ui/web/model-logos/
+!/ui/web/model-logos/*
 !/ui/web/*.html
 !/ui/web/*.css
 !/ui/web/*.js

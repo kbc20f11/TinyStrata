@@ -8,6 +8,7 @@ const formatSource=source.slice(source.indexOf('const numberFormats ='),source.i
 const replyStart=source.indexOf('async function generateReply()');
 const replyEnd=source.indexOf('\n$("composer").onsubmit',replyStart);
 const replySource=source.slice(replyStart,replyEnd);
+const readinessSource=source.slice(source.indexOf('function modelIsSelectable('),source.indexOf('function syncComposerInput('));
 assert(statsSource.includes('terminalStreamStats')&&replySource.includes('stopStatsClock()'));
 let checks=0;
 const ok=(value,label)=>{assert(value,label);checks++;};
@@ -144,7 +145,7 @@ const sample=(generated,more={})=>({generated,tok_s:21,elapsed_s:.5,first_token_
 // ordinary deltas schedule prose paints; stats-only packets never scroll.
 async function streamingFixture({tool=false,cancel=false,legacy=false}={}){
  const f=fixture(),c=f.ctx;let fetches=0,paintCalls=0,scrollCalls=0,telemetryChecks=0;
- c.messages=[];c.busy=null;c.modelSwitching=false;c.resourceOperation=null;c.health={model:'clover-35b-a3b-preview'};
+ c.messages=[];c.busy=null;c.modelSwitching=false;c.modelSwitchAvailable=false;c.modelCatalog=[];c.resourceOperation=null;c.health={model:'clover-35b-a3b-preview'};
  c.settings={temperature:0,mcp:false};c.mcpInfo={tools:0};c.globalTools={max_concurrency:1};c.headers=()=>({});
  c.saveChat=()=>{};c.settlePending=()=>{};c.setBusy=()=>{};c.paintLive=()=>{};c.apiMessages=()=>[];c.effortForModel=()=> 'none';c.projectionLoaded=()=>false;
  c.renderChat=()=>{};c.samplingUntouched=()=>true;c.toast=()=>{};
@@ -176,7 +177,7 @@ async function streamingFixture({tool=false,cancel=false,legacy=false}={}){
    return {done:false,value:new TextEncoder().encode(data)};
   }})}};
  };
- vm.runInContext(replySource,c);await c.generateReply();
+ vm.runInContext(readinessSource+'\n'+replySource,c);await c.generateReply();
  const m=c.messages[0];equal(c.busy,null,'request releases busy state');equal(f.frames.size,0,'all clock/prose frames cancelled on exit');
  if(cancel){ok(m.stopped,'cancelled SSE retained');ok(!m.stats.finalCount,'cancel cannot invent final usage');equal(m.stats.generated,4,'cancel retains last actual native count');}
  else{ok(!m.error,'no stream error: '+m.error);equal(m.stats.generated,tool?11:4,'HTTP local-tool offsets and final aggregate usage');ok(m.stats.finalCount,'final authoritative count saved');equal(m.text,'391','content unchanged by stats');}

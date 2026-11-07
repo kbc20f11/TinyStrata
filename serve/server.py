@@ -5960,7 +5960,7 @@ def make_handler(svc: Service):
         def do_POST(self):
             try:
                 path = self.path.split("?")[0].rstrip("/")
-                control = path in ("/v1/model/switch", "/v1/model/expert-placement", "/v1/model/download", "/v1/model/download/cancel")
+                control = path in ("/v1/model/switch", "/v1/model/expert-placement", "/v1/model/download", "/v1/model/download/cancel", "/v1/model/delete")
                 with svc.models.admit() if svc.models is not None and not control else contextlib.nullcontext():
                     self._post()
             except ModelControlError as e:
@@ -6032,6 +6032,16 @@ def make_handler(svc: Service):
                     else:
                         state = svc.models.start(req["model"])
                         self._json(202 if state["switching"] else 200, state)
+                    return
+                if path == "/v1/model/delete":
+                    if not self._own_page("managed model files can be deleted"):
+                        return
+                    if set(req) != {"model"}:
+                        raise ValueError("send a JSON object containing only model")
+                    if svc.models is None:
+                        self._json(404, {"error": {"message": "model management is not configured"}})
+                    else:
+                        self._json(200, svc.models.delete(req["model"]))
                     return
                 if path in ("/v1/model/download", "/v1/model/download/cancel"):
                     if not self._own_page("the fixed model can be downloaded or its download cancelled"):

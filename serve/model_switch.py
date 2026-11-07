@@ -153,8 +153,12 @@ class ModelSwitcher:
 
     def catalog(self):
         with self._lock:
+            from serve.model_library import inventory
             items = []
-            for row in self.profiles.list():
+            rows = self.profiles.list()
+            peers = tuple(self.profiles.get(row['id']) for row in rows)
+            conflict = self._library_conflict()
+            for row in rows:
                 model = row['id']
                 active = model == self.active_id
                 loaded = active and not self._busy and self.svc.loaded()
@@ -162,14 +166,76 @@ class ModelSwitcher:
                 if self._busy and model == self._target:
                     value = 'loading'
                 context = self.context_info(model)
+                management = inventory(self.profiles.get(model), peers).management
+                if active:
+                    management.update(can_delete=False, delete_reason='active')
+                elif conflict and management['can_delete']:
+                    management.update(can_delete=False, delete_reason=conflict)
+                if conflict:
+                    management['can_download'] = False
                 items.append({'id': model, 'arch': row['arch'], 'installed': row['installed'],
                               'object': 'model', 'active': active,
                               'status': {'value': value},
                               'architecture': {'input_modalities': ['text', 'image'] if row['vision'] else ['text'],
                                                'output_modalities': ['text']},
                               'context': context,
+                              'management': management,
                               'meta': {'n_ctx': context['allocated_tokens'] or 0}})
             return items
+
+    def _library_conflict(self):
+        if self._busy or self._requests:
+            return 'busy'
+        if any(manager.status().get('state') in ('downloading', 'verifying', 'loading') or
+               getattr(manager, 'running', False) is True for manager in self._downloads.values()):
+            return 'downloading'
+        return None
+
+    def delete(self, model):
+        """Remove only an inactive model's explicit managed artifact manifest."""
+        from serve.model_library import delete_files, inventory
+        target = self.profiles.resolve(model)
+        with self._lock:
+            self._open()
+            if target == self.active_id:
+                raise ModelControlError(409, 'switch to another model before deleting this model, even if it is unloaded')
+            conflict = self._library_conflict()
+            if conflict:
+                raise ModelControlError(409, 'a model request, switch or download is running; retry after it finishes')
+            # Acquire without waiting while holding the controller lock. Normal
+            # non-HTTP lifecycle work uses the same FIFO/install lock order.
+            if not self.svc.fifo.acquire(blocking=False):
+                raise ModelControlError(409, 'the model is busy')
+            install = getattr(self.svc, 'install_lock', None)
+            locked = False
+            try:
+                if install is not None:
+                    locked = install.acquire(blocking=False)
+                    if not locked:
+                        raise ModelControlError(409, 'a model installation is running')
+                peers = tuple(self.profiles.get(row['id']) for row in self.profiles.list())
+                plan = inventory(self.profiles.get(target), peers)
+                if not plan.management['can_delete']:
+                    reason = plan.management['delete_reason']
+                    raise ModelControlError(400, {'custom': 'custom local model files are not deleted by the model library',
+                        'unsafe_path': 'model files contain an unsafe or unreadable path; no files were deleted',
+                        'shared': 'another model profile references these model weights',
+                        'not_downloaded': 'there are no managed model files to delete'}.get(reason, 'this model cannot be deleted'))
+                # Retire verified-path caches before removal too: a partial
+                # filesystem failure must still permit a fresh repair/download.
+                manager = self._downloads.pop(target, None)
+                if manager is not None:
+                    manager.close()
+                try:
+                    removed = delete_files(plan)
+                except (OSError, ValueError) as error:
+                    raise ModelControlError(500, f'managed model removal failed: {error}') from None
+                return {'model_id': target, 'deleted_bytes': removed,
+                        'retained_shared_bytes': plan.management['shared_bytes'], 'catalog': self.catalog()}
+            finally:
+                if locked:
+                    install.release()
+                self.svc.fifo.release()
 
     def start(self, model) -> dict:
         target = self.profiles.resolve(model)

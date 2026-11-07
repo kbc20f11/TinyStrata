@@ -102,6 +102,8 @@ Für die reine API-Installation verwenden Sie `run-api.bat`:
 
 ### UI-Suche und Python
 
+Im Tab **Modelle** können Sie Modelle herunterladen oder ihre heruntergeladenen Dateien entfernen. Die Modellauswahl im Chat zeigt nur installierte Modelle. Vor dem Löschen ist eine Bestätigung erforderlich. Wechseln Sie zu einem anderen Modell, bevor Sie das aktive löschen. Gemeinsam genutzte Dateien, die ein anderes Modell benötigt, bleiben erhalten.
+
 In einer neuen UI ist die Websuche **standardmäßig eingeschaltet**. Ohne gespeicherten Suchanbieter wird **DDGS ohne API-Schlüssel** verwendet. Über das Kontrollkästchen **Websuche** neben **Chat-Einstellungen** lässt sie sich ausschalten; dieser Browser behält die Auswahl auch nach Neustarts für alle unterstützten Modelle bei. Bereits gespeicherte Ein-/Aus-Einstellungen, Suchanbieter und API-Schlüssel bleiben erhalten. Suchanbieter, API-Schlüssel und Parallelität werden in den Chat-Einstellungen festgelegt. Python im isolierten Browserbereich steht dem Modell bei Bedarf immer zur Verfügung. Fertig generierte Python-Codeblöcke lassen sich auch über **Python ausführen** manuell starten.
 
 ### Automatische Kontextkomprimierung

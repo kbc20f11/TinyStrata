@@ -1,0 +1,53 @@
+{
+  "fetched_date": "2026-11-07",
+  "purpose": "Local model/provider identification only; no endorsement implied.",
+  "assets": [
+    {
+      "file": "qwen.png",
+      "represents": "Qwen model family",
+      "source_page": "https://github.com/QwenLM/qwenlm.github.io",
+      "source_url": "https://raw.githubusercontent.com/QwenLM/qwenlm.github.io/1f89f8c81adb85e3808f9cc15180ab1fdacbb900/static/favicon/android-chrome-192x192.png",
+      "revision": "1f89f8c81adb85e3808f9cc15180ab1fdacbb900",
+      "license": "Official Qwen site artwork; no separate asset license supplied. Brand rights remain with its owner.",
+      "sha256": "f7c6bc23edfb85a522473f2473b358dbd9d7e85e889873bdda1233d9b7c03f4b",
+      "modifications": "None; copied original bytes."
+    },
+    {
+      "file": "gemma.svg",
+      "represents": "Gemma model family",
+      "source_page": "https://github.com/google-deepmind/gemma/blob/9e1f74131ba9d45e5fe6ae7bb3941d9f2abb39c3/docs/images/icon.svg",
+      "source_url": "https://raw.githubusercontent.com/google-deepmind/gemma/9e1f74131ba9d45e5fe6ae7bb3941d9f2abb39c3/docs/images/icon.svg",
+      "revision": "9e1f74131ba9d45e5fe6ae7bb3941d9f2abb39c3",
+      "license": "Apache-2.0 repository license; see gemma-LICENSE.txt. Brand/trademark rights are retained.",
+      "sha256": "32f303f34d5b32db3a5bea76f850b6a0b127cd7490abb54d89679e95e0aa1ed6",
+      "modifications": "None; copied original bytes."
+    },
+    {
+      "file": "liquid.png",
+      "represents": "Liquid AI provider brand for LFM",
+      "source_page": "https://www.liquid.ai/",
+      "source_url": "https://www.liquid.ai/icon.png",
+      "revision": null,
+      "license": "Official Liquid AI site artwork; no separate asset license supplied. Brand rights remain with its owner.",
+      "display": "Unchanged black/transparent artwork, displayed on a white badge for contrast.",
+      "sha256": "30e5f9d94551a520884effacbd68da5ba148807221dd65504887806ef5623dcf",
+      "modifications": "None; copied original bytes."
+    },
+    {
+      "file": "diffuspace.jpg",
+      "represents": "DiffuSpace provider brand for Clover",
+      "source_page": "https://github.com/DiffuSpace/Clover-35B-A3B-Preview",
+      "source_url": "https://avatars.githubusercontent.com/u/277593146?v=4",
+      "revision": null,
+      "license": "Official DiffuSpace organization avatar; no separate asset license supplied. Do not infer an artwork license from the model-weight license.",
+      "sha256": "5e158a23474211644c2759a7958d7ab51447191d35a36598f958d737a2aa3192",
+      "modifications": "None; copied original bytes."
+    }
+  ],
+  "fallback": {
+    "model": "tiel-coder-35b-a3b",
+    "file": "../model-icons.svg",
+    "source": "Existing TinyStrata ui/web/sprite.svg i-layers glyph, covered by the existing upstream Strata MIT attribution.",
+    "reason": "The official model-card asset set reviewed at bb5f3f441849fc24c2d9037c310bc995404bfa0c contains a composite Tiel banner but no standalone icon asset. A generic model glyph is used; no invented brand mark."
+  }
+}
