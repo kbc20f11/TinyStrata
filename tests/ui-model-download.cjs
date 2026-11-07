@@ -237,7 +237,7 @@ async function workerRegressions(){
 
  f=fixture();f.t.install(IDS[1]);f.t.library();f.t.openDelete(IDS[0]);
  ok(!f.element('model-delete-dialog').open&&posts(f,'v1/model/delete').length===0,'active model cannot enter delete confirmation');
- f.t.openDelete(IDS[1]);ok(f.element('model-delete-dialog').open&&f.element('model-delete-title').textContent==='Delete Gemma 4?'&&f.element('model-delete-size').textContent==='1.00 GB','delete confirmation contains only model and reclaimable size');
+ f.t.openDelete(IDS[1]);ok(f.element('model-delete-dialog').open&&f.element('model-delete-title').textContent==='Delete Gemma 4?'&&f.element('model-delete-size').textContent==='The model files for Gemma 4 (1.00 GB) will be deleted.','delete confirmation explains the model files and reclaimable size');
  f.t.dismissDelete();ok(posts(f,'v1/model/delete').length===0,'delete cancellation is mutation-free');
  f.t.openDelete(IDS[1]);f.backend.nextError=Object.assign(Error('busy'),{status:409});await f.t.delete();
  ok(f.element('model-delete-dialog').open&&f.element('model-delete-error').textContent==='busy'&&f.t.catalog().find(r=>r.id===IDS[1]).installed,'rejected delete keeps files/catalog and exposes the error');
@@ -281,7 +281,7 @@ async function workerRegressions(){
  ok(f.element('s-web-search').disabled&&f.element('s-apply').disabled,'resource operation keeps request settings stable');
  await f.t.open(IDS[1]);
  ok(posts(f,'v1/model/switch').length===0,'a resource operation cannot race a model switch');
- const required=[...snippet.matchAll(/tr\("(model\.download[^\"]+)"/g)].map(m=>m[1]);
+ const required=[...snippet.matchAll(/tr\("(model\.download[^\"]+|models\.deleteDescription(?:Size)?)"/g)].map(m=>m[1]);
  for(const name of fs.readdirSync(localeDirectory)){
    if(!name.endsWith('.json'))continue;
    const locale=JSON.parse(fs.readFileSync(path.join(localeDirectory,name),'utf8'));

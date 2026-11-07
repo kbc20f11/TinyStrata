@@ -1171,9 +1171,12 @@ function renderModelLibrary() {
 function renderModelDelete() {
   const row = modelCatalog.find((item) => item.id === modelDeleteTarget);
   if (!row) return;
-  $("model-delete-title").textContent = tr("models.deleteTitle", "Delete {model}?", {model: modelNames[row.id] || row.id});
+  const model = modelNames[row.id] || row.id;
+  $("model-delete-title").textContent = tr("models.deleteTitle", "Delete {model}?", {model});
   const bytes = row.management?.reclaimable_bytes;
-  $("model-delete-size").textContent = Number.isFinite(bytes) ? downloadSize(bytes) : "";
+  $("model-delete-size").textContent = Number.isFinite(bytes)
+    ? tr("models.deleteDescriptionSize", "The model files for {model} ({size}) will be deleted.", {model, size: downloadSize(bytes)})
+    : tr("models.deleteDescription", "The model files for {model} will be deleted.", {model});
   $("model-delete-error").textContent = modelDeleteError;
   $("model-delete-error").hidden = !modelDeleteError;
   $("model-delete-cancel").disabled = !!modelDeleting;
