@@ -93,7 +93,7 @@ function applyTheme() {
     button.setAttribute("aria-checked", String(selected));
     button.tabIndex = selected ? 0 : -1;
   }
-  document.querySelector('meta[name="theme-color"]').content = t === "dark" ? "#040b08" : "#f4faf5";
+  document.querySelector('meta[name="theme-color"]').content = t === "dark" ? "#040b08" : "#fafbf8";
   refreshPreviews();                                  // the preview frames carry the page's colours
   if (typeof StrataDiagrams !== "undefined") StrataDiagrams.refresh();
 }

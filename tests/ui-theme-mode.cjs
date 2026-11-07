@@ -90,7 +90,7 @@ for(const dark of [false,true]){
  equal(f.meta.content,'#040b08','browser theme colour follows manual dark');
  f.buttons[0].onclick();equal(f.mode(),'system','OS follow can be restored explicitly');
  f.os(false);equal(f.doc.documentElement.dataset.theme,'light','OS-follow mode responds to a new light preference');
- equal(f.meta.content,'#f4faf5','browser theme colour follows resolved light');
+ equal(f.meta.content,'#fafbf8','browser theme colour follows resolved light');
  equal(f.data.get('strata.themeMode'),'"system"','OS events do not turn system mode into a saved manual colour');
  ok(f.previews()>before&&f.diagrams()===f.previews(),'code previews and diagrams refresh together on real theme application');
 }
