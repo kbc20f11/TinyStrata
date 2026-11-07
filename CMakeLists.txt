@@ -239,6 +239,11 @@ target_include_directories(q36_chunk_policy_test PRIVATE include)
 add_executable(q36_suffix_lookup_test EXCLUDE_FROM_ALL tests/q36-suffix-lookup.cpp)
 target_include_directories(q36_suffix_lookup_test PRIVATE include)
 
+add_executable(qwen_draft_policy_test EXCLUDE_FROM_ALL tests/qwen-draft-policy.cpp)
+target_include_directories(qwen_draft_policy_test PRIVATE include)
+add_executable(gemma_draft_policy_test EXCLUDE_FROM_ALL tests/gemma-draft-policy.cpp)
+target_include_directories(gemma_draft_policy_test PRIVATE include)
+
 if(STRATA_ENABLE_CUDA)
   add_executable(q36_gdn_chain_test EXCLUDE_FROM_ALL tests/q36-gdn-chain.cu)
   target_include_directories(q36_gdn_chain_test PRIVATE include src/qwen35)

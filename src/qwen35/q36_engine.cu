@@ -33,6 +33,7 @@
 #include "clover_diffusion.cuh"
 #include "strata/qwen35/clover_decode.hpp"
 #include "strata/qwen35/suffix_lookup.hpp"
+#include "strata/qwen35/draft_policy.hpp"
 #include "strata/qwen35/clover_diffusion.hpp"
 #include "strata/qwen35/attention.cuh"
 #include "strata/qwen35/clover_attention.cuh"
@@ -1381,6 +1382,8 @@ struct Engine {
     __half* x16 = nullptr;
     bool use_graph = true;
     int mtp_d = 0;   // MTP drafts per speculative step (0: none)
+    bool mtp_auto = false;
+    int lookup_draft = 0;
     std::vector<int32_t> mtp_pending;   // accepted rows needing the main model's hidden states on a later MTP pass
     bool mtp_sampled_pending = false;
     bool expert_auto = true;
@@ -1465,6 +1468,7 @@ struct Engine {
     static constexpr int kRebalanceEvery = 32;
     bool rows_deferred = false;          // set while a decode step or a verify window runs
     bool lookup_verifying = false;
+    bool draft_compatibility = false;
     std::vector<std::vector<int32_t>> row_ids;   // [main layer][row * top_k + k] of the last such call
     void count_expert(size_t li, size_t e, uint64_t hits = 1) {
         Hy& H = hy[li];
@@ -3011,7 +3015,7 @@ struct Engine {
         std::map<int, size_t> open;   // expert -> its job with room
         // A user may keep the original singleton GGML dot (MT_MIN > 1).
         // Lookup must not switch that arithmetic merely by grouping proposals.
-        const bool singleton = lookup_verifying && C::native_gu_mt_min(H.fmt.gu_type) > 1;
+        const bool singleton = (lookup_verifying || draft_compatibility) && C::native_gu_mt_min(H.fmt.gu_type) > 1;
         const bool defer = rows_deferred && li < m->layers.size();
         const bool compact = cpu_compact_enabled && !graph_service && !recording_hybrid &&
             fast_k && !verify_k && !clover_preview && T >= 1 && T <= 8 && N == 2048 && Kp == 8;
@@ -3903,6 +3907,64 @@ struct Engine {
                            (size_t) m->g.n_embd * sizeof(float), cudaMemcpyDeviceToDevice, st));
         pos += accepted + 1;
         after_rows(accepted + 1);
+        return accepted;
+    }
+
+    // Resolve the preceding MTP window before another main forward replaces its seed rows.
+    void repair_lookup_mtp() {
+        if (!m->has_mtp || mtp_d <= 0 || mtp_pending.empty()) return;
+        const int T = (int) mtp_pending.size(), N = (int) m->g.n_embd;
+        CK(cudaStreamSynchronize(st));
+        std::copy(mtp_pending.begin(), mtp_pending.end(), hpin + 16);
+        hpin[1] = (int32_t) (pos - T);
+        CK(cudaMemcpyAsync(tok_m, hpin + 16, (size_t) T * 4, cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(pos0_m, hpin + 1, 4, cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(mtp_seed(), hmain, (size_t) T * N * 4, cudaMemcpyDeviceToDevice, st));
+        forward_mtp(T, pos - T, mtp_seed(), false, false);
+        CK(cudaStreamSynchronize(st));
+        mtp_pending.clear();
+        mtp_sampled_pending = false;
+    }
+
+    template <class Verify>
+    int qwen_lookup_step_with(int anchor, const std::vector<int32_t>& drafts, int32_t* picks, Verify verify) {
+        const int T = (int) drafts.size() + 1, N = (int) m->g.n_embd;
+        if (m->clover || drafts.empty() || T > verify_capacity || pos + T > ctx)
+            throw std::invalid_argument("Invalid Qwen lookup window");
+        struct Restore {
+            Engine& e; bool old;
+            ~Restore() { e.draft_compatibility = old; e.rows_deferred = false; }
+        } restore{*this, draft_compatibility};
+        draft_compatibility = true;
+        repair_lookup_mtp();
+        ensure_kv(pos + T);
+        CK(cudaStreamSynchronize(st));
+        hpin[1] = (int32_t) pos;
+        hpin[16] = anchor;
+        std::copy(drafts.begin(), drafts.end(), hpin + 17);
+        CK(cudaMemcpyAsync(tok, hpin + 16, (size_t) T * 4, cudaMemcpyHostToDevice, st));
+        CK(cudaMemcpyAsync(pos0, hpin + 1, 4, cudaMemcpyHostToDevice, st));
+        rows_deferred = true;
+        graph_run(gv[T], [&] { forward(T, pos, T, use_graph, true); }, T);
+        rows_deferred = false;
+        const int accepted = verify(T, drafts, picks), kept = accepted + 1;
+        commit(kept);
+        // The anchor's seed is still the old hlast. Subsequent seeds are this window's main hidden rows.
+        if (m->has_mtp && mtp_d > 0) {
+            CK(cudaMemcpyAsync(mtp_seed(), hlast, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
+            if (kept > 1)
+                CK(cudaMemcpyAsync(mtp_seed() + N, hmain, (size_t) (kept - 1) * N * 4, cudaMemcpyDeviceToDevice, st));
+            hpin[16] = anchor;
+            std::copy_n(drafts.begin(), accepted, hpin + 17);
+            CK(cudaMemcpyAsync(tok_m, hpin + 16, (size_t) kept * 4, cudaMemcpyHostToDevice, st));
+            CK(cudaMemcpyAsync(pos0_m, pos0, 4, cudaMemcpyDeviceToDevice, st));
+            forward_mtp(kept, pos, mtp_seed(), false, false);
+            mtp_pending.clear();
+            mtp_sampled_pending = false;
+        }
+        CK(cudaMemcpyAsync(hlast, hmain + (size_t) accepted * N, (size_t) N * 4, cudaMemcpyDeviceToDevice, st));
+        pos += kept;
+        after_rows(kept);
         return accepted;
     }
 
@@ -4844,6 +4906,8 @@ int serve(Engine& E) {
                 E.clover_accept.c_str(), (double) E.clover_accept_ratio, (double) E.clover_accept_delta,
                 E.clover_draft_penalty_gpu ? 1 : 0, E.clover_gpu_exact_verify ? 1 : 0, E.clover_query_tile);
     E.print_kv_info();
+    if (!E.m->clover)
+        std::printf("INFO mtp_auto=%d lookup_draft=%d\n", E.mtp_auto ? 1 : 0, E.lookup_draft);
     std::printf("INFO q36_gdn_chain=%d q36_gdn_chain_eligible_layers=%d\n",
                 E.gdn_chain_enabled ? 1 : 0, E.gdn_chain_eligible_layers());
 #if !defined(__HIPCC__) && !defined(STRATA_USE_HIP)
@@ -4887,6 +4951,15 @@ int serve(Engine& E) {
     std::vector<int32_t> turn_ids;
     Engine::TurnState turn_state; // one recent turn; bounded RAM, no duplicate full KV cache
     std::vector<float> lg;
+    // Cost evidence belongs to the serving engine, rather than a single GEN.
+    // Keep it for repeats/continuations; reset when the prompt, sampler or
+    // physical execution regime changes. No target sampling state lives here.
+    std::unique_ptr<strata::qwen35::DraftDepthPolicy> qwen_mtp_policy;
+    strata::qwen35::LookupDraftGate qwen_lookup_gate;
+    std::vector<int32_t> qwen_policy_prefix;
+    std::array<float, 6> qwen_policy_sampling{};
+    std::array<int64_t, 8> qwen_policy_geometry{};
+    bool qwen_policy_valid = false;
     for (;;) {
         std::string line;
         {
@@ -4923,6 +4996,8 @@ int serve(Engine& E) {
         // A request may select a smaller/larger self-draft window without
         // reloading weights or changing the configured default. The benchmark
         // harness uses this native-protocol key to compare the same cache.
+        int request_mtp_auto = E.mtp_auto ? 1 : 0;
+        int request_lookup_draft = E.lookup_draft;
         int request_clover_draft = E.clover_draft;
         int request_clover_lookup = E.clover_lookup;
         std::string request_clover_mode = E.clover_mode;
@@ -4953,6 +5028,13 @@ int serve(Engine& E) {
             else if (key == "seed") smp.seed = std::strtoull(v, nullptr, 10);
             else if (key == "turn_at") turn_at = std::strtoll(v, nullptr, 10);
             else if (key == "ckpt") checkpoint = std::atoi(v) != 0;
+            else if (key == "mtp_auto" || key == "lookup_draft") {
+                char* end = nullptr;
+                const long parsed = std::strtol(v, &end, 10);
+                const int maximum = key == "mtp_auto" ? 1 : 7;
+                const int value = end == v || *end || parsed < 0 || parsed > maximum ? -1 : (int) parsed;
+                (key == "mtp_auto" ? request_mtp_auto : request_lookup_draft) = value;
+            }
             else if (key == "clover_lookup") {
                 char* end = nullptr;
                 const long parsed = std::strtol(v, &end, 10);
@@ -4988,6 +5070,15 @@ int serve(Engine& E) {
                 const float checked = end == v || *end || !std::isfinite(parsed) || parsed < 0 || parsed > 1 ? -1.f : parsed;
                 (key == "clover_accept_ratio" ? request_clover_accept_ratio : request_clover_accept_delta) = checked;
             }
+        }
+        if (request_mtp_auto < 0 || request_lookup_draft < 0 ||
+            ((request_mtp_auto || request_lookup_draft) && E.m->clover) ||
+            (request_mtp_auto && (!E.m->has_mtp || E.mtp_d < 1))) {
+            std::printf("ERR mtp_auto takes 0|1 with a Qwen MTP head; lookup_draft takes 0..7 for Qwen\n");
+            std::fflush(stdout); continue;
+        }
+        if (request_lookup_draft > 0 && (size_t) E.ctx + 64 > strata::qwen35::SuffixLookup::kMaxCapacity) {
+            std::printf("ERR lookup_draft context exceeds lookup capacity\n"); std::fflush(stdout); continue;
         }
         if (request_clover_draft < 0) {
             std::printf("ERR clover_draft takes 0 .. 31\n"); std::fflush(stdout); continue;
@@ -5089,6 +5180,10 @@ int serve(Engine& E) {
         const auto image_prefix = [&](size_t end) {
             return V::same_prefix(E.image_input, image_input, end, (int) E.m->g.n_embd);
         };
+        // A different image can have exactly the same image-pad IDs.
+        const bool policy_image_match = !qwen_policy_valid ||
+            image_prefix(std::min(qwen_policy_prefix.size(), ids.size()));
+        if (!request_mtp_auto && !request_lookup_draft) qwen_policy_valid = false;
         if (live.size() < ids.size() && std::equal(live.begin(), live.end(), ids.begin()) &&
             image_prefix(live.size())) reuse = live.size();
         else if (!turn_ids.empty() &&
@@ -5197,6 +5292,33 @@ int serve(Engine& E) {
         }
         long long produced = 0, offered = 0, accepted = 0;
         long long lookup_rounds = 0, lookup_fallbacks = 0;
+        std::unique_ptr<strata::qwen35::SuffixLookup> qwen_lookup;
+        if (request_lookup_draft > 0) {
+            qwen_lookup = std::make_unique<strata::qwen35::SuffixLookup>(3, 64, (size_t) E.ctx + 64);
+            qwen_lookup->rebuild(ids.data(), ids.size());
+        }
+        if (!E.m->clover && (request_mtp_auto || request_lookup_draft)) {
+            const std::array<float, 6> sampling{ smp.temperature, smp.top_p, smp.min_p, smp.repeat, smp.freq, smp.present };
+            int64_t slots = 0;
+            for (const Layer& layer : E.m->layers) slots += layer.n_slots;
+            if (E.m->has_mtp) slots += E.m->mtp.n_slots;
+            const std::array<int64_t, 8> geometry{ E.mtp_d, request_mtp_auto, request_lookup_draft,
+                E.pos / 4096, E.kv_committed_rows, slots, smp.top_k, smp.last_n };
+            const bool same_prompt = qwen_policy_prefix.size() <= ids.size() &&
+                std::equal(qwen_policy_prefix.begin(), qwen_policy_prefix.end(), ids.begin());
+            if (!qwen_policy_valid || !same_prompt || !policy_image_match ||
+                sampling != qwen_policy_sampling || geometry != qwen_policy_geometry) {
+                qwen_mtp_policy = std::make_unique<strata::qwen35::DraftDepthPolicy>(E.mtp_d);
+                qwen_lookup_gate = strata::qwen35::LookupDraftGate{};
+                qwen_policy_sampling = sampling;
+                qwen_policy_geometry = geometry;
+                qwen_policy_valid = true;
+            }
+            qwen_policy_prefix = ids;
+        }
+        auto* mtp_policy = request_mtp_auto ? qwen_mtp_policy.get() : nullptr;
+        std::array<long long, 8> qwen_depth_rounds{};
+        long long qwen_lookup_rounds = 0, qwen_lookup_accepted = 0;
         const char* finish = "length";
         E.clover_blocks = E.clover_passes = 0;
         E.clover_preview_ms = E.clover_replay_ms = 0;
@@ -5327,6 +5449,7 @@ int serve(Engine& E) {
                 ++produced;
                 hist.push_back(t);
                 if (lookup) lookup->append(t);
+                if (qwen_lookup) qwen_lookup->append(t);
                 if (gpu_spec_counts && t >= 0 && t < E.m->g.n_vocab) ++spec_counts[(size_t) t];
                 if (is_eos(t)) { finish = "stop"; return false; }
                 if (produced >= max_new) return false;
@@ -5437,13 +5560,78 @@ int serve(Engine& E) {
                 nx = picks[a];
                 continue;
             }
-            if (spec && (sampled || E.pos + E.mtp_d + 1 <= E.ctx)) {
+            if (qwen_lookup) {
+                const int64_t lookahead = E.mtp_d > 0 ? E.mtp_d + 64 : 65;
+                const int64_t before_growth = E.kv_grow && E.kv_committed_rows < E.ctx
+                    ? E.kv_committed_rows - E.pos - lookahead : request_lookup_draft;
+                const int maximum = E.int8_fdec_enabled ? std::min(request_lookup_draft, 3) : request_lookup_draft;
+                const int budget = (int) std::max<int64_t>(0, std::min<int64_t>({maximum, E.verify_capacity - 1,
+                    before_growth, E.ctx - E.pos - 1, max_new - produced - 1,
+                    E.main_hybrid ? Engine::kRebalanceEvery - E.pos % Engine::kRebalanceEvery - 1 : maximum}));
+                drafts.resize((size_t) budget);
+                int count = qwen_lookup->propose(budget, drafts.data());
+                if (qwen_lookup->last_match() < 8) count = std::min(count, 3);
+                drafts.resize((size_t) count);
+                if (count > 0 && qwen_lookup_gate.choose()) {
+                    const int T = count + 1;
+                    const bool recorded = E.use_graph && !E.gv[T] &&
+                        (!E.hybrid_graph || (T <= Engine::kVerify && T <= E.hybrid_t));
+                    const auto began = Clock::now();
+                    std::vector<int32_t> row_history = hist;
+                    const int a = E.qwen_lookup_step_with(nx, drafts, picks,
+                        [&](int rows, const std::vector<int32_t>& proposed, int32_t* selected) {
+                            if (!sampled) {
+                                CK(cudaMemcpyAsync(E.hpin + 2, E.pick, (size_t) rows * 4, cudaMemcpyDeviceToHost, E.st));
+                                CK(cudaStreamSynchronize(E.st));
+                                return strata::qwen35::speculative_sampling::select_prefix(proposed.data(), rows - 1, selected,
+                                    [&](int row) { return E.hpin[2 + row]; },
+                                    [&](int token) { return is_eos(token) || stop.load(); });
+                            }
+                            verify_rows.resize((size_t) rows * E.m->g.n_vocab);
+                            CK(cudaMemcpyAsync(verify_rows.data(), E.logits, verify_rows.size() * 4, cudaMemcpyDeviceToHost, E.st));
+                            CK(cudaStreamSynchronize(E.st));
+                            return strata::qwen35::speculative_sampling::select_prefix(proposed.data(), rows - 1, selected,
+                                [&](int row) {
+                                    if (row) row_history.push_back(proposed[(size_t) row - 1]);
+                                    lg.assign(verify_rows.data() + (size_t) row * E.m->g.n_vocab,
+                                              verify_rows.data() + (size_t) (row + 1) * E.m->g.n_vocab);
+                                    return sample(lg, smp, row_history, rng);
+                                }, [&](int token) { return is_eos(token) || stop.load(); });
+                        });
+                    CK(cudaStreamSynchronize(E.st));
+                    qwen_lookup_gate.observe(true, a + 1, count, a, ms_since(began), recorded);
+                    ++qwen_lookup_rounds; qwen_lookup_accepted += a;
+                    offered += count; accepted += a;
+                    live.push_back(nx);
+                    live.insert(live.end(), drafts.begin(), drafts.begin() + a);
+                    kv_usage.publish((int64_t) live.size());
+                    fix.clear();
+                    for (int i = 0; i < a; ++i) if (!emit(drafts[(size_t) i])) { done = true; break; }
+                    nx = picks[a];
+                    continue;
+                }
+            }
+            if (spec && (sampled || request_mtp_auto || E.pos + E.mtp_d + 1 <= E.ctx)) {
                 int a;
+                const bool measured = request_mtp_auto || request_lookup_draft > 0;
+                if (measured && E.pos >= E.ctx) break;
+                int chosen_depth = mtp_policy ? mtp_policy->choose() : E.mtp_d;
+                if (measured) {
+                    chosen_depth = (int) std::max<int64_t>(0, std::min<int64_t>({chosen_depth,
+                        E.ctx - E.pos - 1, max_new - produced - 1,
+                        E.main_hybrid ? Engine::kRebalanceEvery - E.pos % Engine::kRebalanceEvery - 1 : chosen_depth}));
+                    // A depth probe must not change when the configured baseline grows KV or moves Experts.
+                    E.ensure_kv(std::min<int64_t>(E.ctx, E.pos + E.mtp_d + 64));
+                }
+                const bool recorded = measured && E.use_graph &&
+                    ((!E.gv[chosen_depth + 1] && (!E.hybrid_graph || chosen_depth + 1 <= E.hybrid_t)) ||
+                     (chosen_depth > 1 && E.mtp_graph && !E.gm1));
+                const auto began = measured ? Clock::now() : Clock::time_point{};
                 if (sampled) {
                     // Leave room for the returned next token. In particular,
                     // max_new=2 verifies only nx (D=0), rather than sampling a
                     // speculative tail that can never be emitted.
-                    const int D = (int) std::min<long long>(E.mtp_d,
+                    const int D = (int) std::min<long long>(chosen_depth,
                         std::min<long long>(E.ctx - E.pos - 1, max_new - produced - 1));
                     std::vector<int32_t> row_history = hist;   // already includes nx
                     a = E.sampled_spec_step(nx, fix, D, drafts, picks, verify_rows,
@@ -5452,7 +5640,14 @@ int serve(Engine& E) {
                             lg.assign(logits, logits + (size_t) E.m->g.n_vocab);
                             return sample(lg, smp, row_history, rng);
                         }, [&](int token) { return is_eos(token) || stop.load(); });
-                } else a = E.spec_step(nx, fix, E.mtp_d, drafts, picks);
+                } else a = E.spec_step(nx, fix, chosen_depth, drafts, picks);
+                if (measured) {
+                    CK(cudaStreamSynchronize(E.st));
+                    const double elapsed = ms_since(began);
+                    ++qwen_depth_rounds[drafts.size()];
+                    if (mtp_policy) mtp_policy->observe((int) drafts.size(), a, elapsed, recorded);
+                    qwen_lookup_gate.observe(false, a + 1, (int) drafts.size(), a, elapsed, recorded);
+                }
                 offered += (long long) drafts.size();
                 accepted += a;
                 // As in Strata's Flash-Next consumed-history bookkeeping:
@@ -5472,7 +5667,14 @@ int serve(Engine& E) {
             }
             if (E.pos + 1 > E.ctx) break;
             const int32_t one = nx;
-            E.process(&one, 1, [](int64_t) {});
+            const bool measured = request_mtp_auto || request_lookup_draft > 0;
+            const bool recorded = measured && E.use_graph && !E.g1;
+            const auto began = measured ? Clock::now() : Clock::time_point{};
+            E.process(&one, 1, [](int64_t) {}, measured);
+            if (measured) {
+                CK(cudaStreamSynchronize(E.st));
+                qwen_lookup_gate.observe(false, 1, 0, 0, ms_since(began), recorded);
+            }
             live.push_back(nx);
             kv_usage.publish((int64_t) live.size());
             fix.clear();
@@ -5490,6 +5692,22 @@ int serve(Engine& E) {
             return 1;
         }
         const double decode_ms = ms_since(d0);
+        if (!E.m->clover)
+            std::printf("INFO qwen_last_mtp_auto=%d qwen_last_lookup_draft=%d qwen_lookup_rounds=%lld "
+                        "qwen_lookup_accepted=%lld qwen_mtp_d0_rounds=%lld qwen_mtp_d1_rounds=%lld qwen_mtp_max_rounds=%lld\n",
+                        request_mtp_auto, request_lookup_draft, qwen_lookup_rounds, qwen_lookup_accepted,
+                        qwen_depth_rounds[0], qwen_depth_rounds[1], qwen_depth_rounds[E.mtp_d]);
+        if (mtp_policy) {
+            const auto& d0 = mtp_policy->rate(0);
+            const auto& d1 = mtp_policy->rate(1);
+            const auto& dm = mtp_policy->rate(E.mtp_d);
+            std::printf("INFO qwen_auto_leader=%d qwen_auto_probes=%llu qwen_auto_d0_samples=%d "
+                        "qwen_auto_d0_tok_s=%.3f qwen_auto_d1_samples=%d qwen_auto_d1_tok_s=%.3f "
+                        "qwen_auto_max_samples=%d qwen_auto_max_tok_s=%.3f qwen_auto_max_acceptance=%.6f\n",
+                        mtp_policy->leader(), mtp_policy->probes(), d0.samples, 1000 * d0.rate(),
+                        d1.samples, 1000 * d1.rate(), dm.samples, 1000 * dm.rate(),
+                        dm.offered > 0 ? dm.accepted / dm.offered : 0.);
+        }
         kv_usage.publish((int64_t) live.size(), true);
         if (E.m->clover) {
             std::printf("INFO clover_last_lookup=%d clover_lookup_rounds=%lld clover_lookup_fallbacks=%lld\n",
@@ -5537,6 +5755,7 @@ int strata::qwen35::run(int argc, char** argv) {
     int ctx = 0, chunk = 0, n_gen = 64, bench_pp = 0, bench_tg = 0, mtp_d = 0, cpu_threads = 0, hybrid_rows = 128;
     int clover_draft = -1;
     int clover_lookup = 0;
+    int mtp_auto = 0, lookup_draft = 0;
     std::string clover_mode;
     int clover_block_size = 32;
     float clover_threshold = 0.95f;
@@ -5575,6 +5794,8 @@ int strata::qwen35::run(int argc, char** argv) {
                         "  --kv-grow --kv-whole      Grow physical KV with sequence length (default: grow)\n"
                         "  --chunk auto|N           Prompt chunk size (default: auto)\n"
                         "  --mtp N                  MTP drafts, 0..7 (default: 0)\n"
+                        "  --mtp-auto 0|1           Qwen measured MTP proposal scheduling (default: 0)\n"
+                        "  --lookup-draft N         Qwen exact suffix proposals, 0..7 (default: 0)\n"
                         "  --clover-mode MODE       Clover: causal (default), self-spec, diffusion\n"
                         "  --clover-draft N         Legacy self drafts, 0..31 (0: causal, positive: self-spec)\n"
                         "  --clover-lookup N        Exact suffix lookup drafts, 0..7 (default: 0; causal greedy only)\n"
@@ -5639,6 +5860,16 @@ int strata::qwen35::run(int argc, char** argv) {
             const std::string v = next();
             if (!v.empty() && std::isdigit((unsigned char) v[0])) mtp_d = std::atoi(v.c_str());
             else { std::fprintf(stderr, "tinystrata: --mtp requires a number of drafts\n"); return 2; }
+        }
+        else if (a == "--mtp-auto" || a == "--lookup-draft") {
+            const std::string value = next();
+            char* end = nullptr;
+            const long parsed = std::strtol(value.c_str(), &end, 10);
+            const int maximum = a == "--mtp-auto" ? 1 : 7;
+            if (end == value.c_str() || *end || parsed < 0 || parsed > maximum) {
+                std::fprintf(stderr, "tinystrata: invalid %s value\n", a.c_str()); return 2;
+            }
+            (a == "--mtp-auto" ? mtp_auto : lookup_draft) = (int) parsed;
         }
         else if (a == "--clover-lookup") {
             const std::string value = next();
@@ -5776,6 +6007,12 @@ int strata::qwen35::run(int argc, char** argv) {
         std::fprintf(stderr, "tinystrata: %s\n", e.what());
         return 1;
     }
+    if ((mtp_auto || lookup_draft) && (m.clover || !serve_mode)) {
+        std::fprintf(stderr, "tinystrata: --mtp-auto/--lookup-draft require a Qwen model and --serve\n"); return 2;
+    }
+    if (mtp_auto && (!m.has_mtp || mtp_d < 1)) {
+        std::fprintf(stderr, "tinystrata: --mtp-auto requires positive --mtp and an embedded MTP head\n"); return 2;
+    }
     if (m.clover) {
         if (mtp_d != 0) {
             std::fprintf(stderr, "tinystrata: Clover has no MTP head; use --clover-draft for self drafting\n");
@@ -5848,6 +6085,8 @@ int strata::qwen35::run(int argc, char** argv) {
     }
     E.clover_draft = m.clover ? clover_draft : 0;
     E.clover_lookup = m.clover ? clover_lookup : 0;
+    E.mtp_auto = !m.clover && mtp_auto != 0;
+    E.lookup_draft = m.clover ? 0 : lookup_draft;
     E.clover_mode = m.clover ? clover_mode : "causal";
     E.clover_block_size = clover_block_size;
     E.clover_threshold = clover_threshold;

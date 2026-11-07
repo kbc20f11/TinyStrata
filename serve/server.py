@@ -1192,6 +1192,8 @@ class StrataEngine:
             keys += f" top_k={tk if 1 <= tk <= 64 else 64}"
         for key, value in config.clover_request_options(sampling).items():
             keys += f" {key}={value!r}" if isinstance(value, float) else f" {key}={value}"
+        for key, value in config.speculation_request_options(sampling).items():
+            keys += f" {key}={value}"
         mp = sampling.get("min_p")
         if isinstance(mp, (int, float)) and 0.0 < float(mp) <= 1.0:
             keys += f" min_p={float(mp)!r}"
@@ -4101,8 +4103,41 @@ class Service:
                     content[n] = {"type": "text", "text": f"[image omitted: {why}]"}
         return fetched
 
+    def speculation_request_settings(self, req: dict | None = None) -> dict | None:
+        """Validate inherited and explicit Qwen/Gemma controls before request admission."""
+        options = config.speculation_request_options(req)
+        info = getattr(self.engine, "info", {}) or {}
+        spawn = getattr(self.engine, "spawn", ())
+        args = list(spawn[1]) if len(spawn) > 1 and isinstance(spawn[1], (tuple, list)) else []
+        arch = getattr(self.engine, "_tinystrata_arch", None)
+        supported = arch in ("qwen35moe", "gemma4") or (arch is None and
+            self.model.startswith(("qwen3.6", "gemma-4", "tiel-coder")))
+        if not supported:
+            if options:
+                raise ValueError(f"{next(iter(options))}: this option requires Qwen35MoE or Gemma 4")
+            return None
+        cfg = {"args": args}
+        settings = {}
+        for key in config.SPECULATION_REQUEST_KEYS:
+            value = options.get(key, info.get(key, config.value_of(cfg, key)))
+            if isinstance(value, str):
+                try:
+                    value = int(value)
+                except ValueError:
+                    pass
+            settings[key] = config.check(key, 0 if value is None else value, {})
+        if settings["lookup_draft"]:
+            temperature = (req or {}).get("temperature")
+            if temperature is None:
+                temperature = self.shared.get("temperature", self.sampling_defaults.get("temperature", 0.0))
+            if isinstance(temperature, bool) or not isinstance(temperature, (int, float)) or \
+                    not math.isfinite(temperature) or temperature < 0:
+                raise ValueError("lookup_draft: requires a finite nonnegative temperature")
+        return settings
+
     def clover_request_settings(self, req: dict | None = None) -> dict | None:
         """Resolve validated per-request Clover controls against resident defaults."""
+        self.speculation_request_settings(req)
         options = config.clover_request_options(req)
         info = getattr(self.engine, "info", {}) or {}
         spawn = getattr(self.engine, "spawn", ())
@@ -6927,6 +6962,7 @@ def check_request_sampling(req) -> None:
     integer (never bool or float) for top_k, penalty_last_n and seed.  Ranges behave as before (a temperature <= 0 is
     greedy, top_k 0 or above 64 is clamped, a seed <= 0 is unset), and an absent or null field is not checked."""
     config.clover_request_options(req)
+    config.speculation_request_options(req)
     if isinstance(req, dict):      # #1819: llama.cpp's names; the OpenAI-style field wins when both are sent
         if req.get("repeat_penalty") is not None and req.get("repetition_penalty") is None:
             req["repetition_penalty"] = req["repeat_penalty"]

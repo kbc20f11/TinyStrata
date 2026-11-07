@@ -147,7 +147,7 @@ def prepare(a) -> tuple[dict, Path]:
         cfg["vision_tokens"] = a.vision_tokens
     for key in ("max_context", "kv_type", "mtp", "expert_vram", "vram_reserve_mib", "chunk", "clover_draft",
                 "clover_mode", "clover_lookup", "clover_block_size", "clover_threshold", "clover_accept",
-                "clover_accept_ratio", "clover_accept_delta") + config.CONVERSATION_CACHE_KEYS:
+                "clover_accept_ratio", "clover_accept_delta", "mtp_auto", "lookup_draft") + config.CONVERSATION_CACHE_KEYS:
         value = getattr(a, key, None)
         if value is not None:
             if key == "expert_vram" and value == "auto":
@@ -246,6 +246,8 @@ def main() -> int:
     kv_allocation.add_argument("--kv-whole", "--no-kv-grow", dest="kv_grow", action="store_false",
                                help="allocate the whole context's KV at load; saved for later starts")
     ap.add_argument("--mtp", type=int)
+    ap.add_argument("--mtp-auto", type=int, choices=(0, 1), help="adapt MTP depth using measured throughput; default off")
+    ap.add_argument("--lookup-draft", type=int, choices=range(8), help="Qwen/Gemma exact target-sampled suffix proposals, 0-7; default off")
     ap.add_argument("--clover-draft", type=int, metavar="N",
                     help="legacy Clover self-speculative draft tokens, 0-31; 0 selects causal, positive values self-spec")
     ap.add_argument("--clover-lookup", type=int, metavar="N",

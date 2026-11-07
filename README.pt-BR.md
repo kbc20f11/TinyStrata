@@ -288,6 +288,8 @@ Novas configurações do inicializador usam MTP 3, que propõe vários tokens ad
 
 O MTP oferece suporte tanto à geração gulosa quanto à amostragem baseada em temperatura, incluindo penalidades de repetição, frequência e presença. Nas solicitações com amostragem, o modelo principal faz a amostragem de cada linha de verificação, e apenas o prefixo do rascunho que coincide é aceito.
 
+Qwen e Gemma também oferecem `--lookup-draft N` opcional (**0–7**, máximo de tokens propostos) e `--mtp-auto 0|1` experimental; **ambos usam 0/desativado por padrão**. Lookup copia continuações conhecidas da entrada ou do histórico e verifica cada token com o amostrador e as penalidades existentes do modelo principal, inclusive nas temperaturas normais. Todos os especialistas selecionados são calculados, sem aceitação aproximada nem omissão da parte final. Os padrões **MTP 3** e as temperaturas (**Qwen 0.7 / Gemma 1.0**) são mantidos. O MTP automático não acelera todas as tarefas e permanece desativado. Veja as [medições de desenvolvimento controladas e seus limites](benchmark/results/qwen-gemma-speculation-20261107.md), separadas do benchmark v1 fixo.
+
 Configurações explícitas substituem as escolhas automáticas, e as configurações existentes selecionadas manualmente continuam em vigor. Por exemplo, `run-api.bat --kv-type int8` fixa INT8; `run-api.bat --kv-type auto --max-context auto --expert-vram auto` restaura a seleção automática de KV, contexto e alocação de especialistas.
 
 ## Servidor de API

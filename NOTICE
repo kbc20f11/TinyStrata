@@ -63,6 +63,11 @@ lookup in VecSzn/PolyStrata, include/strata/spec/suffix_drafter.hpp and
 src/spec/suffix_drafter.cpp at a82999fd60c2b6b3dbfb3924df60f8ff756c4371
 (MIT). It proposes existing token continuations; TinyStrata verifies them with
 the full causal model and preserves response-only generation penalties.
+The optional Qwen/Gemma suffix proposal paths reuse that bounded lookup. Their
+measured proposal-depth and lookup gating policies also consult PolyStrata's
+Guesses/DraftPolicy cost and probe design at the same commit (MIT). TinyStrata
+retains full target-model sampling and computes every selected Expert; proposal
+scheduling does not introduce approximate acceptance or Expert omission.
 
 Qwen3.6 native-server consumed-history tracking follows Strata Flash-Next's
 src/program/generate.cpp at the base commit listed above (MIT), recording the

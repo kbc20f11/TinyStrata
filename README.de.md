@@ -288,6 +288,8 @@ Neue Launcher-Konfigurationen verwenden MTP 3, das mehrere Token im Voraus vorsc
 
 MTP unterstützt sowohl Greedy-Generierung als auch temperaturbasiertes Sampling, einschließlich Wiederholungs-, Häufigkeits- und Präsenzstrafen. Bei Sampling-Anfragen zieht das Hauptmodell für jede Überprüfungszeile eine Stichprobe, und nur das übereinstimmende Präfix des Entwurfs wird akzeptiert.
 
+Qwen und Gemma bieten außerdem optional `--lookup-draft N` (**0–7**, maximale Anzahl vorgeschlagener Tokens) und experimentell `--mtp-auto 0|1`; **beide sind standardmäßig 0/aus**. Lookup kopiert bekannte Fortsetzungen aus Prompt oder Verlauf und prüft jedes Token mit dem bestehenden Sampler des Hauptmodells und denselben Penalties, auch bei normalen Temperaturen. Alle ausgewählten Experten werden berechnet; es gibt weder approximative Annahme noch übersprungene Endstücke. **MTP 3** und die Temperaturen (**Qwen 0.7 / Gemma 1.0**) bleiben Standard. Automatisches MTP beschleunigt nicht jede Aufgabe und bleibt aus. Siehe die [kontrollierten Entwicklungsmessungen und Grenzen](benchmark/results/qwen-gemma-speculation-20261107.md), getrennt vom festen v1-Benchmark.
+
 Explizite Einstellungen überschreiben die automatische Auswahl, und bereits manuell gewählte Einstellungen bleiben wirksam. Beispielsweise legt `run-api.bat --kv-type int8` INT8 fest; `run-api.bat --kv-type auto --max-context auto --expert-vram auto` stellt die automatische Auswahl von KV, Kontext und Expertenplatzierung wieder her.
 
 ## API-Server

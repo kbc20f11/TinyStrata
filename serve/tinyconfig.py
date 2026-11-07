@@ -1,6 +1,7 @@
 """Validate the subset of upstream configuration supported by TinyStrata."""
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 
@@ -308,7 +309,7 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         raise ValueError("args must be a list of engine argument strings")
     values = {"--model", "--draft-model", "--max-context", "--kv-type", "--chunk", "--mtp", "--expert-vram",
               "--expert-slots", "--cpu-threads", "--hybrid-rows", "--vram-reserve-mib", "--clover-draft",
-               "--clover-mode", "--clover-lookup", "--clover-block-size", "--clover-threshold", "--clover-accept",
+              "--clover-mode", "--clover-lookup", "--mtp-auto", "--lookup-draft", "--clover-block-size", "--clover-threshold", "--clover-accept",
               "--clover-accept-ratio", "--clover-accept-delta"}
     values.update(config.ENGINE_OPTIONS[key][0] for key in config.CONVERSATION_CACHE_KEYS)
     switches = {"--no-graph", "--no-warmup", "--hybrid-graph", "--no-hybrid-graph", "--vision",
@@ -332,7 +333,7 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         raise ValueError("Choose only one KV allocation mode: --kv-grow or --kv-whole")
     for key in ("kv_type", "max_context", "expert_vram", "vram_reserve_mib", "mtp", "chunk", "clover_draft",
                 "clover_mode", "clover_lookup", "clover_block_size", "clover_threshold", "clover_accept",
-                "clover_accept_ratio", "clover_accept_delta") + config.CONVERSATION_CACHE_KEYS:
+                "clover_accept_ratio", "clover_accept_delta", "mtp_auto", "lookup_draft") + config.CONVERSATION_CACHE_KEYS:
         value = config.value_of(cfg, key)
         if value is not None:
             config.check(key, value, cfg)
@@ -398,6 +399,14 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         raise ValueError("Qwen3.6 does not support --kv-type fp16")
     if arch != "gemma4" and "--draft-model" in seen:
         raise ValueError("--draft-model is only supported by the Gemma 4 engine")
+    if config.value_of(cfg, "lookup_draft"):
+        defaults = GEMMA4_SAMPLING if arch == "gemma4" else DEFAULT_SAMPLING
+        temperature = (cfg.get("sampling") or {}).get("temperature", defaults["temperature"])
+        if temperature is None:
+            temperature = defaults["temperature"]
+        if isinstance(temperature, bool) or not isinstance(temperature, (int, float)) or \
+                not math.isfinite(temperature) or temperature < 0:
+            raise ValueError("--lookup-draft requires a finite nonnegative sampling.temperature")
 
 
 def check_files(cfg: dict, *, allow_uninstalled: bool = False) -> None:

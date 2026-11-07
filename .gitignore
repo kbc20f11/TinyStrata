@@ -76,6 +76,9 @@
 !/tests/native-iq-packed-bytes.cu
 !/tests/q36-suffix-lookup.cpp
 !/tests/test_clover_lookup_options.py
+!/tests/test_speculation_options.py
+!/tests/gemma-draft-policy.cpp
+!/tests/qwen-draft-policy.cpp
 
 # Only build/runtime sources and the fixed public benchmark inputs belong here.
 /benchmark/**

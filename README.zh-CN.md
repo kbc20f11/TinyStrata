@@ -288,6 +288,8 @@ GGUF 权重量化与 KV 精度是两回事。选用的 UD-IQ3_XXS 模型使用�
 
 MTP 同时支持贪心生成和基于温度的采样，包括重复惩罚、频率惩罚和存在惩罚。对于采样请求，主模型会对每个验证行进行采样，只接受与之匹配的草稿前缀。
 
+Qwen 和 Gemma 还提供可选的 `--lookup-draft N`（最多提议 **0–7 个 token**）与实验性的 `--mtp-auto 0|1`；**两者均默认 0（关闭）**。lookup 复制输入或历史中已有的后续片段，在常规温度设置下也使用现有的主模型采样器和惩罚逐 token 验证。所有选中的 Expert 仍会计算，不使用近似接受或跳过尾部。默认 **MTP 3** 和温度（**Qwen 0.7 / Gemma 1.0**）保持不变。自动 MTP 并非在所有任务中都更快，因此默认关闭。参见与固定 v1 基准分开的[受控开发测量与限制](benchmark/results/qwen-gemma-speculation-20261107.md)。
+
 显式设置会覆盖自动选择，现有的手动设置也会继续生效。例如，`run-api.bat --kv-type int8` 会固定使用 INT8；`run-api.bat --kv-type auto --max-context auto --expert-vram auto` 会恢复自动选择 KV、上下文和专家放置。
 
 ## API 服务器

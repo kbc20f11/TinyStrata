@@ -6,6 +6,8 @@
 #include "strata/common/conversations.hpp"
 #include "strata/common/context_policy.hpp"
 #include "strata/gemma4/vram.hpp"
+#include "strata/gemma4/draft_policy.hpp"
+#include "strata/qwen35/suffix_lookup.hpp"
 #include <cuda_runtime.h>
 #include <algorithm>
 #include <atomic>
@@ -371,7 +373,8 @@ void memory_info(const Engine& e, int64_t used) {
                 (long long) (used < 0 ? e.pos() : used));
 }
 
-int serve(Engine& e, const Options& o, strata::conversation::Options cache_options) {
+int serve(Engine& e, const Options& o, strata::conversation::Options cache_options,
+          int configured_mtp, int configured_auto, int configured_lookup) {
     cache_options.max_tokens = e.max_context();
     strata::conversation::Cache<Engine> cache(e, cache_options);
     std::printf("INFO version=0.1.0 family=gemma4 model=gemma-4-26b-a4b-it kv=%s mtp=%d vision=%d expert_slots=%d expert_total=%d "
@@ -379,10 +382,11 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
                 "kv_grow=%d kv_committed_rows=%lld kv_logical_bytes=%llu kv_mapped_bytes=%llu kv_used_tokens=%lld\n",
                 e.kv_format() == strata::gemma4::KvFmt::kFp8 ? "fp8-mma" :
                     e.kv_format() == strata::gemma4::KvFmt::kQ8_0 ? "int8" : "fp16",
-                e.drafts() ? e.max_window() - 1 : 0, e.sees(),
+                e.drafts() ? configured_mtp : 0, e.sees(),
                 e.cached_experts(), e.total_experts(), (long long) (e.cached_gib() * 1024), o.expert_vram_gib < 0 && o.gpu_experts,
                 e.max_rows(), e.reserve_mib(), o.graphs, e.kv_growing(), (long long) e.kv_committed_rows(),
                 (unsigned long long) e.kv_logical_bytes(), (unsigned long long) e.kv_mapped_bytes(), (long long) e.pos());
+    std::printf("INFO mtp_auto=%d lookup_draft=%d lookup_capacity=%d\n", configured_auto, configured_lookup, e.max_window() - 1);
     if (cache.enabled()) cache.info();
     std::printf("READY %d stop\n", e.max_context());
     std::fflush(stdout);
@@ -421,6 +425,7 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
     // state snapshot also owns its sliding-window rings and the MTP hidden row.
     std::vector<int32_t> checkpoint_ids;
     std::vector<uint8_t> checkpoint_state;
+    strata::gemma4::DraftPolicy policy(configured_mtp);
     for (;;) {
         std::string line;
         {
@@ -454,6 +459,7 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
             const auto max_new = integer(word, "max_new");
             if (max_new < 1 || max_new > e.max_context()) throw std::invalid_argument("max_new outside context capacity");
             Sampling smp;
+            int request_auto = configured_auto, request_lookup = configured_lookup;
             int64_t turn_at = -1;
             bool checkpoint = true;
             int32_t image_pad = -1;
@@ -464,7 +470,9 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
                     remaining = word; std::string rest; std::getline(input, rest); remaining += rest; break;
                 }
                 const auto key = word.substr(0, eq);
-                if (key == "image_pad") image_pad = bounded_integer(word.substr(eq + 1), "image_pad", 0, e.n_vocab() - 1);
+                if (key == "mtp_auto") request_auto = bounded_integer(word.substr(eq + 1), "mtp_auto", 0, 1);
+                else if (key == "lookup_draft") request_lookup = bounded_integer(word.substr(eq + 1), "lookup_draft", 0, 7);
+                else if (key == "image_pad") image_pad = bounded_integer(word.substr(eq + 1), "image_pad", 0, e.n_vocab() - 1);
                 else if (key == "turn_at") turn_at = bounded_integer(word.substr(eq + 1), "turn_at", 0, e.max_context());
                 else if (key == "ckpt") checkpoint = bounded_integer(word.substr(eq + 1), "ckpt", 0, 1) != 0;
                 else if (key == "img_keys") {
@@ -476,6 +484,12 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
                 }
                 else sampling_key(smp, word);
             }
+            // Every emitted token is an ordinary target draw; equality with a
+            // proposal only saves forward work, including during sampling.
+            if (request_lookup && (!std::isfinite(smp.temperature) || smp.temperature < 0.0))
+                throw std::invalid_argument("lookup_draft requires a finite nonnegative temperature");
+            if (request_lookup && (size_t) e.max_context() + 64 > strata::qwen35::SuffixLookup::kMaxCapacity)
+                throw std::invalid_argument("lookup_draft context exceeds suffix capacity");
             std::string file, tokens = remaining;
             if (geni) {
                 const auto split = remaining.find_last_of(" \t");
@@ -577,6 +591,15 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
             if (geni) std::replace_if(history.begin(), history.end(), [](int32_t id) { return id < 0; }, image_pad);
             std::mt19937_64 rng(smp.seed);
             const auto d0 = Clock::now();
+            std::unique_ptr<strata::qwen35::SuffixLookup> lookup;
+            if (request_lookup) {
+                lookup = std::make_unique<strata::qwen35::SuffixLookup>(3, 64, (size_t) e.max_context() + 64);
+                lookup->rebuild(ids.data(), ids.size());
+            }
+            if (request_auto) policy.begin_request((int64_t) ids.size());
+            strata::gemma4::LookupDraftGate lookup_gate;
+            long long lookup_rounds = 0, auto_rounds = 0, auto_d0 = 0, auto_d1 = 0, auto_dmax = 0;
+            long long lookup_skipped = 0;
             int produced = 0;
             int evaluated = 0;
             const char* finish = "length";
@@ -592,35 +615,125 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
                 return false;
             };
             int32_t token = pick(e.logits());
-            while (show(token)) {
-                const int width = e.drafts() ? std::min<int64_t>({e.max_window(), e.max_context() - e.pos(),
-                                                                 max_new - produced + 1}) : 1;
-                if (width <= 1) {
-                    e.eval(&token, 1, true); ++evaluated; live.push_back(token);
+            if (!request_auto && !request_lookup) {
+                while (show(token)) {
+                    const int width = e.drafts() ? std::min<int64_t>({configured_mtp + 1, e.max_window(), e.max_context() - e.pos(),
+                                                                     max_new - produced + 1}) : 1;
+                    if (width <= 1) {
+                        e.eval(&token, 1, true); ++evaluated; live.push_back(token);
+                        memory.changed();
+                        token = pick(e.logits()); continue;
+                    }
+                    int32_t w[8]; w[0] = token;
+                    for (int i = 1; i < width; ++i) {
+                        if (box->stop.load()) break;
+                        float confidence = 0.f;
+                        w[i] = e.draft(w[i - 1], i - 1, &confidence);
+                    }
+                    if (box->stop.load()) { finish = "cancel"; break; }
+                    e.window(w, width);
+                    int right = 0;
+                    bool more = true;
+                    token = pick(e.logits_of(0));
+                    while (right < width - 1 && token == w[right + 1] && (more = show(token)))
+                        token = pick(e.logits_of(++right));
+                    e.keep(right + 1);
+                    live.insert(live.end(), w, w + right + 1); evaluated += right + 1;
                     memory.changed();
-                    token = pick(e.logits()); continue;
+                    guessed += width - 1;
+                    // A terminal accepted token was shown but deliberately not fed.
+                    // Cancellation before show() emits it is not an accepted output.
+                    accepted += right + (!more && std::strcmp(finish, "cancel") != 0 ? 1 : 0);
+                    if (!more) break;
                 }
-                int32_t w[8]; w[0] = token;
-                for (int i = 1; i < width; ++i) {
-                    if (box->stop.load()) break;
-                    float confidence = 0.f;
-                    w[i] = e.draft(w[i - 1], i - 1, &confidence);
+            } else {
+                // Lookup history is distinct from the sampler's original full
+                // history: do not change penalties or target RNG draw ordering.
+                const auto emit = [&](int32_t value) {
+                    const int before = produced;
+                    const bool more = show(value);
+                    if (lookup && produced != before) lookup->append(value);
+                    return more;
+                };
+                while (emit(token)) {
+                    const auto round = Clock::now();
+                    const int shown_before = produced;
+                    const int64_t offered_before = guessed, accepted_before = accepted;
+                    const int capacity = strata::gemma4::speculation_width(
+                        e.max_window(), e.pos(), e.max_context(), e.max_context(),
+                        false, (int) (max_new - produced));
+                    const int lookup_capacity = strata::gemma4::speculation_width(
+                        e.max_window(), e.pos(), e.max_context(), e.kv_committed_rows(),
+                        e.kv_growing(), (int) (max_new - produced));
+                    int32_t w[8]; w[0] = token;
+                    int count = 0, lookup_match = 0;
+                    bool from_lookup = false;
+                    if (lookup && lookup_capacity > 1) {
+                        count = lookup->propose(std::min(request_lookup, lookup_capacity - 1), w + 1);
+                        lookup_match = lookup->last_match();
+                        if (lookup_match < 8) count = std::min(count, 3);
+                        // Image sentinels are history, never valid embedding IDs.
+                        int valid = 0;
+                        while (valid < count && w[valid + 1] >= 0 && w[valid + 1] < e.n_vocab()) ++valid;
+                        count = valid;
+                        if (count && !lookup_gate.allows(lookup_match)) {
+                            count = 0;
+                            ++lookup_skipped;
+                        }
+                        from_lookup = count > 0;
+                    }
+                    int selected_depth = 0;
+                    if (!from_lookup && e.drafts()) {
+                        const int maximum = std::min(configured_mtp, capacity - 1);
+                        selected_depth = request_auto ? policy.choose(maximum) : maximum;
+                        for (int i = 0; i < selected_depth; ++i) {
+                            if (box->stop.load()) break;
+                            float confidence = 0.f;
+                            w[i + 1] = e.draft(w[i], i, &confidence);
+                            ++count;
+                        }
+                    }
+                    if (box->stop.load()) { finish = "cancel"; break; }
+                    bool continue_generation = true;
+                    if (!count) {
+                        e.eval(&token, 1, true); ++evaluated; live.push_back(token);
+                        memory.changed();
+                        token = pick(e.logits());
+                    } else {
+                        const int width = count + 1;
+                        e.window(w, width);
+                        int right = 0;
+                        bool more = true;
+                        token = pick(e.logits_of(0));
+                        while (right < width - 1 && token == w[right + 1] && (more = emit(token)))
+                            token = pick(e.logits_of(++right));
+                        e.keep(right + 1);
+                        live.insert(live.end(), w, w + right + 1); evaluated += right + 1;
+                        memory.changed();
+                        guessed += count;
+                        accepted += right + (!more && std::strcmp(finish, "cancel") != 0 ? 1 : 0);
+                        if (from_lookup) ++lookup_rounds;
+                        if (!more) continue_generation = false;
+                    }
+                    const int emitted = 1 + produced - shown_before;
+                    const double round_ms = elapsed(round);
+                    const bool recorded = e.took_record();
+                    if (lookup) {
+                        if (from_lookup)
+                            lookup_gate.observe(lookup_match, int(guessed - offered_before),
+                                                int(accepted - accepted_before), emitted, round_ms, recorded);
+                        else lookup_gate.fallback(emitted, round_ms, recorded);
+                    }
+                    if (request_auto && !from_lookup) {
+                        ++auto_rounds;
+                        if (selected_depth == 0) ++auto_d0;
+                        else if (selected_depth == 1) ++auto_d1;
+                        else ++auto_dmax;
+                        policy.observe(selected_depth, emitted, round_ms, recorded,
+                                       int(guessed - offered_before), int(accepted - accepted_before));
+                    }
+                    if (!continue_generation) break;
                 }
-                if (box->stop.load()) { finish = "cancel"; break; }
-                e.window(w, width);
-                int right = 0;
-                bool more = true;
-                token = pick(e.logits_of(0));
-                while (right < width - 1 && token == w[right + 1] && (more = show(token)))
-                    token = pick(e.logits_of(++right));
-                e.keep(right + 1);
-                live.insert(live.end(), w, w + right + 1); evaluated += right + 1;
-                memory.changed();
-                guessed += width - 1;
-                // A terminal accepted token was shown but deliberately not fed.
-                // Cancellation before show() emits it is not an accepted output.
-                accepted += right + (!more && std::strcmp(finish, "cancel") != 0 ? 1 : 0);
-                if (!more) break;
             }
             if ((int64_t) live.size() != e.pos()) throw std::logic_error("history/state mismatch");
             const double native_tg = elapsed(d0);
@@ -630,6 +743,18 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
                 cache.release(); cache.info();
             }
             memory_info(e);
+            std::printf("INFO last_mtp_auto=%d last_lookup_draft=%d lookup_rounds=%lld "
+                        "mtp_auto_rounds=%lld mtp_auto_d0=%lld mtp_auto_d1=%lld mtp_auto_dmax=%lld\n",
+                        request_auto, request_lookup, lookup_rounds, auto_rounds, auto_d0, auto_d1, auto_dmax);
+            if (request_auto)
+                std::printf("INFO mtp_auto_ms_d0=%.6f mtp_auto_ms_d1=%.6f mtp_auto_ms_dmax=%.6f "
+                            "mtp_auto_samples_d0=%d mtp_auto_samples_d1=%d mtp_auto_samples_dmax=%d "
+                            "mtp_auto_accept_ratio=%.6f\n", policy.milliseconds_per_token(0),
+                            policy.milliseconds_per_token(1), policy.milliseconds_per_token(configured_mtp),
+                            policy.samples(0), policy.samples(1), policy.samples(configured_mtp), policy.acceptance());
+            if (request_lookup)
+                std::printf("INFO lookup_skipped=%lld lookup_ms_short=%.6f lookup_ms_strong=%.6f\n",
+                            lookup_skipped, lookup_gate.milliseconds_per_token(false), lookup_gate.milliseconds_per_token(true));
             std::printf("DONE %d %zu %.1f %.1f %s %lld %lld %zu 0 0 0 0 0.0 %d 0\n", produced, ids.size(), pp,
                         native_tg, finish, (long long) accepted, (long long) guessed, reuse, fresh);
             std::fflush(stdout);
@@ -664,7 +789,7 @@ int main(int argc, char** argv) {
         cache_options.slots = 2;
         bool cache_budget_explicit = false;
         std::string ids_text, force_text, dump, ctx = "auto", chunk = "auto";
-        int n_gen = 64, mtp = 3;
+        int n_gen = 64, mtp = 3, mtp_auto = 0, lookup_draft = 0;
         bool server = false, require_vision = false;
         opt.draft = false;
         opt.window = 1;
@@ -694,6 +819,8 @@ int main(int argc, char** argv) {
                 std::puts("TinyStrata Gemma 4 26B-A4B (image input and assistant MTP)\n"
                           "  --model GGUF --serve\n"
                           "  --draft-model GGUF --mtp 0..7  Matching assistant and proposal count (default 3)\n"
+                          "  --mtp-auto 0|1         Opt-in measured D0/D1/Dmax selection (default 0)\n"
+                          "  --lookup-draft 0..7    Opt-in exact suffix proposals (default 0)\n"
                           "  --vision              Require the native image-embedding input path\n"
                           "  --model GGUF --tokens IDS --n N [--dump-full-logits FILE] [--force IDS]\n"
                           "  --max-context auto|N   Context capacity; auto by total VRAM: 8 GB 64K, 12 GB 128K, 16+ GB 256K\n"
@@ -752,14 +879,18 @@ int main(int argc, char** argv) {
                 else if (s == "fp16") opt.kv_format = strata::gemma4::KvFmt::kFp16;
                 else if (s == "auto") opt.kv_format = strata::gemma4::KvFmt::kAuto;
                 else throw std::invalid_argument("Gemma KV supports auto/fp8/int8/fp16 only");
-            } else if (arg == "--mtp") {
+            } else if (arg == "--mtp-auto") mtp_auto = bounded_integer(next(), "mtp-auto", 0, 1);
+            else if (arg == "--lookup-draft") lookup_draft = bounded_integer(next(), "lookup-draft", 0, 7);
+            else if (arg == "--mtp") {
                 mtp = bounded_integer(next(), "MTP draft count", 0, 7);
             } else throw std::invalid_argument("unknown option: " + arg);
         }
         if (mtp > 0 && opt.draft_model.empty())
             throw std::invalid_argument("MTP requires --draft-model pointing to the matching Gemma assistant GGUF; use --mtp 0 otherwise");
         opt.draft = mtp > 0;
-        opt.window = mtp + 1;
+        opt.window = std::max(mtp + 1, lookup_draft + 1);
+        if (!server && (mtp_auto || lookup_draft))
+            throw std::invalid_argument("--mtp-auto and --lookup-draft require --serve");
         if (opt.model.empty()) throw std::invalid_argument("--model is required");
         if (!server && ids_text.empty()) throw std::invalid_argument("--serve or --tokens is required");
         if (server && (!ids_text.empty() || !force_text.empty() || !dump.empty()))
@@ -791,7 +922,7 @@ int main(int argc, char** argv) {
         if (server && !cache_budget_explicit) cache_options.bytes = size_t(1024) << 20;
 #endif
         if (cache_options.bytes && !server) throw std::invalid_argument("conversation cache requires --serve");
-        if (server) return serve(*e, opt, cache_options);
+        if (server) return serve(*e, opt, cache_options, mtp, mtp_auto, lookup_draft);
         const auto ids = parse_ids(ids_text), forced = parse_ids(force_text);
         check_ids(ids, *e);
         for (int id : forced) if (id >= e->n_vocab()) throw std::invalid_argument("forced token outside vocabulary");

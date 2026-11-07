@@ -81,6 +81,23 @@ The launcher and API support `--clover-lookup N` / `clover_lookup: N`, with **0�
 
 Lookup copies candidate continuations already present in the prompt/history. The full causal model verifies them with the same generation penalties. Matches shorter than **8 tokens** are internally capped at **3 proposals**; requested widths **4–7** require a match of at least **8 tokens**. It uses no D3 preview, Expert skipping or threshold acceptance. Count only emitted output tokens; rejected proposals add work, not output. Compare **3** and **7** with lookup disabled on your own workload; gains depend on how much can be copied. The standard v1 runner does not enable lookup; [lookup measurements](results/clover-lookup-20261107.md) are separate experiments. Floating-point batching can change near-tied choices, so matching token IDs on the tested fixtures is evidence for those fixtures, not a universal bitwise-equivalence guarantee.
 
+### Qwen/Gemma lookup and adaptive MTP (optional)
+
+The launcher supports `--lookup-draft N` (**0–7**, maximum proposed tokens rather than match length) and experimental `--mtp-auto 0|1`; API request overrides are `lookup_draft: N` and `mtp_auto: 0|1`. **Both default to 0/off.** Default **MTP 3** and sampling temperatures (**Qwen 0.7 / Gemma 1.0**) are unchanged. Automatic MTP selects among D0, D1 and the configured maximum using measured round costs; it does not consistently improve every workload and remains experimental.
+
+Lookup proposes known prompt/history continuations. Each accepted token must match an ordinary draw from the existing full target model, with the same sampler, penalties and normal temperature support; images are supported. All selected Experts are computed, without approximate acceptance or tail skipping. Count only emitted tokens, and include rejected verification work in decode time. Floating-point batching can still change token choices; agreement on tested fixtures is not a universal bitwise-equivalence guarantee.
+
+Gemma allocates its verification capacity at startup: use the launcher's `--lookup-draft N` to reserve the desired window. A per-request override is clamped to that initialized capacity (`Engine.max_window() - 1`), so setting only a request to 7 does not enlarge a service started with ordinary MTP 3. Qwen's native verifier has eight rows (up to seven proposals); its INT8 FDEC route caps lookup at three proposals. Requested width is an upper bound, not a promise that every round uses it.
+
+For example, from a source checkout:
+
+```powershell
+& $python .\run.py --model-family qwen36 --lookup-draft 3
+& $python .\run.py --model-family gemma4 --lookup-draft 7
+```
+
+Compare lookup alone with the same saved profile and lookup off before also testing `--mtp-auto 1`; combining them is not guaranteed to be faster. The [controlled development runs](results/qwen-gemma-speculation-20261107.md) are separate from **tinystrata-bench-v1** and do not replace its historical tables or defaults.
+
 ### CPU worker probe (diagnostic)
 
 Stop the regular API first, then use [probe.py](probe.py) for Qwen or Clover:
@@ -237,6 +254,23 @@ Clover の長文比較には **`--include-64k`** を追加できます。
 ```
 
 入力・履歴にある続きをコピーして候補とし、同じ生成ペナルティを適用した因果モデル全体で検証します。一致区間が **8 トークン未満**なら内部で**最大 3 トークン**に抑え、指定した幅 **4～7** を使うには **8 トークン以上**の一致が必要です。D3 の preview・Expert の省略・閾値採用は使いません。出力には実際に返したトークンだけを数え、不採用の提案は処理時間に含めます。コピーできる内容によって効果が変わるため、使う入力で無効時と **3**・**7** を比較してください。標準 v1 は lookup を有効にせず、[lookup の測定](results/clover-lookup-20261107.md)は別の実験として扱います。浮動小数点演算のバッチ化で僅差の候補が変わる可能性があるため、検証入力でのトークン ID 一致を、すべての入力でのビット一致保証とはしません。
+
+### Qwen・Gemma の lookup と自動 MTP（任意）
+
+ランチャーの `--lookup-draft N` は、一致を探す長さではなく提案トークン数の上限 **0～7**、実験的な `--mtp-auto 0|1` は自動 MTP の有効／無効を指定します。API のリクエストごとの指定は `lookup_draft: N` と `mtp_auto: 0|1` です。**どちらも既定は 0（無効）**で、既定の **MTP 3** と温度（**Qwen 0.7／Gemma 1.0**）は維持します。自動 MTP は実測したラウンドの処理時間から D0・D1・設定した最大幅を選びます。一律に高速化できないため、実験的な任意選択です。
+
+lookup は入力・履歴にある続きを候補にします。採用には、既存の主モデル全体が通常のサンプラーと同じペナルティで選んだトークンとの一致が必要で、通常の温度設定と画像にも対応します。選ばれた Expert はすべて計算し、近似採用や末尾の省略は行いません。実際に出力したトークンだけを数え、不採用の検証時間も生成時間に含めます。浮動小数点演算のバッチ化で選択が変わる可能性はあるため、検証入力での一致をすべての入力でのビット一致保証とはしません。
+
+Gemma の検証用の容量は起動時に確保します。必要な幅はランチャーの `--lookup-draft N` で指定してください。リクエストごとの幅は、起動時の容量（`Engine.max_window() - 1`）が上限です。通常の MTP 3 で起動したサービスへリクエストだけ 7 を指定しても容量は拡張しません。Qwen の native 検証器は 8 行（最大 7 提案）ですが、INT8 FDEC 経路では lookup を最大 3 提案に抑えます。指定幅は上限であり、毎回その幅を使うとは限りません。
+
+ソースのチェックアウトから起動する例：
+
+```powershell
+& $python .\run.py --model-family qwen36 --lookup-draft 3
+& $python .\run.py --model-family gemma4 --lookup-draft 7
+```
+
+まず同じ保存済みプロファイルで lookup 単独を無効時と比較し、その後 `--mtp-auto 1` も個別に試してください。併用が速いとは限りません。[開発用の条件を揃えた測定](results/qwen-gemma-speculation-20261107.md)は **tinystrata-bench-v1** と区別し、過去の表や既定値は変更しません。
 
 ### CPU ワーカー数の調査（診断用）
 

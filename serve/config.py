@@ -15,6 +15,8 @@ ENGINE_OPTIONS = {
     "expert_vram": ("--expert-vram", 0, None, False),
     "vram_reserve_mib": ("--vram-reserve-mib", 0, None, True),
     "mtp": ("--mtp", 0, 7, True),
+    "mtp_auto": ("--mtp-auto", 0, 1, True),
+    "lookup_draft": ("--lookup-draft", 0, 7, True),
     "clover_draft": ("--clover-draft", 0, 31, True),
     "clover_lookup": ("--clover-lookup", 0, 7, True),
     "clover_mode": ("--clover-mode", ("causal", "self-spec", "diffusion")),
@@ -53,6 +55,11 @@ def check(key: str, value, cfg: dict):
         raise ValueError(f"{key}: conversation parking settings are supported only by Gemma 4 and LFM2.5")
     if value is None:
         return None
+    if key in ("mtp_auto", "lookup_draft"):
+        if cfg.get("arch") not in (None, "qwen35moe", "gemma4"):
+            raise ValueError(f"{key}: this option requires Qwen35MoE or Gemma 4")
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{key}: expected a whole number")
     if key == "clover_lookup":
         if cfg.get("arch") not in (None, "clover_moe"):
             raise ValueError("clover_lookup: this option requires a Clover model")
@@ -93,6 +100,13 @@ def clover_mode(cfg: dict) -> str:
 
 CLOVER_REQUEST_KEYS = ("clover_mode", "clover_draft", "clover_lookup", "clover_block_size", "clover_threshold",
                        "clover_accept", "clover_accept_ratio", "clover_accept_delta")
+SPECULATION_REQUEST_KEYS = ("mtp_auto", "lookup_draft")
+
+
+def speculation_request_options(req: dict | None) -> dict:
+    """Explicit Qwen/Gemma speculation settings; null inherits the resident default."""
+    return {key: check(key, (req or {})[key], {}) for key in SPECULATION_REQUEST_KEYS
+            if (req or {}).get(key) is not None}
 
 
 def clover_request_options(req: dict | None) -> dict:

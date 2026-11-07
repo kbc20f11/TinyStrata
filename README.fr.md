@@ -288,6 +288,8 @@ Les nouvelles configurations du lanceur utilisent MTP 3, qui propose plusieurs t
 
 MTP prend en charge la génération gloutonne et l’échantillonnage fondé sur la température, y compris les pénalités de répétition, de fréquence et de présence. Pour les requêtes avec échantillonnage, le modèle principal échantillonne chaque ligne de vérification, et seul le préfixe concordant de la proposition est accepté.
 
+Qwen et Gemma proposent aussi `--lookup-draft N` en option (**0–7**, nombre maximal de tokens proposés) et `--mtp-auto 0|1` à titre expérimental ; **les deux valent 0/désactivé par défaut**. Lookup copie les suites connues du prompt ou de l’historique et vérifie chaque token avec l’échantillonneur et les pénalités existants du modèle principal, y compris aux températures habituelles. Tous les experts sélectionnés sont calculés, sans acceptation approximative ni omission de fin. **MTP 3** et les températures (**Qwen 0.7 / Gemma 1.0**) restent inchangés. Le MTP automatique n’accélère pas toutes les tâches et reste désactivé. Voir les [mesures de développement contrôlées et leurs limites](benchmark/results/qwen-gemma-speculation-20261107.md), distinctes du benchmark v1 fixe.
+
 Les paramètres explicites remplacent les choix automatiques, et les paramètres déjà sélectionnés manuellement restent en vigueur. Par exemple, `run-api.bat --kv-type int8` impose INT8 ; `run-api.bat --kv-type auto --max-context auto --expert-vram auto` rétablit la sélection automatique de KV, du contexte et du placement des experts.
 
 ## Serveur API
