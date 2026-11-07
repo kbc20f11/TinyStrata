@@ -1302,6 +1302,7 @@ void Engine::fill_expert_cache() {
 // The thread and the stream that bring experts into the cache while an answer is written (follow()).
 void Engine::start_swaps() {
     if (swap_ || cached_ == 0 || opt_.expert_swaps == 0) return;
+    if (std::getenv("TINYSTRATA_DIAG_NO_SWAP")) return;   // diagnostics: decode with a static cache (issue #7)
     swap_ = std::make_unique<Swap[]>((size_t) opt_.expert_swaps);
     cudaStream_t up = nullptr;
     ck(cudaStreamCreateWithFlags(&up, cudaStreamNonBlocking), "cudaStreamCreate");
@@ -2259,6 +2260,54 @@ void Engine::moe_router(const Layer& L, int n) {
     copy2(rl_, h_rl_, n * n_expert_, xn_, h_x_, n * n_embd_, st_);
 }
 
+namespace {
+// Diagnostic only (TINYSTRATA_PHASE_PROF=1, one-token decode, run with --no-graph): GPU time between events recorded
+// after each phase of a layer.  A phase's time includes any stall of the stream waiting for the host to launch.
+struct PhaseProf {
+    bool on = std::getenv("TINYSTRATA_PHASE_PROF") != nullptr;
+    cudaEvent_t ev[5] = {};
+    double ms[4] = {};
+    long layers = 0, card_layers = 0;
+    cudaEvent_t cev[7] = {};   // inside moe_card()
+    double cms[6] = {};
+    long cn = 0;
+    bool fine = false;   // set by run() around a profiled layer
+    bool kin = false;   // inside moe(): time each launch of the experts' chain
+    bool stages = !(std::getenv("TINYSTRATA_PHASE_PROF") && std::string(std::getenv("TINYSTRATA_PHASE_PROF")) == "2");   // =2: only the outer events
+    double chain_ms = 0;
+    double gap_ms = 0, exec_ms = 0, stage_ms[5] = {};   // moe(): shared expert done -> first expert launch lands; experts' own launches
+    long gap_n = 0;
+    bool host = std::getenv("TINYSTRATA_HOST_PROF") != nullptr;   // host-side chrono only: no events, no extra syncs
+    double h_wait = 0, h_prep = 0, h_launch = 0;
+    long h_calls = 0;
+    ~PhaseProf() {
+        if (h_calls)
+            std::fprintf(stderr, "gemma4 moe() host time over %ld one-token calls with every pick cached, us per call: "
+                         "wait for the router %.1f, route + prepare %.1f, launch the experts' chain %.1f\n", h_calls,
+                         h_wait / h_calls * 1e3, h_prep / h_calls * 1e3, h_launch / h_calls * 1e3);
+
+        if (gap_n)
+            std::fprintf(stderr, "gemma4 moe() GPU-only layers: %ld, us per layer: idle gap from shared-expert end to the "
+                         "first expert launch %.1f; then gate_up %.1f, act %.1f, quant %.1f, down %.1f, add %.1f (sum %.1f)\n", gap_n,
+                         gap_ms / gap_n * 1e3, stage_ms[0] / gap_n * 1e3, stage_ms[1] / gap_n * 1e3,
+                         stage_ms[2] / gap_n * 1e3, stage_ms[3] / gap_n * 1e3, stage_ms[4] / gap_n * 1e3,
+                         (stage_ms[0] + stage_ms[1] + stage_ms[2] + stage_ms[3] + stage_ms[4]) / gap_n * 1e3);
+        if (gap_n)
+            std::fprintf(stderr, "gemma4 moe() experts' chain, first event to last event (the outer pair only counts): %.1f us per layer\n",
+                         chain_ms / gap_n * 1e3);
+        if (cn)
+            std::fprintf(stderr, "gemma4 moe_card profile over %ld calls, us per call: route %.1f, gate_up %.1f, "
+                         "act+quant %.1f, down %.1f, sum %.1f, (sum of parts %.1f)\n", cn, cms[0] / cn * 1e3, cms[1] / cn * 1e3,
+                         cms[2] / cn * 1e3, cms[3] / cn * 1e3, cms[4] / cn * 1e3,
+                         (cms[0] + cms[1] + cms[2] + cms[3] + cms[4]) / cn * 1e3);
+        if (layers)
+            std::fprintf(stderr, "gemma4 phase profile over %ld layer calls (%ld on the card path), ms per layer call: "
+                         "head+shared %.3f, routed %.3f, tail %.3f, total %.3f\n", layers, card_layers,
+                         ms[0] / layers, ms[2] / layers, ms[3] / layers, (ms[0] + ms[2] + ms[3]) / layers);
+    }
+} g_phase;
+}  // namespace
+
 // The routed experts of tokens that come a few at a time.  moe_router() is on its way, with ev_ behind it.  True
 // when experts were computed on the CPU: their sum waits in h_cpu_ for moe_add().  `first` is run once, by the
 // thread that hands the cached experts to the card and ahead of them.
@@ -2267,6 +2316,9 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
     Clock::time_point t0 = Clock::now();
     ck(cudaEventSynchronize((cudaEvent_t) ev_), "router");
     stats_.route_wait_ms += ms_since(t0);
+    const bool host_prof = g_phase.host && n == 1 && !split_ && !next_;   // diagnostics off: no extra clock reads
+    const double wait_ms = host_prof ? ms_since(t0) : 0.0;
+    const Clock::time_point t_prep = host_prof ? Clock::now() : Clock::time_point();
 
     const float limit = clamp_exp_[(size_t) il];
     const size_t xq_row = kernels::gemma_native_q8_1_bytes(n_embd_);
@@ -2329,13 +2381,17 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
                 for (int j = 0; j < m && !one; ++j)
                     kernels::gemma_native_mmvq((int) L.gu_type, gate_up.w[j], gate_up.x[j], gate_up.y[j], n_embd_,
                                          2 * n_ff_exp_, 1, st_);
+                if (g_phase.kin) cudaEventRecord(g_phase.cev[1], cs(st_));
                 if (gelu_) geglu_rows(g_, h_, n_ff_exp_, m, st_);
                 else swiglu_clamp_rows(g_, h_, n_ff_exp_, m, limit, st_);
+                if (g_phase.kin) cudaEventRecord(g_phase.cev[2], cs(st_));
                 kernels::gemma_native_quantize_q8_1(h_, q8_, n_ff_exp_, m, st_);
+                if (g_phase.kin) cudaEventRecord(g_phase.cev[3], cs(st_));
                 if (!(m > 1 && kernels::gemma_native_mmvq_slots((int) L.d_type, down, m, n_ff_exp_, n_embd_, st_)))
                     for (int j = 0; j < m; ++j)
                         kernels::gemma_native_mmvq((int) L.d_type, down.w[j], down.x[j], down.y[j], n_ff_exp_, n_embd_, 1,
                                              st_);
+                if (g_phase.kin) cudaEventRecord(g_phase.cev[4], cs(st_));
                 for (int j = 0; j < m; ++j) {
                     const Cached& c = cached[i0 + j];
                     const int k = (i0 + j) % kSumRows;
@@ -2350,7 +2406,33 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
         // The next layer's router wait is what makes h_cpu_ free to write again.
         float* cpu = h_cpu_ + (size_t) at * e_row;
         if (n_host == 0) {
+            const bool fine = g_phase.on && g_phase.fine && n == 1;
+            g_phase.kin = fine && g_phase.stages;
+            if (fine) cudaEventRecord(g_phase.cev[0], cs(st_));
+            const Clock::time_point t_launch = host_prof ? Clock::now() : Clock::time_point();
             launch();
+            if (host_prof && m == 1) {
+                g_phase.h_wait += wait_ms;
+                g_phase.h_prep += std::chrono::duration<double, std::milli>(t_launch - t_prep).count();
+                g_phase.h_launch += ms_since(t_launch);
+                ++g_phase.h_calls;
+            }
+            g_phase.kin = false;
+            if (fine) {
+                cudaEventRecord(g_phase.cev[5], cs(st_));
+                cudaEventSynchronize(g_phase.cev[5]);
+                float t = 0;
+                cudaEventElapsedTime(&t, g_phase.ev[1], g_phase.cev[0]);
+                g_phase.gap_ms += t;
+                cudaEventElapsedTime(&t, g_phase.cev[0], g_phase.cev[5]);
+                g_phase.chain_ms += t;
+                if (g_phase.stages)
+                for (int k = 0; k < 5; ++k) {
+                    cudaEventElapsedTime(&t, g_phase.cev[k], g_phase.cev[k + 1]);
+                    g_phase.stage_ms[k] += t;
+                }
+                ++g_phase.gap_n;
+            }
             std::fill(cpu, cpu + (size_t) m * e_row, 0.f);
             continue;
         }
@@ -2394,24 +2476,44 @@ bool Engine::card_moe(int n) {
 // on the host, or its formats have no kernel for picks on the card.
 bool Engine::moe_card(Layer& L, int il, int n) {
     if (L.card == 0) return false;
-    if (!kernels::gemma_native_mmvq_ids_supported((int) L.gu_type) || !kernels::gemma_native_mmvq_ids_supported((int) L.d_type) ||
-        !route_card(il, n, d_ids_, d_wts_)) {
+    const bool fine = g_phase.on && g_phase.fine;   // diagnostics: single engine, single device only (see run())
+    const auto mark = [&](int k) { if (fine) cudaEventRecord(g_phase.cev[k], cs(st_)); };
+    if (!kernels::gemma_native_mmvq_ids_supported((int) L.gu_type) || !kernels::gemma_native_mmvq_ids_supported((int) L.d_type)) {
         L.card = 0;
         return false;
     }
+    mark(0);   // the device routing is bracketed by marks 0 and 1
+    if (!route_card(il, n, d_ids_, d_wts_)) {
+        L.card = 0;
+        return false;
+    }
+    mark(1);
     L.card = 1;
     const int rr = n * n_used_;
     const void* const* table = d_slots_ + (size_t) il * n_expert_;
     const kernels::MmvqIds gate_up{table, d_ids_, 0, xq_, kernels::gemma_native_q8_1_bytes(n_embd_), n_used_, g_,
                                    2 * (size_t) n_ff_exp_};
     kernels::gemma_native_mmvq_ids((int) L.gu_type, gate_up, rr, n_embd_, 2 * n_ff_exp_, st_);
+    mark(2);
     if (gelu_) geglu_rows(g_, h_, n_ff_exp_, rr, st_);
     else swiglu_clamp_rows(g_, h_, n_ff_exp_, rr, clamp_exp_[(size_t) il], st_);
     kernels::gemma_native_quantize_q8_1(h_, q8_, n_ff_exp_ * rr, 1, st_);   // the rows back to back, as one vector
+    mark(3);
     const kernels::MmvqIds down{table, d_ids_, 2 * L.gu_bytes, q8_, kernels::gemma_native_q8_1_bytes(n_ff_exp_), 1, d_,
                                 (size_t) n_embd_};
     kernels::gemma_native_mmvq_ids((int) L.d_type, down, rr, n_ff_exp_, n_embd_, st_);
+    mark(4);
     moe_sum(d_, d_wts_, fo_, n_embd_, n_used_, n, st_);
+    mark(5);
+    if (fine) {
+        cudaEventSynchronize(g_phase.cev[5]);
+        float t = 0;
+        for (int k = 0; k < 5; ++k) {
+            cudaEventElapsedTime(&t, g_phase.cev[k], g_phase.cev[k + 1]);
+            g_phase.cms[k] += t;
+        }
+        ++g_phase.cn;
+    }
     return true;
 }
 
@@ -2971,11 +3073,34 @@ void Engine::run(const int32_t* tokens, int n) {
     }
     for (int il = lo_; il < hi_; ++il) {
         Layer& L = layers_[(size_t) il];
+        const bool prof = g_phase.on && !split_ && !next_ && !replay && n == 1 && L.moe && !batched(L, n);   // single engine, single device
+        if (prof) {
+            if (!g_phase.ev[0]) {
+                for (auto& e : g_phase.ev) cudaEventCreate(&e);
+                for (auto& e : g_phase.cev) cudaEventCreate(&e);
+            }
+            cudaEventRecord(g_phase.ev[0], cs(st_));
+        }
         up(il, n, (size_t) n - 1);
         if (!L.moe) continue;
+        if (prof) cudaEventRecord(g_phase.ev[1], cs(st_));   // head and shared expert launched
+        g_phase.fine = prof;
         if (batched(L, n)) moe_rows(L, il, n);
         else if (!on_card(il, n, (size_t) n - 1) && moe(L, il, n)) moe_add(n);
+        else if (prof) ++g_phase.card_layers;
+        g_phase.fine = false;
+        if (prof) cudaEventRecord(g_phase.ev[2], cs(st_));
         tail(il, n, (size_t) n - 1);
+        if (prof) {
+            cudaEventRecord(g_phase.ev[3], cs(st_));
+            cudaEventSynchronize(g_phase.ev[3]);
+            float t = 0;
+            for (int k = 0; k < 3; ++k) {
+                cudaEventElapsedTime(&t, g_phase.ev[k], g_phase.ev[k + 1]);
+                g_phase.ms[k == 0 ? 0 : k + 1] += t;   // [0] head+shared, [2] routed, [3] tail
+            }
+            ++g_phase.layers;
+        }
     }
 }
 

@@ -2260,6 +2260,21 @@ void Engine::moe_router(const Layer& L, int n) {
     copy2(rl_, h_rl_, n * n_expert_, xn_, h_x_, n * n_embd_, st_);
 }
 
+namespace {
+// Diagnostic only (TINYSTRATA_HOST_PROF=1): host-side chrono around moe(); no events, no extra syncs.
+struct HostProf {
+    bool on = std::getenv("TINYSTRATA_HOST_PROF") != nullptr;
+    double wait = 0, prep = 0, launch = 0;
+    long calls = 0;
+    ~HostProf() {
+        if (calls)
+            std::fprintf(stderr, "lfm2 moe() host time over %ld one-token calls with every pick cached, us per call: "
+                         "wait for the router %.1f, route + prepare %.1f, launch the experts' chain %.1f\n", calls,
+                         wait / calls * 1e3, prep / calls * 1e3, launch / calls * 1e3);
+    }
+} g_host;
+}  // namespace
+
 // The routed experts of tokens that come a few at a time.  moe_router() is on its way, with ev_ behind it.  True
 // when experts were computed on the CPU: their sum waits in h_cpu_ for moe_add().  `first` is run once, by the
 // thread that hands the cached experts to the card and ahead of them.
@@ -2268,6 +2283,9 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
     Clock::time_point t0 = Clock::now();
     ck(cudaEventSynchronize((cudaEvent_t) ev_), "router");
     stats_.route_wait_ms += ms_since(t0);
+    const bool host_prof = g_host.on && n == 1 && !split_ && !next_;   // diagnostics off: no extra clock reads
+    const double wait_ms = host_prof ? ms_since(t0) : 0.0;
+    const Clock::time_point t_prep = host_prof ? Clock::now() : Clock::time_point();
 
     const float limit = clamp_exp_[(size_t) il];
     const size_t xq_row = kernels::lfm_native_q8_1_bytes(n_embd_);
@@ -2351,7 +2369,14 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
         // The next layer's router wait is what makes h_cpu_ free to write again.
         float* cpu = h_cpu_ + (size_t) at * e_row;
         if (n_host == 0) {
+            const Clock::time_point t_launch = host_prof ? Clock::now() : Clock::time_point();
             launch();
+            if (host_prof && m == 1) {
+                g_host.wait += wait_ms;
+                g_host.prep += std::chrono::duration<double, std::milli>(t_launch - t_prep).count();
+                g_host.launch += ms_since(t_launch);
+                ++g_host.calls;
+            }
             std::fill(cpu, cpu + (size_t) m * e_row, 0.f);
             continue;
         }

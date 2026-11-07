@@ -99,6 +99,10 @@
 !/benchmark/results/
 /benchmark/results/**
 !/benchmark/results/*.md
+!/benchmark/diagnostics/
+/benchmark/diagnostics/**
+!/benchmark/diagnostics/*.md
+!/benchmark/diagnostics/*.cpp
 /assets/**
 !/assets/memory-sharing.png
 !/assets/automatic-settings.png
