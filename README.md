@@ -100,7 +100,7 @@ irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/insta
 
 Windows HIP uses the driver's minimum VMM granularity only when the three app-local core hashes, actual loaded runtime and compiled HIP version (7.17 or newer) pass verification. Legacy, mismatched or unverified runtimes retain a **4 MiB allocation floor**. For coarse recovery, set `$env:TINYSTRATA_HIP_VMM_COARSE='1'` before launch; **any nonempty value forces coarse backing**, so remove the variable to restore automatic selection. Graceful native unload allows **60 seconds only for verified sub-4-MiB HIP**, with the existing budget on other paths. The AMD display limitation above remains in effect. See [validation and remaining limits](benchmark/results/hip-runtime-vmm-20261107.md).
 
-The optional green-themed UI supports the seven README languages, image input and live generation statistics. Light and dark mode follow your OS settings.
+The optional green-themed UI supports the seven README languages, image input and live generation statistics. Under **About → Settings → Appearance**, choose **Follow OS** (default), **Light** or **Dark**. This browser remembers your choice across restarts.
 
 The Windows UI installer creates a **TinyStrata** desktop shortcut. Open it to start or reuse the local API and UI and open the chat in your browser. The API-only installer does not create this shortcut. You can also run this command or double-click `run-ui.bat`:
 
@@ -116,7 +116,7 @@ For the API-only installation, use `run-api.bat`:
 
 ### UI search, Python and saved chats
 
-Use the **Web search** checkbox beside **Chat settings** in the composer to enable web search for any supported model. Configure the search provider, API key and concurrency in Chat settings. Python execution is always available when the model needs it; completed Python code blocks also have a **Run Python** button for manual execution.
+Web search is **on by default** in a fresh UI, using **DDGS without an API key** when no provider has been saved. Turn off the **Web search** checkbox beside **Chat settings** to disable it; this browser remembers that choice across restarts for all supported models. Previously saved on/off, provider and API-key choices are preserved. Configure the provider, API key and concurrency in Chat settings. Python execution is always available when the model needs it; completed Python code blocks also have a **Run Python** button for manual execution.
 
 - **Search:** DDGS needs no key and defaults to one concurrent search with at least 2 seconds between starts. Brave needs an API key and defaults to one concurrent search with at least 1.1 seconds between starts; rate-limit headers are respected. Queries are cached for 5 minutes, with at most 3 searches per reply. Provider, key and concurrency settings are shared across models by the UI server; keys are protected with Windows DPAPI and are not returned to the browser.
 - **Python:** standard-library code runs in an isolated browser iframe/worker using Pyodide, with a 10-second execution limit and no network, host filesystem, shell or `pip` access. First use downloads a pinned, SHA-256-verified runtime of about **13.5 MB** into the work directory, outside Git; later runs reuse it.

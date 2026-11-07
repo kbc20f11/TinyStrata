@@ -65,24 +65,52 @@ async function copyText(text, btn) {
 }
 
 // ------------------------------------------------------------------ theme and tabs
-// Follow the operating system on first paint and whenever its preference changes.
-// Older manually saved choices stay in storage, but no longer override the OS.
-function setTheme(t, save) {
-  t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+// An explicit display preference is independent of the resolved OS colour.
+// Ignore the retired "theme" key; old installations continue to follow the OS.
+function validThemeMode(value) { return ["system", "light", "dark"].includes(value) ? value : "system"; }
+let themeMode = validThemeMode(store.get("themeMode", "system"));
+const themeMedia = (() => { try { return matchMedia("(prefers-color-scheme: dark)"); } catch (_) { return null; } })();
+function applyTheme() {
+  const t = themeMode === "system" ? themeMedia?.matches ? "dark" : "light" : themeMode;
   document.documentElement.dataset.theme = t;
+  document.documentElement.dataset.themeMode = themeMode;
   $("theme-icon").setAttribute("href", `${SPRITE}#i-${t === "dark" ? "sun" : "moon"}`);
   $("dark-toggle").setAttribute("aria-checked", String(t === "dark"));
   $("theme-btn").title = t === "dark" ? tr("theme.switchToLight", "Switch to light mode") : tr("theme.switchToDark", "Switch to dark mode");
   $("theme-btn").setAttribute("aria-label", $("theme-btn").title);
-  $("theme-mode").textContent = t === "dark" ? tr("theme.darkMode", "Dark") : tr("theme.lightMode", "Light");
+  for (const button of $("theme-options").children) {
+    const selected = button.dataset.v === themeMode;
+    button.setAttribute("aria-checked", String(selected));
+    button.tabIndex = selected ? 0 : -1;
+  }
   document.querySelector('meta[name="theme-color"]').content = t === "dark" ? "#040b08" : "#f4faf5";
   refreshPreviews();                                  // the preview frames carry the page's colours
   if (typeof StrataDiagrams !== "undefined") StrataDiagrams.refresh();
 }
-setTheme(document.documentElement.dataset.theme || "light", false);
-matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
-  setTheme(e.matches ? "dark" : "light", false);
-});
+function selectThemeMode(value) {
+  themeMode = validThemeMode(value);
+  store.set("themeMode", themeMode);
+  applyTheme();
+}
+applyTheme();
+const onThemeMediaChange = () => { if (themeMode === "system") applyTheme(); };
+if (themeMedia?.addEventListener) themeMedia.addEventListener("change", onThemeMediaChange);
+else if (themeMedia?.addListener) themeMedia.addListener(onThemeMediaChange);
+for (const button of $("theme-options").children) {
+  button.onclick = () => selectThemeMode(button.dataset.v);
+  button.onkeydown = (event) => {
+    const buttons = [...$("theme-options").children], index = buttons.indexOf(button);
+    let next;
+    if (["ArrowRight", "ArrowDown"].includes(event.key)) next = (index + 1) % buttons.length;
+    else if (["ArrowLeft", "ArrowUp"].includes(event.key)) next = (index + buttons.length - 1) % buttons.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = buttons.length - 1;
+    else return;
+    event.preventDefault();
+    selectThemeMode(buttons[next].dataset.v);
+    buttons[next].focus();
+  };
+}
 
 let tab = "chat";
 function showTab(name) {
@@ -966,7 +994,7 @@ function markdown(text) {
 // 0.7 / 0.8 / 20 with a presence penalty). Before 0.1.45 the page sent 0.6 itself; a stored 0.6 with the other two
 // values untouched counts as "not set" too.
 const DEFAULTS = {thinking: "high", temperature: 1.0, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true, math: true,
-                  chatList: true, whileBusy: "wait", webSearch: false, autoCompact: true};
+                  chatList: true, whileBusy: "wait", webSearch: true, autoCompact: true};
 const OLD_DEFAULT_TEMPERATURE = 0.6;
 function samplingUntouched(s) {
   const t = +s.temperature;
@@ -3020,7 +3048,7 @@ for (const id of ["s-math", "s-show", "s-esp", "s-mcp", "s-share", "s-list", "s-
   $(id).onclick = () => $(id).setAttribute("aria-checked", String($(id).getAttribute("aria-checked") !== "true"));
 }
 $("s-reset").onclick = () => {
-  setComposerTools({webSearch: false});
+  setComposerTools({webSearch: DEFAULTS.webSearch});
   loadDrawer(DEFAULTS);
   $("s-search-provider").value = "ddgs";
   $("s-search-concurrency").value = 1;
@@ -3085,7 +3113,7 @@ $("lang").innerHTML = StrataI18n.LANGUAGES.map(([code, name]) => `<option value=
 function showLanguage() {
   $("lang").value = StrataI18n.lang;
   renderEmptyChat();
-  setTheme(document.documentElement.dataset.theme, false);
+  applyTheme();
   renderMcp();
   setSidebar(sidebarOpen, false);
   outputs();
@@ -3105,7 +3133,7 @@ $("lang").onchange = async () => {
 async function start() {
   await StrataI18n.setLanguage(urlLang || store.get("lang", "ja"));
   $("lang").value = StrataI18n.lang;
-  setTheme(document.documentElement.dataset.theme, false);
+  applyTheme();
   renderEmptyChat();
   initChats();
   await loadGlobalTools();

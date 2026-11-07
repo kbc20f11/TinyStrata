@@ -14,11 +14,18 @@
 <link rel="stylesheet" href="web/local-tools.css?v=20261103.2">
 <link rel="stylesheet" href="web/resource-dialogs.css?v=20261104.3">
 <script>
-  // Match the operating system before the first paint, including older installs.
+  // Resolve the saved display choice before first paint; inaccessible or
+  // malformed storage falls back to the operating system.
+  let mode = "system", dark = false;
   try {
-    const t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-    document.documentElement.dataset.theme = t;
-  } catch (e) {}
+    const saved = JSON.parse(localStorage.getItem("strata.themeMode"));
+    if (["system", "light", "dark"].includes(saved)) mode = saved;
+  } catch (_) {}
+  try { dark = matchMedia("(prefers-color-scheme: dark)").matches; } catch (_) {}
+  const theme = mode === "system" ? dark ? "dark" : "light" : mode;
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.dataset.themeMode = mode;
+  document.querySelector('meta[name="theme-color"]').content = theme === "dark" ? "#040b08" : "#f4faf5";
 </script>
 </head>
 <body class="terminal-shell">
@@ -70,7 +77,7 @@
         <div class="chat" id="chat">
           <div class="chat-empty" id="chat-empty">
             <div class="chat-empty__title" data-i18n="chat.empty">Talk to TinyStrata</div>
-            <div class="chat-empty__sub" id="chat-empty-sub">The model runs on this PC. Nothing leaves it.</div>
+            <div class="chat-empty__sub" id="chat-empty-sub">The model runs on this PC. Web search sends queries to your selected provider.</div>
           </div>
         </div>
       </div>
@@ -276,8 +283,13 @@
           <select class="st-input" id="lang"></select>
           <span class="muted small" data-i18n="settings.languageNote">The interface language applies to chat, monitoring, settings and measurements.</span>
         </div>
-        <div class="st-field"><span class="st-label" data-i18n="settings.appearance">Appearance</span>
-          <span><span data-i18n="settings.followsOs">Follows your operating system</span> · <span id="theme-mode"></span></span></div>
+        <div class="st-field"><span class="st-label" id="theme-label" data-i18n="settings.appearance">Appearance</span>
+          <div class="seg seg--3" id="theme-options" role="radiogroup" aria-labelledby="theme-label">
+            <button type="button" role="radio" data-v="system" aria-checked="true" tabindex="0" data-i18n="theme.system">Follow OS</button>
+            <button type="button" role="radio" data-v="light" aria-checked="false" tabindex="-1" data-i18n="theme.light">Light</button>
+            <button type="button" role="radio" data-v="dark" aria-checked="false" tabindex="-1" data-i18n="theme.dark">Dark</button>
+          </div>
+        </div>
         <div class="toggle-row" hidden><span data-i18n="settings.darkTheme">Dark theme</span>
           <button class="st-toggle" id="dark-toggle" role="switch" aria-checked="false" aria-label="Dark theme"></button></div>
         <p class="muted small"><span data-i18n="about.browserStorage">Chat history is saved on this PC. Display preferences and the API connection key stay in this browser.</span>
@@ -338,7 +350,7 @@
       <button class="st-toggle" id="s-mcp" role="switch" aria-checked="true" aria-label="Use tools from MCP servers" data-i18n-label="drawer.mcp"></button></div>
     <div class="drawer-group" role="group" aria-labelledby="g-local-tools">
       <h3 class="drawer-group__title" id="g-local-tools" data-i18n="localTools.title">Search and code execution</h3>
-      <p class="muted small" data-i18n="localTools.composerHint">Web search is optional. Isolated Python execution is always available when the model needs it.</p>
+      <p class="muted small" data-i18n="localTools.composerHint">Web search is on by default. Uncheck it beside the message box when you do not need it. Isolated Python execution is always available when the model needs it.</p>
       <p class="muted small" data-i18n="localTools.shared">The provider, search key and concurrency apply to every model in this UI.</p>
       <fieldset class="local-search-fields" id="search-provider-fields">
         <div class="st-field"><label class="st-label" for="s-search-provider" data-i18n="localTools.provider">Search provider</label>

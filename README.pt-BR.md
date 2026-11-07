@@ -86,7 +86,7 @@ irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/insta
 
 O Windows HIP usa a granularidade VMM mínima do driver somente após verificar os três arquivos locais, o runtime carregado e a versão HIP compilada correspondente (7.17 ou posterior). Runtimes antigos, incompatíveis ou não verificados mantêm um **mínimo de alocação de 4 MiB**. Para recuperar os blocos maiores, defina `$env:TINYSTRATA_HIP_VMM_COARSE='1'` antes de iniciar; **qualquer valor não vazio os força**. Remova a variável para restaurar a seleção automática. Somente **HIP verificado com granularidade inferior a 4 MiB** permite **60 segundos** para encerrar normalmente o descarregamento nativo; os outros caminhos mantêm o prazo anterior. A limitação de vídeo AMD acima continua válida. Veja a [validação e as limitações restantes](benchmark/results/hip-runtime-vmm-20261107.md).
 
-A interface opcional em tons de verde oferece os sete idiomas do README, entrada de imagens e estatísticas de geração em tempo real. O modo claro ou escuro segue as configurações do sistema.
+A interface opcional em tons de verde oferece os sete idiomas do README, entrada de imagens e estatísticas de geração em tempo real. Em **Sobre → Configurações → Aparência**, escolha **Seguir o sistema** (padrão), **Claro** ou **Escuro**. Este navegador mantém sua escolha após reiniciar.
 
 O instalador com interface para Windows cria um atalho **TinyStrata** na área de trabalho. Abra-o para iniciar ou reutilizar a API e a interface locais e abrir o chat no navegador. O instalador somente com API não cria esse atalho. Você também pode executar este comando ou dar um clique duplo em `run-ui.bat`:
 
@@ -102,7 +102,7 @@ Para a instalação somente com API, use `run-api.bat`:
 
 ### Busca e Python na UI
 
-A caixa **Busca na web**, ao lado de **Configurações do chat**, ativa a busca para os quatro modelos. O provedor, a chave API e a concorrência são definidos nessas configurações. A execução Python no ambiente isolado está sempre disponível quando o modelo precisa dela. Blocos Python concluídos também podem ser executados manualmente com **Executar Python**.
+A busca na web fica **ativada por padrão** em uma UI nova e usa **DDGS sem chave API** quando nenhum provedor foi salvo. Desmarque **Busca na web**, ao lado de **Configurações do chat**, para desativá-la; este navegador mantém a escolha após reiniciar para todos os modelos compatíveis. As preferências de ativação, o provedor e as chaves API já salvos são preservados. O provedor, a chave API e a concorrência são definidos nessas configurações. A execução Python no ambiente isolado está sempre disponível quando o modelo precisa dela. Blocos Python concluídos também podem ser executados manualmente com **Executar Python**.
 
 ### Compactação automática do contexto
 

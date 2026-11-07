@@ -86,7 +86,7 @@ irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/insta
 
 Windows HIP utilise la granularité VMM minimale du pilote uniquement après vérification des trois bibliothèques locales, du runtime réellement chargé et de la version HIP compilée correspondante (7.17 ou ultérieure). Les runtimes anciens, incompatibles ou non vérifiés conservent un **minimum de 4 MiB**. Pour revenir aux blocs grossiers, définissez `$env:TINYSTRATA_HIP_VMM_COARSE='1'` avant le démarrage ; **toute valeur non vide les impose**. Supprimez la variable pour rétablir la sélection automatique. Seul **HIP vérifié avec une granularité inférieure à 4 MiB** dispose de **60 secondes** pour terminer normalement le déchargement natif ; les autres chemins gardent leur délai. La restriction d’affichage AMD ci-dessus reste applicable. Voir [la validation et les limites restantes](benchmark/results/hip-runtime-vmm-20261107.md).
 
-L’interface verte optionnelle prend en charge les sept langues du README, les images et les statistiques de génération en direct. Le mode clair ou sombre suit les paramètres du système.
+L’interface verte optionnelle prend en charge les sept langues du README, les images et les statistiques de génération en direct. Dans **À propos → Paramètres → Apparence**, choisissez **Suivre le système** (par défaut), **Clair** ou **Sombre**. Ce navigateur conserve votre choix après les redémarrages.
 
 L’installateur avec interface pour Windows crée un raccourci **TinyStrata** sur le bureau. Ouvrez-le pour démarrer ou réutiliser l’API et l’interface locales, puis afficher le chat dans le navigateur. L’installateur avec API seule ne crée pas ce raccourci. Vous pouvez aussi exécuter cette commande ou double-cliquer sur `run-ui.bat` :
 
@@ -102,7 +102,7 @@ Pour l’installation avec API seule, utilisez `run-api.bat` :
 
 ### Recherche et Python dans l’UI
 
-La case **Recherche web**, à côté des **Paramètres de discussion**, active la recherche pour les quatre modèles. Le fournisseur, la clé API et le nombre de recherches simultanées se règlent dans ces paramètres. L’exécution Python dans l’environnement isolé est toujours disponible lorsque le modèle en a besoin. Les blocs Python terminés peuvent aussi être exécutés manuellement avec **Exécuter Python**.
+Dans une nouvelle UI, la recherche web est **activée par défaut** et utilise **DDGS sans clé API** si aucun fournisseur n’a été enregistré. Décochez **Recherche web**, à côté des **Paramètres de discussion**, pour la désactiver ; ce navigateur conserve ce choix après les redémarrages pour tous les modèles pris en charge. Les choix d’activation, le fournisseur et les clés API déjà enregistrés sont conservés. Le fournisseur, la clé API et le nombre de recherches simultanées se règlent dans ces paramètres. L’exécution Python dans l’environnement isolé est toujours disponible lorsque le modèle en a besoin. Les blocs Python terminés peuvent aussi être exécutés manuellement avec **Exécuter Python**.
 
 ### Compaction automatique du contexte
 

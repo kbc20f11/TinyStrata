@@ -39,6 +39,7 @@
 !/tests/test_live_stream_stats.py
 !/tests/ui-live-stats.cjs
 !/tests/ui-reasoning-order.cjs
+!/tests/ui-theme-mode.cjs
 !/tests/ui-model-download.cjs
 !/tests/model-artifact-migration.py
 !/tests/clover-self-spec.cpp

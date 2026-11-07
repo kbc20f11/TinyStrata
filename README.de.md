@@ -86,7 +86,7 @@ irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/insta
 
 Windows HIP verwendet die vom Treiber gemeldete minimale VMM-Granularität nur nach Prüfung der drei lokalen Kernbibliotheken, der tatsächlich geladenen Laufzeit und der passenden kompilierten HIP-Version (ab 7.17). Ältere, abweichende oder ungeprüfte Laufzeiten behalten eine **Mindestgröße von 4 MiB**. Zur Wiederherstellung setzen Sie vor dem Start `$env:TINYSTRATA_HIP_VMM_COARSE='1'`; **jeder nichtleere Wert erzwingt grobe Blöcke**. Entfernen Sie die Variable für die automatische Auswahl. Nur bei **verifiziertem HIP mit Blöcken unter 4 MiB** wartet die native Entladung bis zu **60 Sekunden** auf ein reguläres Ende; andere Pfade behalten ihr Zeitlimit. Die obige AMD-Bildausgabebeschränkung gilt weiter. Siehe [Validierung und verbleibende Grenzen](benchmark/results/hip-runtime-vmm-20261107.md).
 
-Die optionale grüne Oberfläche unterstützt die sieben README-Sprachen, Bildeingaben und Live-Statistiken zur Generierung. Der helle oder dunkle Modus folgt den Betriebssystemeinstellungen.
+Die optionale grüne Oberfläche unterstützt die sieben README-Sprachen, Bildeingaben und Live-Statistiken zur Generierung. Unter **Info → Einstellungen → Erscheinungsbild** wählen Sie **System folgen** (Standard), **Hell** oder **Dunkel**. Dieser Browser behält Ihre Auswahl auch nach Neustarts bei.
 
 Der Windows-UI-Installer erstellt eine **TinyStrata**-Verknüpfung auf dem Desktop. Sie startet die lokale API und Oberfläche oder verwendet die bereits laufenden Prozesse und öffnet den Chat im Browser. Der reine API-Installer erstellt diese Verknüpfung nicht. Alternativ diesen Befehl ausführen oder `run-ui.bat` doppelklicken:
 
@@ -102,7 +102,7 @@ Für die reine API-Installation verwenden Sie `run-api.bat`:
 
 ### UI-Suche und Python
 
-Über das Kontrollkästchen **Websuche** neben **Chat-Einstellungen** wird die Suche für alle vier Modelle aktiviert. Suchanbieter, API-Schlüssel und Parallelität werden in den Chat-Einstellungen festgelegt. Python im isolierten Browserbereich steht dem Modell bei Bedarf immer zur Verfügung. Fertig generierte Python-Codeblöcke lassen sich auch über **Python ausführen** manuell starten.
+In einer neuen UI ist die Websuche **standardmäßig eingeschaltet**. Ohne gespeicherten Suchanbieter wird **DDGS ohne API-Schlüssel** verwendet. Über das Kontrollkästchen **Websuche** neben **Chat-Einstellungen** lässt sie sich ausschalten; dieser Browser behält die Auswahl auch nach Neustarts für alle unterstützten Modelle bei. Bereits gespeicherte Ein-/Aus-Einstellungen, Suchanbieter und API-Schlüssel bleiben erhalten. Suchanbieter, API-Schlüssel und Parallelität werden in den Chat-Einstellungen festgelegt. Python im isolierten Browserbereich steht dem Modell bei Bedarf immer zur Verfügung. Fertig generierte Python-Codeblöcke lassen sich auch über **Python ausführen** manuell starten.
 
 ### Automatische Kontextkomprimierung
 
