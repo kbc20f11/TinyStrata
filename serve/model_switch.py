@@ -415,19 +415,35 @@ class ModelSwitcher:
             raise ValueError('the matching Gemma QAT assistant is missing or invalid; download the model bundle first')
         if (api.gpu_list(cfg) or [0]) != (getattr(svc, 'gpu_indices', None) or [0]):
             raise ValueError('live switching requires both model profiles to use this server GPU')
+        native_env = api.child_env(cfg)
+        live_env = getattr(svc, 'telemetry_env', None)
+        if cfg.get('backend') == 'hip' and live_env:
+            if any(native_env.get(key) != live_env.get(key)
+                   for key in ('HIP_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES')):
+                raise ValueError('Live switching requires the same HIP device selection; restart the API to change GPUs')
+            current_identity = live_env.get('TINYSTRATA_HIP_RUNTIME_FINGERPRINT')
+            next_identity = native_env.get('TINYSTRATA_HIP_RUNTIME_FINGERPRINT')
+            if current_identity and next_identity and current_identity != next_identity:
+                raise ValueError('Live switching requires the same HIP SDK dependencies; restart the API after updating it')
+            current_dll = live_env.get('TINYSTRATA_HIP_RUNTIME_DLL')
+            next_dll = native_env.get('TINYSTRATA_HIP_RUNTIME_DLL')
+            if current_dll and next_dll and Path(current_dll).resolve() != Path(next_dll).resolve():
+                import hashlib
+                if hashlib.sha256(Path(current_dll).read_bytes()).digest() != hashlib.sha256(Path(next_dll).read_bytes()).digest():
+                    raise ValueError('Live switching requires the same HIP runtime; restart the API after updating it')
         tok = api.model_tokenizer(Path(cfg['tokenizer']))
         template = api.ChatTemplate(Path(cfg['tokenizer']) / 'chat_template.jinja',
                                     clover_vision=want_vision and profile.arch == 'clover_moe')
         effort = api.effort_end_args(cfg, str(exe), tok)
         engine = api.StrataEngine(str(exe), api.engine_args(cfg) + (effort or []),
-                                  cwd=cfg.get('cwd'), log=cfg.get('log'), env=api.child_env(cfg), lazy=True)
+                                  cwd=cfg.get('cwd'), log=cfg.get('log'), env=native_env, lazy=True)
         engine.silence_s = api.engine_silence_s(cfg)
         vision = None
         try:
             if cfg.get('vision'):
                 vision = api.Vision(cfg['vision'],
                                     log=open(cfg['log'], 'a', encoding='utf-8') if cfg.get('log') else None,
-                                    env=api.vision_env(cfg, api.child_env(cfg)), lazy=True)
+                                    env=api.vision_env(cfg, native_env), lazy=True)
             fresh = api.Service(engine, tok, template, model_name=api.default_model_name(cfg),
                                 vision=vision, sampling_defaults=api.sampling_defaults_from_config(cfg),
                                 fit_max_tokens=cfg.get('fit_max_tokens') is True, generation_defaults=cfg)

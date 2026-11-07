@@ -6,9 +6,10 @@ Install and start TinyStrata on Windows.
 Run with: irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex
 Uses local sources when available, otherwise downloads them from GitHub.
 Other downloads use official Python, NVIDIA, AMD and Microsoft endpoints.
-The selected GPU driver must already be installed. AMD builds use an existing
-ROCm/HIP SDK or prepare a private pinned AMD SDK in the work directory. No persistent PATH or execution
-policy changes are made. Runtime data stays in the sibling TinyStrata-work folder.
+The selected GPU driver must already be installed. AMD builds use the private
+pinned ROCm 10.2.0a20260930 SDK (HIP 7.17) by default; -HipDirectory selects a
+custom SDK. No persistent PATH or execution policy changes are made. Runtime
+data stays in the sibling TinyStrata-work folder.
 #>
 [CmdletBinding()]
 param(
@@ -88,6 +89,7 @@ function Initialize-TinyStrataSource {
     param([string]$SourceRoot, [string]$CacheRoot, [switch]$Refresh)
     $SourceRoot = [IO.Path]::GetFullPath($SourceRoot).TrimEnd('\')
     $existing = Test-TinyStrataSource -Directory $SourceRoot
+    $backup = $null
     if ($existing -and -not $Refresh) { return }
     if ($existing) {
         $sourceItem = Get-Item -LiteralPath $SourceRoot -Force
@@ -132,7 +134,8 @@ function Initialize-TinyStrataSource {
             (Test-Path -LiteralPath (Join-Path $SourceRoot '.git'))) {
             throw 'The source directory changed while downloading; it was left unchanged.'
         }
-        $backupParent = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $CacheRoot) 'source-backups'))
+        # Directory.Move must stay on the source volume even with a custom WorkDir.
+        $backupParent = [IO.Path]::GetFullPath((Join-Path $sourceParent '.TinyStrata-source-backups'))
         $backup = [IO.Path]::GetFullPath((Join-Path $backupParent ((Split-Path -Leaf $SourceRoot) + '-' + [Guid]::NewGuid().ToString('N'))))
         if (-not $backup.StartsWith($backupParent.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
             throw 'Invalid source backup destination.'
@@ -152,6 +155,17 @@ function Initialize-TinyStrataSource {
     }
     [IO.Directory]::Delete($staging, $false)
     Write-Host "Source: $SourceRoot"
+    return [pscustomobject]@{ SourceRoot = $SourceRoot; Backup = $backup }
+}
+
+function Restore-TinyStrataSource {
+    param($Change)
+    if (-not $Change -or -not $Change.Backup) { return }
+    if (-not (Test-Path -LiteralPath $Change.Backup -PathType Container)) { throw 'The previous source backup is missing.' }
+    $failed = $Change.Backup + '.failed-update'
+    if (Test-Path -LiteralPath $Change.SourceRoot) { [IO.Directory]::Move($Change.SourceRoot, $failed) }
+    [IO.Directory]::Move($Change.Backup, $Change.SourceRoot)
+    Write-Warning "Update preparation failed; previous sources restored. Unpublished sources: $failed"
 }
 
 function Ensure-TinyStrataBuildTools {
@@ -357,21 +371,35 @@ function Get-TinyStrataPrivateHipRoot {
     return Find-TinyStrataHipToolkit -Directory ([string]$reported[0])
 }
 
+function Get-TinyStrataPrivateHipDirectory {
+    param([string]$DestinationDirectory)
+    $sdk = Join-Path $DestinationDirectory 'Scripts\rocm-sdk.exe'
+    $python = Join-Path $DestinationDirectory 'Scripts\python.exe'
+    if ((Test-Path -LiteralPath $sdk -PathType Leaf) -and
+        -not (Test-TinyStrataRocmPackages -Python $python -Names @('rocm', 'rocm-sdk-core', 'rocm-sdk-devel', 'rocm-sdk-libraries'))) {
+        return $DestinationDirectory + '-10.2.0a20260930'
+    }
+    return $DestinationDirectory
+}
+
 function Ensure-TinyStrataHipToolkit {
     param([string]$DestinationDirectory, [string]$Python, [string]$Directory, [string]$Architectures)
     # An explicitly supplied path is a deliberate selection; never replace it
     # with a downloaded SDK when it is misspelled or incomplete.
     if ($Directory) { return Find-TinyStrataHipToolkit -Directory $Directory }
+    $basePackages = @('rocm', 'rocm-sdk-core', 'rocm-sdk-devel', 'rocm-sdk-libraries')
+    # An old runtime may still be referenced by another saved model profile.
+    # Keep it immutable and prepare a new pin in a different environment.
+    $DestinationDirectory = Get-TinyStrataPrivateHipDirectory -DestinationDirectory $DestinationDirectory
     $venvPython = Join-Path $DestinationDirectory 'Scripts\python.exe'
     $sdk = Join-Path $DestinationDirectory 'Scripts\rocm-sdk.exe'
-    if (-not (Test-Path -LiteralPath $sdk -PathType Leaf)) {
-        try { return Find-TinyStrataHipToolkit } catch { }
-    }
+    # Automatic installs always use the tested private pin. A global HIP_PATH
+    # or system SDK can be older and must not silently replace this choice.
+    # Explicit -HipDirectory above remains a deliberate custom SDK selection.
     if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
         & $Python -I -m venv $DestinationDirectory | Out-Host
         if ($LASTEXITCODE -ne 0) { throw 'Could not create the private AMD SDK environment.' }
     }
-    $basePackages = @('rocm', 'rocm-sdk-devel', 'rocm-sdk-libraries')
     $baseReady = (Test-Path -LiteralPath $sdk -PathType Leaf) -and (Test-TinyStrataRocmPackages -Python $venvPython -Names $basePackages)
     # AMD ships the small "rocm" metapackage as an sdist at this pin; the
     # compiler/runtime/device payloads must still be prebuilt wheels.
@@ -471,6 +499,7 @@ function Find-TinyStrataBuildTools {
 function Test-TinyStrataVisionBackend {
     param([string]$ExecutablePath, [string[]]$SearchDirectories = @(), [string]$Backend = 'cuda')
     if (-not (Test-Path -LiteralPath $ExecutablePath -PathType Leaf)) { return $false }
+    if ($Backend -eq 'hip') { return @(Get-TinyStrataHipImports -ExecutablePath $ExecutablePath).Count -gt 0 }
     $previousPath = $env:PATH
     try {
         $env:PATH = (@($SearchDirectories) + @((Split-Path -Parent $ExecutablePath), $previousPath)) -join ';'
@@ -595,6 +624,7 @@ function Invoke-TinyStrataPortableBuild {
             -not (Test-Path -LiteralPath $gemmaExe -PathType Leaf)) {
             throw 'Expected Qwen, LFM, Gemma or vision build outputs are missing.'
         }
+        if ($Backend -eq 'hip') { Install-TinyStrataHipRuntime -SearchDirectories @(Get-TinyStrataHipRuntimeDirectories -Directory $hipRoot) -EngineDirectory $buildRoot -SdkRoot $hipRoot }
         if (-not (Test-TinyStrataVisionBackend -ExecutablePath $visionExe -Backend $Backend)) { throw "The image encoder was not built with $Backend support." }
         foreach ($engine in @($exe, $lfmExe, $gemmaExe)) {
             if (-not (Test-TinyStrataEngineBackend -ExecutablePath $engine -Backend $Backend)) { throw "The engine was not built with $Backend support: $engine" }
@@ -687,11 +717,50 @@ function Find-TinyStrataPython {
     return $null
 }
 
+function Backup-TinyStrataPython {
+    param([string]$VenvRoot, [hashtable]$Transaction)
+    if ($null -eq $Transaction -or $Transaction.ContainsKey('PythonBackup') -or -not (Test-Path -LiteralPath $VenvRoot -PathType Container)) { return }
+    $backup = $VenvRoot + '.rollback-' + [Guid]::NewGuid().ToString('N')
+    # Never traverse a linked venv while making a rollback snapshot.
+    if (((Get-Item -LiteralPath $VenvRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+        @(Get-ChildItem -LiteralPath $VenvRoot -Recurse -Force | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }).Count) {
+        throw 'The Python environment contains linked paths; dependency updates were not started.'
+    }
+    try { Copy-Item -LiteralPath $VenvRoot -Destination $backup -Recurse -Force -ErrorAction Stop }
+    catch {
+        if (([IO.Path]::GetFullPath($backup)).StartsWith([IO.Path]::GetFullPath($VenvRoot) + '.rollback-', [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $backup)) {
+            Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        throw "Could not snapshot the existing Python environment. It was not changed: $backup. $_"
+    }
+    $Transaction.PythonBackup = $backup
+    $Transaction.PythonVenv = [IO.Path]::GetFullPath($VenvRoot)
+}
+
+function Complete-TinyStrataPythonTransaction {
+    param([hashtable]$Transaction, [switch]$Rollback)
+    if ($null -eq $Transaction -or -not $Transaction.ContainsKey('PythonBackup')) { return }
+    $venv = $Transaction.PythonVenv
+    $backup = [IO.Path]::GetFullPath($Transaction.PythonBackup)
+    if (-not $backup.StartsWith($venv + '.rollback-', [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid Python rollback snapshot.' }
+    if ($Rollback) {
+        $failed = $venv + '.failed-' + [Guid]::NewGuid().ToString('N')
+        if (Test-Path -LiteralPath $venv) { [IO.Directory]::Move($venv, $failed) }
+        [IO.Directory]::Move($backup, $venv)
+        if (Test-Path -LiteralPath $failed) {
+            if (-not ([IO.Path]::GetFullPath($failed)).StartsWith($venv + '.failed-', [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid failed Python environment directory.' }
+            Remove-Item -LiteralPath $failed -Recurse -Force
+        }
+    } else { Remove-Item -LiteralPath $backup -Recurse -Force }
+    $Transaction.Remove('PythonBackup')
+}
+
 function Initialize-TinyStrataPython {
     param(
         [Parameter(Mandatory=$true)][string]$WorkRoot,
         [Parameter(Mandatory=$true)][string]$SourceRoot,
-        [Parameter(Mandatory=$true)][string]$CacheRoot
+        [Parameter(Mandatory=$true)][string]$CacheRoot,
+        [hashtable]$Transaction
     )
     $runtimeRoot = Join-Path $WorkRoot 'runtime'
     $venvRoot = Join-Path $runtimeRoot '.venv'
@@ -714,6 +783,7 @@ function Initialize-TinyStrataPython {
             if (-not (Test-TinyStrataPython -Executable $basePython)) { throw 'The private Python runtime did not start.' }
         }
         Write-Host 'Preparing the private Python environment...'
+        Backup-TinyStrataPython -VenvRoot $venvRoot -Transaction $Transaction
         & $basePython -I -B -m venv $venvRoot | Out-Host
         if ($LASTEXITCODE -ne 0 -or -not (Test-TinyStrataPython -Executable $venvPython -RequirePip)) {
             throw 'Could not create the private Python environment.'
@@ -745,6 +815,7 @@ for raw in open(sys.argv[1], encoding='utf-8-sig'):
         return $venvPython
     }
     Write-Host 'Installing API dependencies...'
+    Backup-TinyStrataPython -VenvRoot $venvRoot -Transaction $Transaction
     & $venvPython -I -B -m pip --isolated --disable-pip-version-check --no-input install `
         --index-url https://pypi.org/simple --only-binary=:all: `
         -r $requirements | Out-Host
@@ -754,11 +825,237 @@ for raw in open(sys.argv[1], encoding='utf-8-sig'):
     return $venvPython
 }
 
+function Get-TinyStrataHipRuntimeFiles {
+    param([string[]]$SearchDirectories)
+    # Pick one SDK directory, never fill holes with another SDK or System32.
+    $source = $null
+    $runtimes = @()
+    foreach ($directory in $SearchDirectories) {
+        $runtimes = @(Get-ChildItem -LiteralPath $directory -Filter 'amdhip64*.dll' -File -ErrorAction SilentlyContinue)
+        if ($runtimes.Count) { $source = $directory; break }
+    }
+    if (-not $source) { throw 'The selected AMD SDK has no HIP runtime DLL.' }
+    $comgr = @(Get-ChildItem -LiteralPath $source -Filter 'amd_comgr*.dll' -File)
+    if (-not $comgr.Count) { throw "The selected AMD SDK is missing its matching COMGR DLL: $source" }
+    $files = @($runtimes) + @($comgr)
+    # Import tables and dynamic-load names both contain the DLL basename. Check
+    # ASCII and UTF-16 references without loading code or initializing a GPU.
+    # Older SDKs predate kpack; require it only when referenced, but include it
+    # when present. Likewise do not substitute a differently named COMGR DLL.
+    $references = @()
+    foreach ($runtime in $runtimes) {
+        $bytes = [IO.File]::ReadAllBytes($runtime.FullName)
+        foreach ($encoding in @([Text.Encoding]::ASCII, [Text.Encoding]::Unicode)) {
+            $references += @([regex]::Matches($encoding.GetString($bytes), '(?i)(?:rocm_kpack|amd_comgr[0-9_]*)\.dll') | ForEach-Object Value)
+        }
+    }
+    foreach ($name in @($references | Select-Object -Unique)) {
+        if (-not (Test-Path -LiteralPath (Join-Path $source $name) -PathType Leaf)) {
+            throw "The selected AMD SDK is missing HIP runtime dependency $name in $source. No HIP DLLs were copied."
+        }
+    }
+    $kpack = Join-Path $source 'rocm_kpack.dll'
+    if (Test-Path -LiteralPath $kpack -PathType Leaf) { $files += Get-Item -LiteralPath $kpack }
+    return @($files | Sort-Object Name -Unique)
+}
+
+function Get-TinyStrataHipImports {
+    param([string]$ExecutablePath)
+    # Read PE import descriptors only: never load an executable or its DLLs.
+    $bytes = [IO.File]::ReadAllBytes($ExecutablePath)
+    if ($bytes.Length -lt 64 -or [BitConverter]::ToUInt16($bytes, 0) -ne 0x5a4d) { return @() }
+    try {
+        $pe = [BitConverter]::ToInt32($bytes, 60)
+        if ($pe -lt 0 -or $pe + 24 -gt $bytes.Length -or [BitConverter]::ToUInt32($bytes, $pe) -ne 0x4550) { throw 'invalid PE signature' }
+        $sections = [BitConverter]::ToUInt16($bytes, $pe + 6)
+        $optionalSize = [BitConverter]::ToUInt16($bytes, $pe + 20)
+        $optional = $pe + 24
+        $magic = [BitConverter]::ToUInt16($bytes, $optional)
+        $directory = if ($magic -eq 0x20b) { 112 } elseif ($magic -eq 0x10b) { 96 } else { throw 'invalid optional header' }
+        $sectionTable = $optional + $optionalSize
+        if ($optionalSize -lt $directory + 16 -or $sections -gt 96 -or $sectionTable + 40 * $sections -gt $bytes.Length) { throw 'invalid PE headers' }
+        $importRva = [BitConverter]::ToUInt32($bytes, $optional + $directory + 8)
+        if (-not $importRva) { return @() }
+        $offsetOf = {
+            param([uint32]$Rva)
+            for ($index = 0; $index -lt $sections; $index++) {
+                $section = $sectionTable + 40 * $index
+                $address = [BitConverter]::ToUInt32($bytes, $section + 12)
+                $size = [BitConverter]::ToUInt32($bytes, $section + 16)
+                $raw = [BitConverter]::ToUInt32($bytes, $section + 20)
+                if ($Rva -ge $address -and $Rva -lt [long]$address + $size) {
+                    $result = [long]$raw + $Rva - $address
+                    if ($result -ge $bytes.Length) { throw 'invalid section data' }
+                    return [int]$result
+                }
+            }
+            throw 'unmapped import RVA'
+        }
+        $descriptor = & $offsetOf $importRva
+        for ($count = 0; $count -lt 4096; $count++) {
+            if ($descriptor + 20 -gt $bytes.Length) { throw 'truncated import table' }
+            $nameRva = [BitConverter]::ToUInt32($bytes, $descriptor + 12)
+            if (-not $nameRva) { return }
+            $nameOffset = & $offsetOf $nameRva
+            $end = [Array]::IndexOf($bytes, [byte]0, $nameOffset)
+            if ($end -lt $nameOffset -or $end - $nameOffset -gt 256) { throw 'invalid import name' }
+            $name = [Text.Encoding]::ASCII.GetString($bytes, $nameOffset, $end - $nameOffset)
+            if ($name -match '^amdhip64(?:_[0-9]+)?\.dll$') { $name }
+            $descriptor += 20
+        }
+        throw 'unterminated import table'
+    } catch { throw "Cannot inspect HIP imports in $ExecutablePath : $_" }
+}
+
+function Install-TinyStrataHipRuntime {
+    param([string[]]$SearchDirectories, [Parameter(Mandatory=$true)][string]$EngineDirectory, [string]$SdkRoot)
+    # Windows searches the executable directory before System32, then PATH.
+    # AMD's Windows llama.cpp guide requires this matching three-DLL set:
+    # https://rocm.docs.amd.com/projects/ai-ecosystem/en/latest/inference/llamacpp.html#copy-the-hip-runtime-libraries
+    $files = @(Get-TinyStrataHipRuntimeFiles -SearchDirectories $SearchDirectories)
+    $destination = [IO.Path]::GetFullPath($EngineDirectory).TrimEnd('\')
+    $windows = [IO.Path]::GetFullPath([Environment]::GetEnvironmentVariable('SystemRoot')).TrimEnd('\')
+    if ($destination -eq $windows -or $destination.StartsWith($windows + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'HIP runtime DLLs must be installed beside TinyStrata, outside the Windows directory.'
+    }
+    $runtimeImports = @()
+    foreach ($executable in @(Get-ChildItem -LiteralPath $destination -Filter 'tinystrata*.exe' -File -ErrorAction SilentlyContinue)) {
+        foreach ($name in @(Get-TinyStrataHipImports -ExecutablePath $executable.FullName)) {
+            $runtimeImports += $name
+            if ($files.Name -notcontains $name) {
+                throw "The selected AMD SDK does not provide $name required by $($executable.Name). Rebuild TinyStrata with this SDK; an old app-local or system DLL will not be substituted."
+            }
+        }
+    }
+    $runtimeImports = @($runtimeImports | Select-Object -Unique)
+    if ($runtimeImports.Count -gt 1) { throw 'The native engines require different HIP runtimes. Rebuild them with one SDK.' }
+    $runtimeName = if ($runtimeImports.Count) { $runtimeImports[0] } else { @($files | Where-Object { $_.Name -like 'amdhip64*.dll' })[0].Name }
+    $dependencies = @()
+    foreach ($dependency in @('hipblas.dll', 'rocblas.dll', 'rocsolver.dll', 'libhipblaslt.dll', 'libtensilelite-host.dll')) {
+        foreach ($directory in $SearchDirectories) {
+            $path = Join-Path $directory $dependency
+            if (Test-Path -LiteralPath $path -PathType Leaf) {
+                $dependencies += [ordered]@{ path = [IO.Path]::GetFullPath($path); sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() }
+                break
+            }
+        }
+    }
+    if (@($dependencies | Where-Object { [IO.Path]::GetFileName($_.path) -eq 'hipblas.dll' }).Count -ne 1 -or
+        @($dependencies | Where-Object { [IO.Path]::GetFileName($_.path) -eq 'rocblas.dll' }).Count -ne 1) {
+        throw 'The selected AMD SDK is missing matching HIP/rocBLAS math libraries. No runtime DLLs were copied.'
+    }
+    $manifest = [ordered]@{
+        schema = 1; runtime_dll = $runtimeName
+        lib_dirs = @($SearchDirectories | ForEach-Object { [IO.Path]::GetFullPath($_) } | Select-Object -Unique)
+        files = @($files | ForEach-Object { [ordered]@{ name = $_.Name; sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() } })
+        dependencies = $dependencies
+    }
+    if ($SdkRoot) {
+        if (-not (Test-Path -LiteralPath $SdkRoot -PathType Container)) { throw 'The selected HIP SDK root is missing.' }
+        $manifest['sdk_root'] = [IO.Path]::GetFullPath($SdkRoot)
+    }
+    $manifestBytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($manifest | ConvertTo-Json -Depth 5))
+    $payloads = @($files | ForEach-Object { [pscustomobject]@{ Name = $_.Name; Source = $_.FullName; Bytes = $null } })
+    $payloads += [pscustomobject]@{ Name = '.tinystrata-hip-runtime.json'; Source = $null; Bytes = $manifestBytes }
+
+    # Native CLI guard uses this fixed-format proof after checking the actual
+    # loaded app-local runtime/version and all three hashes independently.
+    # Publish it in the same rollback transaction as the JSON and core DLLs.
+    $proofBytes = [byte[]]@()
+    $runtimeSource = @($files | Where-Object { $_.Name -eq $runtimeName })[0]
+    $comgrFiles = @($files | Where-Object { $_.Name -match '^amd_comgr(?:_[0-9]+)?\.dll$' })
+    $runtimeBytes = [IO.File]::ReadAllBytes($runtimeSource.FullName)
+    $references = @()
+    foreach ($encoding in @([Text.Encoding]::ASCII, [Text.Encoding]::Unicode)) {
+        $references += @([regex]::Matches($encoding.GetString($runtimeBytes), '(?i)amd_comgr(?:_[0-9]+)?\.dll') | ForEach-Object Value)
+    }
+    $selectedComgr = @($comgrFiles | Where-Object { $references -contains $_.Name })
+    if ($selectedComgr.Count -eq 0 -and $comgrFiles.Count -eq 1) { $selectedComgr = $comgrFiles }
+    $kpackFiles = @($files | Where-Object { $_.Name -eq 'rocm_kpack.dll' })
+    if ($selectedComgr.Count -eq 1 -and $kpackFiles.Count -eq 1) {
+        $proofFiles = @($runtimeSource, $selectedComgr[0], $kpackFiles[0]) | Sort-Object Name
+        $proofText = "TINYSTRATA_HIP_VMM_V1`n"
+        foreach ($file in $proofFiles) {
+            $proofText += $file.Name.ToLowerInvariant() + ' ' + (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() + "`n"
+        }
+        $proofBytes = [Text.Encoding]::ASCII.GetBytes($proofText)
+    }
+    # An older SDK writes an empty proof, invalidating any prior small-grain
+    # grant without blocking its verified/coarse runtime compatibility path.
+    $payloads += [pscustomobject]@{ Name = '.tinystrata-hip-vmm.txt'; Source = $null; Bytes = $proofBytes }
+
+    $changes = @()
+    foreach ($file in $payloads) {
+        $target = Join-Path $destination $file.Name
+        if (Test-Path -LiteralPath $target -PathType Leaf) {
+            if ($null -ne $file.Bytes) { $same = [Convert]::ToBase64String([IO.File]::ReadAllBytes($target)) -eq [Convert]::ToBase64String($file.Bytes) }
+            else { $same = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $file.Source -Algorithm SHA256).Hash }
+            if ($same) { continue }
+        }
+        if ((Test-Path -LiteralPath $target) -and
+            ((Get-Item -LiteralPath $target).PSIsContainer -or ((Get-Item -LiteralPath $target).Attributes -band [IO.FileAttributes]::ReadOnly))) {
+            throw "Cannot install the selected AMD runtime: $target is not a writable DLL file. Choose a writable TinyStrata engine directory."
+        }
+        $changes += [pscustomobject]@{ Source = $file.Source; Bytes = $file.Bytes; Target = $target; Name = $file.Name; Existed = (Test-Path -LiteralPath $target -PathType Leaf) }
+    }
+    if (-not $changes.Count) { return }
+    $stage = Join-Path $destination ('.tinystrata-hip-' + [Guid]::NewGuid().ToString('N'))
+    $installed = @()
+    $keepBackup = $false
+    try {
+        [IO.Directory]::CreateDirectory($stage) | Out-Null
+        # Read/validate the complete source set before replacing any target.
+        foreach ($change in $changes) {
+            $staged = Join-Path $stage $change.Name
+            if ($null -ne $change.Bytes) { [IO.File]::WriteAllBytes($staged, $change.Bytes) }
+            else { Copy-Item -LiteralPath $change.Source -Destination $staged -ErrorAction Stop }
+        }
+        # SDK updates or a failed copy must not publish a mixed generation.
+        # Compare staged bytes to the manifest captured before any replacement.
+        foreach ($entry in $manifest.files) {
+            $staged = Join-Path $stage $entry.name
+            $checked = if (Test-Path -LiteralPath $staged -PathType Leaf) { $staged } else { Join-Path $destination $entry.name }
+            if ((Get-FileHash -LiteralPath $checked -Algorithm SHA256).Hash.ToLowerInvariant() -ne $entry.sha256) {
+                throw "The selected HIP SDK changed while preparing $($entry.name). No runtime DLLs were published."
+            }
+        }
+        foreach ($entry in $dependencies) {
+            if ((Get-FileHash -LiteralPath $entry.path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $entry.sha256) {
+                throw "The selected HIP math SDK changed while preparing $($entry.path). No runtime DLLs were published."
+            }
+        }
+        foreach ($change in $changes) {
+            $staged = Join-Path $stage $change.Name
+            if ($change.Existed) { [IO.File]::Replace($staged, $change.Target, (Join-Path $stage ($change.Name + '.old'))) }
+            else { [IO.File]::Move($staged, $change.Target) }
+            $installed += $change
+        }
+    } catch {
+        $failure = $_
+        foreach ($change in @($installed | Sort-Object Name -Descending)) {
+            try {
+                if ($change.Existed) { [IO.File]::Replace((Join-Path $stage ($change.Name + '.old')), $change.Target, (Join-Path $stage ($change.Name + '.failed'))) }
+                else { [IO.File]::Delete($change.Target) }
+            } catch { $keepBackup = $true }
+        }
+        $extra = if ($keepBackup) { " Recovery files remain in $stage." } else { ' Existing HIP DLLs were left unchanged.' }
+        throw "Cannot install the selected AMD runtime beside TinyStrata. The engine directory must be writable and its DLLs must not be in use: $destination. $failure$extra"
+    } finally {
+        # This generated staging directory is confined to the named engine directory.
+        if (-not $keepBackup -and (Test-Path -LiteralPath $stage)) {
+            if (-not ([IO.Path]::GetFullPath($stage)).StartsWith($destination + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid HIP staging directory.' }
+            Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction Stop
+        }
+    }
+}
+
 function Initialize-TinyStrataRuntime {
     param(
         [Parameter(Mandatory=$true)][string]$RuntimeRoot,
         [Parameter(Mandatory=$true)][string]$CacheRoot,
         [string[]]$SearchDirectories = @(),
+        [string[]]$HipRuntimeDirectories = @(),
+        [string]$HipSdkRoot,
         [string]$EngineDirectory,
         [ValidateSet('cuda', 'hip')][string]$Backend = 'cuda'
     )
@@ -766,10 +1063,17 @@ function Initialize-TinyStrataRuntime {
     [IO.Directory]::CreateDirectory($CacheRoot) | Out-Null
     $cudaDirectories = New-Object System.Collections.Generic.List[string]
     $search = @($SearchDirectories | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) } | Select-Object -Unique)
+    # Only the deliberately selected SDK can provide HIP binaries. Loader
+    # fallback directories may already contain a previous app-local runtime.
+    $runtimeSearch = $search
+    if ($Backend -eq 'hip') {
+        $runtimeSearch = @($HipRuntimeDirectories | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) } | Select-Object -Unique)
+        if (-not $runtimeSearch.Count) { throw 'The selected AMD SDK runtime directories are required.' }
+    }
     $haveCuda = $true
     foreach ($dll in $(if ($Backend -eq 'hip') { @('amdhip64*.dll', 'hipblas.dll', 'rocblas.dll') } else { @('cudart64_13.dll', 'cublas64_13.dll', 'cublasLt64_13.dll') })) {
         $found = $null
-        foreach ($directory in $search) {
+        foreach ($directory in $runtimeSearch) {
             $candidate = @(Get-ChildItem -LiteralPath $directory -Filter $dll -File -ErrorAction SilentlyContinue)
             if ($candidate.Count -gt 0) { $found = $directory; break }
         }
@@ -777,6 +1081,10 @@ function Initialize-TinyStrataRuntime {
         $cudaDirectories.Add($found)
     }
     if ($Backend -eq 'hip' -and -not $haveCuda) { throw 'The selected AMD SDK is missing HIP/hipBLAS/rocBLAS runtime DLLs in its bin/lib folders.' }
+    if ($Backend -eq 'hip') {
+        if (-not $EngineDirectory) { throw 'A TinyStrata engine directory is required to select the AMD runtime on Windows.' }
+        Install-TinyStrataHipRuntime -SearchDirectories $runtimeSearch -EngineDirectory $EngineDirectory -SdkRoot $HipSdkRoot
+    }
     # Keep already installed, sufficiently recent CRT libraries. Older system
     # copies must not override newer MSVC exports required by the engine.
     $systemDirectory = [Environment]::SystemDirectory
@@ -1122,6 +1430,98 @@ function Initialize-TinyStrataOptionalUI {
     if ($ConfigureOnly) { Write-Host "UI prepared. Start it with $(Join-Path $SourceRoot 'run-ui.bat')." }
 }
 
+function Enter-TinyStrataInstallationGuard {
+    param([string]$WorkRoot)
+    [IO.Directory]::CreateDirectory($WorkRoot) | Out-Null
+    $path = Join-Path ([IO.Path]::GetFullPath($WorkRoot)) '.tinystrata-installing.json'
+    if ((Test-Path -LiteralPath $path) -and ((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "The installer guard is linked and was left unchanged: $path"
+    }
+    $stream = $null
+    try {
+        # Readers may inspect the guard; a second writer cannot acquire it.
+        # OpenOrCreate also lets a new installer repair an unlocked stale guard.
+        $stream = [IO.File]::Open($path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Read)
+        $owner = [Diagnostics.Process]::GetCurrentProcess()
+        $epoch = [DateTime]::SpecifyKind([DateTime]'1970-01-01', [DateTimeKind]::Utc)
+        $token = [Guid]::NewGuid().ToString('D')
+        $record = [ordered]@{ schema = 1; pid = $owner.Id; started_unix = ($owner.StartTime.ToUniversalTime() - $epoch).TotalSeconds; token = $token }
+        $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($record | ConvertTo-Json))
+        $stream.SetLength(0)
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+        return [pscustomobject]@{ Path = $path; Stream = $stream; Token = $token }
+    } catch {
+        if ($stream) { $stream.Dispose() }
+        throw "Cannot acquire the TinyStrata installer guard. Another installer may be preparing this installation, or the work directory is not writable: $path. $_"
+    }
+}
+
+function Exit-TinyStrataInstallationGuard {
+    param($Guard)
+    if (-not $Guard) { return }
+    $Guard.Stream.Dispose()
+    for ($attempt = 0; $attempt -lt 5; $attempt++) {
+        try {
+            if (-not (Test-Path -LiteralPath $Guard.Path -PathType Leaf)) { return }
+            $record = [IO.File]::ReadAllText($Guard.Path) | ConvertFrom-Json
+            # A competing installer may acquire the unlocked file first. Never
+            # remove its guard; FileShare.Read also prevents deletion while locked.
+            if ($record.token -eq $Guard.Token) { [IO.File]::Delete($Guard.Path) }
+            return
+        } catch {
+            if ($attempt -eq 4) { throw "The installer finished but could not remove its guard. Run the installer again to repair it: $($Guard.Path). $_" }
+            # A concurrent read of the marker can briefly deny deletion on Windows.
+            [Threading.Thread]::Sleep(20)
+        }
+    }
+}
+
+function Assert-TinyStrataInstallationIdle {
+    param([string]$SourceRoot, [string]$WorkRoot)
+    $source = [IO.Path]::GetFullPath($SourceRoot).TrimEnd('\')
+    $work = [IO.Path]::GetFullPath($WorkRoot).TrimEnd('\')
+    foreach ($process in @(Get-CimInstance Win32_Process -ErrorAction Stop)) {
+        $command = [string]$process.CommandLine
+        $path = [string]$process.ExecutablePath
+        $native = $process.Name -like 'tinystrata*.exe' -and
+                  ($path.StartsWith($work + '\', [StringComparison]::OrdinalIgnoreCase) -or
+                   $path.StartsWith($source + '\', [StringComparison]::OrdinalIgnoreCase) -or
+                   $command.IndexOf($work, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+        $python = $process.Name -like 'python*.exe' -and
+                  ($command -match 'serve\.server|ui[\\/]launch\.py|ui[\\/]server\.py|\bui\.server\b') -and
+                  ($command.IndexOf($source, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+                   $command.IndexOf($work, [StringComparison]::OrdinalIgnoreCase) -ge 0)
+        if ($native -or $python) { throw "Stop TinyStrata's API, UI and model processes for this installation before preparing an update or runtime (PID $($process.ProcessId))." }
+    }
+}
+
+function New-TinyStrataNativeGeneration {
+    param([string]$WorkRoot, [string]$Backend, [string]$FromDirectory)
+    $root = [IO.Path]::GetFullPath((Join-Path $WorkRoot 'native'))
+    $generation = Join-Path $root ($Backend + '-' + [Guid]::NewGuid().ToString('N'))
+    [IO.Directory]::CreateDirectory($generation) | Out-Null
+    if ($FromDirectory) {
+        # Copy only application binaries and their app-local CRT, never build
+        # caches or old SDK runtime DLLs/manifest. The selected SDK supplies those.
+        foreach ($file in @(Get-ChildItem -LiteralPath $FromDirectory -File)) {
+            if ($file.Name -match '^(tinystrata(?:-[a-z0-9]+)?\.exe|strata[^\\/]*\.dll|(?:msvcp140[^\\/]*|vcruntime140[^\\/]*|vcomp140|concrt140|vccorlib140)\.dll)$') {
+                Copy-Item -LiteralPath $file.FullName -Destination (Join-Path $generation $file.Name) -ErrorAction Stop
+            }
+        }
+    }
+    return $generation
+}
+
+function Remove-TinyStrataNativeGeneration {
+    param([string]$WorkRoot, [string]$Directory)
+    if (-not $Directory -or -not (Test-Path -LiteralPath $Directory)) { return }
+    $root = [IO.Path]::GetFullPath((Join-Path $WorkRoot 'native')).TrimEnd('\') + '\'
+    $target = [IO.Path]::GetFullPath($Directory)
+    if (-not $target.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid unpublished native generation directory.' }
+    Remove-Item -LiteralPath $target -Recurse -Force
+}
+
 function Invoke-TinyStrataInstaller {
     param([string]$SourceDirectory, [string]$WorkingDirectory, [int]$ApiPort,
           [bool]$DoNotStart, [bool]$DoNotDownload, [bool]$InspectOnly, [bool]$BuildAgain, [bool]$RefreshSource,
@@ -1155,7 +1555,7 @@ function Invoke-TinyStrataInstaller {
         if (-not $sourceReady -or $RefreshSource) { Write-Host 'First download TinyStrata sources from GitHub (no git installation required).' }
         Write-Host "Backend: $selectedBackend"
         Write-Host 'Plan: reuse installed components; prepare Python/dependencies; reuse or build the selected GPU engine; prepare its runtime; save configuration.'
-        if ($selectedBackend -eq 'hip') { Write-Host 'AMD: reuse an existing SDK or prepare a private ROCm/HIP SDK; Qwen/LFM select native FP8 when available, otherwise INT8; Gemma uses INT8.' }
+        if ($selectedBackend -eq 'hip') { Write-Host 'AMD: use the private pinned ROCm 10.2.0a20260930 SDK (HIP 7.17) by default; -HipDirectory selects a custom SDK; Qwen/LFM select native FP8 when available, otherwise INT8; Gemma uses INT8.' }
         if (-not $DoNotStart) { Write-Host 'Then start the API and install the fixed model through its API if needed.' }
         if ($IncludeUI) { Write-Host $(if ($DoNotStart) { 'Prepare the optional UI launcher without starting services.' } else { 'Then start the optional UI and open it in the browser.' }) }
         return
@@ -1170,6 +1570,7 @@ function Invoke-TinyStrataInstaller {
     }
     $server = Get-TinyStrataSavedProcess -StatePath $statePath -ConfigPath $configPath -SourcePath $sourceRoot -ApiPort $ApiPort
     if ($server -and ($BuildAgain -or $RefreshSource)) { throw 'Stop the API for this installation before requesting an update or rebuild.' }
+    if ($server -and $HipDirectory) { throw 'Stop the API before selecting a HIP SDK. The requested SDK was not applied to the running installation.' }
     if ($server -and $DoNotStart) {
         if ($IncludeUI) { Initialize-TinyStrataOptionalUI -SourceRoot $sourceRoot -WorkRoot $workRoot -ApiPort $ApiPort -UiPort $UiPort -Family $selectedFamily.Name -ConfigureOnly }
         Write-Host "Installation already prepared; existing API left unchanged (PID $($server.Id))."
@@ -1182,6 +1583,15 @@ function Invoke-TinyStrataInstaller {
         }
     }
     if (-not $server) {
+        $sourceChange = $null
+        $generation = $null
+        $candidateConfig = $null
+        $installationGuard = $null
+        $pythonTransaction = @{}
+        $preparationCommitted = $false
+        try {
+        $installationGuard = Enter-TinyStrataInstallationGuard -WorkRoot $workRoot
+        Assert-TinyStrataInstallationIdle -SourceRoot $sourceRoot -WorkRoot $workRoot
         if ($selectedBackend -eq 'cuda') {
             $smi = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
             if (-not $smi) { throw 'A working NVIDIA GPU driver is required for -Backend cuda.' }
@@ -1189,8 +1599,8 @@ function Invoke-TinyStrataInstaller {
             if ($LASTEXITCODE -ne 0) { throw 'The NVIDIA driver is not working. GPU drivers are not replaced by this installer.' }
         }
         $cacheRoot = Join-Path $workRoot 'downloads'
-        if (-not $sourceReady -or $RefreshSource) { Initialize-TinyStrataSource -SourceRoot $sourceRoot -CacheRoot $cacheRoot -Refresh:$RefreshSource }
-        $python = Initialize-TinyStrataPython -WorkRoot $workRoot -SourceRoot $sourceRoot -CacheRoot $cacheRoot
+        if (-not $sourceReady -or $RefreshSource) { $sourceChange = Initialize-TinyStrataSource -SourceRoot $sourceRoot -CacheRoot $cacheRoot -Refresh:$RefreshSource }
+        $python = Initialize-TinyStrataPython -WorkRoot $workRoot -SourceRoot $sourceRoot -CacheRoot $cacheRoot -Transaction $pythonTransaction
         if ($selectedBackend -eq 'hip') {
             $hipRoot = Ensure-TinyStrataHipToolkit -DestinationDirectory (Join-Path $workRoot 'rocm-venv') -Python $python -Directory $HipDirectory -Architectures $HipArchitectures
             $hipArchs = Get-TinyStrataHipArchitectures -Directory $hipRoot -Requested $HipArchitectures
@@ -1204,7 +1614,11 @@ function Invoke-TinyStrataInstaller {
         }
         if ($env:CUDA_PATH) { $cudaRoots += $env:CUDA_PATH }
         foreach ($cudaRoot in $cudaRoots) { $search += Join-Path $cudaRoot 'bin'; $search += Join-Path $cudaRoot 'bin\x64' }
-        if ($selectedBackend -eq 'hip') { $search = @(Get-TinyStrataHipRuntimeDirectories -Directory $hipRoot) }
+        $hipRuntimeDirs = @()
+        if ($selectedBackend -eq 'hip') {
+            $hipRuntimeDirs = @(Get-TinyStrataHipRuntimeDirectories -Directory $hipRoot)
+            $search = $hipRuntimeDirs
+        }
         $search += $runtimeRoot
         $exe = $null
         if (-not $BuildAgain -and -not $RefreshSource) {
@@ -1228,29 +1642,68 @@ function Invoke-TinyStrataInstaller {
         if (-not $exe) {
             Write-Host 'No local TinyStrata engine found; preparing the first source build.'
             $null = Ensure-TinyStrataBuildTools -CacheDirectory $cacheRoot
+            $generation = New-TinyStrataNativeGeneration -WorkRoot $workRoot -Backend $selectedBackend
             if ($selectedBackend -eq 'hip') {
-                $build = Invoke-TinyStrataPortableBuild -SourceDirectory $sourceRoot -BuildDirectory (Join-Path $workRoot 'build-hip') -Backend hip -HipDirectory $hipRoot -HipArchitectures $hipArchs -Clean:($BuildAgain -or $RefreshSource)
+                $build = Invoke-TinyStrataPortableBuild -SourceDirectory $sourceRoot -BuildDirectory $generation -Backend hip -HipDirectory $hipRoot -HipArchitectures $hipArchs
             } else {
                 $cuda = Ensure-TinyStrataCudaToolkit -DestinationDirectory (Join-Path $workRoot 'cuda-13.2') -CacheDirectory $cacheRoot -SearchDirectories $cudaRoots
-                $build = Invoke-TinyStrataPortableBuild -SourceDirectory $sourceRoot -BuildDirectory (Join-Path $workRoot 'build') -CudaDirectory $cuda -Clean:($BuildAgain -or $RefreshSource)
+                $build = Invoke-TinyStrataPortableBuild -SourceDirectory $sourceRoot -BuildDirectory $generation -CudaDirectory $cuda
                 $search += Join-Path $cuda 'bin'; $search += Join-Path $cuda 'bin\x64'
             }
             $exe = $build.Exe
+        } elseif ($selectedBackend -eq 'hip') {
+            # Prepare a new immutable runtime generation. Other saved profiles
+            # and failed updates keep their previous core/math combination.
+            $generation = New-TinyStrataNativeGeneration -WorkRoot $workRoot -Backend hip -FromDirectory (Split-Path -Parent $exe)
+            $exe = Join-Path $generation 'tinystrata.exe'
         }
         $search += Split-Path -Parent $exe
         $search += $runtimeRoot
-        $dllDirs = @(Initialize-TinyStrataRuntime -RuntimeRoot $runtimeRoot -CacheRoot $cacheRoot -SearchDirectories $search -EngineDirectory (Split-Path -Parent $exe) -Backend $selectedBackend)
-        if ($cfg -and $cfg.lib_dirs -and $cfg.backend -eq $selectedBackend) { $dllDirs = @(@($cfg.lib_dirs) + $dllDirs | Select-Object -Unique) }
+        $dllDirs = @(Initialize-TinyStrataRuntime -RuntimeRoot $runtimeRoot -CacheRoot $cacheRoot -SearchDirectories $search -HipRuntimeDirectories $hipRuntimeDirs -HipSdkRoot $hipRoot -EngineDirectory (Split-Path -Parent $exe) -Backend $selectedBackend)
+        if ($cfg -and $cfg.lib_dirs -and $cfg.backend -eq $selectedBackend) {
+            # Keep HIP math libraries from the selected SDK ahead of a saved
+            # SDK's directories; its matching core runtime is now app-local.
+            if ($selectedBackend -eq 'hip') { $dllDirs = @($dllDirs + @($cfg.lib_dirs) | Select-Object -Unique) }
+            else { $dllDirs = @(@($cfg.lib_dirs) + $dllDirs | Select-Object -Unique) }
+        }
         $selectedExe = Join-Path (Split-Path -Parent $exe) $selectedFamily.NativeFile
+        [IO.Directory]::CreateDirectory((Split-Path -Parent $configPath)) | Out-Null
+        $candidateConfig = $configPath + '.prepare-' + [Guid]::NewGuid().ToString('N')
+        if (Test-Path -LiteralPath $configPath -PathType Leaf) { Copy-Item -LiteralPath $configPath -Destination $candidateConfig -ErrorAction Stop }
         $arguments = @('-B', (Join-Path $sourceRoot 'run.py'), '--model-family', $selectedFamily.Name,
-                       '--config', $configPath, '--exe', $selectedExe, '--backend', $selectedBackend, '--configure-only')
+                       '--config', $candidateConfig, '--exe', $selectedExe, '--backend', $selectedBackend, '--configure-only')
         $arguments += @('--vision-exe', (Join-Path (Split-Path -Parent $exe) 'tinystrata-vision.exe'))
         foreach ($directory in $dllDirs) { $arguments += @('--lib-dir', $directory) }
         $arguments += @('--port', [string]$ApiPort)
         Write-Host 'Preparing API settings (hardware and VRAM settings remain automatic by default)...'
-        & $python @arguments
+        $previousTransaction = [Environment]::GetEnvironmentVariable('TINYSTRATA_INSTALLER_TRANSACTION', 'Process')
+        try {
+            [Environment]::SetEnvironmentVariable('TINYSTRATA_INSTALLER_TRANSACTION', $installationGuard.Token, 'Process')
+            & $python @arguments
+        } finally { [Environment]::SetEnvironmentVariable('TINYSTRATA_INSTALLER_TRANSACTION', $previousTransaction, 'Process') }
         if ($LASTEXITCODE -ne 0) { throw 'TinyStrata configuration failed.' }
-        $cfg = Get-TinyStrataConfig -Path $configPath
+        $prepared = Get-TinyStrataConfig -Path $candidateConfig
+        if (-not $prepared -or $prepared.backend -ne $selectedBackend -or $prepared.exe -ne $selectedExe) { throw 'Prepared configuration does not match the selected native runtime.' }
+        if (Test-Path -LiteralPath $configPath -PathType Leaf) { [IO.File]::Replace($candidateConfig, $configPath, ($configPath + '.bak')) }
+        else { [IO.File]::Move($candidateConfig, $configPath) }
+        $preparationCommitted = $true
+        $cfg = $prepared
+        } catch {
+            $preparationError = $_
+            try { Remove-TinyStrataNativeGeneration -WorkRoot $workRoot -Directory $generation } catch { Write-Warning "Unpublished native files remain: $generation" }
+            try { Complete-TinyStrataPythonTransaction -Transaction $pythonTransaction -Rollback } catch { Write-Warning "Python rollback needs repair from $($pythonTransaction.PythonBackup): $_" }
+            Restore-TinyStrataSource -Change $sourceChange
+            throw $preparationError
+        } finally {
+            try {
+            if ($preparationCommitted) {
+                try { Complete-TinyStrataPythonTransaction -Transaction $pythonTransaction } catch { Write-Warning "The old Python snapshot could not be removed: $($pythonTransaction.PythonBackup)" }
+            }
+            if ($candidateConfig) {
+                foreach ($temporary in @($candidateConfig, ($candidateConfig + '.bak'), ($candidateConfig + '.tmp'))) { if (Test-Path -LiteralPath $temporary -PathType Leaf) { [IO.File]::Delete($temporary) } }
+            }
+            } finally { Exit-TinyStrataInstallationGuard -Guard $installationGuard }
+        }
         if ($DoNotStart) {
             if ($IncludeUI) { Initialize-TinyStrataOptionalUI -SourceRoot $sourceRoot -WorkRoot $workRoot -ApiPort $ApiPort -UiPort $UiPort -Family $selectedFamily.Name -ConfigureOnly }
             Write-Host "Installed. Config: $configPath"

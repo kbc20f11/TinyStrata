@@ -32,7 +32,20 @@ $tinyStrataUiOldSecurityProtocol = [Net.ServicePointManager]::SecurityProtocol
 try {
     $ErrorActionPreference = 'Stop'
     $tinyStrataUiInstaller = $null
-    if ($PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'install.ps1') -PathType Leaf)) {
+    if ($Update -and -not $CheckOnly -and -not $SourceDir -and $PSScriptRoot) {
+        # A downloaded ScriptBlock has no installation directory of its own.
+        # Retain the caller's local installation, without treating a folder
+        # containing only downloaded bootstrap scripts as a source tree.
+        $tinyStrataUiLocalSource = $true
+        foreach ($tinyStrataUiSourceFile in @('run.py', 'requirements.txt', 'CMakeLists.txt', 'serve\server.py')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot $tinyStrataUiSourceFile) -PathType Leaf)) { $tinyStrataUiLocalSource = $false; break }
+        }
+        if ($tinyStrataUiLocalSource) { $tinyStrataUiForward.SourceDir = $PSScriptRoot }
+    }
+    # Updating must run the new installer itself, not the old adjacent copy
+    # whose function definitions would remain loaded after a source refresh.
+    # A local CheckOnly remains an offline inspection, even with -Update.
+    if ((-not $Update -or $CheckOnly) -and $PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'install.ps1') -PathType Leaf)) {
         $tinyStrataUiCandidate = Join-Path $PSScriptRoot 'install.ps1'
         if ((Get-Command -Name $tinyStrataUiCandidate).Parameters.ContainsKey('WithUI')) { $tinyStrataUiInstaller = $tinyStrataUiCandidate }
     }

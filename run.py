@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -58,6 +59,30 @@ def vision_tokens(value: str) -> int:
     raise argparse.ArgumentTypeError("expected a positive whole-number image token limit")
 
 
+def refresh_hip_device(cfg: dict) -> dict:
+    """Refresh automatic Windows selection after driver/runtime device reordering."""
+    if cfg.get("backend") != "hip" or cfg.get("gpu") not in (None, "", []):
+        return cfg
+    from serve.backend import hip_ordinal
+    if os.name != "nt":
+        if cfg.get("hip_ordinal") is None:
+            ordinal = hip_ordinal(cfg.get("lib_dirs") or [])
+            if ordinal is not None:
+                return {**cfg, "hip_ordinal": ordinal}
+        return cfg
+    result = dict(cfg)
+    masks = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES")
+    if any(os.environ.get(key) or (cfg.get("env") or {}).get(key) for key in masks):
+        result.pop("hip_ordinal", None)
+        return result
+    ordinal = hip_ordinal(cfg.get("lib_dirs") or [], executable=cfg.get("exe"))
+    if ordinal is None:
+        raise ValueError("Cannot identify a usable HIP GPU with the selected TinyStrata runtime. "
+                         "Check the AMD driver or select --gpu explicitly; device 0 was not assumed.")
+    result["hip_ordinal"] = ordinal
+    return result
+
+
 def prepare(a) -> tuple[dict, Path]:
     from serve import config
     from serve.backend import configure_backend, executable_backend, hardware_backend, hip_ordinal
@@ -86,6 +111,8 @@ def prepare(a) -> tuple[dict, Path]:
     path = (config_path or RUNTIME / ".tinystrata" / ("config-tiel-coder.json" if tiel else
             {"lfm2moe": "config-lfm2.json", "gemma4": "config-gemma4.json", "clover_moe": "config-clover.json"}
             .get(requested_arch, "config.json"))).expanduser().resolve()
+    from serve.install_guard import assert_installation_ready
+    assert_installation_ready(path, allow_installer=getattr(a, "configure_only", False))
     arch = requested_arch or "qwen35moe"
     fresh = not path.exists()
     cfg = config.load(path) if not fresh else {
@@ -189,14 +216,13 @@ def prepare(a) -> tuple[dict, Path]:
     if a.gpu is not None:
         cfg["gpu"] = a.gpu
         cfg.pop("hip_ordinal", None)
+    from serve.hip_runtime import migrate_installed_runtime
+    cfg = migrate_installed_runtime(cfg, path)
     cfg = shared_library_dirs(cfg)
     native_backend = executable_backend(cfg["exe"], cfg.get("lib_dirs") or []) if cfg.get("exe") else None
     if native_backend and native_backend != cfg["backend"]:
         raise ValueError(f"The selected executable uses {native_backend}, but the configuration selects {cfg['backend']}; rebuild/install the matching backend")
-    if cfg["backend"] == "hip" and cfg.get("gpu") is None and cfg.get("hip_ordinal") is None:
-        ordinal = hip_ordinal(cfg.get("lib_dirs") or [])
-        if ordinal is not None:
-            cfg["hip_ordinal"] = ordinal
+    cfg = refresh_hip_device(cfg)
     cfg = configure_download(cfg, path)
     model = model_path(cfg)
     if cfg.get("vision_mode") == "no":
@@ -282,6 +308,12 @@ def main() -> int:
     ap.add_argument("--api-key", help="API key required by clients (default: unset)")
     ap.add_argument("--configure-only", action="store_true")
     a = ap.parse_args()
+    from serve.install_guard import assert_installation_ready
+    try:
+        assert_installation_ready(a.config or RUNTIME / ".tinystrata/config.json",
+                                  allow_installer=a.configure_only)
+    except ValueError as error:
+        ap.error(str(error))
     missing = [m for m in ("jinja2", "regex", "psutil") if importlib.util.find_spec(m) is None]
     if missing:
         ap.error("Missing API dependencies: " + ", ".join(missing) +

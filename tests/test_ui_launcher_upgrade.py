@@ -97,6 +97,113 @@ class LauncherUpgradeTests(unittest.TestCase):
             self.launcher.ensure_ui()
         restart.assert_not_called()
 
+    def make_fake_python(self):
+        self.launcher.python.parent.mkdir(parents=True, exist_ok=True)
+        self.launcher.python.write_bytes(b"test-only; never executed")
+
+    def test_spawn_log_failure_stops_only_new_child_and_preserves_record(self):
+        self.make_fake_python()
+        self.launcher.write_state("api-process.json", {"pid": 12, "command": ["previous"]})
+        record = self.launcher.state_dir / "api-process.json"
+        previous = record.read_bytes()
+        child = mock.Mock(pid=42)
+        child.poll.return_value = None
+        with mock.patch.object(launch.subprocess, "Popen", return_value=child), \
+             mock.patch.object(self.launcher, "log", side_effect=OSError("log disk full")), \
+             mock.patch.object(self.launcher, "write_state") as write, \
+             self.assertRaisesRegex(OSError, "log disk full"):
+            self.launcher.spawn(None, ["-m", "serve.server"], "api")
+        child.terminate.assert_called_once_with()
+        child.wait.assert_called_once_with(timeout=5)
+        child.kill.assert_not_called()
+        write.assert_not_called()
+        self.assertEqual(record.read_bytes(), previous)
+
+    def test_spawn_state_failure_stops_new_child_and_keeps_previous_record(self):
+        self.make_fake_python()
+        self.launcher.write_state("ui-process.json", {"pid": 12, "command": ["previous"]})
+        record = self.launcher.state_dir / "ui-process.json"
+        previous = record.read_bytes()
+        child = mock.Mock(pid=42)
+        child.poll.return_value = None
+        with mock.patch.object(launch.subprocess, "Popen", return_value=child), \
+             mock.patch.object(launch, "process_started", return_value="new-child-created"), \
+             mock.patch.object(self.launcher, "log"), \
+             mock.patch.object(self.launcher, "write_state", side_effect=OSError("state denied")), \
+             self.assertRaisesRegex(OSError, "state denied"):
+            self.launcher.spawn(None, ["ui.py"], "ui")
+        child.terminate.assert_called_once_with()
+        child.wait.assert_called_once_with(timeout=5)
+        self.assertEqual(record.read_bytes(), previous)
+
+    def test_spawn_publication_failure_escalates_only_the_owned_handle(self):
+        self.make_fake_python()
+        child = mock.Mock(pid=42)
+        child.poll.return_value = None
+        child.wait.side_effect = [subprocess.TimeoutExpired("owned child", 5), 0]
+        with mock.patch.object(launch.subprocess, "Popen", return_value=child), \
+             mock.patch.object(self.launcher, "log", side_effect=OSError("log failed")), \
+             self.assertRaisesRegex(OSError, "log failed"):
+            self.launcher.spawn(None, [], "api")
+        child.terminate.assert_called_once_with()
+        child.kill.assert_called_once_with()
+        self.assertEqual(child.wait.call_count, 2)
+
+    def test_popen_failure_never_publishes_replacement_state(self):
+        self.make_fake_python()
+        with mock.patch.object(launch.subprocess, "Popen", side_effect=OSError("cannot spawn")), \
+             mock.patch.object(self.launcher, "write_state") as write, \
+             self.assertRaisesRegex(OSError, "cannot spawn"):
+            self.launcher.spawn(None, [], "api")
+        write.assert_not_called()
+
+    def test_replacement_import_failure_keeps_old_ui_running(self):
+        self.make_fake_python()
+        with mock.patch.object(self.launcher, "existing_ui", return_value={"pid": 42}), \
+             mock.patch.object(self.launcher, "current_ui", return_value=False), \
+             mock.patch.object(launch, "backend_revision", return_value="new"), \
+             mock.patch.object(launch.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", "SyntaxError: fixture")), \
+             mock.patch.object(self.launcher, "restart_previous_ui") as restart, \
+             mock.patch.object(self.launcher, "spawn") as spawn, \
+             self.assertRaisesRegex(RuntimeError, "previous UI was left running"):
+            self.launcher.ensure_ui()
+        restart.assert_not_called()
+        spawn.assert_not_called()
+
+    def test_replacement_import_timeout_keeps_old_ui_running(self):
+        self.make_fake_python()
+        with mock.patch.object(self.launcher, "existing_ui", return_value={"pid": 42}), \
+             mock.patch.object(self.launcher, "current_ui", return_value=False), \
+             mock.patch.object(launch, "backend_revision", return_value="new"), \
+             mock.patch.object(launch.subprocess, "run", side_effect=subprocess.TimeoutExpired("import fixture", 30)), \
+             mock.patch.object(self.launcher, "restart_previous_ui") as restart, \
+             self.assertRaisesRegex(RuntimeError, "previous UI was left running"):
+            self.launcher.ensure_ui()
+        restart.assert_not_called()
+
+    def test_replacement_import_uses_installed_python_without_starting_server(self):
+        self.make_fake_python()
+        with mock.patch.object(launch.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+            self.launcher.validate_ui_backend()
+        command = run.call_args.args[0]
+        self.assertEqual(command[:4], [str(self.launcher.python), "-I", "-B", "-c"])
+        self.assertIn("import_module('ui.server')", command[4])
+        self.assertNotIn("serve_forever", command[4])
+        self.assertEqual(command[5], str(self.source))
+        self.assertEqual(run.call_args.kwargs["timeout"], 30)
+
+    def test_replacement_import_passes_before_previous_ui_stops(self):
+        order = []
+        with mock.patch.object(self.launcher, "existing_ui", return_value={"pid": 42}), \
+             mock.patch.object(self.launcher, "current_ui", return_value=False), \
+             mock.patch.object(launch, "backend_revision", return_value="new"), \
+             mock.patch.object(self.launcher, "validate_ui_backend", side_effect=lambda: order.append("validated")), \
+             mock.patch.object(self.launcher, "restart_previous_ui", side_effect=lambda health: order.append("stopped")), \
+             mock.patch.object(self.launcher, "spawn", side_effect=RuntimeError("end mocked path")), \
+             self.assertRaisesRegex(RuntimeError, "end mocked path"):
+            self.launcher.ensure_ui()
+        self.assertEqual(order, ["validated", "stopped"])
+
     def test_process_match_requires_image_command_parent_and_listener(self):
         command = [sys.executable, "-B", str(self.source / "ui" / "server.py")]
         metadata = {"executable": sys.executable, "command": subprocess.list2cmdline(command),

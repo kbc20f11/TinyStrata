@@ -31,6 +31,11 @@
 # Keep only the public regression tests, not local test artifacts.
 /tests/**
 !/tests/installer-entrypoints.ps1
+!/tests/installer-hip-runtime.ps1
+!/tests/installer-update-transaction.ps1
+!/tests/test_hip_runtime.py
+!/tests/test_hip_runtime_integration.py
+!/tests/test_install_guard.py
 !/tests/ui-model-download.cjs
 !/tests/model-artifact-migration.py
 !/tests/clover-self-spec.cpp
@@ -230,3 +235,5 @@ Desktop.ini
 *.whl
 CMakeCache.txt
 CMakeFiles/
+
+!/tests/hip-vmm-policy.cpp

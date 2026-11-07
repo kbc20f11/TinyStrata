@@ -371,6 +371,14 @@ class GpuBusy(RuntimeError):
         self.retry_after = retry_after
 
 
+def engine_quit_wait(info: dict | None) -> int:
+    """Small verified HIP pages take longer to release; keep other budgets."""
+    facts = info or {}
+    quantum = facts.get("hip_vmm_quantum_kib")
+    return 60 if (facts.get("hip_vmm_verified") == 1 and type(quantum) is int and
+                  0 < quantum < 4096) else 20
+
+
 def unload_wait(value, default: float) -> float:
     """#1997: the `wait` of POST /unload?wait=...: absent / 0 / false: 0 (answer "busy" at once, as before); 1 / true /
     yes: `default` seconds; a number of seconds above 1: that long (at most an hour)."""
@@ -2187,7 +2195,8 @@ class StrataEngine:
 
     def close(self):
         """End the engine process: QUIT first (the engine frees its memory itself - unpinning tens of GB can take
-        a while), then terminate, then kill, each given 20 s.  Raises EngineStuck when it still runs after all three."""
+        a while). Verified sub-4-MiB HIP gets 60 s for QUIT; other paths get 20 s.
+        Terminate and kill each retain 20 s. Raises EngineStuck if all three fail."""
         if self.proc is None:
             return
         try:
@@ -2196,7 +2205,7 @@ class StrataEngine:
                     self.proc.stdin.write("QUIT\n")
                     self.proc.stdin.flush()
                     self.proc.stdin.close()  # Windows' detached stdin reader must see EOF before shutdown
-                    self.proc.wait(timeout=20)
+                    self.proc.wait(timeout=engine_quit_wait(getattr(self, "info", None)))
                 except (OSError, ValueError, subprocess.TimeoutExpired):
                     self.proc.terminate()
                     self.proc.wait(timeout=20)
@@ -2914,6 +2923,8 @@ def child_env(cfg: dict) -> dict:
         var = "PATH" if os.name == "nt" else "LD_LIBRARY_PATH"
         env[var] = os.pathsep.join(dirs + ([env[var]] if env.get(var) else []))
     if cfg.get("backend") == "hip":
+        from serve.hip_runtime import runtime_environment
+        env = runtime_environment(cfg, env)
         hip_env_guard(env, cfg)
     return env
 
@@ -2963,7 +2974,29 @@ def vision_env(cfg: dict, env: dict) -> dict:
     """The image encoder's environment: the engine's, unless the config's vision section names its own "cuda_device"
     (numbered like nvidia-smi) - then the encoder runs on that card alone, so a spare GPU can hold it while the engine
     keeps all of its own cards' VRAM (#408, Efs-O).  Without it, nothing changes."""
-    dev = (cfg.get("vision") or {}).get("cuda_device")
+    vision = cfg.get("vision") or {}
+    if cfg.get("backend") == "hip" and os.name == "nt" and (vision.get("exe") or cfg.get("vision_exe")):
+        from serve.hip_runtime import resolve_hip_runtime, runtime_environment
+        vcfg = {**cfg, "exe": vision.get("exe") or cfg["vision_exe"]}
+        def selected(executable):
+            if executable and not Path(executable).is_absolute():
+                executable = Path(cfg.get("cwd") or ".") / executable
+            return resolve_hip_runtime(executable, cfg.get("lib_dirs") or ())
+        primary = selected(cfg.get("exe"))
+        encoder = selected(vcfg["exe"])
+        if primary is not None and encoder is not None and vision.get("gpu", True):
+            left, right = Path(primary.dll), Path(encoder.dll)
+            if left.resolve() != right.resolve():
+                import hashlib
+                if hashlib.sha256(left.read_bytes()).digest() != hashlib.sha256(right.read_bytes()).digest():
+                    raise ValueError("The model and GPU image encoder select different HIP runtimes. "
+                                     "Reinstall the matching TinyStrata engine and image encoder together.")
+            from serve.hip_runtime import runtime_fingerprint
+            if runtime_fingerprint(primary) != runtime_fingerprint(encoder):
+                raise ValueError("The model and GPU image encoder select different HIP SDK dependencies. "
+                                 "Reinstall the matching engines and SDK together.")
+        env = runtime_environment(vcfg, env)
+    dev = vision.get("cuda_device")
     if dev is None:
         return env
     env = dict(env)
@@ -7196,9 +7229,24 @@ def main() -> int:
                          "each, requests spread over them (also \"replicas\" in the config: a number, or "
                          "[{\"gpus\": [0, 1]}, {\"gpus\": [2, 3]}])")
     a = ap.parse_args()
+    from serve.install_guard import assert_installation_ready
+    try:
+        assert_installation_ready(a.config)
+    except ValueError as error:
+        ap.error(str(error))
     if a.engine == "tinystrata":
         a.engine = "strata"  # keep the upstream engine adapter and protocol
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
+
+    runtime_config_changed = False
+    settings_migrated = False
+    if a.engine == "strata" and cfg.get("backend") == "hip":
+        from serve.hip_runtime import migrate_installed_runtime
+        migrated_runtime = migrate_installed_runtime(cfg, a.config)
+        if migrated_runtime is not cfg:
+            cfg = migrated_runtime
+            runtime_config_changed = True
+
     lift_reasoning_effort_arg(cfg)
     bootstrap = a.engine == "strata" and cfg.get("model_bootstrap") is True
     if a.engine == "strata":
@@ -7208,16 +7256,14 @@ def main() -> int:
             from serve.backend import configure_backend
             cfg = configure_backend(cfg)
             validate(cfg, allow_uninstalled=bootstrap)
-            if migrated and a.config:
-                config.save(a.config, cfg)
-                print("[tinystrata] migrated API configuration and automatic available-VRAM allocation; "
-                      "other settings were retained and the earlier config was backed up.", flush=True)
+            settings_migrated = bool(migrated and a.config)
         except ValueError as e:
             ap.error(str(e))
     if a.replicas is not None:
         cfg["replicas"] = a.replicas
     if a.gpu is not None:
         cfg["gpu"] = int(a.gpu) if a.gpu.strip().isdigit() else a.gpu
+        cfg.pop("hip_ordinal", None)
     a.host = a.host or cfg.get("host") or "127.0.0.1"   # issue #26: the run scripts pass no --host, the config can
     try:                                                # before the minutes of loading: is the port free?
         Server((a.host, a.port), BaseHTTPRequestHandler).server_close()
@@ -7234,6 +7280,15 @@ def main() -> int:
     if (tpath / "vocab.json").exists():
         tok = model_tokenizer(tpath)
     hub = hub_from_config(cfg, a.mcp_config)            # before the minutes of loading: a bad entry stops here
+    if runtime_config_changed or settings_migrated:
+        from serve.model_setup import save_settings
+        # Publish one validated final configuration, preserving the original
+        # pre-upgrade .bak even when settings and runtime both migrate.
+        save_settings(a.config, cfg)
+        if settings_migrated:
+            print("[tinystrata] migrated API configuration and automatic available-VRAM allocation; "
+                  "other settings were retained and the earlier config was backed up.", flush=True)
+
     if bootstrap:
         effort_end, groups = None, []
         engine, vision = UnavailableEngine(), None

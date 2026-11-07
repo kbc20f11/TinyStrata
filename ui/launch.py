@@ -192,6 +192,11 @@ def stop_owned_ui(pid, command, started, port, launcher_pid=None):
 class Launcher:
     def __init__(self, args, source, work):
         self.source, self.work = source, work
+        root = str(Path(__file__).resolve().parents[1])
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        from serve.install_guard import assert_installation_ready
+        assert_installation_ready(work_root=self.work, allow_installer=bool(getattr(args, "configure_only", False)))
         self.runtime = work / "runtime"
         self.state_dir = self.runtime / "ui"
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -249,12 +254,42 @@ class Launcher:
              (self.state_dir / f"{label}.stderr.log").open("ab") as errors:
             process = subprocess.Popen(command, cwd=self.source, stdin=subprocess.DEVNULL,
                                        stdout=output, stderr=errors, creationflags=flags)
-        self.log(f"Started {label}: PID {process.pid}")
-        state = {"pid": process.pid, "command": command}
-        if label == "ui" and os.name == "nt":
-            state["started"] = process_started(process.pid)
-        self.write_state(f"{label}-process.json", state)
+        try:
+            self.log(f"Started {label}: PID {process.pid}")
+            state = {"pid": process.pid, "command": command}
+            if label == "ui" and os.name == "nt":
+                state["started"] = process_started(process.pid)
+            self.write_state(f"{label}-process.json", state)
+        except BaseException:
+            # Publication failed: leave the previous atomic state record intact
+            # and stop only the exact child handle created by this invocation.
+            # Never resolve a PID from a stale record or terminate a process tree.
+            if process.poll() is None:
+                process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+            raise
         return process
+
+    def validate_ui_backend(self):
+        """Check replacement imports before stopping a working UI; no server is created."""
+        if not self.python.is_file():
+            raise RuntimeError(f"Installed Python was not found: {self.python}; the previous UI was left running")
+        code = ("import importlib,sys; sys.path.insert(0,sys.argv[1]); "
+                "importlib.import_module('ui.server')")
+        try:
+            checked = subprocess.run([str(self.python), "-I", "-B", "-c", code, str(self.source)],
+                                     cwd=self.source, capture_output=True, text=True,
+                                     encoding="utf-8", errors="replace", timeout=30,
+                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise RuntimeError("The replacement UI import check failed; the previous UI was left running") from error
+        if checked.returncode:
+            detail = (checked.stderr or checked.stdout or "import failed")[-1200:].strip()
+            raise RuntimeError(f"The replacement UI could not import; the previous UI was left running: {detail}")
 
     def prepare_api(self, config):
         # Keep run.py's configuration migration/bootstrap, but run the actual
@@ -344,6 +379,7 @@ class Launcher:
                 return
             # An incomplete update must not stop the working previous UI.
             backend_revision(self.source)
+            self.validate_ui_backend()
             self.restart_previous_ui(health)
         process = self.spawn(self.source / "ui" / "server.py", ["--port", str(self.port),
                              "--api-port", str(self.api_port), "--data-dir", str(self.state_dir)], "ui")

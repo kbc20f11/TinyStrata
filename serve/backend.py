@@ -33,36 +33,28 @@ def hardware_backend() -> str | None:
     return None
 
 
-def hip_ordinal(directories=()) -> int | None:
+def hip_ordinal(directories=(), executable=None) -> int | None:
     """Prefer a discrete HIP device, then the largest reported memory capacity."""
     # Query in a short-lived process: DLL search/runtime initialization must not
     # affect the Python API process or its later native model children.
-    # hipDeviceAttributeIntegrated == 16 in AMD's hip_runtime_api.h. Do not
-    # compare only memory sizes: an APU can report more shared RAM than a dGPU.
-    script = ("import ctypes,os,pathlib; dirs=[d for d in os.environ.get('PATH','').split(os.pathsep) if d and os.path.isdir(d)]; "
-              "handles=[os.add_dll_directory(d) for d in dirs] if hasattr(os,'add_dll_directory') else []; "
-              "names=[p for d in dirs "
-              "if d for p in pathlib.Path(d).glob('amdhip64*.dll')]; "
-              "h=ctypes.CDLL(str(names[0]) if names else 'amdhip64.dll'); "
-              "n=ctypes.c_int(); assert h.hipGetDeviceCount(ctypes.byref(n))==0; "
-              "totals=[]\nfor i in range(n.value):\n "
-              "t=ctypes.c_size_t(); r=h.hipDeviceTotalMem(ctypes.byref(t),i); "
-              "integrated=ctypes.c_int(1); h.hipDeviceGetAttribute(ctypes.byref(integrated),16,i); "
-              "totals.append((not integrated.value,t.value,-i)) if r==0 and t.value else None\n"
-              "print(-max(totals)[2] if totals else '')")
+    directories = tuple(directories)
     env = dict(os.environ)
     env["PATH"] = os.pathsep.join(map(str, directories)) + os.pathsep + env.get("PATH", "")
     # Existing visibility masks are honored instead of persisting a remapped ordinal.
     if env.get("HIP_VISIBLE_DEVICES") or env.get("ROCR_VISIBLE_DEVICES"):
         return None
-    try:
-        import sys
-        result = subprocess.run([sys.executable, "-c", script], env=env,
-                                capture_output=True, text=True, timeout=15,
-                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        return int(result.stdout.strip()) if result.returncode == 0 and result.stdout.strip().isdigit() else None
-    except (OSError, subprocess.TimeoutExpired):
+    if executable is not None:
+        from serve.hip_runtime import runtime_environment
+        env = runtime_environment({"backend": "hip", "exe": executable, "lib_dirs": list(directories)}, env)
+    from serve.windows_amd_telemetry import hip_cards
+    cards = hip_cards(env)
+    valid = [card for card in cards if type(card.get("mem_total")) is int and card["mem_total"] > 0]
+    discrete = [card for card in valid if card.get("integrated") is False]
+    # Unknown integrated status cannot safely be ranked by shared RAM capacity.
+    if not discrete and any(card.get("integrated") is None for card in valid):
         return None
+    pool = discrete or [card for card in valid if card.get("integrated") is True]
+    return max(pool, key=lambda card: (card["mem_total"], -card["index"]))["index"] if pool else None
 
 
 def executable_backend(executable: str | Path, directories=()) -> str | None:

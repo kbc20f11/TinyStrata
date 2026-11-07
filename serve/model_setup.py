@@ -24,6 +24,17 @@ def model_architecture(path: str | Path) -> str:
 
 def shared_library_dirs(cfg: dict) -> dict:
     """Reuse a matching installed GPU runtime for another model config."""
+    if os.name == "nt" and cfg.get("backend") == "hip" and cfg.get("exe"):
+        from serve.hip_runtime import resolve_hip_runtime
+        executable = Path(cfg["exe"]).expanduser()
+        if not executable.is_absolute():
+            executable = Path(cfg.get("cwd") or ROOT) / executable
+        runtime = resolve_hip_runtime(executable, cfg.get("lib_dirs") or ())
+        if runtime is not None and runtime.managed:
+            # The executable's installation generation owns its SDK selection.
+            # An independently launched model can carry older saved lib_dirs.
+            return {**cfg, "lib_dirs": list(dict.fromkeys((*runtime.directories,
+                                                           *(cfg.get("lib_dirs") or ()))))}
     if (cfg.get("arch") not in ("lfm2moe", "gemma4", "clover_moe") and
             cfg.get("model_name") != "tiel-coder-35b-a3b") or "lib_dirs" in cfg:
         return cfg

@@ -43,6 +43,10 @@ $entrypointCapture = @'
     UiPort = $UiPort
     CheckOnly = [bool]$CheckOnly
     WithUI = [bool](Get-Variable -Name WithUI -ValueOnly -ErrorAction SilentlyContinue)
+    Update = [bool]$Update
+    NoStart = [bool]$NoStart
+    Origin = $probeOrigin
+    SourceDir = $SourceDir
 }
 '@
 
@@ -106,28 +110,38 @@ foreach ($header in @($entrypointCoreHeader, $entrypointUiHeader)) {
 }
 
 function Invoke-MockedUiBootstrap {
-    param([string]$UiText, [string]$CoreHeader, [hashtable]$Arguments = @{}, [switch]$Iex)
+    param([string]$UiText, [string]$CoreHeader, [hashtable]$Arguments = @{}, [switch]$Iex,
+          [switch]$LocalInstaller, [switch]$DownloadFails, [string]$Revision = ('1' * 40), [switch]$IncompleteLocalSource)
     & {
-        param($probeUi, $probeCore, $probeArguments, $probeIex, $probeCapture)
+        param($probeUi, $probeCore, $probeArguments, $probeIex, $probeCapture, $probeLocal, $probeDownloadFails, $probeRevision, $probeIncomplete)
         $probeRequests = New-Object 'System.Collections.Generic.List[string]'
-        $probeCoreStub = $probeCore + $probeCapture
-        # Force the downloaded-ScriptBlock route regardless of the caller's
-        # PSScriptRoot. No real installer body or HTTP command may run here.
-        function Test-Path { param($LiteralPath, $Path, $PathType) return $false }
+        $probeCoreStub = $probeCore + "`n`$probeOrigin = 'pinned'`n" + $probeCapture
+        $probeLocalStub = $probeCore + "`n`$probeOrigin = 'local'`n" + $probeCapture
+        # Intercept the local invocation too: neither branch may run an actual
+        # installer body, even when a neighboring old installer is present.
+        $probeUi = $probeUi.Replace('& $tinyStrataUiInstaller @tinyStrataUiForward', '& ([scriptblock]::Create($probeLocalStub)) @tinyStrataUiForward')
+        $probeUi = $probeUi.Replace('$PSScriptRoot', "'C:\mock-ui-bootstrap'")
+        function Test-Path {
+            param($LiteralPath, $Path, $PathType)
+            if ($probeIncomplete -and $LiteralPath -like '*CMakeLists.txt') { return $false }
+            return $probeLocal
+        }
+        function Get-Command { param($Name) return [pscustomobject]@{ Parameters = @{ WithUI = $true } } }
         function Invoke-RestMethod {
             param($Uri, $Headers, $TimeoutSec)
             $probeRequests.Add([string]$Uri)
-            return [pscustomobject]@{ sha = ('1' * 40) }
+            return [pscustomobject]@{ sha = $probeRevision }
         }
         function Invoke-WebRequest {
             param($Uri, [switch]$UseBasicParsing, $TimeoutSec)
             $probeRequests.Add([string]$Uri)
+            if ($probeDownloadFails) { throw 'mocked installer download failure' }
             return [pscustomobject]@{ Content = $probeCoreStub }
         }
         $forwarded = if ($probeIex) { Invoke-Expression $probeUi }
                      else { & ([scriptblock]::Create($probeUi)) @probeArguments }
         return [pscustomobject]@{ Forwarded = $forwarded; Requests = $probeRequests.ToArray() }
-    } $UiText $CoreHeader $Arguments ([bool]$Iex) $entrypointCapture
+    } $UiText $CoreHeader $Arguments ([bool]$Iex) $entrypointCapture ([bool]$LocalInstaller) ([bool]$DownloadFails) $Revision ([bool]$IncompleteLocalSource)
 }
 
 $entrypointUiText = [IO.File]::ReadAllText($entrypointUiPath)
@@ -139,6 +153,21 @@ $result = Invoke-MockedUiBootstrap -UiText $entrypointUiText -CoreHeader $entryp
 }
 Assert-Entrypoint ($result.Forwarded.WithUI -and $result.Forwarded.CheckOnly -and $result.Forwarded.Port -eq 8080 -and $result.Forwarded.UiPort -eq 3001) 'UI forwards CheckOnly and requested ports'
 Assert-Entrypoint ($result.Forwarded.Backend -eq 'hip' -and $result.Forwarded.ModelFamily -eq 'gemma4' -and $result.Forwarded.HipArchitectures -eq 'gfx1200;gfx1201') 'UI forwards backend family and multiple architectures'
+
+$result = Invoke-MockedUiBootstrap -UiText $entrypointUiText -CoreHeader $entrypointCoreHeader -LocalInstaller
+Assert-Entrypoint ($result.Forwarded.Origin -eq 'local' -and $result.Requests.Count -eq 0) 'ordinary local bootstrap remains offline and uses adjacent installer'
+$result = Invoke-MockedUiBootstrap -UiText $entrypointUiText -CoreHeader $entrypointCoreHeader -LocalInstaller -Arguments @{ Update = $true; NoStart = $true }
+Assert-Entrypoint ($result.Forwarded.Origin -eq 'pinned' -and $result.Forwarded.Update -and $result.Forwarded.NoStart) 'Update runs the newly fetched installer and forwards update/no-start'
+Assert-Entrypoint ($result.Requests.Count -eq 2 -and $result.Requests[1] -like ('*/' + ('1' * 40) + '/install.ps1')) 'local Update pins the installer script to one resolved revision'
+Assert-Entrypoint ($result.Forwarded.SourceDir -eq 'C:\mock-ui-bootstrap') 'local Update preserves its complete installation directory across ScriptBlock handoff'
+$result = Invoke-MockedUiBootstrap -UiText $entrypointUiText -CoreHeader $entrypointCoreHeader -LocalInstaller -Arguments @{ Update = $true; SourceDir = 'C:\explicit installation' }
+Assert-Entrypoint ($result.Forwarded.SourceDir -eq 'C:\explicit installation') 'explicit source directory takes priority over bootstrap location'
+$result = Invoke-MockedUiBootstrap -UiText $entrypointUiText -CoreHeader $entrypointCoreHeader -LocalInstaller -IncompleteLocalSource -Arguments @{ Update = $true }
+Assert-Entrypoint ([string]::IsNullOrEmpty($result.Forwarded.SourceDir)) 'bootstrap-only download directory is not adopted as an installation'
+$result = Invoke-MockedUiBootstrap -UiText $entrypointUiText -CoreHeader $entrypointCoreHeader -LocalInstaller -Arguments @{ Update = $true; CheckOnly = $true }
+Assert-Entrypoint ($result.Forwarded.Origin -eq 'local' -and $result.Forwarded.CheckOnly -and $result.Requests.Count -eq 0) 'local CheckOnly remains offline even with Update'
+Assert-EntrypointThrows { Invoke-MockedUiBootstrap -UiText $entrypointUiText -CoreHeader $entrypointCoreHeader -LocalInstaller -DownloadFails -Arguments @{ Update = $true } } 'failed Update download does not silently execute stale local installer'
+Assert-EntrypointThrows { Invoke-MockedUiBootstrap -UiText $entrypointUiText -CoreHeader $entrypointCoreHeader -LocalInstaller -Revision 'not-a-commit' -Arguments @{ Update = $true } } 'invalid Update revision never executes adjacent installer'
 
 # Evaluate only the pure readiness predicate, never the installer body.
 $readinessTokens = $null
