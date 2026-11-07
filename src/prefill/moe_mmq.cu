@@ -231,7 +231,7 @@ bool fits(int t, int64_t w_rows) {
         const int cc = info.devices[id].cc;
         const size_t smpbo = info.devices[id].smpbo;
         bool any = false;
-        for (int J = 8; J <= 128 && !any; J += 8) {
+        for (int J = kMmqTileColsStep; J <= kMmqTileColsMax && !any; J += kMmqTileColsStep) {
             const ggml_cuda_mmq_config c = ggml_cuda_mmq_get_config((ggml_type) t, J, fallback, cc);
             any = c.type != GGML_TYPE_COUNT && mmq_get_nbytes_shared(c, cc) <= smpbo;
         }

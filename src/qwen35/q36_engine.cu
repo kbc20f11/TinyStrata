@@ -1767,15 +1767,18 @@ struct Engine {
 #endif
         if (use_mmq) {
             const int64_t ne = (int64_t) T * Kp;
+            MMQ::IdsLayout id_layout;
+            if (!MMQ::ids_layout((uint64_t) ne, (uint64_t) T, id_layout))
+                throw std::overflow_error("MMQ row-map storage exceeds the supported size");
             mctx = std::make_unique<MMQ::Context>();
             rcnt = dalloc_t<int32_t>((size_t) g.n_expert);
             rcur = dalloc_t<int32_t>((size_t) g.n_expert);
             rbounds = dalloc_t<int32_t>((size_t) g.n_expert + 1);
             rmax = dalloc_t<int32_t>(1);
-            ident = dalloc_t<int32_t>((size_t) ne);
+            ident = dalloc_t<int32_t>(id_layout.storage_rows);
             rinv = dalloc_t<int32_t>((size_t) ne);
             CK(cudaDeviceSynchronize());   // ident's cudaMemset (legacy stream) before the iota on the non-blocking stream
-            MMQ::iota(ident, ne, st);
+            MMQ::iota(ident, (int64_t) id_layout.storage_rows, st);
             CK(cudaMalloc(&mq_x, MMQ::q8_bytes(ne, g.n_embd)));
             CK(cudaMalloc(&mq_hq, MMQ::q8_bytes(ne, g.n_ff)));
             mq_gu = dalloc((size_t) ne * 2 * FF);
@@ -4156,6 +4159,7 @@ struct Engine {
         namespace CP = strata::qwen35::chunk_policy;
         const auto& g = m->g;
         CP::Bytes entries = 0, sizes[10] = {}, total_bytes = 0, values = 0;
+        MMQ::IdsLayout id_layout;
         const auto size_for_q8 = [](CP::Bytes rows, int64_t cols, CP::Bytes& bytes) {
             // Query the pinned MMQ layout rather than duplicating its block
             // size. One row is bounded by the already validated int32 shape.
@@ -4167,12 +4171,13 @@ struct Engine {
             CP::mul((CP::Bytes) tmax, (CP::Bytes) m->top_k, entries) && entries <= INT_MAX &&
             CP::mul((CP::Bytes) g.n_expert, 4, sizes[0]) &&
             CP::add((CP::Bytes) g.n_expert, 1, values) && CP::mul(values, 4, sizes[2]) &&
-            CP::mul(entries, 4, sizes[4]) && size_for_q8(entries, g.n_embd, sizes[6]) &&
+            MMQ::ids_layout(entries, (CP::Bytes) tmax, id_layout) &&
+            CP::mul(entries, 4, sizes[5]) && size_for_q8(entries, g.n_embd, sizes[6]) &&
             size_for_q8(entries, g.n_ff, sizes[7]) &&
             CP::mul(entries, (CP::Bytes) g.n_ff, values) && CP::mul(values, 4, sizes[9]) &&
             CP::mul(sizes[9], 2, sizes[8]);
         if (!valid) { keep_native("workspace dimensions overflow"); return; }
-        sizes[1] = sizes[0]; sizes[3] = sizeof(int32_t); sizes[5] = sizes[4];
+        sizes[1] = sizes[0]; sizes[3] = sizeof(int32_t); sizes[4] = id_layout.storage_bytes;
         for (CP::Bytes bytes : sizes) {
             if (!CP::add(total_bytes, bytes, total_bytes)) { keep_native("workspace bytes overflow"); return; }
         }
@@ -4213,7 +4218,7 @@ struct Engine {
             for (int i = 0; i < 10 && status == cudaSuccess; ++i)
                 if (i != 6 && i != 7) status = cudaMemsetAsync(buffers[i], 0, (size_t) sizes[i], st);
             if (status == cudaSuccess) {
-                MMQ::iota((int32_t*) buffers[4], (int64_t) entries, st);
+                MMQ::iota((int32_t*) buffers[4], (int64_t) id_layout.storage_rows, st);
                 status = cudaGetLastError();
             }
             if (status == cudaSuccess) status = cudaStreamSynchronize(st);

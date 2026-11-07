@@ -3,7 +3,7 @@
 // ggml-cpu's x86 dot products for these formats are AVX2 and single-token: every token re-decodes the weights
 // and a sign is applied with five instructions per 32 values.  Here 64 values are decoded once (8 or 16 grid
 // lookups, one 64-bit sign mask, one vector of scales) and every token applies them with a masked subtract, a
-// `maddubs` and a `madd`.  The arithmetic is ggml's (ggml-cpu/quants.c, the `_generic` references): integer sums
+// `maddubs` and a non-saturating integer dot-add.  The arithmetic is ggml's (ggml-cpu/quants.c, the `_generic` references): integer sums
 // per block, times d_x * d_y * the format's constant - only the order of the float additions differs.
 //
 // Formats: IQ2_XXS (16), IQ2_XS (17), IQ3_XXS (18), IQ3_S (21), IQ2_S (22).  IQ1_M stays on ggml-cpu (no shipped
@@ -175,7 +175,7 @@ inline void row_dot(const uint8_t* row, int nblocks, const block_q8_K* const* y,
             for (int t = 0; t < NT; ++t) {
                 const __m512i yv = _mm512_loadu_si512((const void*) (y[t][i].qs + 64 * j));
                 const __m512i ys = _mm512_mask_sub_epi8(yv, m, zero, yv);
-                acci[t] = _mm512_add_epi32(acci[t], _mm512_madd_epi16(_mm512_maddubs_epi16(g, ys), sc));
+                acci[t] = _mm512_dpwssd_epi32(acci[t], _mm512_maddubs_epi16(g, ys), sc);
             }
         }
         const float dx = h2f(u16(blk)) * Fmt<TY>::K;

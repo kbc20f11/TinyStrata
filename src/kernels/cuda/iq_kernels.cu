@@ -1047,6 +1047,120 @@ template<> struct Split<42> {   // Q2_0
         return r.d2 * d8 * sumi;
     }
 };
+// The weight/activation split follows Basalt's grouped K-quant kernels. Keep
+// each apply expression identical to the existing per-entry dot above.
+template<> inline constexpr bool kSplit<10> = true;
+template<> struct Split<10> {   // Q2_K
+    struct W { int v; uint8_t sc[QR2_K]; half2 dm; };
+    template<bool STAGE_GRID = false>
+    __device__ static W load(const void* __restrict__ vbq, int kbx, int iqs, const uint32_t* __restrict__ = nullptr) {
+        const block_q2_K* b = (const block_q2_K*) vbq + kbx;
+        const int scale_offset = iqs - iqs % QI8_1 + (iqs % QI8_1) / (QI8_1 / 2);
+        W r;
+        r.v = get_int_b4(b->qs, iqs);
+#pragma unroll
+        for (int i = 0; i < QR2_K; ++i) r.sc[i] = b->scales[scale_offset + 2 * i];
+        r.dm = b->dm;
+        return r;
+    }
+    __device__ static float apply(const W& r, const block_q8_1* __restrict__ bq8_1, int iqs) {
+        const int bq8_offset = QR2_K * (iqs / QI8_1);
+        float sumf_d = 0.0f, sumf_m = 0.0f;
+#pragma unroll
+        for (int i = 0; i < QR2_K; ++i) {
+            const int u = get_int_b4(bq8_1[bq8_offset + i].qs, iqs % QI8_1);
+            const float d8 = __low2float(bq8_1[bq8_offset + i].ds);
+            const int sc = r.sc[i];
+            const int vi = (r.v >> (2 * i)) & 0x03030303;
+            sumf_d += d8 * (ggml_cuda_dp4a(vi, u, 0) * (sc & 0xF));
+            int m = sc >> 4;
+            m |= m << 8;
+            m |= m << 16;
+            sumf_m += d8 * ggml_cuda_dp4a(m, u, 0);
+        }
+        const float2 dm2f = __half22float2(r.dm);
+        return dm2f.x * sumf_d - dm2f.y * sumf_m;
+    }
+};
+
+template<> inline constexpr bool kSplit<11> = true;
+template<> struct Split<11> {   // Q3_K
+    struct W { int vl, vh, sc[QR3_K]; float d; };
+    template<bool STAGE_GRID = false>
+    __device__ static W load(const void* __restrict__ vbq, int kbx, int iqs, const uint32_t* __restrict__ = nullptr) {
+        const block_q3_K* b = (const block_q3_K*) vbq + kbx;
+        const int bq8_offset = QR3_K * (iqs / (QI3_K / 2));
+        const int scale_offset = iqs - iqs % QI8_1 + (iqs % QI8_1) / (QI8_1 / 2);
+        W r;
+        r.vl = get_int_b2(b->qs, iqs);
+        r.vh = ~get_int_b2(b->hmask, iqs % (QI3_K / 2)) >> bq8_offset;
+        r.d = __half2float(b->d);
+#pragma unroll
+        for (int i = 0; i < QR3_K; ++i) {
+            const int isc = scale_offset + 2 * i;
+            const int sc_low = (b->scales[isc % (QK_K / 32)] >> (4 * (isc / (QK_K / 32)))) & 0xF;
+            const int sc_high = ((b->scales[(QK_K / 32) + isc % (QK_K / 64)] >> (2 * (isc / (QK_K / 64)))) & 3) << 4;
+            r.sc[i] = (sc_low | sc_high) - 32;
+        }
+        return r;
+    }
+    __device__ static float apply(const W& r, const block_q8_1* __restrict__ bq8_1, int iqs) {
+        const int bq8_offset = QR3_K * (iqs / (QI3_K / 2));
+        float sumf = 0.0f;
+#pragma unroll
+        for (int i = 0; i < QR3_K; ++i) {
+            const int u = get_int_b4(bq8_1[bq8_offset + i].qs, iqs % QI8_1);
+            const float d8 = __low2float(bq8_1[bq8_offset + i].ds);
+            const int vil = (r.vl >> (2 * i)) & 0x03030303;
+            const int vih = ((r.vh >> i) << 2) & 0x04040404;
+            const int vi = __vsubss4(vil, vih);
+            sumf += d8 * (ggml_cuda_dp4a(vi, u, 0) * r.sc[i]);
+        }
+        return r.d * sumf;
+    }
+};
+
+template<> inline constexpr bool kSplit<6> = true;
+template<> struct Split<6> {   // Q5_0
+    struct W { int lo[VDR_Q5_0], hi[VDR_Q5_0]; float d; };
+    template<bool STAGE_GRID = false>
+    __device__ static W load(const void* __restrict__ vbq, int kbx, int iqs, const uint32_t* __restrict__ = nullptr) {
+        const block_q5_0* b = (const block_q5_0*) vbq + kbx;
+        W r;
+#pragma unroll
+        for (int i = 0; i < VDR_Q5_0; ++i) {
+            const int vl = get_int_b2(b->qs, iqs + i);
+            const int vh = get_int_b2(b->qh, 0) >> (4 * (iqs + i));
+            int vi0 = (vl >> 0) & 0x0F0F0F0F;
+            vi0 |= (vh << 4) & 0x00000010;
+            vi0 |= (vh << 11) & 0x00001000;
+            vi0 |= (vh << 18) & 0x00100000;
+            vi0 |= (vh << 25) & 0x10000000;
+            int vi1 = (vl >> 4) & 0x0F0F0F0F;
+            vi1 |= (vh >> 12) & 0x00000010;
+            vi1 |= (vh >> 5) & 0x00001000;
+            vi1 |= (vh << 2) & 0x00100000;
+            vi1 |= (vh << 9) & 0x10000000;
+            r.lo[i] = vi0;
+            r.hi[i] = vi1;
+        }
+        r.d = __half2float(b->d);
+        return r;
+    }
+    __device__ static float apply(const W& r, const block_q8_1* __restrict__ bq8_1, int iqs) {
+        int sumi = 0, sumu = 0;
+#pragma unroll
+        for (int i = 0; i < VDR_Q5_0; ++i) {
+            const int u0 = get_int_b4(bq8_1->qs, iqs + i), u1 = get_int_b4(bq8_1->qs, iqs + i + QI5_0);
+            sumi = ggml_cuda_dp4a(r.lo[i], u0, sumi);
+            sumi = ggml_cuda_dp4a(r.hi[i], u1, sumi);
+            sumu = ggml_cuda_dp4a(0x01010101, u1, ggml_cuda_dp4a(0x01010101, u0, sumu));
+        }
+        const float d8 = __low2float(bq8_1->ds);
+        return r.d * d8 * (float) (sumi - 16 * sumu);
+    }
+};
+
 template<> inline constexpr bool kSplit<40> = true;
 template<> struct Split<40> {   // NVFP4: vec_dot_nvfp4_q8_1's two 16-value sub-blocks, weights decoded once per call
     struct W { int2 v0[2], v1[2]; float sc[2]; };
@@ -1863,7 +1977,9 @@ void launch_mmvq(const uint8_t* W, size_t rb, const block_q8_1* X, float* y, int
                  cudaStream_t s) {
     const dim3 grid((unsigned) ((n_out + 3) / 4)), block(32, 4);
     if constexpr (!kSplit<TY>) mmvq_kernel<TY><<<grid, block, 0, s>>>(W, rb, X, y, n_in, n_out, ncols);
-    else if (g_old_kernels) mmvq_kernel<TY><<<grid, block, 0, s>>>(W, rb, X, y, n_in, n_out, ncols);
+    // A singleton has no cross-column weight reuse to amortize the K-quant split.
+    else if (g_old_kernels || ((TY == 6 || TY == 10 || TY == 11) && ncols <= 1))
+        mmvq_kernel<TY><<<grid, block, 0, s>>>(W, rb, X, y, n_in, n_out, ncols);
     else if constexpr (kStageIqGrid<TY>) {
         if (!g_stage_grid_mmvq) {
             launch_mmvq_multi_nc<TY, false>(grid, block, s, W, rb, X, y, n_in, n_out, ncols);
@@ -1880,7 +1996,8 @@ template<int TG>
 void launch_gu(dim3 grid, cudaStream_t s, const unsigned long long* grp_ptr, const int32_t* grp_start,
                const int32_t* n_groups, const int32_t* ent_tok, const block_q8_1* X, const NativeExpertLayout& L,
                float* gate, float* up) {
-    if constexpr (!kSplit<TG>) native_gu_kernel<TG><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
+    // Group row counts live on the device; keep Q5_0's per-entry grouped path.
+    if constexpr (!kSplit<TG> || TG == 6) native_gu_kernel<TG><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
     else if (g_old_kernels) native_gu_kernel<TG><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
     else if constexpr (kStageIqGrid<TG>) {
         if (g_stage_grid) native_gu_multi_kernel<TG, true><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up);
@@ -1892,7 +2009,7 @@ template<int TD>
 void launch_down(dim3 grid, cudaStream_t s, const unsigned long long* grp_ptr, const int32_t* grp_start,
                  const int32_t* n_groups, const int32_t* ent_dst, const block_q8_1* hq, const NativeExpertLayout& L,
                  float* out) {
-    if constexpr (!kSplit<TD>) native_down_kernel<TD><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
+    if constexpr (!kSplit<TD> || TD == 6) native_down_kernel<TD><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
     else if (g_old_kernels) native_down_kernel<TD><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
     else native_down_multi_kernel<TD><<<grid, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out);
 }

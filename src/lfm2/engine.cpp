@@ -7,6 +7,7 @@
 
 #include "lfm2moe.hpp"
 #include "mmq.hpp"
+#include "strata/prefill/mmq_ids_margin.hpp"
 #include "runtime.hpp"
 #include "strata/lfm2/vram.hpp"
 #include "strata/lfm2/kernels.hpp"
@@ -43,6 +44,7 @@
 #endif
 
 namespace strata::lfm2 {
+namespace mmq_ids = strata::prefill::mmq;
 namespace {
 
 // A launch's tiles are as wide as the most rows one of its matrices has, up to 128, and every matrix in it
@@ -2003,8 +2005,11 @@ void Engine::alloc() {
     h_logits_ = (float*) hmalloc((size_t) n_vocab_ * sizeof(float), "pinned memory");
 
     if (mmq_) {
-        const size_t rr = n * n_used_,
-                     tab = (3 * rr + 3 * (size_t) n_expert_ + 3 + kClasses * ((size_t) n_expert_ + 1)) * sizeof(int32_t);
+        const size_t rr = n * n_used_;
+        mmq_ids::PackedIdsLayout tables;
+        if (!mmq_ids::packed_ids_layout(rr, n, (size_t) n_expert_, kClasses, tables))
+            throw std::overflow_error("MMQ row-map storage exceeds the supported size");
+        const size_t tab = tables.bytes;
         mq_ = dmalloc(Mmq::q8_bytes((int64_t) rr, n_embd_), "scratch");
         mq2_ = dmalloc(Mmq::q8_bytes((int64_t) rr, n_ff_exp_), "scratch");
         mqx_ = dmalloc(Mmq::q8_bytes(rows_, q_max), "scratch");
@@ -2014,10 +2019,14 @@ void Engine::alloc() {
         d_slots_ = (void**) dmalloc((size_t) n_layer_ * n_expert_ * sizeof(void*), "scratch");
         tab_ = (int32_t*) dmalloc(tab, "scratch");
         h_tab_ = (int32_t*) hmalloc(tab, "pinned memory");
-        iota_ = (int32_t*) dmalloc(rr * sizeof(int32_t), "scratch");
-        std::vector<int32_t> ramp(rr);
+        // Destination-map tails are read before MMQ masks an out-of-range row. Keep them initialized and
+        // separate from the bounds/weight tables, including for a staged group's d_place + row0 subspan.
+        ck(cudaMemset(tab_, 0, tab), "scratch");
+        std::memset(h_tab_, 0, tab);
+        iota_ = (int32_t*) dmalloc(tables.ids.storage_bytes, "scratch");
+        std::vector<int32_t> ramp(tables.ids.storage_rows);
         std::iota(ramp.begin(), ramp.end(), 0);
-        ck(cudaMemcpy(iota_, ramp.data(), rr * sizeof(int32_t), cudaMemcpyHostToDevice), "scratch");
+        ck(cudaMemcpy(iota_, ramp.data(), tables.ids.storage_bytes, cudaMemcpyHostToDevice), "scratch");
 
         // One layer's experts pass through it at a time, so it never holds more than a layer has.  A model of
         // small experts has a few hundred MiB a layer, and the rest of the default would be VRAM that the
@@ -2455,17 +2464,20 @@ void Engine::stage(const Layer& L, const int32_t* experts, int m, void* stream, 
 void Engine::moe_rows(Layer& L, int il, int n) {
     const int rr = n * n_used_;
     const size_t cap = (size_t) rows_ * n_used_;
+    mmq_ids::PackedIdsLayout tables;
+    if (!mmq_ids::packed_ids_layout(cap, (size_t) rows_, (size_t) n_expert_, kClasses, tables))
+        throw std::overflow_error("MMQ row-map storage exceeds the supported size");
     const bool ahead = opt_.stage_ahead > 0 && (n >= opt_.stage_ahead || shared_ahead_);
     const bool spare = !ahead && opt_.cpu_share != 0 && !all_cached();   // the CPU may take some (below)
     // The layer's tables.  tok and place: a row's token, and its place among that token's experts.  bounds: each
     // expert's first row.  rel: the same for the experts of a staging round, counted from the round's first row.
     // w: the weight of each place.
     int32_t* tok = h_tab_;
-    int32_t* place = tok + cap;
-    int32_t* bounds = place + cap;
-    int32_t* rel = bounds + n_expert_ + 1;
-    float* w = (float*) (rel + 2 * n_expert_ + 2);
-    int32_t* cb = (int32_t*) (w + cap);   // per class: the cached experts' first rows, in the order of the slots
+    int32_t* place = h_tab_ + tables.place;
+    int32_t* bounds = h_tab_ + tables.bounds;
+    int32_t* rel = h_tab_ + tables.relative;
+    float* w = (float*) (h_tab_ + tables.weights);
+    int32_t* cb = h_tab_ + tables.classes;   // per class: the cached experts' first rows, in the order of the slots
     router_scores(L, n);
     // Routed on the card, a batch hands the host its picks: the host took longer to route a batch of 1,024 tokens
     // than the card took for its experts.
@@ -2519,11 +2531,11 @@ void Engine::moe_rows(Layer& L, int il, int n) {
 
     const size_t cb_row = (size_t) n_expert_ + 1;
     const int32_t* d_tok = tab_;
-    const int32_t* d_place = d_tok + cap;
-    const int32_t* d_bounds = d_place + cap;
-    const int32_t* d_rel = d_bounds + n_expert_ + 1;
-    const float* d_w = (const float*) (d_rel + 2 * n_expert_ + 2);
-    const int32_t* d_cb = (const int32_t*) (d_w + cap);
+    const int32_t* d_place = tab_ + tables.place;
+    const int32_t* d_bounds = tab_ + tables.bounds;
+    const int32_t* d_rel = tab_ + tables.relative;
+    const float* d_w = (const float*) (tab_ + tables.weights);
+    const int32_t* d_cb = tab_ + tables.classes;
 
     // A token's routing is a softmax over every expert and a search for the largest few.  On one thread it was
     // 0.9 s of the 2.4 s a 7,709-token prompt took with 40 layers of 256 experts, so the host's threads take a
@@ -2622,8 +2634,7 @@ void Engine::moe_rows(Layer& L, int il, int n) {
         }
         b[n_chan] = at;
     }
-    ck(cudaMemcpyAsync(tab_, h_tab_,
-                       (3 * cap + 3 * (size_t) n_expert_ + 3 + kClasses * cb_row) * sizeof(int32_t),
+    ck(cudaMemcpyAsync(tab_, h_tab_, tables.bytes,
                        cudaMemcpyHostToDevice, cs(st_)),
        "expert rows");
 

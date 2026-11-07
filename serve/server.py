@@ -287,6 +287,10 @@ class LiveStreamStats:
 # server (the engine's main thread waits, untimed, for its next command): the engine is ended and the request fails;
 # the next request starts it again.  The config's "engine_silence_s" sets it (0: wait forever, as before).
 ENGINE_SILENCE_S = 300.0
+# A connected SSE client that stops reading can fill its socket buffer while
+# holding the inference turn. Bound an individual blocked write, not generation
+# or prefill time; 0 retains the previous unbounded-write behavior.
+STREAM_WRITE_TIMEOUT_S = float(os.environ.get("STRATA_STREAM_WRITE_TIMEOUT_S", "60") or 0)
 # Disk sessions: the longest allowance an engine may announce (`SWAIT <phase> <s>`) for one step that blocks in a
 # single call (a file flush, the host->device transfer); the engine's own bound is the same (session_phase_limit_s).
 SESSION_WAIT_MAX_S = 3600
@@ -732,6 +736,7 @@ class ConvCacheLog:
 
     def __init__(self):
         self.key, self.pos = None, 0
+        self.lock = threading.Lock()
         self.reset()
 
     def reset(self):
@@ -740,6 +745,12 @@ class ConvCacheLog:
 
     def poll(self, path, start) -> dict:
         """The state after the log's new lines; `start` is where the engine's current run began in it."""
+        # Metrics readers can overlap. Size, offset and counters must describe
+        # the same read, or one poll may count another poll's lines twice.
+        with self.lock:
+            return self._poll(path, start)
+
+    def _poll(self, path, start) -> dict:
         if not path or start is None:
             return dict(self.state)
         if self.key != (path, start):                   # another start of the engine: its cache starts empty
@@ -6323,6 +6334,11 @@ def make_handler(svc: Service):
             self.send_header("X-Accel-Buffering", "no")   # nginx and similar proxies pass each event at once
             self._cors()
             self.end_headers()
+            if STREAM_WRITE_TIMEOUT_S > 0:
+                try:
+                    self.connection.settimeout(STREAM_WRITE_TIMEOUT_S)
+                except OSError:
+                    pass
 
 
 

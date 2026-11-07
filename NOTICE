@@ -18,6 +18,20 @@ Existing file-level copyright and license notices remain in place.
 
 The HTTP API server and tokenizer are adapted from the same upstream commit.
 
+Checked MMQ row-map storage margins adapt Niko1221/Strata commit
+f225844d19eec380cab7c3083cc644ec37e972c5 (MIT), credited above.
+The AVX512 integer dot-add simplification follows Strata commit
+6368dc68abf6fecb1374e8e80325ddcd8968ee54 without changing accumulation order.
+Blocked SSE-write limits and serialized conversation-cache log reads adapt
+aflin/momoe commits 96edd42278fd3dcbf30d9a78b89b1e42cbd14cca and
+4a5679479da4e0e22e880d00c83ce85cea96f3b4 (MIT).
+Q5_0/Q2_K/Q3_K weight-decode sharing adapts jesdga95/basalt commits
+2a76c8338ee7200c4767eba7a3515c81a9b3984c and
+65a91428559076e00b23edbd98bef4dbc8f9bdbb (MIT).
+Copyright (c) 2026 Jesús Gulfo. The MIT license terms are preserved in LICENSE.
+TinyStrata retains its corrected quantized-activation offset arithmetic and
+per-entry fallbacks where weight decoding cannot be shared.
+
 The image encoder in src/vision/tinystrata_vision.cpp adapts
 tools/vision/strata_vision.cpp from the same upstream commit (MIT), using the
 existing pinned llama.cpp mtmd and GGML libraries for image embeddings.
