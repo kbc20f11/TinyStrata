@@ -11,7 +11,13 @@ const STATUS_ICONS = {idle: "check-circle", ready: "check-circle", done: "check"
   skipped: "stop", stopped: "stop", timeout: "warning", inactive: "info"};
 const statusIcon = (state) => icon(STATUS_ICONS[state] || "info", "st-icon st-status-icon");
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
-const fmt = (n, d = 0) => (n == null || Number.isNaN(n) ? "–" : Number(n).toLocaleString(StrataI18n.lang, {maximumFractionDigits: d, minimumFractionDigits: d}));
+const numberFormats = new Map();
+const fmt = (n, d = 0) => {
+  if (n == null || Number.isNaN(n)) return "–";
+  const key = `${StrataI18n.lang}:${d}`;
+  if (!numberFormats.has(key)) numberFormats.set(key, new Intl.NumberFormat(StrataI18n.lang, {maximumFractionDigits: d, minimumFractionDigits: d}));
+  return numberFormats.get(key).format(Number(n));
+};
 const kfmt = (n) => (n == null ? "–" : n >= 1000 ? `${fmt(n / 1000, n >= 10000 ? 0 : 1)}k` : fmt(n));
 // a context size: 32768 -> "32K" (powers of two), else like kfmt
 const ctxfmt = (n) => (n && n % 1024 === 0 ? `${fmt(n / 1024)}K` : kfmt(n));
@@ -1495,6 +1501,48 @@ const terminalWords = {
 };
 function terminalWord(key) { return tr("terminal." + key, terminalWords[key]); }
 function terminalNumber(n) { return typeof n === "number" && Number.isFinite(n) && n >= 0; }
+function terminalSeconds(ms, active) { return `${fmt(ms / 1000, active && ms < 10000 ? 2 : 1)} s`; }
+function writeTerminalPhase(phase, value) {
+  if (!phase._terminalText) {
+    phase._terminalText = document.createTextNode("");
+    phase.appendChild(phase._terminalText);
+  }
+  if (phase._terminalText.data !== value) phase._terminalText.data = value;
+}
+function terminalBeginRound(stats, round, offset) {
+  stats.generatedOffset = offset;
+  stats.generated = offset;
+  stats.roundHasToken = false;
+  stats.streamRound = round;
+  stats.streamLive = false;
+  stats.streamDone = false;
+  stats.roundGenerating = false;
+  delete stats.streamGenerated;
+  delete stats.decodeRate;
+  delete stats.serverStartMs;
+  delete stats.promptProgress;
+}
+
+// This data belongs to the reader of this HTTP stream, not to the global
+// engine. Local tools start another stream; server MCP rounds are already
+// included in its count. Tokens must never be inferred from text or chunks.
+function terminalStreamStats(stats, sample, round) {
+  if (!sample || stats.streamRound !== round || stats.finalCount ||
+      !Number.isSafeInteger(sample.generated) || sample.generated < 0 ||
+      !terminalNumber(sample.elapsed_s) || typeof sample.done !== "boolean" ||
+      sample.first_token_s != null && !terminalNumber(sample.first_token_s) ||
+      sample.tok_s != null && !terminalNumber(sample.tok_s) ||
+      terminalNumber(stats.streamGenerated) && sample.generated < stats.streamGenerated || stats.streamDone) return false;
+  stats.streamLive = true;
+  stats.streamGenerated = sample.generated;
+  stats.streamDone = sample.done;
+  stats.roundGenerating = sample.generated > 0;
+  stats.generated = (stats.generatedOffset || 0) + sample.generated;
+  if (terminalNumber(sample.tok_s)) stats.decodeRate = sample.tok_s;
+  else delete stats.decodeRate;
+  stats.rateSource = "live";
+  return true;
+}
 
 function terminalFinalStats(stats, usage, timings) {
   const out = {...stats};
@@ -1530,7 +1578,7 @@ function terminalMetrics(stats, sample) {
   const live = sample && sample.live;
   // Before this reply's own first token, another client may own the engine.
   // Parallel runs cannot be assigned to this message from global metrics.
-  if (!live || stats.roundHasToken === false || !terminalNumber(stats.firstTokenMs) || live.state !== "generating" ||
+  if (stats.streamLive || !live || stats.roundHasToken === false || !terminalNumber(stats.firstTokenMs) || live.state !== "generating" ||
       (live.parallel || 0) > 1 || (live.running || 0) > 1 || !terminalNumber(sample.time) ||
       sample.time * 1000 < stats.startedAt + stats.firstTokenMs ||
       !terminalNumber(live.elapsed_s) || !terminalNumber(live.generated)) return false;
@@ -1555,13 +1603,13 @@ function renderTerminalStats(el, m, streaming) {
   const active = streaming && busy && busy.msg === m;
   const source = terminalWord(s.rateSource || "native");
   const values = [];
-  if (terminalNumber(s.firstTokenMs)) values.push([terminalWord("first"), `${fmt(s.firstTokenMs / 1000, 1)} s`, terminalWord("client")]);
-  if (terminalNumber(s.decodeRate)) values.push([terminalWord("output"), `${fmt(s.decodeRate, 1)} tok/s`, source, "speed"]);
-  if (terminalNumber(s.generated)) values.push([terminalWord("tokens"), `${fmt(s.generated)}${!active && !s.finalCount ? "+" : ""}`,
+  if (terminalNumber(s.firstTokenMs)) values.push(["first", terminalWord("first"), `${fmt(s.firstTokenMs / 1000, 1)} s`, terminalWord("client")]);
+  if (terminalNumber(s.decodeRate)) values.push(["output", terminalWord("output"), `${fmt(s.decodeRate, 1)} tok/s`, source, "speed"]);
+  if (terminalNumber(s.generated)) values.push(["tokens", terminalWord("tokens"), `${fmt(s.generated)}${!active && !s.finalCount ? "+" : ""}`,
     !active && !s.finalCount ? terminalWord("incomplete") : s.finalCount ? terminalWord("native") : terminalWord("live")]);
   const readTokens = terminalNumber(s.readTokens) ? s.readTokens : terminalNumber(s.inputTokens)
     ? Math.max(0, s.inputTokens - (s.cachedTokens || 0)) : null;
-  if (!active && terminalNumber(readTokens)) values.push([terminalWord("input"), `${fmt(readTokens)} tok${terminalNumber(s.promptRate) ? ` · ${fmt(s.promptRate, 1)} tok/s` : ""}`, terminalWord("native")]);
+  if (!active && terminalNumber(readTokens)) values.push(["input", terminalWord("input"), `${fmt(readTokens)} tok${terminalNumber(s.promptRate) ? ` · ${fmt(s.promptRate, 1)} tok/s` : ""}`, terminalWord("native")]);
   if (!active && terminalNumber(s.cachedTokens)) {
     // OpenAI prompt_tokens includes cached tokens. Older saved stats may only
     // have the engine's newly read count, which excludes cached tokens.
@@ -1575,37 +1623,50 @@ function renderTerminalStats(el, m, streaming) {
     const value = pct == null
       ? tr("terminal.cacheUnknown", "— ({n} tok)", {n: fmt(s.cachedTokens)})
       : tr("terminal.cacheValue", "{pct}% ({n} tok)", {pct, n: fmt(s.cachedTokens)});
-    values.push([terminalWord("cache"), value, terminalWord("cacheHint")]);
+    values.push(["cache", terminalWord("cache"), value, terminalWord("cacheHint")]);
   }
-  values.push([terminalWord(active ? "elapsed" : "total"), `${fmt((s.elapsedMs || 0) / 1000, 1)} s`, terminalWord("client")]);
-  // Only rebuild the small telemetry row; the token stream owns the prose DOM.
-  const key = JSON.stringify(values);
-  if (badges.dataset.values !== key) {
-    badges.dataset.values = key;
-    badges.replaceChildren(...values.map(([label, value, title, tone]) => {
-      const badge = document.createElement("span");
-      badge.className = "terminal-stat" + (tone ? ` terminal-stat--${tone}` : "");
-      badge.title = title;
+  values.push(["elapsed", terminalWord(active ? "elapsed" : "total"), terminalSeconds(s.elapsedMs || 0, active), terminalWord("client")]);
+  // Keep badges and text nodes stable while counters change. Clock-only
+  // frames update their existing text nodes without rebuilding this row.
+  const nodes = badges._terminalNodes || (badges._terminalNodes = new Map());
+  const wanted = new Set();
+  let position = 0;
+  for (const [key, label, value, title, tone] of values) {
+    wanted.add(key);
+    let badge = nodes.get(key);
+    if (!badge) {
+      badge = document.createElement("span");
+      badge._name = document.createTextNode(label);
+      badge._value = document.createTextNode(value);
       const name = document.createElement("span"), number = document.createElement("strong");
-      name.textContent = label; number.textContent = value;
-      badge.append(name, number);
-      return badge;
-    }));
+      name.appendChild(badge._name); number.appendChild(badge._value); badge.append(name, number);
+      nodes.set(key, badge);
+    }
+    const className = "terminal-stat" + (tone ? ` terminal-stat--${tone}` : "");
+    if (badge.className !== className) badge.className = className;
+    if (badge.title !== title) badge.title = title;
+    if (badge._name.data !== label) badge._name.data = label;
+    if (badge._value.data !== value) badge._value.data = value;
+    if (badges.children[position] !== badge) badges.insertBefore(badge, badges.children[position] || null);
+    position++;
   }
+  for (const [key, badge] of nodes) if (!wanted.has(key)) { badge.remove(); nodes.delete(key); }
   let status = "";
+  phase._clockPrefix = null;
   if (active && m.compacting) {
     status = tr("context.compacting", "Summarizing earlier conversation…");
-  } else if (active && !terminalNumber(s.firstTokenMs)) {
+  } else if (active && !terminalNumber(s.firstTokenMs) && !s.roundGenerating) {
     status = terminalWord(s.promptProgress ? "reading" : "preparing");
     const p = s.promptProgress;
     if (p && terminalNumber(p.processed) && terminalNumber(p.total)) status += ` · ${fmt(p.processed)} / ${fmt(p.total)} tok`;
-    status += ` · ${fmt((s.elapsedMs || 0) / 1000, 1)} s`;
+    phase._clockPrefix = status + " · ";
+    status = phase._clockPrefix + terminalSeconds(s.elapsedMs || 0, true);
   } else if (active && m.reasoning && !m.text) status = terminalWord("thinking");
   else if (m.error) status = terminalWord("error");
   else if (m.stopped) status = terminalWord(m.interrupted ? "interrupted" : "stopped");
   phase.hidden = !status;
   phase.dataset.state = m.error ? "error" : active ? "active" : "stopped";
-  phase.textContent = status;
+  writeTerminalPhase(phase, status);
 }
 
 function terminalMessageElement(m, cached = null) {
@@ -1621,6 +1682,35 @@ function refreshTerminalStats() {
   m.stats.elapsedMs = Math.max(0, performance.now() - busy.startedMono);
   const el = terminalMessageElement(m, busy.element);
   if (el) { busy.element = el; renderTerminalStats(el, m, true); }
+}
+
+function refreshTerminalClock(owner) {
+  if (busy !== owner || !owner.msg.stats) return;
+  const m = owner.msg;
+  m.stats.elapsedMs = Math.max(0, performance.now() - owner.startedMono);
+  const el = terminalMessageElement(m, owner.element);
+  if (!el) return;
+  owner.element = el;
+  const badges = el.querySelector(".terminal-stats"), phase = el.querySelector(".terminal-phase");
+  const value = terminalSeconds(m.stats.elapsedMs, true), badge = badges?._terminalNodes?.get("elapsed");
+  if (badge && badge._value.data !== value) badge._value.data = value;
+  if (phase?._clockPrefix != null) {
+    const status = phase._clockPrefix + value;
+    writeTerminalPhase(phase, status);
+  }
+}
+
+function startTerminalClock(owner) {
+  refreshTerminalStats();
+  let frame = 0, stopped = false;
+  const tick = () => {
+    frame = 0;
+    if (stopped || busy !== owner) return;
+    refreshTerminalClock(owner);
+    frame = requestAnimationFrame(tick);
+  };
+  frame = requestAnimationFrame(tick);
+  return () => { stopped = true; if (frame) cancelAnimationFrame(frame); frame = 0; };
 }
 
 function msgEl(m, i) {
@@ -2401,11 +2491,11 @@ async function generateReply() {
   };
   const controller = new AbortController();
   busy = {controller, msg: m, cut: false, cutAfterTool: false, element: el, startedMono: performance.now()};
-  const statsTimer = setInterval(refreshTerminalStats, 250);
+  const stopStatsClock = startTerminalClock(busy);
   setBusy(true);
   paintLive();
 
-  const body = {model: health.model, messages: apiMessages(), stream: true, return_progress: true,
+  const body = {model: health.model, messages: apiMessages(), stream: true, return_progress: true, return_live_stats: true,
                 reasoning_effort: effortForModel()};
   // Gemma's canonical template defaults this flag to false and does not map
   // reasoning_effort itself. Send the mode explicitly, including to older APIs.
@@ -2435,9 +2525,7 @@ async function generateReply() {
     const roundBase = Math.max(0, ...(m.tools || []).map((tool) => tool.round || 0)) + 1;
     let roundUsage = null, roundTimings = null, finishReason = null, streamComplete = false;
     const cumulative = StrataLocalTools.combined(completedRounds);
-    m.stats.generatedOffset = cumulative.usage?.completion_tokens ?? cumulative.timings?.predicted_n ?? 0;
-    m.stats.roundHasToken = false;
-    delete m.stats.serverStartMs;
+    terminalBeginRound(m.stats, round, cumulative.usage?.completion_tokens ?? cumulative.timings?.predicted_n ?? 0);
     const r = await fetch("v1/chat/completions", {method: "POST", headers: headers(true), body: JSON.stringify(body),
                                                    signal: controller.signal});
     if (!r.ok) {
@@ -2464,7 +2552,10 @@ async function generateReply() {
         if (j.error) throw new Error(j.error.message || tr("toast.engineError", "the engine reported an error"));
         if (j.usage) roundUsage = j.usage;
         if (j.timings) roundTimings = j.timings;
-        if (j.prompt_progress) m.stats.promptProgress = j.prompt_progress;
+        let statsChanged = false;
+        if (j.strata_stats) statsChanged = terminalStreamStats(m.stats, j.strata_stats, round);
+        if (j.prompt_progress) { m.stats.promptProgress = j.prompt_progress; statsChanged = true; }
+        if (statsChanged) refreshTerminalStats();
         if (j.strata_mcp) {
           onTool(m, {...j.strata_mcp, ...(j.strata_mcp.round == null ? {} : {round: roundBase + j.strata_mcp.round})});
           // an interjection waited for a running tool: it has its result now, so the answer can stop
@@ -2496,7 +2587,9 @@ async function generateReply() {
           if (lastTool && m.text && lastTool.at === m.text.length) m.text += "\n\n";
           m.text += d.content;
         }
-        if (!frame) frame = requestAnimationFrame(paint);
+        // Telemetry-only packets update the small stable stats row. They must
+        // never rebuild Markdown/tool output or move the reader's scroll.
+        if ((j.strata_mcp || d.reasoning_content || d.content || d.tool_calls?.length) && !frame) frame = requestAnimationFrame(paint);
       }
     }
     completedRounds.push({usage: roundUsage, timings: roundTimings});
@@ -2533,7 +2626,7 @@ async function generateReply() {
     if (e.name === "AbortError") m.stopped = true;
     else { m.error = e.message || String(e); toast("error", tr("toast.requestFailed", "The request failed"), m.error, 6000); }
   }
-  clearInterval(statsTimer);
+  stopStatsClock();
   refreshTerminalStats();
   if (m.stopped || m.error) { usage = null; timings = null; m.stats.finalCount = false; }
   m.stats = terminalFinalStats(m.stats, usage, timings);

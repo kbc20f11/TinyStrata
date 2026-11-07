@@ -226,6 +226,63 @@ CTX_SLACK = 8               # `strata --serve` rejects prompt + max_new + 8 > co
 # token (the Monitor showed five-digit numbers) and then undershoots for the first second of every answer.
 RATE_WINDOW_S = 2.0
 RATE_MIN_SPAN_S = 0.25      # younger than this there is no rate yet: the mean so far, with the span floored here
+RATE_SAMPLE_S = 0.05
+RATE_SAMPLES = 64          # time buckets retain >2 seconds even at thousands of tokens/s
+LIVE_STATS_INTERVAL_S = 0.1
+
+
+def note_rate_sample(samples, now, generated):
+    """Keep the first anchor and a moving end inside each bounded 50 ms bucket."""
+    if len(samples) > 1 and now - samples[-2][0] < RATE_SAMPLE_S:
+        samples[-1] = (now, generated)
+    else:
+        samples.append((now, generated))
+
+
+def measured_token_rate(generated, first, samples, now):
+    """Observed tokens over the last two seconds, including a quiet current tail."""
+    if first is None:
+        return 0.0
+    age = max(0.0, now - first)
+    if age < RATE_MIN_SPAN_S:
+        return max(0.0, generated / RATE_MIN_SPAN_S)
+    oldest = next(((t, n) for t, n in samples if now - t <= RATE_WINDOW_S), None)
+    if oldest is None:
+        return 0.0  # no newly observed token in the window; never fall back to a lifetime average
+    return max(0.0, (generated - oldest[1]) / max(RATE_MIN_SPAN_S, now - oldest[0]))
+
+
+class LiveStreamStats:
+    """Request-owned observations; never consult shared status, text length or hardware."""
+    def __init__(self):
+        self.started = time.monotonic()
+        self.first = None
+        self.generated = 0
+        self.samples = collections.deque(maxlen=RATE_SAMPLES)
+        self.last_sent = None
+
+    def observe(self, generated):
+        now = time.monotonic()
+        if self.first is None and generated > 0:
+            self.first = now
+            self.samples.append((now, 0))
+        self.generated = generated
+        if self.first is not None:
+            note_rate_sample(self.samples, now, generated)
+
+    def snapshot(self, *, force=False, done=False):
+        now = time.monotonic()
+        if not force and self.last_sent is not None and now - self.last_sent < LIVE_STATS_INTERVAL_S:
+            return None
+        self.last_sent = now
+        return {"generated": self.generated,
+                "tok_s": round(measured_token_rate(self.generated, self.first, self.samples, now), 1)
+                         if self.first is not None else None,
+                "elapsed_s": round(max(0.0, now - self.started), 3),
+                "first_token_s": round(max(0.0, self.first - self.started), 3) if self.first is not None else None,
+                "done": done}
+
+
 # #481: a running request whose engine prints nothing (no T, PP or any other line) for this long has lost step with the
 # server (the engine's main thread waits, untimed, for its next command): the engine is ended and the request fails;
 # the next request starts it again.  The config's "engine_silence_s" sets it (0: wait forever, as before).
@@ -3252,7 +3309,7 @@ class Service:
         self.allowed_hosts: list[str] = []
         self.host_names: set[str] = set(LOOPBACK_NAMES)
         self.status = {"busy": False, "queued": 0}      # GET /status: what the model is doing right now
-        self.rate = collections.deque(maxlen=32)        # (time, generated) samples for the live tok/s window
+        self.rate = collections.deque(maxlen=RATE_SAMPLES)  # bounded time-bucket samples for the live tok/s window
         # "parallel" (the engine's batch slots): every running request's own status and rate window; self.status
         # then says busy while any runs and shows the newest one
         self.live_reqs: dict[int, tuple[dict, collections.deque]] = {}
@@ -3809,12 +3866,7 @@ class Service:
     def _rate_of(s, rate):
         if not s.get("busy") or not s.get("first_token"):
             return 0.0
-        now = time.time()
-        newest = rate[-1] if rate else None
-        oldest = next(((t, g) for t, g in rate if now - t <= RATE_WINDOW_S), None)
-        if newest and oldest and newest[0] - oldest[0] >= RATE_MIN_SPAN_S:
-            return max(0.0, (newest[1] - oldest[1]) / (newest[0] - oldest[0]))
-        return s["generated"] / max(RATE_MIN_SPAN_S, now - s["first_token"])
+        return measured_token_rate(s["generated"], s["first_token"], rate, time.time())
 
     def _tok_s_mean(self):
         """The whole-request mean since the first token (the old formula), kept so the two can be compared."""
@@ -4478,9 +4530,12 @@ class Service:
         with self.status_lock:
             s = self.status if st is None else st
             s["generated"] = n
+            now = time.time()
+            samples = self.rate if rate is None else rate
             if s.get("first_token") is None:
-                s["first_token"] = time.time()
-            (self.rate if rate is None else rate).append((time.time(), n))   # the live rate's window (RATE_WINDOW_S)
+                s["first_token"] = now
+                samples.append((now, 0))
+            note_rate_sample(samples, now, n)
             for ev in evs:
                 if ev.kind == "reasoning":
                     s["phase"] = "thinking"
@@ -4608,7 +4663,8 @@ class Service:
         # window (self.status says busy while any runs); one at a time they are self.status / self.rate, as before
         par = bool(getattr(self.engine, "batch", 0))
         st = {} if par else self.status
-        rate = collections.deque(maxlen=32) if par else self.rate
+        rate = collections.deque(maxlen=RATE_SAMPLES) if par else self.rate
+        live_stats = LiveStreamStats() if sampling.get("return_live_stats") is True else None
         with self.status_lock:
             self.status["queued"] += 1
         try:
@@ -4635,6 +4691,8 @@ class Service:
                 if not got:                              # cancelled while queued
                     with self.status_lock:
                         self.status["queued"] -= 1
+                    if live_stats is not None:
+                        yield "stats", live_stats.snapshot(force=True, done=True)
                     yield "done", {"finish": "cancel", "completion_tokens": 0, "reused": 0, "timings": None,
                                    "reasoning_tokens": 0, "reasoning_recoveries": 0}
                     return
@@ -4687,6 +4745,8 @@ class Service:
                         rate.clear()                    # the previous request's samples must not leak into this one
                     before = getattr(self.engine, "last", None)
                     last_print = time.time()
+                    if live_stats is not None:
+                        yield "stats", live_stats.snapshot(force=True)
                     prompt, thought = ids, 0            # thought: the reasoning tokens so far (the budget's count)
                     for ev in opening:
                         yield "event", ev
@@ -4709,9 +4769,19 @@ class Service:
                                 if t is None:               # heartbeat while the engine is quiet
                                     last_print = self._progress(last_print, st=st)
                                     last_out = time.perf_counter()
+                                    if live_stats is not None:
+                                        snapshot = live_stats.snapshot()
+                                        if snapshot is not None:
+                                            yield "stats", snapshot
                                     yield "ping", None
                                     continue
                                 n += 1
+                                if live_stats is not None:
+                                    first_observation = live_stats.first is None
+                                    live_stats.observe(n)
+                                    snapshot = live_stats.snapshot(force=first_observation)
+                                    if snapshot is not None:
+                                        yield "stats", snapshot
                                 if t in self.stop_ids:
                                     if force and parser.state == "reasoning" and parser.buf == think_end:
                                         opens = True    # #537: the held </think> was the end: the call opens there
@@ -4996,6 +5066,9 @@ class Service:
                 "reasoning_recoveries": recovery_count}
         if stops is not None and stops.hit is not None:
             done["stop_sequence"] = stops.hit
+        if live_stats is not None:
+            live_stats.observe(n)
+            yield "stats", live_stats.snapshot(force=True, done=True)
         yield "done", done
 
 
@@ -5100,12 +5173,21 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
     could not reach the model before the client's)."""
     max_rounds = int(hub.settings["max_rounds"])
     total, rounds, done = 0, 0, None
+    live_stats = LiveStreamStats() if (sampling or {}).get("return_live_stats") is True else None
     messages = list(messages)
     while True:
         text, reasoning, calls, own_calls = [], [], [], 0
         for kind, x in svc.run(ids, thinking, tools, max_new, sampling, cancel):
             if kind == "done":
                 done = x
+                continue
+            if kind == "stats":
+                if live_stats is not None:
+                    first_observation = live_stats.first is None and x["generated"] > 0
+                    live_stats.observe(total + x["generated"])
+                    snapshot = live_stats.snapshot(force=first_observation)
+                    if snapshot is not None:
+                        yield "stats", snapshot
                 continue
             if kind == "event":
                 ev: Event = x
@@ -5153,6 +5235,10 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
                 while worker.is_alive():
                     worker.join(1.0)
                     if worker.is_alive():
+                        if live_stats is not None:
+                            snapshot = live_stats.snapshot()
+                            if snapshot is not None:
+                                yield "stats", snapshot
                         yield "ping", None
             except GeneratorExit:
                 cancel.set()                             # the client is gone: stop the tool too
@@ -5176,6 +5262,9 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
         except ClientGone:                                      # #1999: the client left while a picture was prepared
             done = {**done, "finish": "cancel"}
             break
+    if live_stats is not None:
+        live_stats.observe(total)
+        yield "stats", live_stats.snapshot(force=True, done=True)
     yield "done", {**done, "completion_tokens": total, "prompt_tokens": len(ids)}
 
 
@@ -5215,6 +5304,7 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
     # llama.cpp's flag, and its default: a client that wants prompt progress asks for it, and nothing changes for one
     # that does not.  Strata already sends a keep-alive comment on every PP line, so this only fills that line in.
     want_progress = bool(req.get("return_progress"))
+    want_stats = req.get("return_live_stats") is True
 
     def chunk(delta, finish=None):
         return {"id": cid, "object": "chat.completion.chunk", "created": created, "model": model,
@@ -5230,6 +5320,9 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
             # now it carries the progress when the client asked, and stays the comment when there is nothing to report.
             pp = prompt_progress(svc) if want_progress else None
             yield None if pp is None else {**chunk({}), "prompt_progress": pp}
+        elif kind == "stats":
+            if want_stats:
+                yield {**chunk({}), "strata_stats": x}
         elif kind == "mcp":
             c = chunk({})
             c["strata_mcp"] = x
@@ -5353,6 +5446,9 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
     for kind, x in svc.run(ids, thinking, tools, max_new, req, cancel, force=force):
         if kind == "ping":
             yield None
+            continue
+        if kind == "stats":
+            # This opt-in extension is an OpenAI chat field, not an Anthropic event.
             continue
         if kind == "event":
             ev: Event = x
@@ -6996,6 +7092,9 @@ def check_request_sampling(req) -> None:
     greedy, top_k 0 or above 64 is clamped, a seed <= 0 is unset), and an absent or null field is not checked."""
     config.clover_request_options(req)
     config.speculation_request_options(req)
+    live_stats = (req or {}).get("return_live_stats")
+    if live_stats is not None and not isinstance(live_stats, bool):
+        raise ValueError("return_live_stats: a boolean")
     if isinstance(req, dict):      # #1819: llama.cpp's names; the OpenAI-style field wins when both are sent
         if req.get("repeat_penalty") is not None and req.get("repetition_penalty") is None:
             req["repetition_penalty"] = req["repeat_penalty"]

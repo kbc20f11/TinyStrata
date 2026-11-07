@@ -36,6 +36,8 @@
 !/tests/test_hip_runtime.py
 !/tests/test_hip_runtime_integration.py
 !/tests/test_install_guard.py
+!/tests/test_live_stream_stats.py
+!/tests/ui-live-stats.cjs
 !/tests/ui-model-download.cjs
 !/tests/model-artifact-migration.py
 !/tests/clover-self-spec.cpp
