@@ -82,6 +82,10 @@ irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/insta
 irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex
 ```
 
+**Runtime AMD padrão:** instalações e atualizações automáticas usam o **SDK ROCm privado `10.2.0a20260930` (HIP 7.17)** no diretório de trabalho, em vez de um `HIP_PATH` global antigo ou SDK do sistema. `-HipDirectory` ainda permite selecionar explicitamente um SDK personalizado. Os mecanismos e o Vision compartilham arquivos HIP/COMGR/Kpack compatíveis e caminhos verificados das bibliotecas matemáticas do SDK; as atualizações preparam uma geração nativa separada antes de publicar as configurações. Drivers, System32 e o PATH permanente do sistema não são alterados.
+
+O Windows HIP usa a granularidade VMM mínima do driver somente após verificar os três arquivos locais, o runtime carregado e a versão HIP compilada correspondente (7.17 ou posterior). Runtimes antigos, incompatíveis ou não verificados mantêm um **mínimo de alocação de 4 MiB**. Para recuperar os blocos maiores, defina `$env:TINYSTRATA_HIP_VMM_COARSE='1'` antes de iniciar; **qualquer valor não vazio os força**. Remova a variável para restaurar a seleção automática. Somente **HIP verificado com granularidade inferior a 4 MiB** permite **60 segundos** para encerrar normalmente o descarregamento nativo; os outros caminhos mantêm o prazo anterior. A limitação de vídeo AMD acima continua válida. Veja a [validação e as limitações restantes](benchmark/results/hip-runtime-vmm-20261107.md).
+
 A interface opcional em tons de verde oferece os sete idiomas do README, entrada de imagens e estatísticas de geração em tempo real. O modo claro ou escuro segue as configurações do sistema.
 
 O instalador com interface para Windows cria um atalho **TinyStrata** na área de trabalho. Abra-o para iniciar ou reutilizar a API e a interface locais e abrir o chat no navegador. O instalador somente com API não cria esse atalho. Você também pode executar este comando ou dar um clique duplo em `run-ui.bat`:

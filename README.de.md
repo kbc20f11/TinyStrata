@@ -82,6 +82,10 @@ irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/insta
 irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex
 ```
 
+**AMD-Laufzeitstandard:** Automatische Installationen und Updates verwenden das private **ROCm-SDK `10.2.0a20260930` (HIP 7.17)** im Arbeitsverzeichnis statt eines älteren globalen `HIP_PATH` oder System-SDKs. Ein ausdrücklich angegebenes `-HipDirectory` wählt weiterhin ein eigenes SDK. Modell-Engines und Vision verwenden zusammenpassende HIP-/COMGR-/Kpack-Dateien und geprüfte SDK-Mathematikbibliotheken; Updates bereiten eine separate native Generation vor, bevor die Einstellungen veröffentlicht werden. Treiber, System32 und der dauerhafte System-PATH bleiben unverändert.
+
+Windows HIP verwendet die vom Treiber gemeldete minimale VMM-Granularität nur nach Prüfung der drei lokalen Kernbibliotheken, der tatsächlich geladenen Laufzeit und der passenden kompilierten HIP-Version (ab 7.17). Ältere, abweichende oder ungeprüfte Laufzeiten behalten eine **Mindestgröße von 4 MiB**. Zur Wiederherstellung setzen Sie vor dem Start `$env:TINYSTRATA_HIP_VMM_COARSE='1'`; **jeder nichtleere Wert erzwingt grobe Blöcke**. Entfernen Sie die Variable für die automatische Auswahl. Nur bei **verifiziertem HIP mit Blöcken unter 4 MiB** wartet die native Entladung bis zu **60 Sekunden** auf ein reguläres Ende; andere Pfade behalten ihr Zeitlimit. Die obige AMD-Bildausgabebeschränkung gilt weiter. Siehe [Validierung und verbleibende Grenzen](benchmark/results/hip-runtime-vmm-20261107.md).
+
 Die optionale grüne Oberfläche unterstützt die sieben README-Sprachen, Bildeingaben und Live-Statistiken zur Generierung. Der helle oder dunkle Modus folgt den Betriebssystemeinstellungen.
 
 Der Windows-UI-Installer erstellt eine **TinyStrata**-Verknüpfung auf dem Desktop. Sie startet die lokale API und Oberfläche oder verwendet die bereits laufenden Prozesse und öffnet den Chat im Browser. Der reine API-Installer erstellt diese Verknüpfung nicht. Alternativ diesen Befehl ausführen oder `run-ui.bat` doppelklicken:

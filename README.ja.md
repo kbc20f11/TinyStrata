@@ -96,6 +96,10 @@ irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/insta
 irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex
 ```
 
+**AMD ランタイムの既定:** 自動インストール・更新では、古いグローバルの `HIP_PATH` やシステム SDK よりも、作業フォルダー内の private **ROCm `10.2.0a20260930` SDK（HIP 7.17）**を使います。`-HipDirectory` を明示した場合は、そのカスタム SDK を尊重します。モデルと Vision で HIP・COMGR・Kpack の組み合わせと検証済みの SDK 数学ライブラリの場所を統一し、更新時は別の native 世代を用意してから設定を切り替えます。ドライバー・System32・永続的なシステム PATH は変更しません。
+
+Windows HIP は、app-local の 3 ファイルのハッシュ・実際に読み込んだランタイム・コンパイル時の HIP バージョン（7.17 以降）が検証を通った場合だけ、ドライバーが報告する最小 VMM 粒度を使います。従来版・不一致・未検証では **4 MiB を割り当ての下限**にします。復旧時は起動前に `$env:TINYSTRATA_HIP_VMM_COARSE='1'` を設定できます。**空でない値はすべて粗い粒度を強制する**ため、自動選択に戻すには環境変数を削除してください。正常終了を待つ時間は、**検証済みで 4 MiB 未満の HIP のみ 60 秒**とし、ほかの経路の待機時間は維持します。冒頭の AMD 映像出力制限は引き続き適用します。[検証結果と残る制約](benchmark/results/hip-runtime-vmm-20261107.md)を参照してください。
+
 緑を基調とした UI は、README と同じ 7 言語、画像入力、生成状況のリアルタイム表示に対応します。ライト／ダークモードは OS の設定に従います。
 
 Windows の UI ありインストーラーは、デスクトップに **TinyStrata** のショートカットを作成します。開くとローカルの API と UI を起動し、起動済みなら再利用して、ブラウザにチャットを表示します。API のみのインストーラーは、このショートカットを作成しません。次のコマンドや `run-ui.bat` のダブルクリックでも起動できます。

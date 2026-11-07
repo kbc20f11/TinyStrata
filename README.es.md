@@ -82,6 +82,10 @@ irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/insta
 irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex
 ```
 
+**Runtime AMD predeterminado:** las instalaciones y actualizaciones automáticas usan el **SDK ROCm privado `10.2.0a20260930` (HIP 7.17)** del directorio de trabajo, en lugar de un `HIP_PATH` global antiguo o un SDK del sistema. `-HipDirectory` sigue permitiendo seleccionar explícitamente un SDK personalizado. Los motores y Vision comparten archivos HIP/COMGR/Kpack compatibles y rutas verificadas de las bibliotecas matemáticas del SDK; las actualizaciones preparan una generación nativa aparte antes de publicar los ajustes. No se modifican los controladores, System32 ni el PATH permanente del sistema.
+
+Windows HIP usa la granularidad VMM mínima del controlador solo tras verificar los tres archivos locales, el runtime cargado y su versión HIP compilada correspondiente (7.17 o posterior). Los runtimes antiguos, incompatibles o sin verificar conservan un **mínimo de asignación de 4 MiB**. Para recuperar los bloques gruesos, establece `$env:TINYSTRATA_HIP_VMM_COARSE='1'` antes de iniciar; **cualquier valor no vacío los fuerza**. Elimina la variable para restaurar la selección automática. Solo **HIP verificado con granularidad inferior a 4 MiB** permite **60 segundos** para finalizar normalmente la descarga nativa; las otras rutas mantienen su plazo. La limitación de vídeo AMD indicada arriba sigue vigente. Consulta la [validación y las limitaciones restantes](benchmark/results/hip-runtime-vmm-20261107.md).
+
 La interfaz opcional de tonos verdes admite los siete idiomas del README, imágenes y estadísticas de generación en directo. El modo claro u oscuro sigue la configuración del sistema.
 
 El instalador con interfaz para Windows crea un acceso directo **TinyStrata** en el escritorio. Ábrelo para iniciar o reutilizar la API y la interfaz locales y abrir el chat en el navegador. El instalador de solo API no crea este acceso directo. También puedes ejecutar este comando o hacer doble clic en `run-ui.bat`:

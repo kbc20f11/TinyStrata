@@ -2,10 +2,12 @@
 import copy
 import importlib.util
 import json
+import io
 from pathlib import Path
 import sys
+import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -31,6 +33,67 @@ def controlled(model):
 
 
 class BenchmarkProfileMigration(unittest.TestCase):
+    def test_saved_profile_preserves_native_sampler_vision_and_source(self):
+        before = original('clover')
+        before.update(api_key='private-production-key', backend='hip', enable_thinking=False,
+                      sampling={'temperature': .37, 'top_p': .91, 'presence_penalty': .2, 'penalty_last_n': 128},
+                      env={'STRATA_IQ_MT_MIN': '2', 'STRATA_API_KEY': 'private-key'}, vision_mode='gpu')
+        before['args'] += ['--kv-type', 'fp8-mma', '--mtp', '0', '--vision', '--cpu-threads', '7']
+        snapshot = copy.deepcopy(before)
+        cfg = bench.saved_config(before, 'clover', ROOT / 'unused-private-output', 18019, CASES)
+        self.assertEqual(cfg['args'], before['args'])
+        self.assertEqual(cfg['sampling'], before['sampling'])
+        self.assertEqual(cfg['vision'], before['vision'])
+        self.assertFalse(cfg['enable_thinking'])
+        self.assertEqual(cfg['env']['STRATA_IQ_MT_MIN'], '2')
+        self.assertNotIn('api_key', cfg)
+        self.assertNotIn('STRATA_API_KEY', cfg['env'])
+        self.assertEqual(cfg['port'], 18019)
+        cfg['vision']['gpu'] = False
+        cfg['sampling']['temperature'] = 9
+        self.assertEqual(before, snapshot)
+
+    def test_saved_profile_registry_and_generation_counts_are_separate(self):
+        self.assertEqual(bench.benchmark_models('all'), list(bench.MODELS))
+        self.assertEqual(bench.benchmark_models('all', True), [*bench.MODELS, 'tiel'])
+        with self.assertRaises(ValueError): bench.benchmark_models('tiel')
+        self.assertEqual(bench.generation_passes(False), (1, 2))
+        self.assertEqual(bench.generation_passes(True), (1,))
+
+    def test_saved_sampler_overrides_clover_protocol_without_replacing_workload_controls(self):
+        sampling = {'temperature': .37, 'top_k': 17, 'penalty_last_n': 128,
+                    'seed': 9, 'max_tokens': 99999, 'strata_checkpoint': True}
+        request = bench.request_body('clover', 'question', 32, CASES, thinking=False, sampling=sampling)
+        self.assertEqual((request['temperature'], request['top_k'], request['penalty_last_n']), (.37, 17, 128))
+        self.assertEqual((request['seed'], request['max_tokens'], request['strata_checkpoint']), (1234, 32, False))
+        self.assertFalse(request['enable_thinking'])
+        self.assertEqual(sampling['seed'], 9)
+        self.assertEqual(bench.request_body('tiel', 'q', 32, CASES)['model'], 'tiel-coder-35b-a3b')
+
+    def test_service_requests_graceful_unload_before_force_cleanup(self):
+        events = []
+        class Process:
+            ended = False
+            def poll(self): return 0 if self.ended else None
+            def kill(self): events.append('kill_api'); self.ended = True
+            def wait(self, timeout): return 0
+        service = bench.Service.__new__(bench.Service)
+        service.process = Process()
+        service.remember = Mock()
+        service.stop, service.watcher = Mock(), Mock()
+        service.owned, service.lock = {}, threading.Lock()
+        service.stdout, service.stderr = io.StringIO(), io.StringIO()
+        def json_call(path, body=None, timeout=None):
+            events.append(path)
+            if path == '/unload': return {'status': 'unloaded'}
+            return {'loaded': events.count('/health') == 1}
+        service.json = json_call
+        with patch.object(bench.psutil, 'wait_procs', return_value=([], [])):
+            service.close()
+        self.assertLess(events.index('/unload'), events.index('kill_api'))
+        self.assertTrue(service.cleanup['graceful_unloaded'])
+        self.assertFalse(service.cleanup['forced_fallback'])
+
     def test_benchmark_requests_are_one_shot_without_parking(self):
         cases = json.loads((ROOT / 'benchmark/cases.json').read_text(encoding='utf-8'))
         for model in bench.MODELS:

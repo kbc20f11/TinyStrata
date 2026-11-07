@@ -82,6 +82,10 @@ irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/insta
 irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex
 ```
 
+**AMD 运行时默认设置：** 自动安装和更新使用工作目录中的私有 **ROCm `10.2.0a20260930` SDK（HIP 7.17）**，不会默认选择旧的全局 `HIP_PATH` 或系统 SDK。显式指定 `-HipDirectory` 仍可选择自定义 SDK。模型与 Vision 共用匹配的 HIP／COMGR／Kpack 和经过验证的 SDK 数学库路径；更新先准备独立的 native 版本，再提交设置。不会修改驱动、System32 或持久的系统 PATH。
+
+仅当本地三个核心文件的哈希、实际加载的运行时及编译时 HIP 版本（7.17 或更新）通过验证时，Windows HIP 才使用驱动报告的最小 VMM 粒度。旧版、不匹配或未验证的运行时保留 **4 MiB 分配下限**。恢复时可在启动前设置 `$env:TINYSTRATA_HIP_VMM_COARSE='1'`；**任何非空值都会强制粗粒度**，恢复自动选择时请删除该变量。仅对**验证通过且粒度小于 4 MiB 的 HIP**，正常卸载的 native 退出等待可达 **60 秒**；其他路径保持原有等待时间。上方 AMD 显示输出限制仍然适用。参见[验证结果与剩余限制](benchmark/results/hip-runtime-vmm-20261107.md)。
+
 绿色主题的可选 UI 支持 README 的七种语言、图像输入和实时生成统计。浅色／深色模式跟随操作系统设置。
 
 Windows 的带 UI 安装脚本会在桌面创建 **TinyStrata** 快捷方式。打开它即可启动或复用本地 API 和 UI，并在浏览器中显示聊天页面。仅安装 API 的脚本不会创建此快捷方式。也可以运行以下命令或双击 `run-ui.bat`：

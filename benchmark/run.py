@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import shutil
 import socket
 import statistics
 import subprocess
@@ -41,6 +42,7 @@ MODELS = {
     'clover': ('config-clover.json', 'clover_moe', 'clover-35b-a3b-preview'),
 }
 TEXT_ONLY_MODELS = ('lfm', 'clover')
+TIEL_MODEL = ('config-tiel-coder.json', 'qwen35moe', 'tiel-coder-35b-a3b')
 # Adding a model must not change the existing v1 texts/image or their hashes.
 CLOVER_SAMPLING = {'temperature': 0.0, 'top_p': 1.0, 'top_k': 64, 'min_p': 0.0,
                    'presence_penalty': 0.9, 'repetition_penalty': 1.05, 'frequency_penalty': 0.0}
@@ -61,7 +63,9 @@ ENGINE_KEYS = ('model', 'version', 'kv', 'kv_grow', 'mtp', 'clover_draft', 'clov
                'kv_logical_bytes', 'kv_mapped_bytes', 'kv_committed_rows', 'gpu_cc',
                'q36_mmvq_il', 'q36_mmvq_il_auto', 'q36_int8_fdec',
                'q36_main_mmq', 'q36_main_mmq_auto', 'q36_mtp_mmq',
-               'q36_mmq_min_rows', 'q36_mmq_auto_workspace_bytes')
+               'q36_mmq_min_rows', 'q36_mmq_auto_workspace_bytes',
+               'hip_vmm_family', 'hip_vmm_verified', 'hip_vmm_driver_min_kib', 'hip_vmm_quantum_kib',
+               'hip_runtime_version', 'hip_compiled_version', 'hip_vmm_reason')
 CLOVER_INFO_FLOATS = ('clover_threshold', 'clover_last_threshold', 'clover_preview_ms',
                       'clover_replay_ms', 'clover_select_ms', 'clover_preview_cpu_ms',
                       'clover_accept_ratio', 'clover_accept_delta', 'clover_last_accept_ratio', 'clover_last_accept_delta')
@@ -141,7 +145,51 @@ def child_environment(environ=None):
 
 
 def model_sampling(model, cases):
-    return dict(CLOVER_SAMPLING if model == 'clover' else cases['sampling'][model])
+    return dict(CLOVER_SAMPLING if model == 'clover' else cases['sampling']['qwen' if model == 'tiel' else model])
+
+
+def model_definition(model):
+    return TIEL_MODEL if model == 'tiel' else MODELS[model]
+
+
+def benchmark_models(model, saved_profile=False):
+    if model == 'tiel' and not saved_profile:
+        raise ValueError('Tiel benchmarking requires --saved-profile')
+    return [*MODELS, *(['tiel'] if saved_profile else [])] if model == 'all' else [model]
+
+
+def generation_passes(saved_profile=False):
+    return (1,) if saved_profile else (1, 2)
+
+
+def saved_config(original, model, folder, port, cases, *, copy_profiles=False):
+    """Retain actual native/model choices; isolate only benchmark side effects."""
+    file, arch, name = model_definition(model)
+    if original.get('arch', 'qwen35moe') != arch:
+        raise ValueError(f'{file} does not select {arch}')
+    cfg = copy.deepcopy(original)
+    cfg.update(host='127.0.0.1', port=port, log=str(Path(folder) / 'engine.log'))
+    cfg.setdefault('model_name', name)
+    cfg.setdefault('sampling', model_sampling(model, cases))
+    # Private loopback requests need no production authentication. The source
+    # profile and every original key remain untouched.
+    cfg.pop('api_key', None)
+    cfg['env'] = dict(cfg.get('env') or {})
+    cfg['env'].pop('STRATA_API_KEY', None)
+    prior = Path(cfg['env'].get('TINYSTRATA_Q36_EXPERT_PROFILE_DIR') or
+                 (Path(original.get('log') or ROOT / 'engine.log').parent / 'expert-profiles'))
+    private = Path(folder) / 'expert-profiles'
+    if copy_profiles:
+        if prior.is_dir(): shutil.copytree(prior, private)
+        else: private.mkdir(parents=True, exist_ok=False)
+    cfg['env']['TINYSTRATA_Q36_EXPERT_PROFILE_DIR'] = str(private)
+    if cfg.get('expert_profile_save'):
+        cfg['expert_profile_save'] = str(Path(folder) / 'expert-profile-save.bin')
+    args = list(cfg.get('args') or [])
+    if '--expert-profile-save' in args:
+        args[args.index('--expert-profile-save') + 1] = str(Path(folder) / 'expert-profile-native.bin')
+    cfg['args'] = args
+    return cfg
 
 
 def chunk_option(value):
@@ -253,11 +301,15 @@ def controlled_config(original, model, folder, port, cases, *, clover_mode='caus
     return cfg
 
 
-def request_body(model, text, limit, cases, thinking=True):
-    sampling = {'frequency_penalty': 0.0, **model_sampling(model, cases)}
-    return dict(model=MODELS[model][2], messages=[dict(role='user', content=text)],
-                max_tokens=limit, stream=True, enable_thinking=thinking,
-                strata_checkpoint=False, seed=cases['seed'], **sampling)
+def request_body(model, text, limit, cases, thinking=True, sampling=None):
+    sampling = {'frequency_penalty': 0.0, **(model_sampling(model, cases) if sampling is None else sampling)}
+    request = dict(sampling)
+    # Workload limits/seed and fresh-input measurement remain explicit even if
+    # a saved sampler also carries generic request defaults.
+    request.update(model=model_definition(model)[2], messages=[dict(role='user', content=text)],
+                   max_tokens=limit, stream=True, enable_thinking=thinking,
+                   strata_checkpoint=False, seed=cases['seed'])
+    return request
 
 
 def read_sse(response, started, clock=time.perf_counter):
@@ -524,6 +576,28 @@ class Service:
                     engine_after=after)
 
     def close(self):
+        # Release native GPU mappings through the normal lifecycle before
+        # stopping the private API. A small-grain HIP pool can need tens of
+        # seconds to release its handles; force-killing it then waiting five
+        # seconds confuses normal driver cleanup with a surviving process.
+        started = time.monotonic()
+        self.cleanup = {'graceful_unloaded': False, 'forced_fallback': False}
+        interrupted = None
+        if self.process.poll() is None:
+            try:
+                health = self.json('/health', timeout=3)
+                if health.get('loaded'):
+                    self.cleanup['unload_response'] = self.json('/unload', {}, timeout=90)
+                    health = self.json('/health', timeout=3)
+                self.cleanup['unload_health'] = health
+                self.cleanup['graceful_unloaded'] = health.get('loaded') is False
+            except (OSError, RuntimeError, ValueError) as error:
+                self.cleanup['unload_error'] = repr(error)
+            except KeyboardInterrupt as error:
+                interrupted = error
+                self.cleanup['unload_error'] = 'interrupted'
+        self.cleanup['unload_wall_s'] = time.monotonic() - started
+        self.cleanup['forced_fallback'] = not self.cleanup['graceful_unloaded']
         self.remember()
         self.stop.set()
         self.watcher.join(timeout=2)
@@ -552,7 +626,10 @@ class Service:
         self.stdout.close()
         self.stderr.close()
         if errors:
+            self.cleanup['errors'] = errors
             raise RuntimeError('; '.join(errors))
+        if interrupted is not None:
+            raise interrupted
 
 
 def free_port():
@@ -581,6 +658,8 @@ def render_report(report):
                     'Expert cache GiB: startup → after16K → after64K |')
         lines[6] = '|---|---:|---:|---:|---:|---:|---:|---|'
     profile = report.get('clover_profile')
+    if report.get('saved_profile'):
+        lines[4:4] = ['Saved-profile variant: native settings and samplers are retained; each canonical generation text runs once per start.', '']
     if profile:
         details = (f'Clover profile: {profile["mode"]}, KV {profile["kv"]}, '
                    f'workers {profile["cpu_workers"]}, chunk {profile["chunk"]}, '
@@ -607,12 +686,12 @@ def render_report(report):
             return low if low == high else f'{low}–{high}'
         cache = result['expert_cache']
         if report.get('include_64k'):
-            lines.append(f'| {MODELS[model][2]} | {rate("generation")} | {rate("input_4k")} | {rate("input_16k")} | '
+            lines.append(f'| {model_definition(model)[2]} | {rate("generation")} | {rate("input_4k")} | {rate("input_16k")} | '
                          f'{rate("input_64k")} | {rate("decode_after_64k")} | {image_text} | '
                          f'{span(cache["startup_engine"])} → {span(cache["after_16k_engine"])} → '
                          f'{span(cache.get("after_64k_engine", []))} |')
         else:
-            lines.append(f'| {MODELS[model][2]} | {rate("generation")} | {rate("input_4k")} | {rate("input_16k")} | '
+            lines.append(f'| {model_definition(model)[2]} | {rate("generation")} | {rate("input_4k")} | {rate("input_16k")} | '
                          f'{image_text} | {span(cache["startup_engine"])} → {span(cache["after_16k_engine"])} |')
         if data.get('error'):
             lines.append(f'\n{model}: ERROR — {data["error"]}')
@@ -627,7 +706,9 @@ def render_report(report):
 def main():
     local = Path(os.environ.get('LOCALAPPDATA', Path.home() / '.local/share'))
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--model', choices=(*MODELS, 'all'), default='all')
+    parser.add_argument('--model', choices=(*MODELS, 'tiel', 'all'), default='all')
+    parser.add_argument('--saved-profile', action='store_true',
+                        help='Nonstandard variant: retain saved native/sampling/Vision settings, include Tiel in all, run each generation text once')
     parser.add_argument('--config-dir', type=Path, default=local / 'TinyStrata-work/runtime/.tinystrata')
     parser.add_argument('--output', type=Path, default=local / 'TinyStrata-work/benchmarks' / time.strftime('%Y%m%d-%H%M%S'))
     parser.add_argument('--runs', type=int, default=4, help='Protocol v1 uses4; other counts are diagnostic')
@@ -696,13 +777,19 @@ def main():
         parser.error('cpu-workers must be in 0..1024')
     if options.clover_mode != 'diffusion' and (options.clover_block_size != 32 or options.clover_threshold != 0.95):
         parser.error('block size and threshold overrides require --clover-mode diffusion')
+    if options.saved_profile and (manual_variant or options.clover_mode != 'causal' or options.clover_vision or
+                                 any(value is not None for value in spec_options)):
+        parser.error('--saved-profile retains the saved settings; do not combine it with profile overrides')
     options.config_dir, options.output = options.config_dir.resolve(), options.output.resolve()
     cases = json.loads((HERE / 'cases.json').read_text(encoding='utf-8'))
     if cases['protocol'] != 'tinystrata-bench-v1' or cases['seed'] != 1234 or len(cases['generation']) != 3:
         parser.error('Unexpected benchmark case manifest')
     if options.include_64k and cases['prefill_max_tokens'] != 32:
         parser.error('--include-64k requires the canonical 32-token long-input output limit')
-    models = list(MODELS) if options.model == 'all' else [options.model]
+    try:
+        models = benchmark_models(options.model, options.saved_profile)
+    except ValueError as error:
+        parser.error(str(error))
     options.output.mkdir(parents=True, exist_ok=False)
     try:
         commit = subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True,
@@ -711,8 +798,8 @@ def main():
         commit = None
     diffusion_variant = options.clover_mode == 'diffusion'
     self_spec_variant = options.clover_mode == 'self-spec'
-    variant = diffusion_variant or self_spec_variant or manual_variant or options.include_64k
-    variant_suffix = ('-clover-diffusion' if diffusion_variant else '-clover-self-spec' if self_spec_variant
+    variant = options.saved_profile or diffusion_variant or self_spec_variant or manual_variant or options.include_64k
+    variant_suffix = ('-saved-profile' if options.saved_profile else '-clover-diffusion' if diffusion_variant else '-clover-self-spec' if self_spec_variant
                       else '-clover-causal-variant' if manual_variant else '')
     if options.include_64k:
         variant_suffix = (variant_suffix or '-clover-causal') + '-64k'
@@ -732,12 +819,15 @@ def main():
     report = dict(protocol=cases['protocol'] + variant_suffix,
                   base_protocol=cases['protocol'], standard=options.runs == cases['runs'] and not variant,
                   clover_mode=options.clover_mode, clover_block_size=options.clover_block_size,
-                  clover_threshold=options.clover_threshold, clover_profile=clover_profile if options.model == 'clover' else None,
+                  clover_threshold=options.clover_threshold, clover_profile=clover_profile if options.model == 'clover' and not options.saved_profile else None,
                   complete=False,
                   label=options.label, source_commit=commit, benchmark_sha256=sha256(__file__),
                   cases_sha256=sha256(HERE / 'cases.json'), image_sha256=sha256(HERE / 'image.png'),
                   platform=platform.platform(), cpu=platform.processor(), ram_bytes=psutil.virtual_memory().total,
                   runs=options.runs, seed=cases['seed'], models={}, started=time.time())
+    if options.saved_profile:
+        report.update(saved_profile=True, generation_passes=1, configuration_scope='saved native profile; private logs/ports/authentication/profile writes',
+                      config_hashes_before={str(p): sha256(p) for p in options.config_dir.glob('config*.json')})
     if options.include_64k:
         report['include_64k'] = True
     if self_spec_variant:
@@ -750,9 +840,14 @@ def main():
     all_hashes = {}
     try:
         for model in models:
-            original = json.loads((options.config_dir / MODELS[model][0]).read_text(encoding='utf-8-sig'))
-            data = dict(runs=[], sampling=model_sampling(model, cases), assets=[],
-                        image_supported=model not in TEXT_ONLY_MODELS or (model == 'clover' and options.clover_vision))
+            profile_path = options.config_dir / model_definition(model)[0]
+            original = json.loads(profile_path.read_text(encoding='utf-8-sig'))
+            sampling = copy.deepcopy(original.get('sampling') or model_sampling(model, cases)) if options.saved_profile else model_sampling(model, cases)
+            data = dict(runs=[], sampling=sampling, assets=[],
+                        image_supported=bool(original.get('vision')) if options.saved_profile else model not in TEXT_ONLY_MODELS or (model == 'clover' and options.clover_vision))
+            if options.saved_profile:
+                data.update(saved_config_sha256=sha256(profile_path), native_args=original.get('args', []),
+                            saved_enable_thinking=original.get('enable_thinking', True), saved_vision_mode=original.get('vision_mode'))
             report['models'][model] = data
             profile_options = dict(clover_mode=options.clover_mode, clover_block_size=options.clover_block_size,
                                    clover_threshold=options.clover_threshold, clover_kv=options.kv_type or 'int8',
@@ -762,7 +857,8 @@ def main():
             if self_spec_variant:
                 profile_options.update(clover_draft=options.clover_draft, clover_accept=options.clover_accept,
                                        clover_accept_ratio=options.clover_accept_ratio, clover_accept_delta=options.clover_accept_delta)
-            prepared = controlled_config(original, model, options.output, free_port(), cases, **profile_options)
+            prepared = saved_config(original, model, options.output, free_port(), cases) if options.saved_profile else \
+                controlled_config(original, model, options.output, free_port(), cases, **profile_options)
             sys.path.insert(0, str(ROOT))
             from serve import tinyconfig
             tinyconfig.validate(prepared)
@@ -777,7 +873,8 @@ def main():
             for number in range(1, options.runs + 1):
                 folder = options.output / f'{model}-{number}'
                 folder.mkdir()
-                cfg = controlled_config(original, model, folder, free_port(), cases, **profile_options)
+                cfg = saved_config(original, model, folder, free_port(), cases, copy_profiles=not options.prepare_only) if options.saved_profile else \
+                    controlled_config(original, model, folder, free_port(), cases, **profile_options)
                 tinyconfig.validate(cfg)
                 save(folder / 'config.json', cfg)
                 if options.prepare_only:
@@ -795,11 +892,11 @@ def main():
                     if options.include_64k:
                         validate_64k_context(info, cases['prefill_max_tokens'])
                     expected_kv = clover_profile['kv'] if model == 'clover' else 'int8'
-                    if info.get('kv') != expected_kv or info.get('kv_grow') != 1 or info.get('mtp') != (0 if model in TEXT_ONLY_MODELS else 3):
+                    if not options.saved_profile and (info.get('kv') != expected_kv or info.get('kv_grow') != 1 or info.get('mtp') != (0 if model in TEXT_ONLY_MODELS else 3)):
                         raise ValueError(f'Engine does not match protocol settings: {info}')
-                    if model == 'clover' and not self_spec_variant and info.get('clover_draft') != 0:
+                    if not options.saved_profile and model == 'clover' and not self_spec_variant and info.get('clover_draft') != 0:
                         raise ValueError(f'The causal/diffusion profiles do not use self-speculative drafts: {info}')
-                    if model == 'clover':
+                    if model == 'clover' and not options.saved_profile:
                         if options.cpu_workers and info.get('cpu_workers') != options.cpu_workers:
                             raise ValueError(f'Clover worker count differs from requested profile: {info}')
                         if isinstance(options.chunk, int) and info.get('chunk') != options.chunk:
@@ -816,8 +913,11 @@ def main():
                         if self_spec_variant:
                             validate_clover_self_spec(info, clover_profile)
                     cache_bytes(info)
-                    thinking = options.thinking == 'on' if model == 'clover' else True
-                    warmup = request_body(model, cases['warmup_text'], cases['warmup_max_tokens'], cases, thinking=thinking)
+                    thinking = cfg.get('enable_thinking', True) if options.saved_profile else options.thinking == 'on' if model == 'clover' else True
+                    def body(text, limit, *, thinking=thinking):
+                        return request_body(model, text, limit, cases, thinking=thinking,
+                                            sampling=sampling if options.saved_profile else None)
+                    warmup = body(cases['warmup_text'], cases['warmup_max_tokens'])
                     save(folder / 'warmup.json', service.generate(warmup))
                     def measure(category, name, body, target=None):
                         save(folder / f'{name}-request.json', body)
@@ -845,28 +945,25 @@ def main():
                             native = record['native']
                             print(f'{model} run{number} {name}: {native["engine_generated"]}output, '
                                   f'PP{native["prompt_read"]}/{native["prompt_ms"]}ms, TG{native["decode_ms"]}ms', flush=True)
-                    for repeat in (1, 2):
+                    for repeat in generation_passes(options.saved_profile):
                         for prompt in cases['generation']:
                             measure('generation', f'{prompt["name"]}-{repeat}',
-                                    request_body(model, prompt['text'], cases['generation_max_tokens'], cases, thinking=thinking))
+                                    body(prompt['text'], cases['generation_max_tokens']))
                     for length, category in ((4096, 'input_4k'), (16384, 'input_16k')):
                         def count(text):
-                            body = request_body(model, text, cases['prefill_max_tokens'], cases, thinking=thinking)
-                            return service.json('/v1/messages/count_tokens', body)['input_tokens']
+                            return service.json('/v1/messages/count_tokens', body(text, cases['prefill_max_tokens']))['input_tokens']
                         text, _ = exact_length_text(count, cases['long_paragraph'], cases['long_question'], length)
-                        measure(category, category, request_body(model, text, cases['prefill_max_tokens'], cases, thinking=thinking), length)
+                        measure(category, category, body(text, cases['prefill_max_tokens']), length)
                     run['after_16k_engine'] = service.engine()
                     if options.include_64k:
                         text, _ = exact_length_text(count, cases['long_paragraph'], cases['long_question'], 65536)
-                        measure('input_64k', 'input_64k', request_body(model, text, cases['prefill_max_tokens'],
-                                cases, thinking=thinking), 65536)
+                        measure('input_64k', 'input_64k', body(text, cases['prefill_max_tokens']), 65536)
                         run['after_64k_engine'] = service.engine()
                     if cfg.get('vision'):
                         image = dict(type='image', source=dict(type='base64', media_type='image/png',
                                      data=base64.b64encode((HERE / 'image.png').read_bytes()).decode('ascii')))
-                        body = request_body(model, [image, dict(type='text', text=cases['image_prompt'])],
-                                            cases['image_max_tokens'], cases, thinking=False)
-                        measure('image', 'image', body)
+                        image_body = body([image, dict(type='text', text=cases['image_prompt'])], cases['image_max_tokens'], thinking=False)
+                        measure('image', 'image', image_body)
                     run['vision_end'] = service.vision_identity()
                     run['complete'] = True
                 except BaseException as error:
@@ -874,8 +971,18 @@ def main():
                     raise
                 finally:
                     if service is not None:
-                        service.close()
+                        try:
+                            service.close()
+                        finally:
+                            if hasattr(service, 'cleanup'):
+                                run['cleanup'] = service.cleanup
+                                if run.get('complete') and (not service.cleanup.get('graceful_unloaded') or
+                                        service.cleanup.get('forced_fallback') or service.cleanup.get('errors')):
+                                    run.update(inference_complete=True, complete=False,
+                                               lifecycle_error='Inference completed, but normal unload/API cleanup did not complete cleanly')
                     persist()
+                    if run.get('lifecycle_error'):
+                        raise RuntimeError(run['lifecycle_error'])
             data['aggregate'] = aggregate_model(data['runs'])
             persist()
         report['complete'] = not options.prepare_only
@@ -885,7 +992,12 @@ def main():
         raise
     finally:
         report['finished'] = time.time()
+        if options.saved_profile:
+            report['configs_unchanged'] = report['config_hashes_before'] == {str(p): sha256(p) for p in options.config_dir.glob('config*.json')}
+            if not report['configs_unchanged']: report['complete'] = False
         persist()
+        if options.saved_profile and not report['configs_unchanged']:
+            raise RuntimeError('Saved model configurations changed during benchmarking; results are incomplete')
     print(f'Results: {options.output / "report.md"}', flush=True)
 
 

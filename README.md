@@ -96,6 +96,10 @@ irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/insta
 irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex
 ```
 
+**AMD runtime default:** automatic installs and updates use the private **ROCm `10.2.0a20260930` SDK (HIP 7.17)** in the work directory, rather than an older global `HIP_PATH` or system SDK. An explicit `-HipDirectory` still selects a custom SDK. Matching HIP/COMGR/Kpack libraries and verified SDK math paths are shared by the model engines and Vision; updates prepare a separate native generation before publishing settings. Drivers, System32 and the persistent system PATH are not changed.
+
+Windows HIP uses the driver's minimum VMM granularity only when the three app-local core hashes, actual loaded runtime and compiled HIP version (7.17 or newer) pass verification. Legacy, mismatched or unverified runtimes retain a **4 MiB allocation floor**. For coarse recovery, set `$env:TINYSTRATA_HIP_VMM_COARSE='1'` before launch; **any nonempty value forces coarse backing**, so remove the variable to restore automatic selection. Graceful native unload allows **60 seconds only for verified sub-4-MiB HIP**, with the existing budget on other paths. The AMD display limitation above remains in effect. See [validation and remaining limits](benchmark/results/hip-runtime-vmm-20261107.md).
+
 The optional green-themed UI supports the seven README languages, image input and live generation statistics. Light and dark mode follow your OS settings.
 
 The Windows UI installer creates a **TinyStrata** desktop shortcut. Open it to start or reuse the local API and UI and open the chat in your browser. The API-only installer does not create this shortcut. You can also run this command or double-click `run-ui.bat`:

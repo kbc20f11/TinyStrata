@@ -82,6 +82,10 @@ irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/insta
 irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex
 ```
 
+**Runtime AMD par défaut :** les installations et mises à jour automatiques utilisent le **SDK ROCm privé `10.2.0a20260930` (HIP 7.17)** du répertoire de travail, plutôt qu’un ancien `HIP_PATH` global ou SDK système. `-HipDirectory` permet toujours de sélectionner explicitement un SDK personnalisé. Les moteurs des modèles et Vision partagent des fichiers HIP/COMGR/Kpack compatibles et les chemins vérifiés des bibliothèques mathématiques du SDK ; la mise à jour prépare une génération native distincte avant de publier les réglages. Les pilotes, System32 et le PATH système permanent restent inchangés.
+
+Windows HIP utilise la granularité VMM minimale du pilote uniquement après vérification des trois bibliothèques locales, du runtime réellement chargé et de la version HIP compilée correspondante (7.17 ou ultérieure). Les runtimes anciens, incompatibles ou non vérifiés conservent un **minimum de 4 MiB**. Pour revenir aux blocs grossiers, définissez `$env:TINYSTRATA_HIP_VMM_COARSE='1'` avant le démarrage ; **toute valeur non vide les impose**. Supprimez la variable pour rétablir la sélection automatique. Seul **HIP vérifié avec une granularité inférieure à 4 MiB** dispose de **60 secondes** pour terminer normalement le déchargement natif ; les autres chemins gardent leur délai. La restriction d’affichage AMD ci-dessus reste applicable. Voir [la validation et les limites restantes](benchmark/results/hip-runtime-vmm-20261107.md).
+
 L’interface verte optionnelle prend en charge les sept langues du README, les images et les statistiques de génération en direct. Le mode clair ou sombre suit les paramètres du système.
 
 L’installateur avec interface pour Windows crée un raccourci **TinyStrata** sur le bureau. Ouvrez-le pour démarrer ou réutiliser l’API et l’interface locales, puis afficher le chat dans le navigateur. L’installateur avec API seule ne crée pas ce raccourci. Vous pouvez aussi exécuter cette commande ou double-cliquer sur `run-ui.bat` :
