@@ -8,6 +8,8 @@ const html=fs.readFileSync(path.join(root,'ui/web/index.html'),'utf8');
 const firstPaint=html.match(/<script>\s*([\s\S]*?)<\/script>/)[1];
 const theme=app.slice(app.indexOf('// ------------------------------------------------------------------ theme and tabs'),app.indexOf('\nlet tab ='));
 const store=app.slice(app.indexOf('const store = {'),app.indexOf('\n// ------------------------------------------------------------------ toasts'));
+const iconStart=app.indexOf('function setIconSymbol(');
+const iconHelper=app.slice(iconStart,app.indexOf('\n}',iconStart)+2);
 let checks=0;
 const equal=(value,expected,label)=>{assert.deepStrictEqual(value,expected,label);checks++;};
 const ok=(value,label)=>{assert.ok(value,label);checks++;};
@@ -38,7 +40,7 @@ function fixture({values={},dark=false,readFails=false,writeFails=false,mediaFai
   refreshPreviews(){previews++;},StrataDiagrams:{refresh(){diagrams++;}}};
  vm.createContext(ctx);vm.runInContext(firstPaint,ctx);
  const painted={...doc.documentElement.dataset};
- vm.runInContext(store+'\n'+theme,ctx);
+ vm.runInContext(iconHelper+'\n'+store+'\n'+theme,ctx);
  return {ctx,data,doc,meta,painted,buttons:group.children,previews:()=>previews,diagrams:()=>diagrams,
   mode:()=>vm.runInContext('themeMode',ctx),apply:()=>vm.runInContext('applyTheme()',ctx),
   os(value){media.matches=value;listeners.get('change')?.({matches:value});},

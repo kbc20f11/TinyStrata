@@ -10,6 +10,15 @@ const STATUS_ICONS = {idle: "check-circle", ready: "check-circle", done: "check"
   loading: "refresh", starting: "refresh", switching: "refresh", unloading: "eject", unloaded: "eject",
   skipped: "stop", stopped: "stop", timeout: "warning", inactive: "info"};
 const statusIcon = (state) => icon(STATUS_ICONS[state] || "info", "st-icon st-status-icon");
+function setIconSymbol(use, name) {
+  const href = `${SPRITE}#i-${name}`;
+  if (use.getAttribute("href") !== href) use.setAttribute("href", href);
+}
+function setStableHtml(el, html) {
+  if (el._stableHtml === html) return;
+  el.innerHTML = html;
+  el._stableHtml = html;
+}
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const numberFormats = new Map();
 const fmt = (n, d = 0) => {
@@ -58,8 +67,9 @@ async function copyText(text, btn) {
   }
   if (btn) {
     const use = btn.querySelector("use");
-    use.setAttribute("href", `${SPRITE}#i-check`);
-    setTimeout(() => use.setAttribute("href", `${SPRITE}#i-copy`), 1500);
+    clearTimeout(btn._copyTimer);
+    setIconSymbol(use, "check");
+    btn._copyTimer = setTimeout(() => { setIconSymbol(use, "copy"); delete btn._copyTimer; }, 1500);
   }
   toast("success", tr("toast.copied", "Copied to clipboard"), "", 1800);
 }
@@ -74,7 +84,7 @@ function applyTheme() {
   const t = themeMode === "system" ? themeMedia?.matches ? "dark" : "light" : themeMode;
   document.documentElement.dataset.theme = t;
   document.documentElement.dataset.themeMode = themeMode;
-  $("theme-icon").setAttribute("href", `${SPRITE}#i-${t === "dark" ? "sun" : "moon"}`);
+  setIconSymbol($("theme-icon"), t === "dark" ? "sun" : "moon");
   $("dark-toggle").setAttribute("aria-checked", String(t === "dark"));
   $("theme-btn").title = t === "dark" ? tr("theme.switchToLight", "Switch to light mode") : tr("theme.switchToDark", "Switch to dark mode");
   $("theme-btn").setAttribute("aria-label", $("theme-btn").title);
@@ -319,11 +329,12 @@ async function poll() {
 }
 
 function setPill(state, text) {
-  $("pill").dataset.state = state;
-  $("pill").title = text;
-  $("pill").setAttribute("aria-label", text);
-  $("pill-symbol").setAttribute("href", `${SPRITE}#i-${STATUS_ICONS[state] || "info"}`);
-  $("pill-text").textContent = text;
+  const pill = $("pill"), label = $("pill-text");
+  if (pill.dataset.state !== state) pill.dataset.state = state;
+  if (pill.title !== text) pill.title = text;
+  if (pill.getAttribute("aria-label") !== text) pill.setAttribute("aria-label", text);
+  setIconSymbol($("pill-symbol"), STATUS_ICONS[state] || "info");
+  if (label.textContent !== text) label.textContent = text;
   // a poll re-sets the sentence every second; refit only when its text changed
   if (text !== lastPillText) { lastPillText = text; fitHeader(); }
 }
@@ -357,12 +368,14 @@ function turnBlocksUnload(live) {
   return pageBusy() || state === "reading" || state === "generating" || (live && live.queued > 0);
 }
 function setModelButton(text, title, disabled, iconName = "eject") {
-  const btn = $("unload-btn");
-  $("model-button-text").textContent = text;
-  $("model-button-icon").toggleAttribute("hidden", !iconName);
-  if (iconName) $("model-button-symbol").setAttribute("href", `web/sprite.svg#i-${iconName}`);
-  btn.title = title; btn.disabled = disabled;
-  fitHeader();
+  const btn = $("unload-btn"), label = $("model-button-text"), symbol = $("model-button-icon");
+  const layoutChanged = label.textContent !== text || symbol.hasAttribute("hidden") !== !iconName;
+  if (label.textContent !== text) label.textContent = text;
+  if (symbol.hasAttribute("hidden") !== !iconName) symbol.toggleAttribute("hidden", !iconName);
+  if (iconName) setIconSymbol($("model-button-symbol"), iconName);
+  if (btn.title !== title) btn.title = title;
+  if (btn.disabled !== disabled) btn.disabled = disabled;
+  if (layoutChanged) fitHeader();
 }
 function modelButton(live) {
   if (modelSwitching) return setModelButton(tr("model.switching", "Switching model…"), "", true, null);
@@ -718,12 +731,12 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // recent requests
   const body = $("req-body");
   if (!requests.length) {
-    body.innerHTML = `<tr><td colspan="9" class="muted">${esc(tr("monitor.noRequests", "No requests yet"))}</td></tr>`;
+    setStableHtml(body, `<tr><td colspan="9" class="muted">${esc(tr("monitor.noRequests", "No requests yet"))}</td></tr>`);
   } else {
     const badge = {stop: ["st-badge--success", tr("monitor.done", "Done"), "done"], length: ["", tr("monitor.maxTokens", "Max tokens"), "info"], cancel: ["st-badge--queued", tr("monitor.stopped", "Stopped"), "stopped"],
                    disconnect: ["st-badge--queued", tr("monitor.closed", "Closed"), "stopped"], error: ["st-badge--error", tr("monitor.error", "Error"), "error"],
                    timeout: ["st-badge--queued", tr("monitor.timeout", "Timeout"), "timeout"]};
-    body.innerHTML = requests.slice(0, reqShowAll ? requests.length : 12).map((r) => {
+    setStableHtml(body, requests.slice(0, reqShowAll ? requests.length : 12).map((r) => {
       const [cls, text, state] = badge[r.finish] || ["", r.finish || "–", "info"];
       const t = new Date(r.time * 1000).toLocaleTimeString(StrataI18n.lang, {hour: "2-digit", minute: "2-digit", second: "2-digit"});
       const proj = r.projection == null ? "" : ` <span class="st-badge${r.projection ? " st-badge--reading" : ""}" title="${esc(tr("monitor.projectionState", "Experimental speed projection: {state}", {state: r.projection ? tr("common.on", "on") : tr("common.off", "off")}))}">${r.projection ? "ESP" : tr("monitor.stock", "stock")}</span>`;
@@ -736,7 +749,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
       return `<tr><td>${esc(t)}</td><td><span class="st-badge st-badge--icon ${cls}">${statusIcon(state)}${esc(text)}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
         <td class="num">${fmt(r.reused)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(prefillRate)}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>
         <td class="num">${hit}</td><td class="num">${fmt(r.duration_s, 1)} s</td></tr>`;
-    }).join("");
+    }).join(""));
   }
   const all = $("req-all");
   kept = kept == null ? requests.length : kept;
@@ -747,8 +760,46 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
 }
 
 function facts(el, rows) {
-  el.innerHTML = rows.filter((r) => r[1] != null && r[1] !== "").map(([k, v, copy]) =>
-    `<dt>${esc(k)}</dt><dd>${copy ? `<code>${esc(v)}</code><button class="st-btn st-btn--icon" data-copy="${esc(v)}" aria-label="${esc(tr("chat.copy", "Copy"))}">${icon("copy")}</button>` : esc(v)}</dd>`).join("");
+  const previous = el._factRows || [], next = [];
+  const visible = rows.filter((r) => r[1] != null && r[1] !== "");
+  for (let i = 0; i < visible.length; i++) {
+    const [key, value, canCopy] = visible[i], text = String(value), copy = !!canCopy;
+    const row = previous[i] || {label: document.createElement("dt"), value: document.createElement("dd")};
+    if (row.label.textContent !== String(key)) row.label.textContent = String(key);
+    if (row.copy !== copy) {
+      if (row.button) clearTimeout(row.button._copyTimer);
+      row.text = document.createTextNode("");
+      row.button = null; row.code = null;
+      if (copy) {
+        row.code = document.createElement("code"); row.code.appendChild(row.text);
+        row.button = document.createElement("button"); row.button.className = "st-btn st-btn--icon";
+        row.button.type = "button"; row.button.innerHTML = icon("copy");
+        row.value.replaceChildren(row.code, row.button);
+      } else row.value.replaceChildren(row.text);
+      row.copy = copy;
+    }
+    if (row.text.data !== text) {
+      row.text.data = text;
+      if (row.button) {
+        clearTimeout(row.button._copyTimer); delete row.button._copyTimer;
+        row.button.dataset.copy = text;
+        setIconSymbol(row.button.querySelector("use"), "copy");
+      }
+    }
+    if (row.button) {
+      const label = tr("chat.copy", "Copy");
+      if (row.button.getAttribute("aria-label") !== label) row.button.setAttribute("aria-label", label);
+    }
+    next.push(row);
+  }
+  let cursor = el.firstChild;
+  for (const row of next) for (const part of [row.label, row.value]) {
+    if (part !== cursor) el.insertBefore(part, cursor);
+    cursor = part.nextSibling;
+  }
+  while (cursor) { const old = cursor; cursor = cursor.nextSibling; old.remove(); }
+  for (const row of previous.slice(next.length)) if (row.button) clearTimeout(row.button._copyTimer);
+  el._factRows = next;
 }
 // INFO cvec=project:4-44[:singleL] | add:A-B | 0
 function projectionText(c) {
@@ -817,7 +868,7 @@ function renderMcp() {
   $("mcp-sum").textContent = servers.length ? tr("mcp.summary", "{tools} tools · {ready} of {total} servers connected", {tools: fmt(mcpInfo.tools), ready: fmt(ready.length), total: fmt(servers.length)}) : "";
   $("mcp-row-sub").textContent = mcpInfo.tools ? tr("mcp.toolsFrom", "{n} tools from {servers}; the model calls them when it decides to", {n: fmt(mcpInfo.tools), servers: ready.map((s) => s.name).join(", ")})
                                                : tr("mcp.notConnected", "no server is connected yet (see the Monitor)");
-  $("mcp-list").innerHTML = servers.map((s) => {
+  setStableHtml($("mcp-list"), servers.map((s) => {
     const [cls, english] = MCP_STATE[s.status] || ["", s.status];
     const text = tr("mcp.state." + s.status, english);
     const info = s.info && s.info.name ? ` · ${s.info.name}${s.info.version ? ` ${s.info.version}` : ""}` : "";
@@ -826,7 +877,7 @@ function renderMcp() {
       (s.error ? `<div class="msg-error">${esc(s.error)}</div>` : "") +
       (s.tools.length ? `<div class="mcp-server__tools">${s.tools.map((t) => `<span class="chip" title="${esc(t.description || "")}">${esc(t.tool)}</span>`).join("")}</div>` : "") +
       `</div>`;
-  }).join("");
+  }).join(""));
 }
 
 // ------------------------------------------------------------------ Model settings (GET / POST /config, #564)
@@ -2218,9 +2269,9 @@ function updateAssistant(el, m, streaming) {
     patchReasoningPart(det, m, 0, (m.reasoning || "").length, thinkingNow, false);
   }
   bubble.classList.remove("cursor");
-  // The whole answer must finish before code can be copied, even when a fence
-  // has already closed. Hide the reserved button slot while streaming: its
-  // SVG is rebuilt with each chunk and can otherwise flash as it reloads.
+  // Code controls become available once the whole answer finishes. Markdown
+  // may still rebuild a closed fence while later prose streams; keep the
+  // reserved button slots hidden so their icons cannot flash as they reload.
   bubble.dataset.streaming = String(!!streaming);
   if (m.error && !timeline) {
     bubble.innerHTML = `<div class="msg-error"></div>`;
@@ -2230,7 +2281,8 @@ function updateAssistant(el, m, streaming) {
   } else {
     renderAnswerBubble(bubble, m, !!streaming, timeline, det);
   }
-  for (const button of bubble.querySelectorAll("[data-code-copy]")) button.disabled = !!streaming;
+  for (const button of bubble.querySelectorAll("[data-code-copy], [data-preview-toggle], [data-preview-scripts]"))
+    if (button.disabled !== !!streaming) button.disabled = !!streaming;
   const activeThought = timeline ? bubble.querySelector('details.think[data-reasoning-active="true"]') : det;
   if (thinkingNow) { if (activeThought?.open) setTerminalCursor(activeThought.querySelector(".thinking")); }
   else if (activeStream && busy?.msg === m && busy.outputPhase === "content" && m.text) setTerminalCursor(bubble);

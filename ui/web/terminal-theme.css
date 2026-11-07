@@ -437,7 +437,7 @@ html[data-theme] .st-composer[data-switching="true"] .st-composer__bar { border-
 .st-code__head { color: #7aaa8d; background: #0a1b10; border-color: #1a3a27; font-family: var(--st-font-mono); }
 .st-code pre { color: #c3e6d0; padding: 18px; }
 .st-code .st-btn--icon { color: #85a78e; }
-.st-bubble[data-streaming="true"] [data-code-copy] { visibility: hidden; pointer-events: none; }
+.st-bubble[data-streaming="true"] .st-code__btns > button { visibility: hidden; pointer-events: none; }
 .st-diagram__image { display: none; padding: 20px; overflow: auto; max-height: 640px; }
 .st-diagram__image img { display: block; max-width: 100%; height: auto; margin-inline: auto; }
 .st-code[data-diagram-view="image"] > .st-diagram__image { display: block; }
