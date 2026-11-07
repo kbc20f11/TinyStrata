@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
+#include "strata/hip_compat/managed_vmm.hpp"
 
 namespace strata::qwen35::kv_grow {
 struct Api {
@@ -67,10 +68,7 @@ struct Api {
         ok = cuMemGetAllocationGranularity(&gran, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM) == CUDA_SUCCESS && gran != 0;
 #if defined(_WIN32)
         if (ok) {
-            // Small Windows HIP handles can pass API checks but fail GPU
-            // access (#1). Use coarse backing while respecting the minimum.
-            constexpr size_t chunk = size_t(4) << 20;
-            gran = ((std::max(gran, chunk) + gran - 1) / gran) * gran;
+            gran = strata::hip_vmm::quantum(gran, "qwen35");
         }
 #endif
         if (!ok) (void) hipGetLastError();

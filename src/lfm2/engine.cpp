@@ -19,6 +19,7 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include "strata/hip_compat/managed_vmm.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -1767,11 +1768,7 @@ void Engine::load(const Options& o) {
                grain_ > 0;
 #if defined(_WIN32) && (defined(STRATA_USE_HIP) || defined(__HIPCC__))
         if (vmm_) {
-            // Match the Qwen Windows HIP backing: small reported allocation
-            // granules can pass API checks yet fail GPU reads on this stack.
-            // Keep the driver's alignment and the Expert arena's 64 MiB pieces.
-            constexpr size_t chunk = size_t(4) << 20;
-            grain_ = ((std::max(grain_, chunk) + grain_ - 1) / grain_) * grain_;
+            grain_ = strata::hip_vmm::quantum(grain_, "lfm2");
         }
 #endif
     }
