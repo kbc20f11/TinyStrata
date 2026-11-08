@@ -14,6 +14,7 @@ from serve.model_profiles import ModelProfiles
 from serve import config as engine_config
 from serve.expert_placement import geometry as expert_geometry
 from serve.tinyconfig import automatic_experts
+from serve import thinking as thinking_api
 
 
 class ModelControlError(RuntimeError):
@@ -179,6 +180,7 @@ class ModelSwitcher:
                               'architecture': {'input_modalities': ['text', 'image'] if row['vision'] else ['text'],
                                                'output_modalities': ['text']},
                               'context': context,
+                              'thinking': thinking_api.capabilities(model),
                               'management': management,
                               'meta': {'n_ctx': context['allocated_tokens'] or 0}})
             return items
@@ -517,7 +519,9 @@ class ModelSwitcher:
             if cfg.get('slot_save_path'):
                 fresh.slot_save_path = api.slot_save_dir(cfg['slot_save_path'], cfg.get('cwd'))
             fresh.effort_end = bool(effort)
-            fresh.config_effort = api.clean_shared_defaults({'reasoning_effort': cfg['reasoning_effort']}).get('reasoning_effort') if cfg.get('reasoning_effort') is not None else None
+            policy = thinking_api.capabilities(fresh.model)
+            fresh.config_effort = (thinking_api.normalize_effort(cfg['reasoning_effort'], policy) if policy else
+                                   api.clean_shared_defaults({'reasoning_effort': cfg['reasoning_effort']}).get('reasoning_effort')) if cfg.get('reasoning_effort') is not None else None
             for key in ('reasoning_close_retry', 'tool_call_recovery', 'codex_compaction_cache', 'codex_thread_titles'):
                 setattr(fresh, key, cfg.get(key) is True)
             fresh.reasoning_budget_tokens = cfg.get('reasoning_budget_tokens', 0)
@@ -536,7 +540,7 @@ class ModelSwitcher:
             fresh.anthropic_think_unasked = mode == 'model'
             fresh.shared_path = str(profile.shared_path)
             try:
-                fresh.shared = api.clean_shared_defaults(json.loads(profile.shared_path.read_text(encoding='utf-8')))
+                fresh.shared = api.clean_shared_defaults(json.loads(profile.shared_path.read_text(encoding='utf-8')), fresh.model)
             except (OSError, ValueError):
                 fresh.shared = {}
             if getattr(svc, 'telemetry', None) is not None:

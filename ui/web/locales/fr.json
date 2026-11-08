@@ -665,5 +665,8 @@
   "models.description.lfm": "Conversation textuelle et rédaction au quotidien",
   "models.description.clover": "Modèle en aperçu pour la conversation et le texte",
   "models.description.tiel": "Génération, débogage et modification de code",
-  "models.downloadRequired": "Téléchargez un modèle pour discuter"
+  "models.downloadRequired": "Téléchargez un modèle pour discuter",
+  "thinking.on": "Activé",
+  "thinking.alwaysOn": "Toujours activé",
+  "thinking.high": "Élevé (xhigh)"
 }

@@ -665,5 +665,8 @@
   "models.description.lfm": "Everyday text chat and writing",
   "models.description.clover": "Preview model for chat and text tasks",
   "models.description.tiel": "Code generation, debugging and edits",
-  "models.downloadRequired": "Download a model to chat"
+  "models.downloadRequired": "Download a model to chat",
+  "thinking.on": "On",
+  "thinking.alwaysOn": "Always on",
+  "thinking.high": "High (xhigh)"
 }

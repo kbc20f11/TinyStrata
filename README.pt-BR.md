@@ -104,6 +104,8 @@ Para a instalação somente com API, use `run-api.bat`:
 
 Use a aba **Modelos** para baixar modelos ou remover os arquivos baixados. O seletor do chat mostra apenas modelos instalados. A exclusão exige confirmação. Mude para outro modelo antes de excluir o ativo. Os arquivos compartilhados necessários para outro modelo são preservados.
 
+Os controles de raciocínio dependem do modelo: Qwen3.6, Clover e Gemma 4 oferecem **Ativado / Desativado**, inicialmente **Ativado**; LFM2.5 fica sempre **Ativado**. Tiel Coder oferece **Desativado / Baixo / Médio / Alto**, inicialmente **Médio** (`xhigh` para Alto). A UI salva a escolha de cada modelo separadamente. Os níveis do [template Sharp](https://huggingface.co/peculiar-ragdoll/Qwen-Sharp-Chat-Templates#setting-reasoning-effort) do Tiel adicionam instruções ao prompt: não são um orçamento numérico de tokens, e Alto não garante uma resposta melhor.
+
 A busca na web fica **ativada por padrão** em uma UI nova e usa **DDGS sem chave API** quando nenhum provedor foi salvo. Desmarque **Busca na web**, ao lado de **Configurações do chat**, para desativá-la; este navegador mantém a escolha após reiniciar para todos os modelos compatíveis. As preferências de ativação, o provedor e as chaves API já salvos são preservados. O provedor, a chave API e a concorrência são definidos nessas configurações. A execução Python no ambiente isolado está sempre disponível quando o modelo precisa dela. Blocos Python concluídos também podem ser executados manualmente com **Executar Python**.
 
 ### Compactação automática do contexto

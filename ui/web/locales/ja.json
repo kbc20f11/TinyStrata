@@ -659,5 +659,8 @@
   "models.description.lfm": "日常のテキスト会話や文章作成に",
   "models.description.clover": "会話や文章作成向けのプレビューモデル",
   "models.description.tiel": "コード作成・不具合調査・修正に",
-  "models.downloadRequired": "モデルをダウンロードしてください"
+  "models.downloadRequired": "モデルをダウンロードしてください",
+  "thinking.on": "オン",
+  "thinking.alwaysOn": "常にオン",
+  "thinking.high": "高 (xhigh)"
 }

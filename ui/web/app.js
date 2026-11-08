@@ -1045,14 +1045,14 @@ function markdown(text) {
 // fields: the server picks the card's set for the request's thinking state (thinking 1.0 / 0.95 / 20, not thinking
 // 0.7 / 0.8 / 20 with a presence penalty). Before 0.1.45 the page sent 0.6 itself; a stored 0.6 with the other two
 // values untouched counts as "not set" too.
-const DEFAULTS = {thinking: "high", temperature: 1.0, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true, math: true,
+const DEFAULTS = {thinkingByModel: {}, temperature: 1.0, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true, math: true,
                   chatList: true, whileBusy: "wait", webSearch: true, autoCompact: true};
 const OLD_DEFAULT_TEMPERATURE = 0.6;
 function samplingUntouched(s) {
   const t = +s.temperature;
   return (t === DEFAULTS.temperature || t === OLD_DEFAULT_TEMPERATURE) && +s.top_p === DEFAULTS.top_p && +s.top_k === DEFAULTS.top_k;
 }
-let settings = {...DEFAULTS, ...store.get("sampling", {})};
+let settings = StrataThinkingControls.migrate({...DEFAULTS, ...store.get("sampling", {})});
 let globalTools = null, toolSettingsSaving = false;
 delete settings.chatEdit;                            // retired: message actions are always available
 delete settings.codeExecution;                       // Python is always available; its runtime still loads on first use.
@@ -1223,7 +1223,79 @@ function canUseModelImages(rows = messages, extra = []) {
   return false;
 }
 function effortForModel(s = settings) {
-  return health.model === "lfm2.5-24b-a2b" && s.thinking === "none" ? "high" : s.thinking;
+  return StrataThinkingControls.choice(thinkingModelId(), s, thinkingMetadata());
+}
+function thinkingModelId() {
+  return modelCatalog.find((row) => row.id === health.model)?.id || health.model;
+}
+function thinkingMetadata() {
+  return modelCatalog.find((row) => row.id === health.model)?.thinking;
+}
+function thinkingPayload(s = settings, shared = false) {
+  return StrataThinkingControls.payload(thinkingModelId(), s, thinkingMetadata(), shared);
+}
+function thinkingLabel(value) {
+  return {none: tr("drawer.off", "Off"), on: tr("thinking.on", "On"), low: tr("drawer.low", "Low"),
+    medium: tr("drawer.medium", "Medium"), xhigh: tr("thinking.high", "High (xhigh)")}[value] || "";
+}
+function setThinkingChoice(value, s = settings) {
+  return StrataThinkingControls.select(s, thinkingModelId(), value, thinkingMetadata());
+}
+function syncThinkingControls(drawerSettings = null) {
+  const id = thinkingModelId(), spec = StrataThinkingControls.contract(id, thinkingMetadata());
+  const select = $("composer-effort"), group = $("s-thinking");
+  for (const option of [...select.options]) if (!spec.options.includes(option.value)) option.remove();
+  for (const [index, value] of spec.options.entries()) {
+    let option = [...select.options].find((node) => node.value === value);
+    if (!option) { option = document.createElement("option"); option.value = value; select.appendChild(option); }
+    if (select.children[index] !== option) select.insertBefore(option, select.children[index] || null);
+    const label = thinkingLabel(value);
+    if (option.textContent !== label) option.textContent = label;
+  }
+  const current = effortForModel(), locked = spec.mode === "always" || modelSwitching || sharedSaving || pageBusy();
+  if (select.value !== current) select.value = current;
+  if (select.disabled !== locked) select.disabled = locked;
+  const title = spec.mode === "always" ? tr("thinking.alwaysOn", "Always on") : "";
+  if (select.title !== title) select.title = title;
+  const checked = [...group.children].find((node) => node.getAttribute("aria-checked") === "true")?.dataset.v;
+  const wanted = drawerSettings ? effortForModel(drawerSettings)
+    : group.dataset.model === id && spec.options.includes(checked) ? checked : effortForModel();
+  for (const button of [...group.children]) if (!spec.options.includes(button.dataset.v)) button.remove();
+  for (const [index, value] of spec.options.entries()) {
+    let button = [...group.children].find((node) => node.dataset.v === value);
+    if (!button) {
+      button = document.createElement("button"); button.type = "button"; button.dataset.v = value; button.setAttribute("role", "radio");
+      button.onclick = () => {
+        if (button.disabled) return;
+        for (const node of group.children) { node.setAttribute("aria-checked", String(node === button)); node.tabIndex = node === button ? 0 : -1; }
+        outputs();
+      };
+      button.onkeydown = (event) => {
+        const buttons = [...group.children].filter((node) => !node.disabled), at = buttons.indexOf(button);
+        let next;
+        if (["ArrowRight", "ArrowDown"].includes(event.key)) next = buttons[(at + 1) % buttons.length];
+        else if (["ArrowLeft", "ArrowUp"].includes(event.key)) next = buttons[(at - 1 + buttons.length) % buttons.length];
+        else if (event.key === "Home") next = buttons[0];
+        else if (event.key === "End") next = buttons.at(-1);
+        if (next) { event.preventDefault(); next.onclick(); next.focus(); }
+      };
+      group.appendChild(button);
+    }
+    if (group.children[index] !== button) group.insertBefore(button, group.children[index] || null);
+    const label = thinkingLabel(value);
+    if (button.textContent !== label) button.textContent = label;
+    const selected = value === wanted, aria = String(selected);
+    if (button.getAttribute("aria-checked") !== aria) button.setAttribute("aria-checked", aria);
+    if (button.tabIndex !== (selected ? 0 : -1)) button.tabIndex = selected ? 0 : -1;
+    const disabled = spec.mode === "always" || modelSwitching;
+    if (button.disabled !== disabled) button.disabled = disabled;
+  }
+  if (group.dataset.model !== id) group.dataset.model = id;
+  const columns = `repeat(${spec.options.length}, 1fr)`;
+  if (group.style.gridTemplateColumns !== columns) group.style.gridTemplateColumns = columns;
+  const required = spec.mode === "always";
+  const hint = required ? tr("thinking.alwaysOn", "Always on") : "";
+  if ($("o-thinking").textContent !== hint) $("o-thinking").textContent = hint;
 }
 function syncComposerControls() {
   $("home-btn").disabled = modelSwitching || !!modelOp || pageBusy();
@@ -1238,14 +1310,9 @@ function syncComposerControls() {
   if (!select.options.length) select.disabled = true;
   // Keep the requested selection visible until the server finishes switching.
   if (!modelSwitching && [...select.options].some((option) => option.value === health.model)) select.value = health.model;
-  $("composer-effort").value = effortForModel();
-  $("composer-effort").disabled = modelSwitching || sharedSaving || pageBusy();
+  syncThinkingControls();
   $("s-apply").disabled = modelSwitching || sharedSaving || toolSettingsSaving || !!resourceOperation;
   $("s-web-search").disabled = modelSwitching || toolSettingsSaving || !!resourceOperation;
-  const noThinking = $("composer-effort").querySelector('[value="none"]');
-  noThinking.disabled = health.model === "lfm2.5-24b-a2b";
-  noThinking.title = noThinking.disabled ? tr("model.thinkingRequired", "This model requires thinking.") : "";
-  for (const b of $("s-thinking").children) b.disabled = b.dataset.v === "none" && health.model === "lfm2.5-24b-a2b";
   syncComposerInput();
 }
 async function modelControl(path, options = {}) {
@@ -1638,12 +1705,11 @@ $("composer-model").onchange = async () => {
 };
 $("composer-effort").onchange = async () => {
   const effort = $("composer-effort").value;
-  if (!["none", "low", "medium", "high"].includes(effort)) return;
-  if (health.model === "lfm2.5-24b-a2b" && effort === "none") {
+  if (!StrataThinkingControls.contract(thinkingModelId(), thinkingMetadata()).options.includes(effort)) {
     syncComposerControls();
     return;
   }
-  settings.thinking = effort;
+  settings = setThinkingChoice(effort);
   store.set("sampling", settings);
   loadDrawer();
   syncComposerControls();
@@ -2775,10 +2841,7 @@ async function generateReply() {
   paintLive();
 
   const body = {model: health.model, messages: apiMessages(), stream: true, return_progress: true, return_live_stats: true,
-                reasoning_effort: effortForModel()};
-  // Gemma's canonical template defaults this flag to false and does not map
-  // reasoning_effort itself. Send the mode explicitly, including to older APIs.
-  if (health.model === "gemma-4-26b-a4b-it") body.chat_template_kwargs = {enable_thinking: body.reasoning_effort !== "none"};
+                ...thinkingPayload()};
   if (!(settings.temperature > 0)) {
     body.temperature = 0;
   } else if (!samplingUntouched(settings)) {
@@ -3057,7 +3120,7 @@ function openDrawer(open) {
 const checked = (id) => $(id).type === "checkbox" ? $(id).checked : $(id).getAttribute("aria-checked") === "true";
 const segValue = (id) => { const b = [...$(id).children].find((x) => x.getAttribute("aria-checked") === "true"); return b ? b.dataset.v : null; };
 function loadDrawer(s = settings) {
-  for (const b of $("s-thinking").children) b.setAttribute("aria-checked", String(b.dataset.v === effortForModel(s)));
+  syncThinkingControls(s);
   $("s-temp").value = s.temperature; $("s-topp").value = s.top_p; $("s-topk").value = s.top_k;
   $("s-max").value = s.max; $("s-seed").value = s.seed;
   $("s-math").setAttribute("aria-checked", String(!!s.math));
@@ -3139,7 +3202,7 @@ async function loadShared() {
   $("s-share").setAttribute("aria-checked", String(sharedOn));
 }
 function sharedDefaults(s) {
-  const d = {reasoning_effort: effortForModel(s)};
+  const d = thinkingPayload(s, true);
   if (!(+s.temperature > 0)) d.temperature = 0;
   else if (!samplingUntouched(s)) Object.assign(d, {temperature: +s.temperature, top_p: +s.top_p, top_k: +s.top_k});
   if (s.seed) d.seed = +s.seed;
@@ -3174,16 +3237,12 @@ function outputs() {
   $("o-temp").textContent = t === 0 ? tr("drawer.greedy", "0 · greedy") : t.toFixed(2);
   $("o-topp").textContent = (+$("s-topp").value).toFixed(2);
   $("o-topk").textContent = $("s-topk").value;
-  const sel = segValue("s-thinking");
-  $("o-thinking").textContent = sel ? {none: tr("drawer.thinkNone", "answers right away"), low: tr("drawer.thinkLow", "short"),
-    medium: tr("drawer.thinkMedium", "medium"), high: tr("drawer.thinkHigh", "thorough (default)")}[sel] : "";
   const busyMode = segValue("s-busy");
   $("o-busy").textContent = {wait: tr("drawer.busyWaitNote", "Send is off until the answer is done, as before."),
     queue: tr("drawer.busyQueueNote", "Your message waits and goes as soon as the answer is done."),
     interject: tr("drawer.busyInterjectNote", "The answer stops where it is (what is written stays) and your message goes at once. A tool that is running finishes first.")}[busyMode] || "";
   for (const id of ["s-topp", "s-topk"]) $(id).disabled = t === 0;
 }
-for (const b of $("s-thinking").children) b.onclick = () => { for (const x of $("s-thinking").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
 for (const b of $("s-busy").children) b.onclick = () => { for (const x of $("s-busy").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
 for (const id of ["s-temp", "s-topp", "s-topk"]) $(id).oninput = outputs;
 for (const id of ["s-math", "s-show", "s-esp", "s-mcp", "s-share", "s-list", "s-compact"]) {
@@ -3208,7 +3267,7 @@ $("s-apply").onclick = async () => {
   const prev = settings;
   // Changing the list replaces the messages on the screen, so wait for an open operation.
   const locked = !!busy || !!resourceOperation || !!panel;
-  settings = {thinking: segValue("s-thinking") || "high", temperature: +$("s-temp").value, top_p: +$("s-topp").value,
+  settings = {...setThinkingChoice(segValue("s-thinking")), temperature: +$("s-temp").value, top_p: +$("s-topp").value,
               top_k: +$("s-topk").value, max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
               math: checked("s-math"), show: checked("s-show"), esp: checked("s-esp"), mcp: checked("s-mcp"),
               webSearch: prev.webSearch,
@@ -3258,6 +3317,7 @@ function showLanguage() {
   applyTheme();
   renderMcp();
   setSidebar(sidebarOpen, false);
+  syncThinkingControls();
   outputs();
   renderChat();
   setBusy(!!busy);

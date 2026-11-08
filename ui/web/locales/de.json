@@ -665,5 +665,8 @@
   "models.description.lfm": "Für alltägliche Textgespräche und Texte",
   "models.description.clover": "Vorschaumodell für Gespräche und Textaufgaben",
   "models.description.tiel": "Code erstellen, Fehler suchen und Änderungen vornehmen",
-  "models.downloadRequired": "Ein Modell zum Chatten herunterladen"
+  "models.downloadRequired": "Ein Modell zum Chatten herunterladen",
+  "thinking.on": "Ein",
+  "thinking.alwaysOn": "Immer ein",
+  "thinking.high": "Hoch (xhigh)"
 }

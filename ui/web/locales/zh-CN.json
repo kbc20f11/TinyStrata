@@ -659,5 +659,8 @@
   "models.description.lfm": "适合日常文字对话和写作",
   "models.description.clover": "面向对话和文本任务的预览模型",
   "models.description.tiel": "用于代码生成、调试和修改",
-  "models.downloadRequired": "请先下载模型"
+  "models.downloadRequired": "请先下载模型",
+  "thinking.on": "开启",
+  "thinking.alwaysOn": "始终开启",
+  "thinking.high": "高 (xhigh)"
 }

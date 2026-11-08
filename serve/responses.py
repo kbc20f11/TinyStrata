@@ -456,7 +456,11 @@ def check_request(req: dict) -> None:
 
 def template_kwargs(req: dict, shared: dict) -> dict:
     effort = (req.get("reasoning") or {}).get("effort")
-    if effort is None:
+    ctk = req.get("chat_template_kwargs")
+    explicit_switch = (isinstance(req.get("enable_thinking"), bool) or
+                       isinstance(ctk, dict) and (isinstance(ctk.get("enable_thinking"), bool) or
+                                                  ctk.get("reasoning_effort") not in (None, "")))
+    if effort is None and not explicit_switch:
         effort = shared.get("reasoning_effort")      # the Chat settings shared with apps, as on the chat path
     try:
         return effort_kwargs(effort)

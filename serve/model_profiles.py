@@ -12,6 +12,7 @@ from pathlib import Path
 
 from serve import config, model_setup, tinyconfig
 from serve.model_download import manifest_for_arch
+from serve.thinking import capabilities
 
 
 _MODELS = {
@@ -155,6 +156,11 @@ class ModelProfiles:
         result = {"arch": arch, "model_name": name, "cwd": str(model_setup.ROOT),
                   "args": args, "memory_policy_version": tinyconfig.MEMORY_POLICY_VERSION,
                   **deepcopy(self._hardware)}
+        thinking = capabilities(name)
+        if thinking and thinking["mode"] == "effort":
+            result["reasoning_effort"] = thinking["default"]
+        elif thinking:
+            result["enable_thinking"] = True
         result = tinyconfig.clover_vision_defaults(tinyconfig.clover_decode_defaults(result))
         if self._engine is not None:
             filename = {"lfm2moe": "tinystrata-lfm2", "gemma4": "tinystrata-gemma4"}.get(arch, "tinystrata")

@@ -14,7 +14,7 @@ function ok(value,label){assert(value,label);checks++;}
 function fixture(saved=[]){
  const elements=new Map(),calls=[],toasts=[],timers=new Map(),storage={'model-downloads':saved};let tid=0;
  class Element {
-  constructor(tag='div'){this.tagName=tag.toUpperCase();this.children=[];this.parentNode=null;this.dataset={};this.attributes={};this.hidden=false;this.disabled=false;this.value='';this._text='';this.open=false;this.writes=0;}
+  constructor(tag='div'){this.tagName=tag.toUpperCase();this.children=[];this.parentNode=null;this.dataset={};this.style={};this.attributes={};this.hidden=false;this.disabled=false;this.value='';this._text='';this.open=false;this.writes=0;}
   get options(){return this.children.filter(n=>n.tagName==='OPTION');}
   set options(rows){this.children=rows;}
   get textContent(){return this._text+this.children.map(n=>n.textContent||'').join('');}
@@ -31,6 +31,7 @@ function fixture(saved=[]){
    }
   }
   appendChild(node){if(node.parentNode)node.remove();this.children.push(node);node.parentNode=this;return node;}
+  insertBefore(node,next){if(node.parentNode)node.remove();const at=next?this.children.indexOf(next):-1;this.children.splice(at<0?this.children.length:at,0,node);node.parentNode=this;return node;}
   remove(){if(this.parentNode){this.parentNode.children.splice(this.parentNode.children.indexOf(this),1);this.parentNode=null;}}
   setAttribute(k,v){this.attributes[k]=String(v);this.writes++;if(k==='class')this.className=String(v);if(k==='hidden')this.hidden=true;}
   getAttribute(k){return Object.hasOwn(this.attributes,k)?this.attributes[k]:null;}
@@ -47,7 +48,6 @@ function fixture(saved=[]){
  function element(id){if(!elements.has(id)){const el=new Element(id==='composer-model'?'select':'div');el.id=id;elements.set(id,el);}return elements.get(id);}
  const noThinking=new Element('option');noThinking.value='none';element('composer-effort').appendChild(noThinking);
  element('composer-model').value=IDS[0];
- element('s-thinking').children=[{dataset:{v:'none'}},{dataset:{v:'high'}}];
  const jobs=Object.fromEntries(IDS.map(model_id=>[model_id,{state:'idle',bytes_downloaded:0,total_bytes:100,progress:0,error:null,can_cancel:false,model_id}]));
  const backend={model:IDS[0],jobs,nextError:null,rejectSwitch:false,rollback:false};
  const ctx={console,Map,Promise,Number,JSON,Array,String,Error,encodeURIComponent,AbortSignal,
@@ -62,7 +62,8 @@ function fixture(saved=[]){
   headers:()=>({}),fetch:()=>{throw Error('Real fetch prohibited');},
   loadHealth:async()=>{ctx.health.model=backend.model;return true;},
   setBusy:()=>{},backend,calls,storage};
- vm.createContext(ctx);vm.runInContext(fs.readFileSync(path.join(webDirectory,'model-library.js'),'utf8'),ctx);vm.runInContext(snippet,ctx);
+ vm.createContext(ctx);vm.runInContext(fs.readFileSync(path.join(webDirectory,'model-library.js'),'utf8'),ctx);
+ vm.runInContext(fs.readFileSync(path.join(webDirectory,'thinking-controls.js'),'utf8'),ctx);vm.runInContext(snippet,ctx);
  vm.runInContext(`modelCatalog=${JSON.stringify(IDS.map((id,i)=>({id,installed:i===0,active:i===0,management:{source:'managed',can_delete:i!==0,can_download:i!==0,complete:i===0,disk_bytes:i===0?1000000000:0,reclaimable_bytes:1000000000,download_bytes:2000000000}})))};
  modelSwitchAvailable=true;
  const productionRefresh=refreshModelCatalog;

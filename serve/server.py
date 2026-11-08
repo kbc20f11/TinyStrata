@@ -59,7 +59,7 @@ from urllib.parse import parse_qs, urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
 from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
-                            forced_call, gemma_model_turn, images_of, literal_tags, mark_think_literals, openai_to_messages,
+                            effort_kwargs, forced_call, gemma_model_turn, images_of, literal_tags, mark_think_literals, openai_to_messages,
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import config  # noqa: E402
@@ -68,6 +68,7 @@ from serve import logit_bias as bias_api  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
+from serve import thinking as thinking_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
 from serve import images as images_api  # noqa: E402
 from serve.model_switch import ModelControlError, ModelSwitcher  # noqa: E402
@@ -3778,7 +3779,7 @@ class Service:
 
     def set_shared(self, defaults) -> dict:
         """The shared inference defaults every client gets for what it leaves out; {} / None = clients use their own again."""
-        self.shared = clean_shared_defaults(defaults)
+        self.shared = clean_shared_defaults(defaults, self.model)
         if self.shared_path:
             try:
                 if self.shared:
@@ -3798,12 +3799,19 @@ class Service:
         """Fill omitted limits before context validation; explicit request values win."""
         s = self.shared
         effort = self.effort_default()
-        req = dict(req)
+        policy = thinking_api.capabilities(self.model)
+        req = thinking_api.normalize_request(req, policy)
         req.pop("_tinystrata_default_max_tokens", None)
         limits = ("max_output_tokens",) if api == "responses" else ("max_tokens", "max_completion_tokens")
         if all(req.get(key) is None for key in limits):
             req[limits[0]] = s.get("max_tokens", self.default_max_tokens)
             req["_tinystrata_default_max_tokens"] = True
+        if policy is not None:
+            default_enable = self.default_enable_thinking
+            if api == "anthropic" and not self.anthropic_think_unasked and not req.get("reasoning_budget_tokens"):
+                default_enable = False  # explicit legacy on_request config, not the fresh-install default
+            return thinking_api.inject_default(req, api, policy, s, self.config_effort,
+                                                default_enable)
         if effort:
             if api == "openai":
                 ctk = req.get("chat_template_kwargs") if isinstance(req.get("chat_template_kwargs"), dict) else {}
@@ -3828,6 +3836,21 @@ class Service:
                 kwargs.pop(key, None)
         req = req or {}
         ctk = req.get("chat_template_kwargs")
+        reasoning = req.get("reasoning") if isinstance(req.get("reasoning"), dict) else {}
+        output_config = req.get("output_config") if isinstance(req.get("output_config"), dict) else {}
+        thinking = req.get("thinking") if isinstance(req.get("thinking"), dict) else {}
+        requested_off = (any(value is False or isinstance(value, str) and
+                             value.strip().lower() in ("none", "off", "minimal", "disabled", "false")
+                             for value in (req.get("reasoning_effort"), reasoning.get("effort"),
+                                           output_config.get("effort"))) or thinking.get("type") == "disabled")
+        # Responses and Anthropic also accept the native-template override. A
+        # translator's explicit OFF keeps its precedence over an effort alias.
+        if (isinstance(ctk, dict) and ctk.get("reasoning_effort") not in (None, "") and
+                not requested_off):
+            override = effort_kwargs(ctk["reasoning_effort"])
+            if "reasoning_effort" in override:
+                kwargs.pop("enable_thinking", None)  # e.g. Anthropic's implicit on_request OFF
+            kwargs.update(override)
         choice = ctk.get("enable_thinking") if isinstance(ctk, dict) else None
         if choice is None:
             choice = req.get("enable_thinking")
@@ -3844,7 +3867,8 @@ class Service:
                 kwargs["enable_thinking"] = self.default_enable_thinking
         if self.call_format == "lfm2" and kwargs.get("enable_thinking") is False:
             raise ValueError("LFM2.5-24B-A2B always uses thinking; disabling it is not supported")
-        return kwargs
+        return thinking_api.template_kwargs(kwargs, thinking_api.capabilities(self.model),
+                                            self.default_enable_thinking)
 
     def start_telemetry(self):
         """The hardware sampler behind GET /metrics (serve/telemetry.py), recording this server's tok/s too."""
@@ -5929,6 +5953,8 @@ def make_handler(svc: Service):
                              "meta": {"n_ctx": svc.reported_ctx()},
                              "architecture": {"input_modalities": ["text", "image"] if svc.vision is not None else ["text"],
                                               "output_modalities": ["text"]}}
+                    if (thinking := thinking_api.capabilities(svc.model)) is not None:
+                        model["thinking"] = thinking
                     if not loaded and (svc.idle_unload_s or getattr(svc.engine, "unloaded", False)):
                         model["status"] = {"value": "unloaded"}   # like llama-server's router: listed, loads on use
                         loaded = True
@@ -6915,24 +6941,30 @@ def origins_of(value, key: str, wildcard: bool) -> list[str]:
     return out
 
 
-SHARED_KEYS = ("reasoning_effort", "reasoning_budget_tokens", "temperature", "top_p", "top_k", "seed", "max_tokens",
+SHARED_KEYS = ("enable_thinking", "reasoning_effort", "reasoning_budget_tokens", "temperature", "top_p", "top_k", "seed", "max_tokens",
                "experimental_speed_projection")
 
 
-def clean_shared_defaults(d) -> dict:
+def clean_shared_defaults(d, model: str | None = None) -> dict:
     """The shared inference defaults other apps get (POST /settings): only known keys, each checked; ValueError names a bad one."""
     if d is None:
         return {}
     if not isinstance(d, dict):
         raise ValueError("defaults must be an object")
     out = {}
+    policy = thinking_api.capabilities(model) if model else None
     for key, value in d.items():
         if value is None or value == "":
             continue
         number = isinstance(value, (int, float)) and not isinstance(value, bool)
         if key == "reasoning_effort":
-            if value not in ("none", "low", "medium", "high"):
+            if policy is not None:
+                value = thinking_api.normalize_effort(value, policy)
+            elif value not in ("none", "low", "medium", "high"):
                 raise ValueError("reasoning_effort: none, low, medium or high")
+        elif key == "enable_thinking":
+            if not isinstance(value, bool):
+                raise ValueError("enable_thinking: true or false")
         elif key == "temperature":
             if not number or not 0 <= value <= 2:
                 raise ValueError("temperature: 0..2")
@@ -6957,6 +6989,11 @@ def clean_shared_defaults(d) -> dict:
         else:
             raise ValueError(f"unknown setting {key!r}")
         out[key] = float(value) if key in ("temperature", "top_p") else value
+    if policy is not None:
+        if policy["mode"] != "effort" and "reasoning_effort" in out:
+            out.setdefault("enable_thinking", out.pop("reasoning_effort") != "none")
+        if policy["mode"] == "always" and "enable_thinking" in out:
+            out["enable_thinking"] = True
     return out
 
 
@@ -7525,7 +7562,9 @@ def main() -> int:
     svc.keep_awake = KeepAwake.create(cfg.get("prevent_sleep") is True)      # #1727: opt-in, Windows only
     if cfg.get("reasoning_effort") is not None:         # #1641: the thinking level of requests that name none
         try:
-            svc.config_effort = clean_shared_defaults({"reasoning_effort": cfg["reasoning_effort"]}).get("reasoning_effort")
+            policy = thinking_api.capabilities(svc.model)
+            svc.config_effort = (thinking_api.normalize_effort(cfg["reasoning_effort"], policy) if policy else
+                                 clean_shared_defaults({"reasoning_effort": cfg["reasoning_effort"]}).get("reasoning_effort"))
         except ValueError as e:
             raise SystemExit(f"[strata] config {e}")
         if svc.config_effort:
@@ -7631,7 +7670,7 @@ def main() -> int:
     if a.config:                                        # the shared inference defaults shared with other apps, from last time
         svc.shared_path = str(Path(a.config).with_suffix("")) + ".shared-settings.json"
         try:
-            svc.shared = clean_shared_defaults(json.loads(Path(svc.shared_path).read_text(encoding="utf-8")))
+            svc.shared = clean_shared_defaults(json.loads(Path(svc.shared_path).read_text(encoding="utf-8")), svc.model)
             if svc.shared:
                 print("[strata] other apps use the shared inference defaults: " +
                       ", ".join(f"{k}={v}" for k, v in svc.shared.items()), flush=True)

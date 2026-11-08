@@ -665,5 +665,8 @@
   "models.description.lfm": "Conversas de texto e escrita no dia a dia",
   "models.description.clover": "Modelo em prévia para conversas e tarefas de texto",
   "models.description.tiel": "Geração, depuração e edição de código",
-  "models.downloadRequired": "Baixe um modelo para conversar"
+  "models.downloadRequired": "Baixe um modelo para conversar",
+  "thinking.on": "Ativado",
+  "thinking.alwaysOn": "Sempre ativado",
+  "thinking.high": "Alto (xhigh)"
 }

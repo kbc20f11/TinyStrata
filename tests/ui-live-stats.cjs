@@ -148,6 +148,8 @@ async function streamingFixture({tool=false,cancel=false,legacy=false}={}){
  c.messages=[];c.busy=null;c.modelSwitching=false;c.modelSwitchAvailable=false;c.modelCatalog=[];c.resourceOperation=null;c.health={model:'clover-35b-a3b-preview'};
  c.settings={temperature:0,mcp:false};c.mcpInfo={tools:0};c.globalTools={max_concurrency:1};c.headers=()=>({});
  c.saveChat=()=>{};c.settlePending=()=>{};c.setBusy=()=>{};c.paintLive=()=>{};c.apiMessages=()=>[];c.effortForModel=()=> 'none';c.projectionLoaded=()=>false;
+ vm.runInContext(fs.readFileSync(path.join(__dirname,'../ui/web/thinking-controls.js'),'utf8')+'\n'+
+   source.slice(source.indexOf('function effortForModel('),source.indexOf('function syncComposerControls(')),c);
  c.renderChat=()=>{};c.samplingUntouched=()=>true;c.toast=()=>{};
  c.prepareContext=async body=>({messages:body.messages});
  c.updateAssistant=(el,m,streaming)=>{paintCalls++;c.renderTerminalStats(el,m,streaming);};
@@ -158,6 +160,7 @@ async function streamingFixture({tool=false,cancel=false,legacy=false}={}){
   mergeCalls:(map,calls)=>calls.map(call=>{const full={index:0,id:'tool-1',name:'run_python',arguments:'{}'};map.set(0,full);return full;}),parseCall:()=>({}),safeURL:()=>null};
  c.fetch=async(url,options)=>{
   fetches++;const body=JSON.parse(options.body);ok(body.return_live_stats===true,'UI opts into request-bound live stats');
+  ok(body.chat_template_kwargs?.enable_thinking===true&&!Object.hasOwn(body,'reasoning_effort'),'actual toggle-model chat request sends native boolean, never on as effort');
   const round=fetches-1,isTool=tool&&round===0;
   const chunk=delta=>({choices:[{index:0,delta,finish_reason:null}]});
   const packets=legacy?[]:[{...chunk({}),strata_stats:sample(0,{tok_s:null,first_token_s:null})},
