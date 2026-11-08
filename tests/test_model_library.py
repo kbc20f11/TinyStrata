@@ -153,18 +153,67 @@ class LibraryTests(unittest.TestCase):
         with self.assertRaises(ModelControlError): self.f.control.delete(GEMMA)
         self.assertEqual(external.read_bytes(), b'custom')
 
-    def test_hardlink_removal_safety_does_not_change_readiness_or_size(self):
+    def test_owned_hardlink_unlinks_only_managed_name_and_reports_reclaimable_bytes(self):
         model = self.file()
-        self.file(D.FIXED_GEMMA4_MMPROJ, b'projector')
-        self.file(D.FIXED_GEMMA4_ASSISTANT, b'assistant')
+        projector = self.file(D.FIXED_GEMMA4_MMPROJ, b'projector')
+        assistant = self.file(D.FIXED_GEMMA4_ASSISTANT, b'assistant')
         alias = self.f.root / 'benchmark-alias.gguf'; os.link(model, alias)
         meta = self.inventory().management
         self.assertTrue(meta['complete']); self.assertGreater(meta['disk_bytes'], 0)
-        self.assertFalse(meta['can_delete']); self.assertEqual(meta['delete_reason'], 'unsafe_path')
+        self.assertTrue(meta['can_delete']); self.assertIsNone(meta['delete_reason'])
+        self.assertEqual(meta['hardlinked_bytes'], len(b'model fixture'))
+        self.assertEqual(meta['reclaimable_bytes'], len(b'projectorassistant'))
+        self.assertEqual(meta['deletable_bytes'], len(b'model fixtureprojectorassistant'))
         row = next(row for row in self.f.control.catalog() if row['id'] == GEMMA)
         self.assertTrue(row['installed'] and row['management']['complete'] is not False)
-        with self.assertRaises(ModelControlError): self.f.control.delete(GEMMA)
-        self.assertEqual(alias.read_bytes(), b'model fixture'); self.assertTrue(model.exists())
+        result = self.f.control.delete(GEMMA)
+        self.assertEqual(result['deleted_bytes'], meta['disk_bytes'])
+        self.assertEqual(alias.read_bytes(), b'model fixture'); self.assertFalse(model.exists())
+        self.assertEqual(alias.stat().st_nlink, 1)
+        self.assertFalse(projector.exists()); self.assertFalse(assistant.exists())
+        self.assertFalse(list(self.f.models.glob('.tinystrata-delete-*')))
+
+    def test_clover_hardlink_is_removable_with_shared_projector_retained(self):
+        model = self.file(D.FIXED_CLOVER_MODEL, b'clover')
+        projector = self.file(D.FIXED_MMPROJ, b'shared projector')
+        alias = self.f.root / 'clover-benchmark-alias.gguf'; os.link(model, alias)
+        qwen = self.f.profiles.get(QWEN)
+        self.f.profiles.update(QWEN, {**qwen.config, 'vision_mmproj': str(projector)})
+        meta = self.inventory(CLOVER).management
+        self.assertTrue(meta['complete']); self.assertTrue(meta['can_delete'])
+        self.assertEqual(meta['reclaimable_bytes'], 0)
+        self.assertEqual(meta['deletable_bytes'], len(b'clover'))
+        self.assertEqual(meta['hardlinked_bytes'], len(b'clover'))
+        result = self.f.control.delete(CLOVER)
+        self.assertEqual(result['deleted_bytes'], len(b'clover'))
+        self.assertEqual(result['retained_shared_bytes'], len(b'shared projector'))
+        self.assertFalse(model.exists()); self.assertEqual(alias.read_bytes(), b'clover')
+        self.assertEqual(projector.read_bytes(), b'shared projector')
+
+    def test_hardlinked_partial_file_and_tokenizer_do_not_touch_external_aliases(self):
+        model = self.file()
+        partial = model.with_name(model.name + '.part'); partial.write_bytes(b'partial')
+        alias = self.f.root / 'partial-alias'; os.link(partial, alias)
+        info = model.stat()
+        identity = f'{model.resolve()}\n{info.st_size}\n{info.st_mtime_ns}'
+        cache = self.f.root / 'models' / hashlib.sha256(identity.encode()).hexdigest()[:16] / 'tokenizer'
+        cache.mkdir(parents=True)
+        tokenizer = cache / 'tokenizer.json'; tokenizer.write_bytes(b'tokenizer')
+        token_alias = self.f.root / 'tokenizer-alias'; os.link(tokenizer, token_alias)
+        profile = self.f.profiles.get(GEMMA)
+        self.f.profiles.update(GEMMA, {**profile.config, 'tokenizer': str(cache)})
+        plan = self.inventory()
+        self.assertEqual(plan.management['hardlinked_bytes'], len(b'partialtokenizer'))
+        L.delete_files(plan)
+        self.assertFalse(partial.exists()); self.assertFalse(tokenizer.exists())
+        self.assertEqual(alias.read_bytes(), b'partial'); self.assertEqual(token_alias.read_bytes(), b'tokenizer')
+
+    def test_hardlink_count_change_after_inventory_is_rejected_before_staging(self):
+        model = self.file(); plan = self.inventory()
+        alias = self.f.root / 'new-alias'; os.link(model, alias)
+        with self.assertRaises(L.UnsafeModelPath): L.delete_files(plan)
+        self.assertEqual(model.read_bytes(), b'model fixture'); self.assertEqual(alias.read_bytes(), b'model fixture')
+        self.assertFalse(list(self.f.models.glob('.tinystrata-delete-*')))
 
     def test_another_profiles_explicit_vision_model_reference_is_shared(self):
         model = self.file()
@@ -336,6 +385,23 @@ class LibraryHTTPTests(unittest.TestCase):
         self.assertEqual(self.http(method='GET', path='/v1/models')[0], 200)
         self.assertEqual(self.http(body={'model': GEMMA})[0], 200)
         self.assertFalse(model.exists()); self.assertEqual(self.f.control._requests, 0)
+
+    def test_hardlinked_managed_name_can_be_deleted_over_http_without_deleting_alias(self):
+        model = self.file(D.FIXED_CLOVER_MODEL, b'clover')
+        alias = self.f.root / 'external-clover-alias'; os.link(model, alias)
+        self.start_http()
+        status, catalog = self.http(method='GET', path='/v1/models')
+        self.assertEqual(status, 200)
+        management = next(row for row in catalog['data'] if row['id'] == CLOVER)['management']
+        self.assertTrue(management['can_delete'])
+        self.assertEqual(management['deletable_bytes'], len(b'clover'))
+        self.assertEqual(management['reclaimable_bytes'], 0)
+        status, result = self.http(body={'model': CLOVER})
+        self.assertEqual(status, 200, result)
+        self.assertEqual(result['deleted_bytes'], len(b'clover'))
+        self.assertFalse(model.exists()); self.assertEqual(alias.read_bytes(), b'clover')
+        self.assertEqual(alias.stat().st_nlink, 1)
+        self.assertFalse(next(row for row in result['catalog'] if row['id'] == CLOVER)['installed'])
 
 
 if __name__ == '__main__': unittest.main()

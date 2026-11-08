@@ -60,7 +60,7 @@ def artifacts(profile):
 
 
 def _signature(info):
-    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_mode)
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_mode, info.st_nlink)
 
 
 def _no_link(path):
@@ -88,8 +88,8 @@ def _checked(path, root):
             return None
         if current != path and not stat.S_ISDIR(info.st_mode):
             raise UnsafeModelPath('A managed model parent is not a directory')
-    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-        raise UnsafeModelPath('A managed model entry is not a private regular file')
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink < 1:
+        raise UnsafeModelPath('A managed model entry is not a regular file')
     return info
 
 
@@ -100,6 +100,7 @@ class ManagedFile:
     signature: tuple
     size: int
     shared: bool = False
+    links: int = 1
 
 
 @dataclass
@@ -115,7 +116,8 @@ def inventory(profile, peers):
     selected = _configured(profile.config, _argument(profile.config, '--model'))
     managed = profile.config.get('model_source') != 'local' and (selected is None or _key(selected) == _key(primary))
     metadata = dict(source='managed' if managed else 'local', can_delete=False, delete_reason=None,
-                    disk_bytes=0, reclaimable_bytes=0, shared_bytes=0, download_bytes=sum(a.size for a in manifests),
+                    disk_bytes=0, deletable_bytes=0, reclaimable_bytes=0, shared_bytes=0, hardlinked_bytes=0,
+                    download_bytes=sum(a.size for a in manifests),
                     complete=False, can_download=False)
     # Readiness is independent of permission to remove a file. In particular,
     # benchmark hardlinks and custom paths can still be fully usable models.
@@ -146,7 +148,7 @@ def inventory(profile, peers):
     def add(path, root, shared=False):
         info = _checked(path, root)
         if info is not None:
-            files[_key(path)] = ManagedFile(path, root, _signature(info), info.st_size, shared)
+            files[_key(path)] = ManagedFile(path, root, _signature(info), info.st_size, shared, info.st_nlink)
         return info
     try:
         primary_shared = False
@@ -171,7 +173,11 @@ def inventory(profile, peers):
                     add(cache / filename, cache_root, shared)
         metadata['disk_bytes'] = sum(file.size for file in files.values())
         metadata['shared_bytes'] = sum(file.size for file in files.values() if file.shared)
-        metadata['reclaimable_bytes'] = sum(file.size for file in files.values() if not file.shared)
+        metadata['hardlinked_bytes'] = sum(file.size for file in files.values() if file.links > 1)
+        metadata['deletable_bytes'] = sum(file.size for file in files.values() if not file.shared)
+        # Unlinking an owned name is safe even when another name references its
+        # inode. Such an unlink does not free the data while that link survives.
+        metadata['reclaimable_bytes'] = sum(file.size for file in files.values() if not file.shared and file.links == 1)
         metadata['delete_reason'] = 'shared' if primary_shared else None if any(not file.shared for file in files.values()) else 'not_downloaded'
         metadata['can_delete'] = metadata['delete_reason'] is None
         metadata['can_download'] = not metadata['complete']
@@ -218,7 +224,11 @@ def _pin_directories(paths):
 
 
 def delete_files(plan):
-    """Stage exact regular files before unlinking; failed staging restores them."""
+    """Unlink exact owned names (including hardlinks); failed staging restores them.
+
+    Return logical bytes of removed entries, not promised filesystem space freed.
+    No write/truncate touches the inode or any other hardlink's contents.
+    """
     if not plan.management['can_delete']:
         raise ValueError('This model has no safely removable managed files')
     files = [file for file in plan.files if not file.shared]

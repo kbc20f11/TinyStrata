@@ -8,6 +8,7 @@ const source=fs.readFileSync(path.join(webDirectory,'app.js'),'utf8');
 const sectionStart=source.indexOf('let modelCatalog ='),sectionEnd=source.indexOf('$("composer-effort").onchange');
 assert(sectionStart>=0&&sectionEnd>sectionStart,'Model controls section not found in app.js');
 const snippet=source.slice(sectionStart,sectionEnd);
+const healthFunction=source.slice(source.indexOf('async function loadHealth()'),source.indexOf('// ------------------------------------------------------------------ Monitor'));
 const IDS=['qwen3.6-35b-a3b','gemma-4-26b-a4b-it','lfm2.5-24b-a2b','clover-35b-a3b-preview','tiel-coder-35b-a3b'];
 let checks=0;
 function ok(value,label){assert(value,label);checks++;}
@@ -52,7 +53,8 @@ function fixture(saved=[]){
  const backend={model:IDS[0],jobs,nextError:null,rejectSwitch:false,rollback:false};
  const ctx={console,Map,Promise,Number,JSON,Array,String,Error,encodeURIComponent,AbortSignal,
   document:{createElement:tag=>new Element(tag)},StrataI18n:{lang:'en'},SPRITE:'web/sprite.svg',
-  $:element,health:{model:IDS[0],images:true},settings:{thinking:'high'},messages:[],busy:null,pending:null,
+  $:element,health:{status:'ok',model:IDS[0],images:true},healthRequestEpoch:0,healthRequestPath:()=> 'health',
+  location:{hash:''},loadShared:async()=>{},renderEmptyChat(){},showTab(){},settings:{thinking:'high'},messages:[],busy:null,pending:null,
   sharedSaving:false,toolSettingsSaving:false,modelOp:null,resourceOperation:null,panel:null,lastMetrics:{live:{state:'idle'}},inflight:false,
   tr:(key,en,values={})=>en.replace(/\{(\w+)\}/g,(_,k)=>values[k]),fmt:(v,d=0)=>Number(v).toFixed(d),
   store:{get:(key,d)=>storage[key]??d,set:(key,value)=>{storage[key]=JSON.parse(JSON.stringify(value));return true;}},
@@ -95,10 +97,58 @@ function fixture(saved=[]){
   library:renderModelLibrary,openDelete:openModelDelete,delete:deleteModel,dismissDelete:dismissModelDelete,catalog:()=>modelCatalog,refresh:productionRefresh,useProductionRefresh:()=>{refreshModelCatalog=productionRefresh;},
   ready:activeModelNeedsDownload,setCatalog:(rows,available=true)=>{modelCatalog=rows;modelSwitchAvailable=available;},
   install:(id,complete=true)=>{const row=modelCatalog.find(row=>row.id===id);row.installed=true;row.management.complete=complete;row.management.can_download=!complete;row.management.disk_bytes=1000000000;}};`,ctx);
- return {ctx,element,backend,calls,toasts,timers,storage,t:ctx.test};
+ return {ctx,element,backend,calls,toasts,timers,storage,t:ctx.test,
+  useProductionHealth:()=>vm.runInContext(healthFunction,ctx)};
 }
 const posts=(f,path)=>f.calls.filter(c=>c.method==='POST'&&c.path===path);
 const drain=()=>new Promise(resolve=>setImmediate(resolve));
+const catalogSnapshot=(f,active)=>JSON.parse(JSON.stringify(f.t.catalog())).map(row=>({...row,active:row.id===active,
+ management:{...row.management,can_delete:row.installed&&row.id!==active,delete_reason:row.id===active?'active':null}}));
+const healthResponse=model=>({ok:true,json:async()=>({status:'ok',model,images:true})});
+function externalSwitchFixture(){
+ const f=fixture();f.t.install(IDS[1]);f.t.install(IDS[3]);f.ctx.health.model=f.backend.model=IDS[3];
+ f.t.setCatalog(catalogSnapshot(f,IDS[3]));f.t.useProductionRefresh();f.useProductionHealth();
+ f.ctx.fetch=async()=>healthResponse(f.backend.model);
+ const original=f.ctx.modelControl;
+ f.ctx.modelControl=(path,options)=>path==='v1/models'?Promise.resolve({data:catalogSnapshot(f,f.backend.model)}):original(path,options);
+ return f;
+}
+function assertExternalSelection(f,model,label){
+ f.t.library();const rows=f.element('model-library-list')._modelRows;
+ ok(f.element('composer-model').value===model,label+': picker follows authoritative health');
+ ok([...rows.values()].filter(row=>row.el.dataset.active==='true').length===1&&rows.get(model).el.dataset.active==='true',label+': exactly one model is in use');
+ ok(rows.get(model).remove.disabled,label+': active model delete stays locked');
+ ok(!rows.get(IDS[3]).remove.disabled&&rows.get(IDS[3]).status.textContent==='Downloaded',label+': old Clover is eligible and no longer in use');
+ ok(posts(f,'v1/model/switch').length===0,label+': synchronization never posts a model switch');
+}
+async function externalSwitchRegressions(){
+ let f=externalSwitchFixture();f.backend.model=IDS[1];await f.t.refresh();await drain();
+ assertExternalSelection(f,IDS[1],'external API switch');
+
+ f=externalSwitchFixture();const before=catalogSnapshot(f,IDS[3]),original=f.ctx.modelControl;let resolveCatalog,reads=0;
+ f.ctx.modelControl=(path,options)=>path==='v1/models'&&++reads===1?new Promise(resolve=>{resolveCatalog=resolve;}):original(path,options);
+ const oldCatalog=f.t.refresh();f.backend.model=IDS[1];await f.ctx.loadHealth();
+ f.t.library();let rows=f.element('model-library-list')._modelRows;
+ ok([...rows.values()].filter(row=>row.el.dataset.active==='true').length===1&&rows.get(IDS[1]).el.dataset.active==='true','health crossing an old catalog cannot label two models in use');
+ ok(rows.get(IDS[3]).remove.disabled&&rows.get(IDS[3]).remove.title==='Updating model status…','stale catalog delete stays conservative with a distinct synchronization reason');
+ resolveCatalog({data:before});await oldCatalog;await drain();
+ assertExternalSelection(f,IDS[1],'delayed pre-switch catalog');
+ ok(reads===2,'health change invalidates an in-flight catalog and queues one fresh read');
+
+ f=externalSwitchFixture();let resolveOldHealth,healthReads=0;
+ f.ctx.fetch=()=>++healthReads===1?new Promise(resolve=>{resolveOldHealth=resolve;}):Promise.resolve(healthResponse(f.backend.model));
+ const oldHealth=f.ctx.loadHealth();f.backend.model=IDS[1];await f.ctx.loadHealth();
+ resolveOldHealth(healthResponse(IDS[3]));await oldHealth;await drain();
+ ok(f.ctx.health.model===IDS[1],'older overlapping health response cannot restore the previous model');
+ assertExternalSelection(f,IDS[1],'delayed pre-switch health');
+
+ f=externalSwitchFixture();f.backend.model=IDS[1];let resolveSyncHealth,requests=0;
+ f.ctx.fetch=()=>++requests===1?new Promise(resolve=>{resolveSyncHealth=resolve;}):Promise.resolve(healthResponse(f.backend.model));
+ const waitingRefresh=f.t.refresh();await drain();
+ f.backend.model=IDS[0];await f.ctx.loadHealth();resolveSyncHealth(healthResponse(IDS[1]));await waitingRefresh;await drain();
+ assertExternalSelection(f,IDS[0],'model changes during catalog health reconciliation');
+ ok(f.t.catalog().find(row=>row.active).id===IDS[0],'catalog is revalidated after awaiting health and cannot overwrite a newer switch snapshot');
+}
 function healthFixture({controlled=false,registration=null}={}){
  const start=source.indexOf('let health ='),end=source.indexOf('// ------------------------------------------------------------------ Monitor',start);
  assert(start>=0&&end>start,'Health controls section not found in app.js');
@@ -173,6 +223,16 @@ async function workerRegressions(){
  ok(image.tagName==='IMG'&&image.getAttribute('alt')===''&&image.getAttribute('aria-hidden')==='true','model images are decorative beside their text names');
  for(const id of IDS){const modelImage=list._modelRows.get(id).image;ok(modelImage.getAttribute('src')===f.ctx.StrataModelLibrary.get(id).iconSrc&&!modelImage.getAttribute('src').includes('#'),'each model renders its local standalone official or generic asset');}
  ok(list._modelRows.get(IDS[0]).remove.disabled&&list._modelRows.get(IDS[0]).status.textContent==='In use','active model clearly disables delete');
+ ok(list._modelRows.get(IDS[0]).remove.title==='Switch to another model to delete.'&&list._modelRows.get(IDS[0]).remove.getAttribute('aria-label')==='Delete: Switch to another model to delete.','active delete lock has a concise tooltip and accessible reason');
+ const reasons={custom:'Local files are managed outside TinyStrata.',local:'Local files are managed outside TinyStrata.',
+  shared:'Required by another model.',unsafe_path:'The file path could not be verified.',busy:'Wait for the current operation to finish.',
+  downloading:'Wait for the download to finish.',not_downloaded:'No downloaded files to delete.',active:'Updating model status…',other:'Deletion is unavailable.'};
+ for(const [reason,text] of Object.entries(reasons)){
+  const blocked=fixture();blocked.t.install(IDS[1]);Object.assign(blocked.t.catalog()[1].management,{can_delete:false,delete_reason:reason});
+  blocked.t.library();const row=blocked.element('model-library-list')._modelRows.get(IDS[1]);
+  ok(row.remove.disabled&&row.remove.title===text&&row.remove.getAttribute('aria-label')==='Delete: '+text,'disabled deletion explains '+reason+' without an inline warning');
+  ok(row.el.dataset.active==='false'&&row.status.textContent==='Downloaded','delete reason '+reason+' does not falsely mark an inactive model in use');
+ }
  f.element('composer-model').value=IDS[2];await f.element('composer-model').onchange();
  ok(f.calls.length===0&&!f.element('model-download-dialog').open,'invalid programmatic selection cannot fetch or download');
  f.element('composer-model').value=IDS[4];await f.element('composer-model').onchange();
@@ -239,6 +299,8 @@ async function workerRegressions(){
  f=fixture();f.t.install(IDS[1]);f.t.library();f.t.openDelete(IDS[0]);
  ok(!f.element('model-delete-dialog').open&&posts(f,'v1/model/delete').length===0,'active model cannot enter delete confirmation');
  f.t.openDelete(IDS[1]);ok(f.element('model-delete-dialog').open&&f.element('model-delete-title').textContent==='Delete Gemma 4?'&&f.element('model-delete-size').textContent==='The model files for Gemma 4 (1.00 GB) will be deleted.','delete confirmation explains the model files and reclaimable size');
+ f.t.dismissDelete();Object.assign(f.t.catalog()[1].management,{deletable_bytes:2000000000,reclaimable_bytes:0});f.t.openDelete(IDS[1]);
+ ok(f.element('model-delete-size').textContent==='The model files for Gemma 4 (2.00 GB) will be deleted.','confirmation names logical files removed even when hardlinks prevent reclaiming storage');
  f.t.dismissDelete();ok(posts(f,'v1/model/delete').length===0,'delete cancellation is mutation-free');
  f.t.openDelete(IDS[1]);f.backend.nextError=Object.assign(Error('busy'),{status:409});await f.t.delete();
  ok(f.element('model-delete-dialog').open&&f.element('model-delete-error').textContent==='busy'&&f.t.catalog().find(r=>r.id===IDS[1]).installed,'rejected delete keeps files/catalog and exposes the error');
@@ -277,12 +339,13 @@ async function workerRegressions(){
  const opening=f.t.open(IDS[1]);f.t.dismiss();resolveConfirmation({...f.backend.jobs[IDS[1]]});await opening;
  ok(!f.element('model-download-dialog').open&&posts(f,'v1/model/download').length===0,'late confirmation response cannot reopen or start transfer');
  await workerRegressions();
+ await externalSwitchRegressions();
  f=fixture();f.ctx.resourceOperation='placement';f.t.controls();
  ok(f.element('composer-model').disabled&&f.element('composer-effort').disabled,'placement reload locks model and effort controls');
  ok(f.element('s-web-search').disabled&&f.element('s-apply').disabled,'resource operation keeps request settings stable');
  await f.t.open(IDS[1]);
  ok(posts(f,'v1/model/switch').length===0,'a resource operation cannot race a model switch');
- const required=[...snippet.matchAll(/tr\("(model\.download[^\"]+|models\.deleteDescription(?:Size)?)"/g)].map(m=>m[1]);
+ const required=[...snippet.matchAll(/(?:tr\(|\[)"(model\.download[^\"]+|models\.delete[A-Z][^\"]*)"/g)].map(m=>m[1]);
  for(const name of fs.readdirSync(localeDirectory)){
    if(!name.endsWith('.json'))continue;
    const locale=JSON.parse(fs.readFileSync(path.join(localeDirectory,name),'utf8'));

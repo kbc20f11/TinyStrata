@@ -8,7 +8,7 @@
 <link rel="icon" href="web/terminal-logo.svg?v=20261030.1" type="image/svg+xml">
 <link rel="stylesheet" href="web/tokens.css">
 <link rel="stylesheet" href="web/components.css">
-<link rel="stylesheet" href="web/app.css?v=20261104.4">
+<link rel="stylesheet" href="web/app.css?v=20261108.1">
 <link rel="stylesheet" href="web/terminal-theme.css?v=20261107.2">
 <link rel="stylesheet" href="web/syntax.css?v=20261103.1">
 <link rel="stylesheet" href="web/local-tools.css?v=20261103.2">
@@ -280,16 +280,18 @@
           <label class="st-label" for="api-key"><span data-i18n="about.apiKey">API key</span> <output data-i18n="about.keyOnly">only if the server was started with one</output></label>
           <input class="st-input" id="api-key" type="password" autocomplete="off" placeholder="Not needed" data-i18n-placeholder="about.keyNotNeeded">
         </div>
-        <div class="st-field">
-          <label class="st-label" for="lang"><span data-i18n="settings.language">Language</span></label>
-          <select class="st-input" id="lang"></select>
-          <span class="muted small" data-i18n="settings.languageNote">The interface language applies to chat, monitoring, settings and measurements.</span>
-        </div>
-        <div class="st-field"><span class="st-label" id="theme-label" data-i18n="settings.appearance">Appearance</span>
-          <div class="seg seg--3" id="theme-options" role="radiogroup" aria-labelledby="theme-label">
-            <button type="button" role="radio" data-v="system" aria-checked="true" tabindex="0" data-i18n="theme.system">Follow OS</button>
-            <button type="button" role="radio" data-v="light" aria-checked="false" tabindex="-1" data-i18n="theme.light">Light</button>
-            <button type="button" role="radio" data-v="dark" aria-checked="false" tabindex="-1" data-i18n="theme.dark">Dark</button>
+        <div class="about-preferences">
+          <div class="st-field about-preferences__language">
+            <label class="st-label" for="lang"><span data-i18n="settings.language">Language</span></label>
+            <select class="st-input" id="lang" aria-describedby="language-note"></select>
+            <span class="muted small" id="language-note" data-i18n="settings.languageNote">The interface language applies to chat, monitoring, settings and measurements.</span>
+          </div>
+          <div class="st-field about-preferences__appearance"><span class="st-label" id="theme-label" data-i18n="settings.appearance">Appearance</span>
+            <div class="seg seg--3" id="theme-options" role="radiogroup" aria-labelledby="theme-label">
+              <button type="button" role="radio" data-v="system" aria-checked="true" tabindex="0" data-i18n="theme.system">Follow OS</button>
+              <button type="button" role="radio" data-v="light" aria-checked="false" tabindex="-1" data-i18n="theme.light">Light</button>
+              <button type="button" role="radio" data-v="dark" aria-checked="false" tabindex="-1" data-i18n="theme.dark">Dark</button>
+            </div>
           </div>
         </div>
         <div class="toggle-row" hidden><span data-i18n="settings.darkTheme">Dark theme</span>
@@ -447,6 +449,6 @@
 <script src="web/resource-actions.js?v=20261104.3"></script>
 <script src="web/model-library.js?v=20261107.1"></script>
 <script src="web/thinking-controls.js?v=20261108.1"></script>
-<script src="web/app.js?v=20261108.1"></script>
+<script src="web/app.js?v=20261108.2"></script>
 </body>
 </html>

@@ -166,6 +166,7 @@ $("api-key").onchange = () => saveApiKey(true);
 
 let health = {model: "strata", images: false, max_context: 0};
 let healthReadSerial = 0;
+let healthRequestEpoch = 0;
 function healthRequestPath() {
   // Older local chat UIs cached /health in a service worker even with no-store.
   // Until that worker retires, every authoritative health read needs a new URL.
@@ -190,21 +191,27 @@ function renderEmptyChat() {
     : tr("chat.emptyModel", "{model} runs on this PC. Nothing leaves it.", {model: health.model});
 }
 async function loadHealth() {
+  const epoch = ++healthRequestEpoch;
   try {
     const r = await fetch(healthRequestPath(), {cache: "no-store"});
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const next = await r.json();
     if (next.status !== "ok" || typeof next.model !== "string") throw new Error("Invalid model health");
+    if (epoch !== healthRequestEpoch) return health.status === "ok";
     const changed = health.model !== next.model;
     health = next;
-    if (changed) { sharedOn = false; await loadShared(); }
+    if (changed) {
+      if (typeof modelHealthChanged === "function") modelHealthChanged();
+      sharedOn = false;
+      await loadShared();
+    }
     renderEmptyChat();
     syncComposerControls();
     $("tab-btn-images").hidden = !health.image_generation;
     if (location.hash === "#images" && health.image_generation) showTab("images");
     return true;
   } catch (e) {
-    setTimeout(loadHealth, 2000);
+    if (epoch === healthRequestEpoch) setTimeout(loadHealth, 2000);
     return false;
   }
 }
@@ -1073,9 +1080,22 @@ let modelDeleteTarget = null, modelDeleting = null, modelDeleteError = "";
 function modelIsSelectable(row) {
   return row.installed === true && row.management?.complete !== false;
 }
+function libraryActiveModelId() {
+  // Health also identifies the model used by chat requests. Never combine two
+  // snapshots with OR: a delayed catalog could otherwise mark two rows in use.
+  return modelCatalog.some((row) => row.id === health.model) ? health.model
+    : modelCatalog.find((row) => row.active === true)?.id || health.model;
+}
+function modelHealthChanged() {
+  modelCatalogEpoch++;
+  renderModelLibrary();
+  renderModelDelete();
+  if (modelCatalogLoading) modelCatalogReloadRequested = true;
+  else refreshModelCatalog();
+}
 function activeModelNeedsDownload() {
   if (!modelSwitchAvailable) return false;
-  const row = modelCatalog.find((item) => item.active === true) || modelCatalog.find((item) => item.id === health.model);
+  const row = modelCatalog.find((item) => item.id === libraryActiveModelId());
   // Unknown legacy/catalog state stays usable. Only authoritative missing
   // files block chat, whose backend may otherwise download on first request.
   return !!row && typeof row.installed === "boolean" && !modelIsSelectable(row);
@@ -1104,6 +1124,27 @@ function syncModelOptions(select) {
   }
 }
 function modelLibraryText(node, value) { if (node.textContent !== value) node.textContent = value; }
+function modelDeleteReason(item, active, transferring) {
+  if (active) return tr("models.deleteActive", "Switch to another model to delete.");
+  if (modelDeleting || modelOperationBusy()) return tr("models.deleteBusy", "Wait for the current operation to finish.");
+  if (transferring) return tr("models.deleteDownloading", "Wait for the download to finish.");
+  if (item?.active === true) return tr("models.deleteRefreshing", "Updating model status…");
+  if (item?.management?.can_delete) return "";
+  const reason = item?.management?.delete_reason;
+  const labels = {
+    active: ["models.deleteRefreshing", "Updating model status…"],
+    custom: ["models.deleteLocal", "Local files are managed outside TinyStrata."],
+    local: ["models.deleteLocal", "Local files are managed outside TinyStrata."],
+    shared: ["models.deleteShared", "Required by another model."],
+    unsafe_path: ["models.deleteUnsafePath", "The file path could not be verified."],
+    busy: ["models.deleteBusy", "Wait for the current operation to finish."],
+    downloading: ["models.deleteDownloading", "Wait for the download to finish."],
+    not_downloaded: ["models.deleteNotDownloaded", "No downloaded files to delete."]
+  };
+  const label = labels[reason] || (item?.management?.source === "local" ? labels.local
+    : ["models.deleteUnavailable", "Deletion is unavailable."]);
+  return tr(...label);
+}
 function modelLibraryRow(id) {
   const list = $("model-library-list");
   if (!list._modelRows) list._modelRows = new Map();
@@ -1128,7 +1169,7 @@ function renderModelLibrary() {
     const item = modelCatalog.find((value) => value.id === id), management = item?.management;
     const info = typeof StrataModelLibrary !== "undefined" ? StrataModelLibrary.describe(id, StrataI18n.lang) : null;
     const row = modelLibraryRow(id), flow = modelDownloads.get(id);
-    const active = item?.active === true || health.model === id, transferring = flow && downloadIsActive(flow);
+    const active = libraryActiveModelId() === id, transferring = flow && downloadIsActive(flow);
     const name = info?.name || modelNames[id] || id;
     modelLibraryText(row.name, name);
     modelLibraryText(row.description, info ? tr(info.descriptionKey, info.descriptionFallback) : "");
@@ -1161,9 +1202,13 @@ function renderModelLibrary() {
     row.cancel.disabled = !!flow?.requestBusy || !!flow?.cancelRequested;
     modelLibraryText(row.cancel, tr("cancel", "Cancel"));
     row.remove.hidden = !item?.installed && !(management?.disk_bytes > 0);
-    row.remove.disabled = !management?.can_delete || active || !!modelDeleting || !!transferring || modelOperationBusy();
-    modelLibraryText(row.remove, tr("models.delete", "Delete"));
-    row.remove.title = active ? tr("models.inUse", "In use") : !management?.can_delete && management?.source === "local" ? tr("models.local", "Local model") : "";
+    row.remove.disabled = !management?.can_delete || active || item?.active === true || !!modelDeleting || !!transferring || modelOperationBusy();
+    const deleteLabel = tr("models.delete", "Delete");
+    const deleteReason = modelDeleteReason(item, active, transferring);
+    modelLibraryText(row.remove, deleteLabel);
+    if (row.remove.title !== deleteReason) row.remove.title = deleteReason;
+    const deleteAria = deleteReason ? `${deleteLabel}: ${deleteReason}` : deleteLabel;
+    if (row.remove.getAttribute("aria-label") !== deleteAria) row.remove.setAttribute("aria-label", deleteAria);
     row.el.dataset.active = String(active);
   }
   for (const [id, row] of list._modelRows || []) if (!ids.includes(id)) { row.el.remove(); list._modelRows.delete(id); }
@@ -1173,7 +1218,7 @@ function renderModelDelete() {
   if (!row) return;
   const model = modelNames[row.id] || row.id;
   $("model-delete-title").textContent = tr("models.deleteTitle", "Delete {model}?", {model});
-  const bytes = row.management?.reclaimable_bytes;
+  const bytes = row.management?.deletable_bytes ?? row.management?.reclaimable_bytes;
   $("model-delete-size").textContent = Number.isFinite(bytes)
     ? tr("models.deleteDescriptionSize", "The model files for {model} ({size}) will be deleted.", {model, size: downloadSize(bytes)})
     : tr("models.deleteDescription", "The model files for {model} will be deleted.", {model});
@@ -1600,10 +1645,16 @@ async function refreshModelCatalog() {
   try {
     const data = await modelControl("v1/models");
     if (epoch !== modelCatalogEpoch) return;
-    modelCatalog = Array.isArray(data.data) ? data.data : [];
+    const rows = Array.isArray(data.data) ? data.data : [];
+    const active = rows.find((row) => row.active);
+    if (active && active.id !== health.model && !modelSwitching) {
+      if (!await loadHealth()) return;
+      if (epoch !== modelCatalogEpoch) return;
+      if (active.id !== health.model) return;
+    }
+    if (epoch !== modelCatalogEpoch) return;
+    modelCatalog = rows;
     modelSwitchAvailable = modelCatalog.some((row) => typeof row.installed === "boolean");
-    const active = modelCatalog.find((row) => row.active);
-    if (active && active.id !== health.model && !modelSwitching) await loadHealth();
     if (modelCatalog.some((row) => row.status && row.status.value === "loading") && !modelSwitching) {
       modelSwitchTarget = modelCatalog.find((row) => row.status && row.status.value === "loading").id;
       modelSwitching = true;
