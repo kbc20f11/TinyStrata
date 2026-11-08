@@ -4,15 +4,15 @@
 (function (root) {
   const definitions = [
     ["qwen3.6-35b-a3b", "Qwen3.6 35B-A3B", "Qwen", "qwen",
-      "General-purpose chat, writing and coding", "会話・文章作成・プログラミングに"],
+      "Most versatile, TinyStrata's default model", "一番汎用性が高い、TinyStrataのデフォルトモデル"],
     ["gemma-4-26b-a4b-it", "Gemma 4 26B-A4B", "Google", "gemma",
-      "Conversation, explanations and writing", "会話・説明・文章作成に"],
+      "Warm conversation and natural language", "温かみのある会話、自然な語の出力"],
     ["lfm2.5-24b-a2b", "LFM2.5 24B-A2B", "Liquid AI", "lfm",
-      "Everyday text chat and writing", "日常のテキスト会話や文章作成に"],
+      "Fastest and most responsive, no image support", "最も軽快で高速に動作する、画像は非対応"],
     ["clover-35b-a3b-preview", "Clover 35B-A3B Preview", "DiffuSpace", "clover",
-      "Preview model for chat and text tasks", "会話や文章作成向けのプレビューモデル"],
+      "Balanced conversation and reasoning, slowest to run", "会話能力と知能のバランスがよい、最も低速で動作"],
     ["tiel-coder-35b-a3b", "Tiel Coder 35B-A3B", "peculiar-ragdoll", "tiel",
-      "Code generation, debugging and edits", "コード作成・不具合調査・修正に"],
+      "Specialized in programming questions", "プログラミングの質問に特化"],
   ];
   const iconSources = {qwen: "web/model-logos/qwen.png", gemma: "web/model-logos/gemma.svg",
     lfm: "web/model-logos/liquid.png", clover: "web/model-logos/diffuspace.jpg", tiel: "web/model-icons.svg"};
