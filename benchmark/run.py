@@ -168,6 +168,11 @@ def saved_config(original, model, folder, port, cases, *, copy_profiles=False):
     if original.get('arch', 'qwen35moe') != arch:
         raise ValueError(f'{file} does not select {arch}')
     cfg = copy.deepcopy(original)
+    # Benchmark startup must load the already-installed model, even if the app
+    # has never activated it or normally loads it lazily. Keep these lifecycle
+    # changes private; native arguments and the source profile stay untouched.
+    cfg.pop('model_bootstrap', None)
+    cfg.pop('lazy_load', None)
     cfg.update(host='127.0.0.1', port=port, log=str(Path(folder) / 'engine.log'))
     cfg.setdefault('model_name', name)
     cfg.setdefault('sampling', model_sampling(model, cases))
@@ -826,7 +831,7 @@ def main():
                   platform=platform.platform(), cpu=platform.processor(), ram_bytes=psutil.virtual_memory().total,
                   runs=options.runs, seed=cases['seed'], models={}, started=time.time())
     if options.saved_profile:
-        report.update(saved_profile=True, generation_passes=1, configuration_scope='saved native profile; private logs/ports/authentication/profile writes',
+        report.update(saved_profile=True, generation_passes=1, configuration_scope='saved native profile; eager private startup; private logs/ports/authentication/profile writes',
                       config_hashes_before={str(p): sha256(p) for p in options.config_dir.glob('config*.json')})
     if options.include_64k:
         report['include_64k'] = True

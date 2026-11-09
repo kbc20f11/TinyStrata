@@ -23,7 +23,7 @@ To measure the **current saved application profiles once**, use:
 & $python .\benchmark\run.py --saved-profile --runs 1 --model all
 ```
 
-This separately labelled **`tinystrata-bench-v1-saved-profile`** diagnostic retains each saved model's native arguments, sampler, KV, CPU/Expert choices and actual Vision configuration. `all` also includes installed Tiel Coder. Each start runs one excluded warm-up, the three canonical generation texts **once each**, exact 4K/16K inputs once, and an image when that profile has Vision. Only private logs, ports, authentication and Expert-profile write destinations change; normal settings and keys remain untouched. It is `standard: false`; unflagged v1 still uses its original four models, fixed profiles, two generation passes and four starts. Saved-profile measurements must not replace or be pooled into historical v1 results. The private API is normally unloaded before process cleanup, and its teardown result is recorded.
+This separately labelled **`tinystrata-bench-v1-saved-profile`** diagnostic retains each saved model's native arguments, sampler, KV, CPU/Expert choices and actual Vision configuration. `all` also includes installed Tiel Coder. Each start runs one excluded warm-up, the three canonical generation texts **once each**, exact 4K/16K inputs once, and an image when that profile has Vision. The private API eagerly loads downloaded models, including those never activated in the app; bootstrap/lazy-load markers are cleared only in its private configuration. Private logs, ports, authentication and Expert-profile write destinations are isolated; normal settings and keys remain untouched. It is `standard: false`; unflagged v1 still uses its original four models, fixed profiles, two generation passes and four starts. Saved-profile measurements must not replace or be pooled into historical v1 results. The private API is normally unloaded before process cleanup, and its teardown result is recorded.
 
 The app defaults to causal decoding without drafts, D0, with INT8 KV and `STRATA_IQ_MT_MIN=1`; exact D3 is optional. Its selected route and the fixed benchmark regulation are separate. The standard benchmark always uses **INT8 causal decoding, D0**, independently of the app profile. Native LowConfidence block diffusion is measured separately:
 
@@ -199,7 +199,7 @@ $python = "$env:LOCALAPPDATA\TinyStrata-work\runtime\.venv\Scripts\python.exe"
 
 ソースを取得したフォルダーでは、スクリプトのパスを `.\benchmark\run.py` に置き換えます。個別に測る場合は `--model qwen`、`--model gemma`、`--model lfm`、`--model clover` を使います。Clover の設定ファイルは `config-clover.json` です。既存のモデルと設定ファイルを使って計測専用 API を起動し、保存済みの設定は書き換えません。結果は `%LOCALAPPDATA%\TinyStrata-work\benchmarks\` に保存します。生成したログや結果は Git に含めません。
 
-現在のアプリ設定で一度ずつ測る場合は `--saved-profile --runs 1 --model all` を指定します。Tiel も含む5モデルの保存済み native・温度・KV・CPU・Vision 設定を維持し、生成3問を各1回、4K・16K入力を各1回、画像対応モデルでは画像も1回測ります。名前は別枠の `tinystrata-bench-v1-saved-profile`、`standard: false` です。通常の設定・キーは変更せず、標準 v1 の既存の4モデル・2周・4起動の条件や過去の表は変更しません。
+現在のアプリ設定で一度ずつ測る場合は `--saved-profile --runs 1 --model all` を指定します。Tiel も含む5モデルの保存済み native・温度・KV・CPU・Vision 設定を維持し、生成3問を各1回、4K・16K入力を各1回、画像対応モデルでは画像も1回測ります。アプリで一度もロードしていないダウンロード済みモデルも、ベンチ専用APIでは起動時にロードします。初回ロード待ち・遅延ロードのフラグは専用設定のコピーだけから除きます。名前は別枠の `tinystrata-bench-v1-saved-profile`、`standard: false` です。通常の設定・キーは変更せず、標準 v1 の既存の4モデル・2周・4起動の条件や過去の表は変更しません。
 
 Clover のアプリの既定はドラフトを使わない因果生成 D0・INT8 KV・`STRATA_IQ_MT_MIN=1` で、exact D3 は任意選択です。アプリで選ぶ生成経路と固定ベンチ規約は別で、標準ベンチはアプリのプロファイルにかかわらず、**INT8・因果生成・D0** を使います。LowConfidence 方式のネイティブなブロック拡散は別々に測定します。
 

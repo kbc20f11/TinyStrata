@@ -20,7 +20,7 @@ CASES = json.loads((ROOT / "benchmark/cases.json").read_text(encoding="utf-8"))
 
 
 def original(model):
-    cfg = {"arch": bench.MODELS[model][1], "exe": "engine.exe", "tokenizer": "tokenizer",
+    cfg = {"arch": bench.model_definition(model)[1], "exe": "engine.exe", "tokenizer": "tokenizer",
            "args": ["--model", "model.gguf", "--max-context", "32768", "--chunk", "512"],
            "vision": {"exe": "vision.exe", "mmproj": "projector.gguf", "model": "model.gguf"}}
     if model == "gemma":
@@ -33,6 +33,31 @@ def controlled(model):
 
 
 class BenchmarkProfileMigration(unittest.TestCase):
+    def test_saved_profile_starts_unactivated_models_without_changing_source(self):
+        for model in bench.benchmark_models('all', saved_profile=True):
+            with self.subTest(model=model):
+                before = original(model)
+                before.update(model_bootstrap=True, lazy_load=True,
+                              sampling={'temperature': .37, 'top_k': 17})
+                snapshot = copy.deepcopy(before)
+                cfg = bench.saved_config(before, model, ROOT / 'unused-private-output', 18019, CASES)
+                self.assertNotIn('model_bootstrap', cfg)
+                self.assertNotIn('lazy_load', cfg)
+                for key in ('args', 'sampling', 'vision'):
+                    self.assertEqual(cfg[key], snapshot[key])
+                self.assertEqual(before, snapshot)
+
+    def test_standard_profile_already_starts_unactivated_models(self):
+        for model in bench.MODELS:
+            with self.subTest(model=model):
+                before = original(model)
+                before.update(model_bootstrap=True, lazy_load=True)
+                snapshot = copy.deepcopy(before)
+                cfg = bench.controlled_config(before, model, ROOT / 'unused-private-output', 18019, CASES)
+                self.assertNotIn('model_bootstrap', cfg)
+                self.assertNotIn('lazy_load', cfg)
+                self.assertEqual(before, snapshot)
+
     def test_saved_profile_preserves_native_sampler_vision_and_source(self):
         before = original('clover')
         before.update(api_key='private-production-key', backend='hip', enable_thinking=False,
