@@ -2319,7 +2319,14 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
             if (split_) cudaSetDevice(device_);   // one of the experts' threads, which every card's engine shares
             if (first && at == 0) (*first)();
             const size_t ff = (size_t) n_ff_exp_, q8_row = kernels::gemma_native_q8_1_bytes(n_ff_exp_);
-            const int per = rows_ >= kSlots ? kSlots : 1;   // the scratch holds rows_ experts' values
+            // Adapted from PolyStrata 43bbf3f1 / 5c0bd2c9: batch independent cached
+            // pairs without changing their arithmetic or ordered 32-row sum.
+            // The diagnostic override compares both widths in the same binary.
+            static const int requested = [] {
+                const char* value = std::getenv("TINYSTRATA_GEMMA_SLOTS32");
+                return kSlots == 32 && (!value || std::strcmp(value, "1") == 0) ? 32 : 8;
+            }();
+            const int per = rows_ >= requested ? requested : rows_ >= 8 ? 8 : 1;
             ScaledRows sum{};
             for (int i0 = 0; i0 < n_cached; i0 += per) {
                 const int m = std::min(per, n_cached - i0);

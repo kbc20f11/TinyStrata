@@ -223,3 +223,9 @@ asset license supplied by its source; the respective owners retain their
 copyright and trademark rights. These identification marks do not imply
 endorsement and are not relicensed as TinyStrata artwork. Tiel uses the
 existing generic layer glyph, not an invented provider/model logo.
+
+Gemma's HIP cached-Expert batching of up to 32 independent token/Expert pairs
+adapts VecSzn/PolyStrata commits 43bbf3f1ffbaa1cb294f8ebd62edd287a3130add
+and 5c0bd2c991de7964b2cd4c9495e1be3346976f2c (MIT; Copyright (c) 2026
+Niko1221 and the Strata contributors). TinyStrata retains CUDA's eight-slot
+payload and its existing per-row arithmetic, Expert selection and ordered sums.
