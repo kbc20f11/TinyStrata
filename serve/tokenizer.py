@@ -86,13 +86,26 @@ LFM2_PATTERN = (
     r"|\s+"
 )
 
+# gpt-oss (o200k_harmony) uses llama.cpp's GPT4O pre-tokenizer: the active, lookahead spelling of the case rules
+# (groups made non-capturing) at src/llama-vocab.cpp, LLAMA_VOCAB_PRE_TYPE_GPT4O (the tokenizer.json original uses \p{Lu}-style classes).
+_CONTRACTION = r"(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])?"
+GPT4O_PATTERN = (
+    r"[^\r\n\p{L}\p{N}]?(?:(?=[\p{L}])[^a-z])*(?:(?=[\p{L}])[^A-Z])+" + _CONTRACTION
+    + r"|[^\r\n\p{L}\p{N}]?(?:(?=[\p{L}])[^a-z])+(?:(?=[\p{L}])[^A-Z])*" + _CONTRACTION
+    + r"|\p{N}{1,3}"
+    r"| ?[^\s\p{L}\p{N}]+[\r\n/]*"
+    r"|\s*[\r\n]+"
+    r"|\s+(?!\S)"
+    r"|\s+"
+)
+
 # Gemma uses UTF-8 pieces and SentencePiece's visible space, rather than
 # GPT-2's byte alphabet. Adapted from PolyStrata tools/strata_tokenizer.py
 # at 51dc242725d9e64e791146f1d13133d5faedb0ce (MIT); merges may contain newlines.
 GEMMA4_PATTERN = r"[^\n]+|\n+"
 SPACE = "\u2581"
 PRE_PATTERNS = {"qwen35": QWEN35_PATTERN, "qwen2": QWEN2_PATTERN,
-                "lfm2": LFM2_PATTERN, "gemma4": GEMMA4_PATTERN}
+                "lfm2": LFM2_PATTERN, "gemma4": GEMMA4_PATTERN, "gpt-4o": GPT4O_PATTERN}
 
 
 class Tokenizer:

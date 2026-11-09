@@ -64,10 +64,25 @@ struct Kvq8 {
     const uint16_t* scales = nullptr;
 };
 
+// gpt-oss.  Up to 8 slots' experts' biases (each n values), as the cached experts of moe() are launched.
+struct ExpertBias {
+    const float* g[8];
+    const float* u[8];
+    const float* d[8];
+};
+void rope_bias(const float* x, const float* bias, float* y, int dim, int heads, int n_rot, float theta_scale,
+               const float* freq, float mscale, int64_t pos, int rows, void* stream, const long long* at = nullptr);
+void swiglu_oai_ids(const float* gate_up, float* out, int n, int rows, const int32_t* ids, const float* bias_gate,
+                    const float* bias_up, float alpha, float limit, void* stream);
+void swiglu_oai_slots(const float* gate_up, float* out, int n, int rows, const ExpertBias& eb, float alpha, float limit,
+                      void* stream);
+void add_expert_bias_ids(float* x, int n, int rows, const int32_t* ids, const float* bias, void* stream);
+void add_expert_bias_slots(float* x, int n, int rows, const ExpertBias& eb, void* stream);
+
 void attend(const float* q, const uint16_t* kcache, const uint16_t* vcache, int64_t pos, int rows, float* score,
             int chunk, float* out, int dim, int n_head, int kv_heads, float scale, void* stream, int window = 0,
             int ring = 0, bool whole = false, const long long* at = nullptr, int room = 0, size_t score_floats = 0,
-            Kvq8 kq8 = {}, Kvq8 vq8 = {});
+            Kvq8 kq8 = {}, Kvq8 vq8 = {}, const float* sinks = nullptr);
 
 size_t attend_split_floats(int chunk, int n_head, int max_rows, int dim);
 

@@ -6,6 +6,7 @@
 #include "engine.hpp"
 
 #include "gemma4.hpp"
+#include "gptoss.hpp"
 #include "mmq.hpp"
 #include "strata/prefill/mmq_ids_margin.hpp"
 #include "runtime.hpp"
@@ -1043,6 +1044,7 @@ std::unique_ptr<Engine> Engine::open(const Options& o) {
     const std::string name = arch ? arch->s : std::string();
     const auto make = [&]() -> std::unique_ptr<Engine> {
         if (name == "gemma4") return std::make_unique<Gemma4>();
+        if (name == "gpt-oss") return std::make_unique<GptOss>();
         throw std::runtime_error(o.model + " is a '" + name + "' model, which this engine does not run");
     };
     int cards = 1, devices = 1;
@@ -2014,6 +2016,12 @@ void Engine::alloc() {
         d_ids_ = (int32_t*) dmalloc(rr * sizeof(int32_t), "scratch");
         d_wts_ = (float*) dmalloc(rr * sizeof(float), "scratch");
         h_ids_ = (int32_t*) hmalloc(rr * sizeof(int32_t), "pinned memory");
+        if (oai_) {
+            d_rowexp_ = (int32_t*) dmalloc(rr * sizeof(int32_t), "scratch");
+            d_placeexp_ = (int32_t*) dmalloc(rr * sizeof(int32_t), "scratch");
+            h_rowexp_ = (int32_t*) hmalloc(rr * sizeof(int32_t), "pinned memory");
+            h_placeexp_ = (int32_t*) hmalloc(rr * sizeof(int32_t), "pinned memory");
+        }
         d_slots_ = (void**) dmalloc((size_t) n_layer_ * n_expert_ * sizeof(void*), "scratch");
         tab_ = (int32_t*) dmalloc(tab, "scratch");
         h_tab_ = (int32_t*) hmalloc(tab, "pinned memory");
@@ -2287,6 +2295,7 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
             const uint8_t* slot;
             float w;
             int row;
+            int expert;
         };
         CpuExpert host[kCpuRows * kMaxUsed];
         Cached cached[kCpuRows * kMaxUsed];
@@ -2300,11 +2309,16 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
                 ++use_[(size_t) il * n_expert_ + e];
                 if (n_swap_ > 0) recent_[(size_t) il * n_expert_ + e] += 1.f;
                 if (const uint8_t* s = L.slot[e]) {
-                    cached[n_cached++] = {s, w[k], at + t};
+                    cached[n_cached++] = {s, w[k], at + t, (int) e};
                     continue;
                 }
                 host[n_host++] = {L.exp_gate + e * L.gu_stride, L.exp_up + e * L.gu_stride,
                                   L.exp_down + e * L.d_bytes, w[k], t};
+                if (oai_) {
+                    host[n_host - 1].b_gate = L.hb_gate + e * (size_t) n_ff_exp_;
+                    host[n_host - 1].b_up = L.hb_up + e * (size_t) n_ff_exp_;
+                    host[n_host - 1].b_down = L.hb_down + e * (size_t) n_embd_;
+                }
             }
         }
         stats_.gpu_experts += n_cached;
@@ -2345,13 +2359,27 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
                 for (int j = 0; j < m && !one; ++j)
                     kernels::gemma_native_mmvq((int) L.gu_type, gate_up.w[j], gate_up.x[j], gate_up.y[j], n_embd_,
                                          2 * n_ff_exp_, 1, st_);
-                if (gelu_) geglu_rows(g_, h_, n_ff_exp_, m, st_);
+                if (oai_) {
+                    ExpertBias eb{};
+                    for (int j = 0; j < m; ++j) {
+                        const size_t at_e = (size_t) cached[i0 + j].expert * ff;
+                        eb.g[j] = L.b_gate + at_e;
+                        eb.u[j] = L.b_up + at_e;
+                    }
+                    swiglu_oai_slots(g_, h_, n_ff_exp_, m, eb, oai_alpha_, limit, st_);
+                } else if (gelu_) geglu_rows(g_, h_, n_ff_exp_, m, st_);
                 else swiglu_clamp_rows(g_, h_, n_ff_exp_, m, limit, st_);
                 kernels::gemma_native_quantize_q8_1(h_, q8_, n_ff_exp_, m, st_);
                 if (!(m > 1 && kernels::gemma_native_mmvq_slots((int) L.d_type, down, m, n_ff_exp_, n_embd_, st_)))
                     for (int j = 0; j < m; ++j)
                         kernels::gemma_native_mmvq((int) L.d_type, down.w[j], down.x[j], down.y[j], n_ff_exp_, n_embd_, 1,
                                              st_);
+                if (oai_)   // each expert's own bias on its output, a row at a time: the rows are not back to back
+                    for (int j = 0; j < m; ++j) {
+                        ExpertBias eb{};
+                        eb.d[0] = L.b_down + (size_t) cached[i0 + j].expert * e_row;
+                        add_expert_bias_slots(down.y[j], n_embd_, 1, eb, st_);
+                    }
                 for (int j = 0; j < m; ++j) {
                     const Cached& c = cached[i0 + j];
                     const int k = (i0 + j) % kSumRows;
@@ -2374,7 +2402,7 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
         t0 = Clock::now();
         cpu_experts(*workers_, host, n_host, m, (int) L.gu_type, (int) L.d_type, n_embd_, n_ff_exp_,
                     h_x_ + (size_t) at * e_row, limit, gelu_, cpu,
-                    n_cached > 0 || (first && at == 0) ? &launch : nullptr);
+                    n_cached > 0 || (first && at == 0) ? &launch : nullptr, oai_ ? oai_alpha_ : 0.f);
         stats_.cpu_ms += ms_since(t0);
     }
     return any_host;
@@ -2421,12 +2449,14 @@ bool Engine::moe_card(Layer& L, int il, int n) {
     const kernels::MmvqIds gate_up{table, d_ids_, 0, xq_, kernels::gemma_native_q8_1_bytes(n_embd_), n_used_, g_,
                                    2 * (size_t) n_ff_exp_};
     kernels::gemma_native_mmvq_ids((int) L.gu_type, gate_up, rr, n_embd_, 2 * n_ff_exp_, st_);
-    if (gelu_) geglu_rows(g_, h_, n_ff_exp_, rr, st_);
+    if (oai_) swiglu_oai_ids(g_, h_, n_ff_exp_, rr, d_ids_, L.b_gate, L.b_up, oai_alpha_, clamp_exp_[(size_t) il], st_);
+    else if (gelu_) geglu_rows(g_, h_, n_ff_exp_, rr, st_);
     else swiglu_clamp_rows(g_, h_, n_ff_exp_, rr, clamp_exp_[(size_t) il], st_);
     kernels::gemma_native_quantize_q8_1(h_, q8_, n_ff_exp_ * rr, 1, st_);   // the rows back to back, as one vector
     const kernels::MmvqIds down{table, d_ids_, 2 * L.gu_bytes, q8_, kernels::gemma_native_q8_1_bytes(n_ff_exp_), 1, d_,
                                 (size_t) n_embd_};
     kernels::gemma_native_mmvq_ids((int) L.d_type, down, rr, n_ff_exp_, n_embd_, st_);
+    if (oai_) add_expert_bias_ids(d_, n_embd_, rr, d_ids_, L.b_down, st_);
     moe_sum(d_, d_wts_, fo_, n_embd_, n_used_, n, st_);
     return true;
 }
@@ -2609,13 +2639,20 @@ void Engine::moe_rows(Layer& L, int il, int n) {
     host_.clear();
     for (int i = 0; i < rr; ++i) {
         const size_t e = (size_t) ids_[(size_t) i];
+        if (oai_) h_placeexp_[i] = (int32_t) e;
         if (on_cpu_[e]) {   // by token, as cpu_experts() takes them, and nothing of it in the card's sum
             host_.push_back({L.exp_gate + e * L.gu_stride, L.exp_up + e * L.gu_stride, L.exp_down + e * L.d_bytes,
                              w[i], i / n_used_});
+            if (oai_) {
+                host_.back().b_gate = L.hb_gate + e * (size_t) n_ff_exp_;
+                host_.back().b_up = L.hb_up + e * (size_t) n_ff_exp_;
+                host_.back().b_down = L.hb_down + e * (size_t) n_embd_;
+            }
             w[i] = 0.f;
             continue;
         }
         const int row = first_[e]++;
+        if (oai_) h_rowexp_[row] = (int32_t) e;
         tok[row] = i / n_used_;
         place[row] = i;
     }
@@ -2648,6 +2685,10 @@ void Engine::moe_rows(Layer& L, int il, int n) {
     stats_.batch_cached += rc;
     stats_.batch_staged += rg - rc;
 
+    if (oai_) {
+        ck(cudaMemcpyAsync(d_rowexp_, h_rowexp_, (size_t) rg * sizeof(int32_t), cudaMemcpyHostToDevice, cs(st_)), "expert rows");
+        ck(cudaMemcpyAsync(d_placeexp_, h_placeexp_, (size_t) rr * sizeof(int32_t), cudaMemcpyHostToDevice, cs(st_)), "expert rows");
+    }
     const float limit = clamp_exp_[(size_t) il];
     const int gt = (int) L.gu_type, dt = (int) L.d_type;
     const int64_t ff = n_ff_exp_, ff2 = 2 * ff;
@@ -2678,7 +2719,8 @@ void Engine::moe_rows(Layer& L, int il, int n) {
             mmq_->mul(slot_of(r.j), gt, ff2, n_embd_, L.slot_bytes, r.m, mq_, d_cb + (size_t) r.c * cb_row + r.j, iota_,
                       rg, r.most, gu_, ff2, st_);
         if (rc > 0) {
-            if (gelu_) geglu_rows(gu_, hx_, n_ff_exp_, rc, st_);
+            if (oai_) swiglu_oai_ids(gu_, hx_, n_ff_exp_, rc, d_rowexp_, L.b_gate, L.b_up, oai_alpha_, limit, st_);
+            else if (gelu_) geglu_rows(gu_, hx_, n_ff_exp_, rc, st_);
             else swiglu_clamp_rows(gu_, hx_, n_ff_exp_, rc, limit, st_);
             Mmq::quantize(hx_, nullptr, mq2_, dt, ff, ff, rc, st_);
         }
@@ -2712,12 +2754,17 @@ void Engine::moe_rows(Layer& L, int il, int n) {
             int most = 0;
             for (int g = g0; g < g0 + m; ++g) most = std::max(most, rows_of(g));
             mmq_->mul(stage_, gt, ff2, n_embd_, gu2, m, mq_, d_bounds + g0, iota_, rg, most, gu_, ff2, st_);
-            if (gelu_) geglu_rows(gu_ + (size_t) r0 * ff2, hx_ + (size_t) r0 * ff, n_ff_exp_, rows, st_);
+            if (oai_)
+                swiglu_oai_ids(gu_ + (size_t) r0 * ff2, hx_ + (size_t) r0 * ff, n_ff_exp_, rows, d_rowexp_ + r0, L.b_gate,
+                               L.b_up, oai_alpha_, limit, st_);
+            else if (gelu_) geglu_rows(gu_ + (size_t) r0 * ff2, hx_ + (size_t) r0 * ff, n_ff_exp_, rows, st_);
             else swiglu_clamp_rows(gu_ + (size_t) r0 * ff2, hx_ + (size_t) r0 * ff, n_ff_exp_, rows, limit, st_);
             Mmq::quantize(hx_ + (size_t) r0 * ff, nullptr, mq2_, dt, ff, ff, rows, st_);
             mmq_->mul(stage_ + down_at, dt, n_embd_, ff, L.d_bytes, m, mq2_, d_rel + (g0 - n_cached + r), d_place + r0,
                       rows, most, dx_, n_embd_, st_);
         }
+        // each expert's own bias on its output; the CPU's places have no weight in the card's sum, so theirs are harmless
+        if (oai_) add_expert_bias_ids(dx_, n_embd_, rr, d_placeexp_, L.b_down, st_);
         ck(cudaEventRecord((cudaEvent_t) ev_free_, cs(st_)), "expert staging");
     };
     if (n_cpu == 0) {
@@ -2734,7 +2781,7 @@ void Engine::moe_rows(Layer& L, int il, int n) {
             done = Clock::now();
         });
         cpu_experts(*workers_, host_.data(), (int) host_.size(), n, gt, dt, n_embd_, n_ff_exp_, h_x_, limit, gelu_,
-                    h_cpu_, nullptr);
+                    h_cpu_, nullptr, oai_ ? oai_alpha_ : 0.f);
         const double cpu = ms_since(start);
         behind.wait();
         const double gpu = std::chrono::duration<double, std::milli>(done - start).count();

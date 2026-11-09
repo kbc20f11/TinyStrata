@@ -6,7 +6,7 @@ set(_gemma_gg "${STRATA_LLAMA_SOURCE_DIR}/ggml")
 set(_gemma_cuda "${_gemma_gg}/src/ggml-cuda")
 set(_gemma_mmq_sources src/gemma4/mmq.cu src/prefill/ggml_cuda_host.cu
   "${_gemma_cuda}/quantize.cu")
-foreach(_type q4_0 q4_k q6_k q8_0)
+foreach(_type q4_0 q4_k q6_k q8_0 mxfp4)
   list(APPEND _gemma_mmq_sources "${_gemma_cuda}/template-instances/mmq-instance-${_type}.cu")
 endforeach()
 if(STRATA_ENABLE_HIP)
@@ -28,7 +28,7 @@ if(STRATA_ENABLE_HIP)
 else()
   target_link_libraries(tinystrata_gemma4_mmq PUBLIC ggml-base CUDA::cudart)
 endif()
-add_library(tinystrata_gemma4 STATIC src/gemma4/engine.cpp src/gemma4/gemma4.cpp
+add_library(tinystrata_gemma4 STATIC src/gemma4/engine.cpp src/gemma4/gemma4.cpp src/gemma4/gptoss.cpp
   src/gemma4/cpu_experts.cpp src/gemma4/kernels.cu src/gemma4/matvec.cu)
 if(STRATA_ENABLE_CUDA)
   set_source_files_properties(src/gemma4/matvec.cu PROPERTIES COMPILE_OPTIONS "--use_fast_math")

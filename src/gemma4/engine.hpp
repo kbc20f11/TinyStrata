@@ -111,6 +111,13 @@ struct Layer {
     Dev attn_norm, ffn_norm;   ///< the norms ahead of the attention and of the FFN
     // MoE
     Dev gate_inp, sh_gate, sh_up, sh_down;
+    const float* b_gate = nullptr;      ///< gpt-oss: each expert's bias on its gate, up and down (n_ff_exp, n_ff_exp, n_embd
+    const float* b_up = nullptr;        ///< values an expert, in VRAM)
+    const float* b_down = nullptr;
+    const float* hb_gate = nullptr;     ///< the same biases in the mapped file, for the experts the CPU computes
+    const float* hb_up = nullptr;
+    const float* hb_down = nullptr;
+    const float* b_router = nullptr;    ///< gpt-oss: the router's bias (n_expert values, in VRAM)
     const uint8_t* exp_gate = nullptr;  ///< n_expert experts back to back, in the mapped file
     const uint8_t* exp_up = nullptr;
     const uint8_t* exp_down = nullptr;
@@ -583,6 +590,8 @@ protected:
     void* ev_in_[2] = {};     ///< marks a call's rows in each half of r_
     void* ev_out_[2] = {};    ///< marks the card done with a call in each half
     float rms_eps_ = 0;
+    bool oai_ = false;        ///< gpt-oss's gated unit with its experts' biases (swiglu_oai_*); clamp_exp_ has the limit
+    float oai_alpha_ = 1.702f;
     bool gelu_ = false;       ///< the routed experts' activation: GELU of the gate, else SiLU within the layer's limits
     std::vector<float> clamp_exp_, clamp_shexp_;   ///< a layer's SwiGLU limits: the routed experts', the shared one's
 
@@ -690,6 +699,8 @@ protected:
     int32_t* iota_ = nullptr;                     ///< 0, 1, 2, ...
     int32_t* d_ids_ = nullptr;                    ///< a batch's experts and weights when it routes on the card
     float* d_wts_ = nullptr;
+    // gpt-oss, which has biases an expert: the expert of each sorted row of a batch, and of each place (token, k)
+    int32_t *d_rowexp_ = nullptr, *d_placeexp_ = nullptr, *h_rowexp_ = nullptr, *h_placeexp_ = nullptr;
     int32_t* h_ids_ = nullptr;                    ///< pinned: the experts, back from the card
     void** d_slots_ = nullptr;                    ///< every layer's L.slot on the card, n_expert_ a layer (moe_card())
     std::vector<void*> h_slots_;                  ///< what d_slots_ holds
