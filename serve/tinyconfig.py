@@ -317,7 +317,7 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
               "--clover-accept-ratio", "--clover-accept-delta"}
     values.update(config.ENGINE_OPTIONS[key][0] for key in config.CONVERSATION_CACHE_KEYS)
     switches = {"--no-graph", "--no-warmup", "--hybrid-graph", "--no-hybrid-graph", "--vision",
-                "--kv-grow", "--kv-whole", "--no-kv-grow"}
+                "--kv-grow", "--kv-whole", "--no-kv-grow", "--allow-gpt-oss-hip"}
     seen = set()
     i = 0
     while i < len(args):
@@ -415,6 +415,8 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
             raise ValueError("Clover does not support --kv-type fp16")
     elif kv == "fp16":
         raise ValueError("Qwen3.6 does not support --kv-type fp16")
+    if arch != "gpt-oss" and "--allow-gpt-oss-hip" in seen:
+        raise ValueError("--allow-gpt-oss-hip is only for gpt-oss")
     if arch != "gemma4" and "--draft-model" in seen:
         raise ValueError("--draft-model is only supported by the Gemma 4 engine")
     if config.value_of(cfg, "lookup_draft"):

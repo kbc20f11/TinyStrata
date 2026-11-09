@@ -16,7 +16,11 @@ namespace strata::gemma4 {
 namespace {
 
 // The types with kernels in this build: one template instance each in CMakeLists.txt.
+#if defined(STRATA_MMQ_MXFP4)   // gpt-oss's experts; cmake/gemma4.cmake builds the instance (opt-in on HIP)
 #define STRATA_LFM_MMQ_TYPES(X) X(Q4_0) X(Q4_K) X(Q6_K) X(Q8_0) X(MXFP4)
+#else
+#define STRATA_LFM_MMQ_TYPES(X) X(Q4_0) X(Q4_K) X(Q6_K) X(Q8_0)
+#endif
 
 int64_t pad512(int64_t n) { return (n + 511) / 512 * 512; }
 

@@ -845,6 +845,9 @@ int main(int argc, char** argv) {
                           "  --conversation-cache-min-tokens N  Minimum prefix parked (default 1024)\n"
                           "  --cpu-threads N --no-graph --no-gpu-experts\n"
 #if defined(STRATA_USE_HIP)
+                          "  --allow-gpt-oss-hip   Run gpt-oss, which has only been tried on CUDA (testing)\n"
+#endif
+#if defined(STRATA_USE_HIP)
                           "  --kv-type auto|fp8|int8  Auto: INT8; native FP8 is opt-in on RDNA4\n"
 #else
                           "  --kv-type auto|fp8|int8|fp16  Auto: INT8; native FP8 is experimental and opt-in\n"
@@ -882,6 +885,7 @@ int main(int argc, char** argv) {
             else if (arg == "--cpu-threads" || arg == "--threads") opt.threads = bounded_integer(next(), "threads", 0, 1024);
             else if (arg == "--no-graph") opt.graphs = false;
             else if (arg == "--no-gpu-experts") opt.gpu_experts = false;
+            else if (arg == "--allow-gpt-oss-hip") opt.allow_gpt_oss_hip = true;
             else if (arg == "--kv-grow") opt.kv_grow = true;
             else if (arg == "--kv-whole" || arg == "--no-kv-grow") opt.kv_grow = false;
             else if (arg == "--kv-type") {

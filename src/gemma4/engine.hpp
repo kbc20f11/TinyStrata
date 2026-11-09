@@ -48,6 +48,7 @@ struct Options {
     int vram_reserve_mib = -1;    ///< left free after the expert cache is filled; below 0: by the card's size
     std::string profile;          ///< expert use counts; orders the expert cache, and save_profile() adds to it
     bool gpu_experts = true;
+    bool allow_gpt_oss_hip = false;   ///< run gpt-oss on the AMD HIP backend, where it has not been tried (--allow-gpt-oss-hip)
     double expert_vram_gib = -1; ///< routed Expert cache cap; -1: available VRAM, 0: CPU Experts
     bool dump = false;            ///< print a checksum of every stage, for comparing against llama.cpp
     // A prompt batch.  More tokens a call and a larger staging buffer read a prompt faster, and both take VRAM

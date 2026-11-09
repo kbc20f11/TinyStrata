@@ -25,6 +25,13 @@ void GptOss::begin_pass() {
 }
 
 void GptOss::load_geometry() {
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
+    // Its kernels have only been run on CUDA.  --allow-gpt-oss-hip lifts this for testing; the MXFP4 prompt kernels
+    // also need a build with -DSTRATA_HIP_MXFP4_MMQ=ON, and without them a prompt runs on the slower path.
+    if (!opt_.allow_gpt_oss_hip)
+        throw std::runtime_error("gpt-oss is not enabled on the AMD HIP backend yet: its kernels have only been run on CUDA "
+                                 "(--allow-gpt-oss-hip to try it)");
+#endif
     load_shape();
     auto find = [&](const char* key) { return meta_in(*gg_, key); };
     auto need = [](bool ok, const char* what) {
