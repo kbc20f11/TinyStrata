@@ -105,6 +105,10 @@ async function main(){
   const locale=JSON.parse(fs.readFileSync(path.join(web,'locales',lang+'.json'),'utf8'));
   for(const key of ['thinking.on','thinking.alwaysOn','thinking.high'])ok(typeof locale[key]==='string'&&locale[key].length>0,'localized concise thinking labels');
  }
+ const effort=f.ctx.StrataThinkingControls;
+ equal(effort.contract('gpt-oss-20b'),{mode:'effort_always',default:'medium',options:['low','medium','xhigh']},'gpt-oss reasons at low, medium or high and cannot turn it off');
+ equal(effort.payload('gpt-oss-20b',{thinkingByModel:{}}),{reasoning_effort:'medium'},'gpt-oss sends its effort, never a thinking switch');
+ ok(effort.select({thinkingByModel:{}},'gpt-oss-20b','none').thinkingByModel['gpt-oss-20b']===undefined,'gpt-oss has no off choice');
  console.log(`ui thinking controls: ${checks} checks PASS`);
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

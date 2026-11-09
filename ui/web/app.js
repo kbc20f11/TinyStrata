@@ -1075,7 +1075,7 @@ let modelSwitchTarget = null, modelSwitchDownload = null;
 let modelSelectionSerial = 0;
 const modelDownloads = new Map();
 let modelDownloadDialogTarget = null, modelDownloadsRecovered = false;
-const modelNames = {"qwen3.6-35b-a3b": "Qwen3.6", "gemma-4-26b-a4b-it": "Gemma 4", "lfm2.5-24b-a2b": "LFM2.5", "clover-35b-a3b-preview": "Clover", "tiel-coder-35b-a3b": "Tiel Coder"};
+const modelNames = {"qwen3.6-35b-a3b": "Qwen3.6", "gemma-4-26b-a4b-it": "Gemma 4", "lfm2.5-24b-a2b": "LFM2.5", "clover-35b-a3b-preview": "Clover", "tiel-coder-35b-a3b": "Tiel Coder", "gpt-oss-20b": "gpt-oss"};
 let modelDeleteTarget = null, modelDeleting = null, modelDeleteError = "";
 function modelIsSelectable(row) {
   return row.installed === true && row.management?.complete !== false;

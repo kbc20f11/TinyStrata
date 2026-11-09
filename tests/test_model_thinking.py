@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT))
 from serve import responses
 from serve.frontend import ChatTemplate, anthropic_to_messages, openai_to_messages
 from serve.server import ByteTokenizer, MockEngine, Server, Service, clean_shared_defaults, make_handler
-from serve.thinking import capabilities, normalize_request
+from serve.thinking import capabilities, normalize_effort, normalize_request, template_kwargs
 
 QWEN = "qwen3.6-35b-a3b"
 CLOVER = "clover-35b-a3b-preview"
@@ -70,6 +70,21 @@ class ThinkingTests(unittest.TestCase):
                 self.assertNotIn("bad", capabilities(model)["options"])
         self.assertEqual(capabilities("tiel-coder"), capabilities(TIEL))
         self.assertIsNone(capabilities("custom-model", "qwen35moe"))
+
+    def test_gpt_oss_has_effort_without_an_off_switch(self):
+        policy = capabilities("gpt-oss-20b")
+        self.assertEqual(policy, {"mode": "effort_always", "default": "medium", "options": ["low", "medium", "xhigh"]})
+        self.assertEqual(capabilities("gpt-oss"), policy)
+        self.assertEqual(capabilities("gptoss"), policy)
+        # off and minimal ask for the least reasoning it has; high is the template's high (xhigh here)
+        self.assertEqual([normalize_effort(v, policy) for v in ("none", False, "minimal", "low", "medium", "high", "xhigh")],
+                         ["low", "low", "low", "low", "medium", "xhigh", "xhigh"])
+        # the switch cannot turn it off: the template always gets an effort
+        self.assertEqual(template_kwargs({"enable_thinking": False}, policy, True),
+                         {"enable_thinking": True, "reasoning_effort": "medium"})
+        self.assertEqual(template_kwargs({"reasoning_effort": "xhigh"}, policy, True),
+                         {"enable_thinking": True, "reasoning_effort": "xhigh"})
+        self.assertEqual(template_kwargs({}, policy, False), {"enable_thinking": True, "reasoning_effort": "medium"})
 
     def test_defaults_all_protocols(self):
         for model in MODELS:

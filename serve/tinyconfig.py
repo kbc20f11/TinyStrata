@@ -23,12 +23,16 @@ LFM2_SAMPLING = {"temperature": 0.1, "top_p": 1.0, "top_k": 50, "min_p": 0.0,
                  "presence_penalty": 0.0, "repetition_penalty": 1.05}
 GEMMA4_SAMPLING = {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0,
                    "presence_penalty": 0.0, "repetition_penalty": 1.0}
+# OpenAI recommends sampling gpt-oss at temperature 1.0 and top_p 1.0; the sampler's widest top-k, 64, is the closest to none.
+GPT_OSS_SAMPLING = {"temperature": 1.0, "top_p": 1.0, "top_k": 64, "min_p": 0.0,
+                    "presence_penalty": 0.0, "repetition_penalty": 1.0}
 CLOVER_SAMPLING = {"temperature": 0.0, "top_p": 1.0, "top_k": 64, "min_p": 0.0,
                    "presence_penalty": 0.9, "frequency_penalty": 0.0, "repetition_penalty": 1.05}
 TIEL_SAMPLING = {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0,
                  "presence_penalty": 0.0, "frequency_penalty": 0.0, "repetition_penalty": 1.0}
 MODEL_NAMES = {"qwen35moe": "qwen3.6-35b-a3b", "lfm2moe": "lfm2.5-24b-a2b",
-               "gemma4": "gemma-4-26b-a4b-it", "clover_moe": "clover-35b-a3b-preview"}
+               "gemma4": "gemma-4-26b-a4b-it", "clover_moe": "clover-35b-a3b-preview",
+               "gpt-oss": "gpt-oss-20b"}
 
 
 def clover_decode_defaults(cfg: dict) -> dict:
@@ -142,7 +146,7 @@ def migrate_generation_settings(cfg: dict) -> tuple[dict, bool]:
             cfg.get("generation_policy_version") != GENERATION_POLICY_VERSION and \
             sampling == {"temperature": 0}:
         sampling = {}
-    defaults = dict({"lfm2moe": LFM2_SAMPLING, "gemma4": GEMMA4_SAMPLING,
+    defaults = dict({"lfm2moe": LFM2_SAMPLING, "gemma4": GEMMA4_SAMPLING, "gpt-oss": GPT_OSS_SAMPLING,
                      "clover_moe": CLOVER_SAMPLING}.get(cfg.get("arch"), DEFAULT_SAMPLING))
     if is_tiel_model(cfg.get("model_name")):
         defaults = dict(TIEL_SAMPLING)
@@ -212,7 +216,7 @@ def migrate_chunk_settings(cfg: dict) -> tuple[dict, bool]:
 
 def check_vision_options(cfg: dict) -> str:
     """Validate launcher preferences independently of installed image assets."""
-    text_only = cfg.get("arch") == "lfm2moe"
+    text_only = cfg.get("arch") in ("lfm2moe", "gpt-oss")
     mode = cfg.get("vision_mode", "no" if text_only else "gpu")
     if mode not in ("gpu", "cpu", "no"):
         raise ValueError("vision_mode must be gpu, cpu or no")
@@ -284,7 +288,7 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         raise ValueError("max_tokens must be a positive whole number")
     arch = cfg.get("arch", "qwen35moe")
     if arch not in MODEL_NAMES:
-        raise ValueError("TinyStrata supports qwen35moe, lfm2moe, gemma4 and clover_moe models")
+        raise ValueError("TinyStrata supports qwen35moe, lfm2moe, gemma4, clover_moe and gpt-oss models")
     if arch == "lfm2moe" and cfg.get("enable_thinking", True) is False:
         raise ValueError("LFM2.5-24B-A2B always uses thinking")
     for key in ("images", "replicas", "layer_split", "vram_elastic", "slot_save_path",
@@ -313,7 +317,7 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
               "--clover-accept-ratio", "--clover-accept-delta"}
     values.update(config.ENGINE_OPTIONS[key][0] for key in config.CONVERSATION_CACHE_KEYS)
     switches = {"--no-graph", "--no-warmup", "--hybrid-graph", "--no-hybrid-graph", "--vision",
-                "--kv-grow", "--kv-whole", "--no-kv-grow"}
+                "--kv-grow", "--kv-whole", "--no-kv-grow", "--allow-gpt-oss-hip"}
     seen = set()
     i = 0
     while i < len(args):
@@ -356,6 +360,20 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
             raise ValueError("LFM2.5 supports at most 131072 context tokens")
         if config.value_of(cfg, "mtp") not in (None, 0):
             raise ValueError("LFM2.5 has no published MTP head; --mtp must be 0")
+    elif arch == "gpt-oss":
+        unsupported = seen.intersection({"--hybrid-graph", "--no-hybrid-graph", "--hybrid-rows",
+                                         "--expert-slots", "--no-warmup", "--draft-model"})
+        if unsupported:
+            raise ValueError("Unsupported gpt-oss engine option: " + ", ".join(sorted(unsupported)))
+        if "--vision" in seen:
+            raise ValueError("gpt-oss-20b is text-only; remove --vision")
+        if kv not in (None, "auto", "fp16", "int8"):
+            raise ValueError("gpt-oss supports --kv-type auto, fp16 or int8")
+        context = config.value_of(cfg, "max_context")
+        if context not in (None, "auto") and context > 131072:
+            raise ValueError("gpt-oss supports at most 131072 context tokens")
+        if config.value_of(cfg, "mtp") not in (None, 0):
+            raise ValueError("gpt-oss has no MTP head; --mtp must be 0")
     elif arch == "gemma4":
         unsupported = seen.intersection({"--hybrid-graph", "--no-hybrid-graph", "--hybrid-rows",
                                          "--expert-slots", "--no-warmup"})
@@ -397,6 +415,8 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
             raise ValueError("Clover does not support --kv-type fp16")
     elif kv == "fp16":
         raise ValueError("Qwen3.6 does not support --kv-type fp16")
+    if arch != "gpt-oss" and "--allow-gpt-oss-hip" in seen:
+        raise ValueError("--allow-gpt-oss-hip is only for gpt-oss")
     if arch != "gemma4" and "--draft-model" in seen:
         raise ValueError("--draft-model is only supported by the Gemma 4 engine")
     if config.value_of(cfg, "lookup_draft"):

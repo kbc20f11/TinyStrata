@@ -19,7 +19,7 @@ param(
     [string]$HipDirectory,
     # An omitted value is empty under irm | iex and selects GPU auto-detection.
     [ValidatePattern('^(gfx[0-9a-f]+(;gfx[0-9a-f]+)*)?$')][string]$HipArchitectures,
-    [ValidateSet('qwen36', 'qwen3.6', 'lfm2', 'lfm2.5', 'gemma4', 'gemma-4', 'clover', 'tiel', 'tiel-coder')][string]$ModelFamily = 'qwen36',
+    [ValidateSet('qwen36', 'qwen3.6', 'lfm2', 'lfm2.5', 'gemma4', 'gemma-4', 'clover', 'tiel', 'tiel-coder', 'gpt-oss', 'gptoss')][string]$ModelFamily = 'qwen36',
     [ValidateRange(0, 65535)][int]$Port = 0,
     [switch]$WithUI,
     [ValidateRange(1, 65535)][int]$UiPort = 3000,
@@ -1226,6 +1226,9 @@ function Get-TinyStrataModelFamily {
         }
         { $_ -in @('tiel', 'tiel-coder') } {
             return [pscustomobject]@{ Name = 'tiel'; ConfigFile = 'config-tiel-coder.json'; StateFile = 'server-state-tiel-coder.json'; NativeFile = 'tinystrata.exe'; Port = 18084 }
+        }
+        { $_ -in @('gpt-oss', 'gptoss') } {
+            return [pscustomobject]@{ Name = 'gpt-oss'; ConfigFile = 'config-gpt-oss.json'; StateFile = 'server-state-gpt-oss.json'; NativeFile = 'tinystrata-gemma4.exe'; Port = 18085 }
         }
         default { throw "Unsupported TinyStrata model family: $Name" }
     }

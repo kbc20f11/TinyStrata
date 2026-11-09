@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from serve.tokenizer import (BYTE_TO_UNICODE, GEMMA4_PATTERN, LFM2_PATTERN,
+from serve.tokenizer import (BYTE_TO_UNICODE, GEMMA4_PATTERN, GPT4O_PATTERN, LFM2_PATTERN,
                              QWEN2_PATTERN, QWEN35_PATTERN, Tokenizer, extract)
 
 
@@ -76,6 +76,16 @@ class DeclaredPreTokenizers(unittest.TestCase):
         self.assertEqual(qwen._re.findall("a\u0301.b"), ["a\u0301", ".b"])
         self.assertEqual(lfm._re.findall("12345"), ["123", "45"])
         self.assertEqual(gemma._re.findall("ab\n\nba"), ["ab", "\n\n", "ba"])
+
+    def test_gpt4o_splits_case_runs_numbers_and_round_trips(self):
+        # gpt-oss declares "gpt-4o": words split where case changes, numbers in threes, a leading space joins its word
+        import regex
+        self.assertEqual(regex.findall(GPT4O_PATTERN, "Hello, world! I'm 12345."),
+                         ["Hello", ",", " world", "!", " I'm", " ", "123", "45", "."])
+        self.assertEqual(regex.findall(GPT4O_PATTERN, "CamelCaseWord"), ["Camel", "Case", "Word"])
+        tokenizer = Tokenizer(byte_vocabulary(), [], [1] * 256, pre="gpt-4o")
+        for text in CORPUS:
+            self.assertEqual(tokenizer.decode(tokenizer.encode(text)), text)
 
     def test_unknown_and_non_string_pre_are_rejected_before_vocabulary_work(self):
         for pre in ("unknown", "qwen355", "minimax-m2", "", None, True, 1, [], {}):

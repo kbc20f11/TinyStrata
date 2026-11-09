@@ -13,6 +13,8 @@
       "Balanced conversation and reasoning, slowest to run", "会話能力と知能のバランスがよい、最も低速で動作"],
     ["tiel-coder-35b-a3b", "Tiel Coder 35B-A3B", "peculiar-ragdoll", "tiel",
       "Specialized in programming questions", "プログラミングの質問に特化"],
+    ["gpt-oss-20b", "gpt-oss 20B", "OpenAI", "gptoss",
+      "Thinks step by step before answering, strong at reasoning", "答える前にじっくり考える、推論に強い"],
   ];
   const iconSources = {qwen: "web/model-logos/qwen.png", gemma: "web/model-logos/gemma.svg",
     lfm: "web/model-logos/liquid.png", clover: "web/model-logos/diffuspace.jpg", tiel: "web/model-icons.svg"};

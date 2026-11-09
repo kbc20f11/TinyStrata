@@ -130,14 +130,14 @@ class SameArchitectureProfiles(unittest.TestCase):
         profiles = self.profiles(cfg)
         self.assertEqual(profiles.get(TIEL).path, self.path)
         self.assertEqual(profiles.get(QWEN).path, self.root / "config-qwen36.json")
-        self.assertEqual(len({p.path for p in profiles._profiles.values()}), 5)
+        self.assertEqual(len({p.path for p in profiles._profiles.values()}), 6)
 
     def test_catalog_availability_checks_only_the_matching_artifact(self):
         directory = self.root / "model-files"
         directory.mkdir()
         (directory / model_download.FIXED_TIEL_MODEL.filename).write_bytes(b"fixture")
         rows = {row["id"]: row for row in self.profiles().list()}
-        self.assertEqual(len(rows), 5)
+        self.assertEqual(len(rows), 6)
         self.assertTrue(rows[TIEL]["installed"])
         self.assertFalse(rows[QWEN]["installed"])
         self.assertEqual(rows[TIEL]["context"]["model_limit"], 262144)

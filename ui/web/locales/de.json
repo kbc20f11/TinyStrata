@@ -665,6 +665,7 @@
   "models.description.lfm": "Am schnellsten und reaktionsfreudigsten, ohne Bildunterstützung",
   "models.description.clover": "Ausgewogene Gespräche und Schlussfolgerungen, langsamste Ausführung",
   "models.description.tiel": "Auf Programmierfragen spezialisiert",
+  "models.description.gptoss": "Denkt Schritt für Schritt nach, stark im logischen Schließen",
   "models.deleteActive": "Zum Löschen zu einem anderen Modell wechseln.",
   "models.deleteBusy": "Warten Sie, bis der aktuelle Vorgang abgeschlossen ist.",
   "models.deleteDownloading": "Warten Sie, bis der Download abgeschlossen ist.",

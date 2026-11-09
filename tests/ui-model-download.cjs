@@ -218,7 +218,7 @@ async function workerRegressions(){
  const list=f.element('model-library-list'),row=list._modelRows.get(IDS[1]),image=row.image,button=row.download;
  button.focus();const sourceWrites=image.writes;
  for(let i=0;i<20;i++)f.t.library();
- ok(list.children.length===5&&list._modelRows.get(IDS[1])===row,'all five model rows retain keyed DOM');
+ ok(list.children.length===6&&list._modelRows.get(IDS[1])===row,'all six model rows retain keyed DOM');
  ok(row.image===image&&image.writes===sourceWrites&&row.download===button&&f.ctx.document.activeElement===button,'catalog polls preserve image src, button and focus');
  ok(image.tagName==='IMG'&&image.getAttribute('alt')===''&&image.getAttribute('aria-hidden')==='true','model images are decorative beside their text names');
  for(const id of IDS){const modelImage=list._modelRows.get(id).image;ok(modelImage.getAttribute('src')===f.ctx.StrataModelLibrary.get(id).iconSrc&&!modelImage.getAttribute('src').includes('#'),'each model renders its local standalone official or generic asset');}

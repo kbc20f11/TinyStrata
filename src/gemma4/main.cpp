@@ -116,9 +116,12 @@ std::vector<int> stop_tokens(const Engine& e) {
         const int64_t id = e.meta_u(key, -1);
         if (id >= 0 && id < e.n_vocab()) ids.push_back((int) id);
     }
-    const int turn_end = e.token_id("<turn|>");
-    if (turn_end >= 0 && turn_end < e.n_vocab() && std::find(ids.begin(), ids.end(), turn_end) == ids.end())
-        ids.push_back(turn_end);
+    // Gemma's end of turn, and gpt-oss's end of a tool call (its <|return|> is the file's eos)
+    for (const char* marker : {"<turn|>", "<|call|>"}) {
+        const int stop = e.token_id(marker);
+        if (stop >= 0 && stop < e.n_vocab() && std::find(ids.begin(), ids.end(), stop) == ids.end())
+            ids.push_back(stop);
+    }
     return ids;
 }
 
@@ -126,7 +129,16 @@ bool is_stop(int token, const std::vector<int>& ids) {
     return std::find(ids.begin(), ids.end(), token) != ids.end();
 }
 
+// IDS: the token IDs separated by commas or spaces, or @FILE to read them from a file (a long prompt does not fit in
+// a command line)
 std::vector<int32_t> parse_ids(std::string text) {
+    if (!text.empty() && text[0] == '@') {
+        std::ifstream file(text.substr(1), std::ios::binary);
+        if (!file) throw std::invalid_argument("cannot read the token file " + text.substr(1));
+        std::ostringstream all;
+        all << file.rdbuf();
+        text = all.str();
+    }
     for (char& c : text) if (c == ',') c = ' ';
     std::istringstream in(text);
     std::string word;
@@ -833,6 +845,9 @@ int main(int argc, char** argv) {
                           "  --conversation-cache-min-tokens N  Minimum prefix parked (default 1024)\n"
                           "  --cpu-threads N --no-graph --no-gpu-experts\n"
 #if defined(STRATA_USE_HIP)
+                          "  --allow-gpt-oss-hip   Run gpt-oss, which has only been tried on CUDA (testing)\n"
+#endif
+#if defined(STRATA_USE_HIP)
                           "  --kv-type auto|fp8|int8  Auto: INT8; native FP8 is opt-in on RDNA4\n"
 #else
                           "  --kv-type auto|fp8|int8|fp16  Auto: INT8; native FP8 is experimental and opt-in\n"
@@ -870,6 +885,7 @@ int main(int argc, char** argv) {
             else if (arg == "--cpu-threads" || arg == "--threads") opt.threads = bounded_integer(next(), "threads", 0, 1024);
             else if (arg == "--no-graph") opt.graphs = false;
             else if (arg == "--no-gpu-experts") opt.gpu_experts = false;
+            else if (arg == "--allow-gpt-oss-hip") opt.allow_gpt_oss_hip = true;
             else if (arg == "--kv-grow") opt.kv_grow = true;
             else if (arg == "--kv-whole" || arg == "--no-kv-grow") opt.kv_grow = false;
             else if (arg == "--kv-type") {

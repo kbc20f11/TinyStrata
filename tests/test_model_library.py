@@ -87,7 +87,7 @@ class LibraryTests(unittest.TestCase):
     def test_catalog_metadata_is_cheap_and_missing_models_stay_downloadable(self):
         with patch('hashlib.file_digest', side_effect=AssertionError('No artifact hashing in catalog')):
             rows = {row['id']: row for row in self.f.control.catalog()}
-        self.assertEqual(len(rows), 5)
+        self.assertEqual(len(rows), 6)
         meta = rows[GEMMA]['management']
         self.assertFalse(meta['can_delete']); self.assertTrue(meta['can_download'])
         self.assertEqual(meta['delete_reason'], 'not_downloaded')
@@ -374,7 +374,7 @@ class LibraryHTTPTests(unittest.TestCase):
             self.assertTrue(model.is_file())
         status, data = self.http(body={'model': GEMMA}, headers=auth)
         self.assertEqual(status, 200, data); self.assertEqual(data['model_id'], GEMMA)
-        self.assertFalse(model.exists()); self.assertEqual(len(data['catalog']), 5)
+        self.assertFalse(model.exists()); self.assertEqual(len(data['catalog']), 6)
 
     def test_control_route_does_not_admit_itself_and_busy_rejects_over_http(self):
         model = self.file(); self.start_http()

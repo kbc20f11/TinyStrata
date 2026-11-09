@@ -21,6 +21,7 @@ _MODELS = {
     "gemma-4-26b-a4b-it": "gemma4",
     "clover-35b-a3b-preview": "clover_moe",
     "tiel-coder-35b-a3b": "qwen35moe",
+    "gpt-oss-20b": "gpt-oss",
 }
 _PROFILE_FILES = {
     "qwen3.6-35b-a3b": ("config.json", "config-qwen36.json"),
@@ -28,10 +29,12 @@ _PROFILE_FILES = {
     "gemma-4-26b-a4b-it": ("config-gemma4.json", "config-gemma4-profile.json"),
     "clover-35b-a3b-preview": ("config-clover.json", "config-clover-profile.json"),
     "tiel-coder-35b-a3b": ("config-tiel-coder.json", "config-tiel-coder-profile.json"),
+    "gpt-oss-20b": ("config-gpt-oss.json", "config-gpt-oss-profile.json"),
 }
 # TinyStrata engine ceilings, not automatically allocated KV capacities. Clover's
 # 256K capacity extends its official 128K limit; general long-context quality is unverified.
-_CONTEXT_LIMITS = {"qwen35moe": 262144, "lfm2moe": 131072, "gemma4": 262144, "clover_moe": 262144}
+_CONTEXT_LIMITS = {"qwen35moe": 262144, "lfm2moe": 131072, "gemma4": 262144, "clover_moe": 262144,
+                   "gpt-oss": 131072}
 _ALIASES = {
     "qwen36": "qwen3.6-35b-a3b", "qwen3.6": "qwen3.6-35b-a3b",
     "qwen35moe": "qwen3.6-35b-a3b",
@@ -41,6 +44,7 @@ _ALIASES = {
     "gemma4-26b-a4b": "gemma-4-26b-a4b-it", "gemma4-26b-a4b-it": "gemma-4-26b-a4b-it",
     "clover": "clover-35b-a3b-preview", "clover_moe": "clover-35b-a3b-preview",
     "tiel": "tiel-coder-35b-a3b", "tiel-coder": "tiel-coder-35b-a3b",
+    "gpt-oss": "gpt-oss-20b", "gptoss": "gpt-oss-20b",
 }
 
 
@@ -153,6 +157,8 @@ class ModelProfiles:
         args = ["--max-context", "auto", "--kv-type", "auto", "--chunk", "auto"]
         if arch in ("qwen35moe", "gemma4"):
             args += ["--mtp", "3"]
+        elif arch == "gpt-oss":
+            args += ["--mtp", "0"]   # the Gemma 4 executable runs it and defaults to MTP 3, which needs an assistant
         result = {"arch": arch, "model_name": name, "cwd": str(model_setup.ROOT),
                   "args": args, "memory_policy_version": tinyconfig.MEMORY_POLICY_VERSION,
                   **deepcopy(self._hardware)}
@@ -163,7 +169,7 @@ class ModelProfiles:
             result["enable_thinking"] = True
         result = tinyconfig.clover_vision_defaults(tinyconfig.clover_decode_defaults(result))
         if self._engine is not None:
-            filename = {"lfm2moe": "tinystrata-lfm2", "gemma4": "tinystrata-gemma4"}.get(arch, "tinystrata")
+            filename = {"lfm2moe": "tinystrata-lfm2", "gemma4": "tinystrata-gemma4", "gpt-oss": "tinystrata-gemma4"}.get(arch, "tinystrata")
             sibling = self._engine.with_name(filename + self._engine.suffix)
             if sibling.is_file():
                 result["exe"] = str(sibling)
@@ -190,7 +196,7 @@ class ModelProfiles:
             source.pop("vision_exe", None)
             source.pop("vision", None)
         if self._engine is not None and (self._hardware.get("backend") == "hip" or backend_changed):
-            filename = {"lfm2moe": "tinystrata-lfm2", "gemma4": "tinystrata-gemma4"}.get(profile.arch, "tinystrata")
+            filename = {"lfm2moe": "tinystrata-lfm2", "gemma4": "tinystrata-gemma4", "gpt-oss": "tinystrata-gemma4"}.get(profile.arch, "tinystrata")
             sibling = self._engine.with_name(filename + self._engine.suffix)
             if sibling.is_file():
                 source["exe"] = str(sibling)

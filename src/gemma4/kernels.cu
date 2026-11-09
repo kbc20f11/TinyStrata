@@ -398,6 +398,75 @@ __global__ void head_norm_rope_kernel(const float* __restrict__ x, int x_stride,
     }
 }
 
+// ---- gpt-oss ----------------------------------------------------------------------------------------------
+// y = rope(x + bias) * mscale, a block a (token, head).  Pairs are i and i + n_rot / 2 (NEOX), turned by
+// position * theta_scale^j, divided by freq[j] when the table is given (YaRN's blend is made on the host).  With
+// n_rot 0 it is a bias added, x and y may be one and the same.
+__global__ void rope_bias_kernel(const float* __restrict__ x, const float* __restrict__ bias, float* __restrict__ y,
+                                 int dim, int heads, int n_rot, float theta_scale, const float* __restrict__ freq,
+                                 float mscale, long long pos, const long long* __restrict__ at) {
+    const float* xr = x + size_t(blockIdx.x) * dim;
+    float* yr = y + size_t(blockIdx.x) * dim;
+    const int head = blockIdx.x % heads, tok = blockIdx.x / heads;
+    const float* b = bias ? bias + size_t(head) * dim : nullptr;
+    const float own = float((at ? *at : pos) + tok);
+    const int half = n_rot / 2;
+    for (int i = threadIdx.x; i < dim; i += blockDim.x) {
+        if (i >= n_rot) {
+            yr[i] = xr[i] + (b ? b[i] : 0.0f);
+            continue;
+        }
+        const int j = i < half ? i : i - half;
+        const float turn = own * powf(theta_scale, float(j));
+        const float theta = freq ? turn / freq[j] : turn;
+        const float x0 = xr[j] + (b ? b[j] : 0.0f), x1 = xr[j + half] + (b ? b[j + half] : 0.0f);
+        const float c = cosf(theta) * mscale, sn = sinf(theta) * mscale;
+        yr[i] = i < half ? x0 * c - x1 * sn : x0 * sn + x1 * c;
+    }
+}
+
+// gpt-oss's gated unit: min(gate, limit) * sigmoid(alpha * min(gate, limit)) * (clamp(up, +-limit) + 1), with the
+// experts' biases added to gate and up first.  gate_up rows hold [gate | up]; row r belongs to the expert whose
+// biases are at bg[r] / bu[r] (n values each), or ids[r] of the tables bg_all / bu_all.
+__device__ __forceinline__ float swiglu_oai(float g, float u, float alpha, float limit) {
+    g = fminf(g, limit);
+    u = fminf(fmaxf(u, -limit), limit);
+    return g / (1.0f + expf(-alpha * g)) * (u + 1.0f);
+}
+
+__global__ void swiglu_oai_ids_kernel(const float* __restrict__ gate_up, float* __restrict__ out, int n,
+                                      const int32_t* __restrict__ ids, const float* __restrict__ bg,
+                                      const float* __restrict__ bu, float alpha, float limit) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const float* row = gate_up + size_t(blockIdx.y) * 2 * n;
+    const size_t e = size_t(ids[blockIdx.y]) * n + i;
+    out[size_t(blockIdx.y) * n + i] = swiglu_oai(row[i] + bg[e], row[n + i] + bu[e], alpha, limit);
+}
+
+__global__ void swiglu_oai_slots_kernel(const float* __restrict__ gate_up, float* __restrict__ out, int n,
+                                        ExpertBias eb, float alpha, float limit) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const float* row = gate_up + size_t(blockIdx.y) * 2 * n;
+    out[size_t(blockIdx.y) * n + i] =
+        swiglu_oai(row[i] + eb.g[blockIdx.y][i], row[n + i] + eb.u[blockIdx.y][i], alpha, limit);
+}
+
+// x[r] += bias of its expert (n values), r the row of ids or of the slots
+__global__ void add_expert_bias_ids_kernel(float* __restrict__ x, int n, const int32_t* __restrict__ ids,
+                                           const float* __restrict__ b) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    x[size_t(blockIdx.y) * n + i] += b[size_t(ids[blockIdx.y]) * n + i];
+}
+
+__global__ void add_expert_bias_slots_kernel(float* __restrict__ x, int n, ExpertBias eb) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    x[size_t(blockIdx.y) * n + i] += eb.d[blockIdx.y][i];
+}
+
 // The rows the token at position p attends: how many, and the first of them.  They end at its own row, or at row
 // `last` when that is given: the tokens of the call then see each other.
 __device__ __forceinline__ int attn_rows(long long p, int window, long long last, long long* lo) {
@@ -596,7 +665,7 @@ attn_score_reg_kernel(const float* __restrict__ q, const half* __restrict__ kcac
 // a block of the group's queries side by side (per: the group's heads).
 __global__ void attn_softmax_kernel(float* score, int n_keys, long long pos, int first, int tokens, int window,
                                     long long last, const long long* __restrict__ at, float* __restrict__ wt,
-                                    int per) {
+                                    int per, const float* __restrict__ sinks) {
     __shared__ float part[8];
     const long long p = (at ? *at : pos) + first;
     long long lo, lo0;
@@ -607,11 +676,15 @@ __global__ void attn_softmax_kernel(float* score, int n_keys, long long pos, int
     float mx = -INFINITY;
     for (int j = threadIdx.x; j < n; j += blockDim.x) mx = fmaxf(mx, row[j]);
     mx = block_max(mx, part);
+    // an attention sink (gpt-oss): a learned logit per head that takes weight in the softmax and has no value
+    const float sink = sinks ? sinks[blockIdx.x] : -INFINITY;
+    mx = fmaxf(mx, sink);
     float sum = 0.0f;
     for (int j = threadIdx.x; j < n; j += blockDim.x) {
         row[j] = expf(row[j] - mx);
         sum += row[j];
     }
+    if (sinks && threadIdx.x == 0) sum += expf(sink - mx);
     const float inv = 1.0f / block_sum(sum, part);
     if (!wt) {
         for (int j = threadIdx.x; j < n; j += blockDim.x) row[j] *= inv;
@@ -1005,6 +1078,16 @@ __global__ void attn_softmax_block_kernel(const float* __restrict__ score, half*
 }
 
 // A chunk's results in the order of the groups, `dim` values a token and head: times its factor, or divided by it.
+// An attention sink (gpt-oss) in the blockwise softmax: one more weight, exp(sink - top), in each token and head's
+// sum.  Index i counts (group, token, head of the group) as attn_softmax_block_kernel's blocks do.
+__global__ void attn_sink_kernel(float* __restrict__ sum, const float* __restrict__ top,
+                                 const float* __restrict__ sinks, int n, int tokens, int per) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const int head = (i / (tokens * per)) * per + i % per;
+    sum[i] += expf(sinks[head] - top[i]);
+}
+
 __global__ void attn_scale_kernel(float* out, const float* __restrict__ factor, int dim, bool divide) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= dim) return;
@@ -1487,9 +1570,35 @@ void head_norm_rope(const float* x, int x_stride, const float* w, float* y, int 
         x, x_stride, w, y, dim, heads, n_rot, theta_scale, freq, (long long) pos, eps, axes, sections, at);
 }
 
+void rope_bias(const float* x, const float* bias, float* y, int dim, int heads, int n_rot, float theta_scale,
+               const float* freq, float mscale, int64_t pos, int rows, void* stream, const long long* at) {
+    rope_bias_kernel<<<rows * heads, dim >= 256 ? 256 : 64, 0, cs(stream)>>>(x, bias, y, dim, heads, n_rot, theta_scale,
+                                                                              freq, mscale, (long long) pos, at);
+}
+
+void swiglu_oai_ids(const float* gate_up, float* out, int n, int rows, const int32_t* ids, const float* bias_gate,
+                    const float* bias_up, float alpha, float limit, void* stream) {
+    swiglu_oai_ids_kernel<<<dim3(grid(n, 256), rows), 256, 0, cs(stream)>>>(gate_up, out, n, ids, bias_gate, bias_up,
+                                                                           alpha, limit);
+}
+
+void swiglu_oai_slots(const float* gate_up, float* out, int n, int rows, const ExpertBias& eb, float alpha, float limit,
+                      void* stream) {
+    swiglu_oai_slots_kernel<<<dim3(grid(n, 256), rows), 256, 0, cs(stream)>>>(gate_up, out, n, eb, alpha, limit);
+}
+
+void add_expert_bias_ids(float* x, int n, int rows, const int32_t* ids, const float* bias, void* stream) {
+    add_expert_bias_ids_kernel<<<dim3(grid(n, 256), rows), 256, 0, cs(stream)>>>(x, n, ids, bias);
+}
+
+void add_expert_bias_slots(float* x, int n, int rows, const ExpertBias& eb, void* stream) {
+    add_expert_bias_slots_kernel<<<dim3(grid(n, 256), rows), 256, 0, cs(stream)>>>(x, n, eb);
+}
+
 void attend(const float* q, const uint16_t* kcache, const uint16_t* vcache, int64_t pos, int rows, float* score,
             int chunk, float* out, int dim, int n_head, int kv_heads, float scale, void* stream, int window,
-            int ring, bool whole, const long long* at, int room, size_t score_floats, Kvq8 kq8, Kvq8 vq8) {
+            int ring, bool whole, const long long* at, int room, size_t score_floats, Kvq8 kq8, Kvq8 vq8,
+            const float* sinks) {
     if (at && (whole || room < 1)) throw std::invalid_argument("attend: a position on the card needs its room");
     if (dim % SCORE_VALUES || uintptr_t(q) % (SCORE_VALUES * sizeof(float)) || uintptr_t(kcache) % (SCORE_VALUES * 2))
         throw std::invalid_argument("attend: queries and keys are read four values at a time");
@@ -1498,7 +1607,7 @@ void attend(const float* q, const uint16_t* kcache, const uint16_t* vcache, int6
     const bool kq = kq8.codes != nullptr, vq = vq8.codes != nullptr;
     // attn_split_kernel, where score has room for every block's sums at the longest the call can attend
     const int most = grid(size_t(at ? room : pos + rows), SPLIT_KEYS);
-    if (dim == 64 && per == 4 && window == 0 && ring == 0 && !whole && !kq && !vq &&
+    if (dim == 64 && per == 4 && window == 0 && ring == 0 && !whole && !kq && !vq && !sinks &&
         size_t(chunk) * n_head * most * (dim + 2) <= score_floats) {
         for (int first = 0; first < rows; first += chunk) {
             const int c = std::min(chunk, rows - first);
@@ -1552,7 +1661,7 @@ void attend(const float* q, const uint16_t* kcache, const uint16_t* vcache, int6
         float* wt = per >= 4 && size_t(kv_heads) * blocks * VALUE_QUERIES <= size_t(chunk - c) * n_head
                         ? score + size_t(c) * n_head * keys : nullptr;
         attn_softmax_kernel<<<dim3(n_head, c), 256, 0, cs(stream)>>>(score, keys, (long long) pos, first, c, window,
-                                                                    last, at, wt, per);
+                                                                    last, at, wt, per, sinks);
         // Two blocks of queries a launch block read the values half as often, where the launch still has
         // blocks for most of the card's 36 multiprocessors: for Qwen3.6's two tokens they are half as many and
         // slower, for three or four tokens and for Gemma 4's full layers faster.
@@ -1609,12 +1718,12 @@ size_t attend_split_floats(int chunk, int n_head, int max_rows, int dim) {
 void attend_batch(void* blas, const float* q, const uint16_t* kcache, const uint16_t* vcache, int64_t pos, int rows,
                   float* score, size_t score_floats, float* work, float* out, int dim, int n_head, int kv_heads,
                   float scale, void* stream, int window, int ring, bool whole, Kvq8 kq8, Kvq8 vq8, uint16_t* kwork,
-                  uint16_t* vwork, size_t work_halves) {
+                  uint16_t* vwork, size_t work_halves, const float* sinks) {
     const int per = n_head / kv_heads, width = kv_heads * dim;
     // The fp16-only dim==64 fast path reads the fp16 caches, which are null under q8 (a q8 cache is load-restricted
     // to qwen35moe's head_dim 128, so it never reaches here); guard explicitly so it is provably not taken for q8.
     if (dim == 64 && per == 4 && window == 0 && ring == 0 && !whole && kq8.codes == nullptr && vq8.codes == nullptr &&
-        tensor_cores()) {
+        !sinks && tensor_cores()) {
         attn_flash64_kernel<<<dim3(grid(rows, FLASH_TOKENS), kv_heads), 4 * WARP, 0, cs(stream)>>>(
             q, (const half*) kcache, (const half*) vcache, out, rows, n_head, kv_heads, (long long) pos,
             scale * 1.44269504f);
@@ -1691,6 +1800,7 @@ void attend_batch(void* blas, const float* q, const uint16_t* kcache, const uint
                                                CUBLAS_GEMM_DEFAULT_TENSOR_OP),
                     "attention values");
         }
+        if (sinks) attn_sink_kernel<<<grid(int(heads), 256), 256, 0, cs(stream)>>>(sum, top, sinks, int(heads), c, per);
         attn_scale_kernel<<<dim3(grid(dim, 256), c * n_head), 256, 0, cs(stream)>>>(og, sum, dim, true);
         attn_ungroup_kernel<<<dim3(grid(dim, 256), c * n_head), 256, 0, cs(stream)>>>(
             og, out + size_t(first) * n_head * dim, dim, n_head, kv_heads, c);
