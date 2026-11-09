@@ -244,6 +244,8 @@ The reduced-memory rows reserve and touch 8, 12 or 16 GiB on the same 24 GB GPU,
 
 Speed on Radeon cards, measured with [tinystrata-bench-v1](benchmark/README.md#english). Each card has its own page with the hardware, driver, engine commit, settings and every column: [`benchmark/results/`](benchmark/results/). Values are generation / 4K input / 16K input, in tok/s. Clover uses the exact D3 variant.
 
+**Latest saved settings:** [RX 9060 XT, 2026-11-09 (five models, one pass)](benchmark/results/rx-9060-xt.md#current-saved-settings--2026-11-09-one-pass). The table below retains the historical fixed-v1 comparison.
+
 | GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS (exact D3, Vision GPU) |
 | --- | ---: | ---: | ---: | ---: |
 | [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 41.67 / 942.27 / 892.94 |

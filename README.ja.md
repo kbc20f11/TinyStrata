@@ -244,6 +244,8 @@ KV／VRAM の各条件で独立起動を 4 回試み、v1 の入力・サンプ�
 
 Radeon カードでの速度を [tinystrata-bench-v1](benchmark/README.md#日本語) で計測した結果です。ハードウェア、ドライバー、エンジンのコミット、設定、全項目はカードごとのページにあります: [`benchmark/results/`](benchmark/results/)。値は 生成／4K 入力／16K 入力（tok/s）です。 Clover は exact D3 の派生条件です。
 
+**現在の保存設定:** [RX 9060 XT・2026-11-09（5モデル・1回測定）](benchmark/results/rx-9060-xt.md#current-saved-settings--2026-11-09-one-pass)。下表は従来の固定 v1 条件による比較です。
+
 | GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS (exact D3, Vision GPU) |
 | --- | ---: | ---: | ---: | ---: |
 | [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 41.67 / 942.27 / 892.94 |

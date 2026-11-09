@@ -220,6 +220,8 @@ INT8 和 FP8 按交替顺序各独立启动 4 次，每次启动将 3 段输入�
 
 Radeon 显卡上的速度，使用 [tinystrata-bench-v1](benchmark/README.md#english) 测得。每张卡都有单独的页面，包含硬件、驱动、引擎提交、设置和全部列：[`benchmark/results/`](benchmark/results/)。数值为 生成 / 4K 输入 / 16K 输入（tok/s）。 Clover 数据采用 exact D3 派生配置。
 
+**当前保存设置：** [RX 9060 XT，2026-11-09（5 个模型，单次测量）](benchmark/results/rx-9060-xt.md#current-saved-settings--2026-11-09-one-pass)。下表保留历史固定 v1 条件的比较。
+
 | GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS (exact D3, Vision GPU) |
 | --- | ---: | ---: | ---: | ---: |
 | [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 41.67 / 942.27 / 892.94 |

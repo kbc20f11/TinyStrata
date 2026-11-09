@@ -220,6 +220,8 @@ Les lignes à mémoire réduite réservent et écrivent 8, 12 ou 16 GiB sur la m
 
 Vitesse sur cartes Radeon, mesurée avec [tinystrata-bench-v1](benchmark/README.md#english). Chaque carte a sa propre page avec le matériel, le pilote, le commit du moteur, les réglages et toutes les colonnes : [`benchmark/results/`](benchmark/results/). Valeurs : génération / entrée 4K / entrée 16K, en tok/s. Les valeurs Clover utilisent la variante exact D3.
 
+**Paramètres enregistrés actuels :** [RX 9060 XT, 2026-11-09 (cinq modèles, un passage)](benchmark/results/rx-9060-xt.md#current-saved-settings--2026-11-09-one-pass). Le tableau ci-dessous conserve la comparaison historique à profil v1 fixe.
+
 | GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS (exact D3, Vision GPU) |
 | --- | ---: | ---: | ---: | ---: |
 | [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 41.67 / 942.27 / 892.94 |

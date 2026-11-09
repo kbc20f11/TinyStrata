@@ -220,6 +220,8 @@ Die reduzierten Speicherstufen reservieren und beschreiben 8, 12 oder 16 GiB auf
 
 Geschwindigkeit auf Radeon-Karten, gemessen mit [tinystrata-bench-v1](benchmark/README.md#english). Jede Karte hat eine eigene Seite mit Hardware, Treiber, Engine-Commit, Einstellungen und allen Spalten: [`benchmark/results/`](benchmark/results/). Werte: Generierung / 4K-Eingabe / 16K-Eingabe in tok/s. Die Clover-Werte verwenden die Variante exact D3.
 
+**Aktuelle gespeicherte Einstellungen:** [RX 9060 XT, 2026-11-09 (fünf Modelle, ein Durchlauf)](benchmark/results/rx-9060-xt.md#current-saved-settings--2026-11-09-one-pass). Die folgende Tabelle behält den historischen Vergleich mit festem v1-Profil bei.
+
 | GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS (exact D3, Vision GPU) |
 | --- | ---: | ---: | ---: | ---: |
 | [RX 9060 XT](benchmark/results/rx-9060-xt.md) | 82.95 / 895.98 / 808.59 | 78.07 / 2482.20 / 2338.68 | 93.14 / 2062.80 / 1694.56 | 41.67 / 942.27 / 892.94 |
