@@ -665,6 +665,7 @@
   "models.description.lfm": "Fastest and most responsive, no image support",
   "models.description.clover": "Balanced conversation and reasoning, slowest to run",
   "models.description.tiel": "Specialized in programming questions",
+  "models.description.gptoss": "Thinks step by step before answering, strong at reasoning",
   "models.deleteActive": "Switch to another model to delete.",
   "models.deleteBusy": "Wait for the current operation to finish.",
   "models.deleteDownloading": "Wait for the download to finish.",

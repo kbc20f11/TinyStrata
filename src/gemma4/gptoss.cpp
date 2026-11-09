@@ -154,6 +154,13 @@ void GptOss::assign_scratch() {
     v_ = fbuf(kv);
     att_ = fbuf(heads);
     score_ = fbuf((size_t) chunk_ * n_head_ * opt_.max_context);
+    if (rows_ >= kStageRows) {   // a prompt batch's attention through cuBLAS (attend_batch)
+        awork_ = fbuf(heads + heads / 2 + 1 + 3 * n * n_head_);
+        if (opt_.kv_format == KvFmt::kQ8_0) {
+            work_halves_ = (size_t) n_kv_ * dim_ * std::min(opt_.max_context, 1024);
+            q8work_ = fbuf((2 * work_halves_ + 1) / 2);
+        }
+    }
     freq_dev_ = fbuf(yarn_freq_.size());
     if (freq_dev_)   // the first pass only counts: there is no memory yet
         ck(cudaMemcpy(freq_dev_, yarn_freq_.data(), yarn_freq_.size() * sizeof(float), cudaMemcpyHostToDevice),
@@ -281,10 +288,18 @@ void GptOss::attn(Block& B, int64_t pos, int n) {
         write(k_, B.k_codes, B.k_scales); write(v_, B.v_codes, B.v_scales);
     } else { store(k_, B.keys, B, pos, n); store(v_, B.vals, B, pos, n); }
     const int window = B.swa ? window_ : 0, ring = B.swa ? ring_ : 0;
-    // The kernels that handle the sink for any number of tokens; a prompt is not sent through cuBLAS yet.
-    attend(q_, B.keys, B.vals, pos, n, score_, chunk_, att_, dim_, n_head_, n_kv_, 1.f / std::sqrt((float) dim_), st_,
-           window, ring, false, at, !at ? 0 : B.swa ? std::min(window_ + n - 1, opt_.max_context) : room(n), 0,
-           q8 ? Kvq8{B.k_codes, B.k_scales} : Kvq8{}, q8 ? Kvq8{B.v_codes, B.v_scales} : Kvq8{}, fp(B.sinks));
+    const float scale = 1.f / std::sqrt((float) dim_);
+    // a prompt batch through cuBLAS; a few tokens with the kernels that give a token the same bits in any company
+    if (n >= kStageRows)
+        attend_batch(blas_, q_, B.keys, B.vals, pos, n, score_, (size_t) chunk_ * n_head_ * opt_.max_context, awork_,
+                     att_, dim_, n_head_, n_kv_, scale, st_, window, ring, false,
+                     q8 ? Kvq8{B.k_codes, B.k_scales} : Kvq8{}, q8 ? Kvq8{B.v_codes, B.v_scales} : Kvq8{},
+                     q8 ? (uint16_t*) q8work_ : nullptr, q8 ? (uint16_t*) q8work_ + work_halves_ : nullptr,
+                     q8 ? work_halves_ : 0, fp(B.sinks));
+    else
+        attend(q_, B.keys, B.vals, pos, n, score_, chunk_, att_, dim_, n_head_, n_kv_, scale, st_, window, ring, false,
+               at, !at ? 0 : B.swa ? std::min(window_ + n - 1, opt_.max_context) : room(n), 0,
+               q8 ? Kvq8{B.k_codes, B.k_scales} : Kvq8{}, q8 ? Kvq8{B.v_codes, B.v_scales} : Kvq8{}, fp(B.sinks));
     lin(B.wo, att_, ao_, n);
     rope_bias(ao_, fp(B.bo), ao_, n_embd_, 1, 0, 1.f, nullptr, 1.f, 0, n, st_);
 }

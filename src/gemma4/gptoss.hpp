@@ -66,6 +66,9 @@ private:
 
     float *qraw_ = nullptr, *q_ = nullptr, *kraw_ = nullptr, *k_ = nullptr, *vraw_ = nullptr, *v_ = nullptr,
           *att_ = nullptr, *score_ = nullptr;
+    float* awork_ = nullptr;   ///< a prompt batch's attention (attend_batch)
+    float* q8work_ = nullptr;
+    size_t work_halves_ = 0;
 };
 
 }  // namespace strata::gemma4

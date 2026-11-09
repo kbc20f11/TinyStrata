@@ -659,6 +659,7 @@
   "models.description.lfm": "最轻快、速度最快，不支持图片",
   "models.description.clover": "对话与推理能力均衡，运行速度最慢",
   "models.description.tiel": "专注于编程问题",
+  "models.description.gptoss": "回答前逐步思考，擅长推理",
   "models.deleteActive": "请先切换到其他模型再删除。",
   "models.deleteBusy": "请等待当前操作完成。",
   "models.deleteDownloading": "请等待下载完成。",

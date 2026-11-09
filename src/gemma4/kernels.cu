@@ -1078,6 +1078,16 @@ __global__ void attn_softmax_block_kernel(const float* __restrict__ score, half*
 }
 
 // A chunk's results in the order of the groups, `dim` values a token and head: times its factor, or divided by it.
+// An attention sink (gpt-oss) in the blockwise softmax: one more weight, exp(sink - top), in each token and head's
+// sum.  Index i counts (group, token, head of the group) as attn_softmax_block_kernel's blocks do.
+__global__ void attn_sink_kernel(float* __restrict__ sum, const float* __restrict__ top,
+                                 const float* __restrict__ sinks, int n, int tokens, int per) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const int head = (i / (tokens * per)) * per + i % per;
+    sum[i] += expf(sinks[head] - top[i]);
+}
+
 __global__ void attn_scale_kernel(float* out, const float* __restrict__ factor, int dim, bool divide) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= dim) return;
@@ -1708,12 +1718,12 @@ size_t attend_split_floats(int chunk, int n_head, int max_rows, int dim) {
 void attend_batch(void* blas, const float* q, const uint16_t* kcache, const uint16_t* vcache, int64_t pos, int rows,
                   float* score, size_t score_floats, float* work, float* out, int dim, int n_head, int kv_heads,
                   float scale, void* stream, int window, int ring, bool whole, Kvq8 kq8, Kvq8 vq8, uint16_t* kwork,
-                  uint16_t* vwork, size_t work_halves) {
+                  uint16_t* vwork, size_t work_halves, const float* sinks) {
     const int per = n_head / kv_heads, width = kv_heads * dim;
     // The fp16-only dim==64 fast path reads the fp16 caches, which are null under q8 (a q8 cache is load-restricted
     // to qwen35moe's head_dim 128, so it never reaches here); guard explicitly so it is provably not taken for q8.
     if (dim == 64 && per == 4 && window == 0 && ring == 0 && !whole && kq8.codes == nullptr && vq8.codes == nullptr &&
-        tensor_cores()) {
+        !sinks && tensor_cores()) {
         attn_flash64_kernel<<<dim3(grid(rows, FLASH_TOKENS), kv_heads), 4 * WARP, 0, cs(stream)>>>(
             q, (const half*) kcache, (const half*) vcache, out, rows, n_head, kv_heads, (long long) pos,
             scale * 1.44269504f);
@@ -1790,6 +1800,7 @@ void attend_batch(void* blas, const float* q, const uint16_t* kcache, const uint
                                                CUBLAS_GEMM_DEFAULT_TENSOR_OP),
                     "attention values");
         }
+        if (sinks) attn_sink_kernel<<<grid(int(heads), 256), 256, 0, cs(stream)>>>(sum, top, sinks, int(heads), c, per);
         attn_scale_kernel<<<dim3(grid(dim, 256), c * n_head), 256, 0, cs(stream)>>>(og, sum, dim, true);
         attn_ungroup_kernel<<<dim3(grid(dim, 256), c * n_head), 256, 0, cs(stream)>>>(
             og, out + size_t(first) * n_head * dim, dim, n_head, kv_heads, c);

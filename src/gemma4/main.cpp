@@ -129,7 +129,16 @@ bool is_stop(int token, const std::vector<int>& ids) {
     return std::find(ids.begin(), ids.end(), token) != ids.end();
 }
 
+// IDS: the token IDs separated by commas or spaces, or @FILE to read them from a file (a long prompt does not fit in
+// a command line)
 std::vector<int32_t> parse_ids(std::string text) {
+    if (!text.empty() && text[0] == '@') {
+        std::ifstream file(text.substr(1), std::ios::binary);
+        if (!file) throw std::invalid_argument("cannot read the token file " + text.substr(1));
+        std::ostringstream all;
+        all << file.rdbuf();
+        text = all.str();
+    }
     for (char& c : text) if (c == ',') c = ' ';
     std::istringstream in(text);
     std::string word;
