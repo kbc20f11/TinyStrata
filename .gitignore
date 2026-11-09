@@ -84,6 +84,7 @@
 !/tests/test_model_thinking.py
 !/tests/ui-thinking-controls.cjs
 !/tests/test_model_library.py
+!/tests/test_harmony_frontend.py
 !/tests/test_server_stream_stability.py
 !/tests/mmq-ids-margin.cpp
 !/tests/native-iq-vnni.cpp

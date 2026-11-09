@@ -3138,7 +3138,7 @@ def tokenizer_stop_ids(tokenizer) -> set[int]:
     if isinstance(eos, int) and not isinstance(eos, bool) and eos >= 0:
         result.add(eos)
     known = set(getattr(tokenizer, "control_tokens", ())) | set(getattr(tokenizer, "special_tokens", ()))
-    for marker in (IM_END, "<|endoftext|>", "<turn|>", "<|tool_response>"):
+    for marker in (IM_END, "<|endoftext|>", "<turn|>", "<|tool_response>", "<|return|>", "<|call|>"):   # the last two: Harmony
         if marker in known:
             result.update(tokenizer.encode(marker, parse_special=True))
     return result
@@ -4632,7 +4632,7 @@ class Service:
         if isinstance(turn_at, int) and not isinstance(turn_at, bool) and 0 < turn_at < len(ids):
             sampling["_tinystrata_turn_at"] = turn_at
         # #123: read after the merge, so a budget shared through POST /settings is seen like the other keys
-        budget = self.reasoning_budget(sampling) if thinking else None
+        budget = self.reasoning_budget(sampling) if thinking and self.call_format != "harmony" else None
         think_end = "<channel|>" if self.call_format == "gemma" else THINK_END
         reasoning_close = "\n<channel|>" if self.call_format == "gemma" else REASONING_CLOSE
         reasoning_wrap = REASONING_WRAP_UP.replace(THINK_END, think_end)
@@ -7039,7 +7039,8 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
     A bad value refuses to start the server (a typo'd config should not quietly change sampling); unknown keys
     are named at startup and ignored."""
     out = {}
-    from serve.tinyconfig import DEFAULT_SAMPLING, LFM2_SAMPLING, GEMMA4_SAMPLING, CLOVER_SAMPLING, TIEL_SAMPLING
+    from serve.tinyconfig import (DEFAULT_SAMPLING, LFM2_SAMPLING, GEMMA4_SAMPLING, CLOVER_SAMPLING, TIEL_SAMPLING,
+                                  GPT_OSS_SAMPLING)
     from serve.model_download import is_tiel_model
     block = dict(cfg.get("sampling") or {})
     for alias, canon in SAMPLING_ALIASES.items():      # #1819: llama.cpp's names for the same two fields
@@ -7048,7 +7049,7 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
                 raise SystemExit(f"[strata] config sampling: both {alias!r} and {canon!r} are set; they are the same "
                                  f"setting, keep one")
             block[canon] = block.pop(alias)
-    defaults = {"lfm2moe": LFM2_SAMPLING, "gemma4": GEMMA4_SAMPLING,
+    defaults = {"lfm2moe": LFM2_SAMPLING, "gemma4": GEMMA4_SAMPLING, "gpt-oss": GPT_OSS_SAMPLING,
                 "clover_moe": CLOVER_SAMPLING}.get(cfg.get("arch"), DEFAULT_SAMPLING)
     if is_tiel_model(cfg.get("model_name")):
         defaults = TIEL_SAMPLING
@@ -7189,7 +7190,7 @@ def check_request_sampling(req) -> None:
 
 # the API's model name per model family (the GGUF architecture, "arch" in the config) when the config names none
 FAMILY_MODEL_NAMES = {"qwen35moe": "qwen3.6-35b-a3b", "lfm2moe": "lfm2.5-24b-a2b", "gemma4": "gemma-4-26b-a4b-it",
-                      "clover_moe": "clover-35b-a3b-preview"}
+                      "clover_moe": "clover-35b-a3b-preview", "gpt-oss": "gpt-oss-20b"}
 
 
 def default_model_name(cfg: dict) -> str:
@@ -7251,7 +7252,7 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
         if exe is None or not Path(exe).is_file():
             raise ValueError("the model is downloaded, but the native executable is missing; build TinyStrata "
                              "and configure it with run.py --exe PATH, then retry")
-        want_vision = updated.get("arch") != "lfm2moe" and updated.get("vision_mode") != "no"
+        want_vision = updated.get("arch") not in ("lfm2moe", "gpt-oss") and updated.get("vision_mode") != "no"
         if want_vision and not updated.get("vision"):
             raise ValueError("the model and projector are verified, but tinystrata-vision is missing; "
                              "reinstall or build the image encoder, then retry")
@@ -7335,7 +7336,7 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
                     projector_paths=(Path(projector),) if projector else (),
                     _manifests=(manifest_for_arch("clover_moe", cfg.get("model_name")),
                                 projector_for_arch("clover_moe", cfg.get("model_name"))))
-    elif cfg.get("arch") in ("lfm2moe", "clover_moe"):
+    elif cfg.get("arch") in ("lfm2moe", "clover_moe", "gpt-oss"):
         svc.downloads = FixedModelDownloader(directory, on_ready=activate,
                                              existing_paths=(existing,) if existing is not None else (),
                                              _manifest=manifest_for_arch(cfg["arch"], cfg.get("model_name")))

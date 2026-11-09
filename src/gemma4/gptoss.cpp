@@ -65,6 +65,13 @@ void GptOss::load_geometry() {
     }
     mscale_ = 1.f + 0.1f * std::log(factor);
 
+    // YaRN stretches 4096 positions by 32: the model's own limit.  The automatic context is sized by the card.
+    const int trained = shape_i("context_length");
+    if (trained > 0 && opt_.max_context > trained) {
+        std::fprintf(stderr, "gpt-oss: the context is limited to the model's %d tokens (asked for %d)\n", trained,
+                     opt_.max_context);
+        opt_.max_context = trained;
+    }
     if (opt_.kv_format == KvFmt::kAuto) opt_.kv_format = KvFmt::kQ8_0;
     need(opt_.kv_format == KvFmt::kFp16 || opt_.kv_format == KvFmt::kQ8_0,
          "a KV format other than fp16 or int8 (the sink is not in the FP8 attention yet)");

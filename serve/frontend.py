@@ -15,6 +15,7 @@ and the formats change often; the engine boundary is token ids in, text deltas o
 from __future__ import annotations
 
 import ast
+import datetime
 import json
 import logging
 import os
@@ -77,11 +78,13 @@ class ChatTemplate:
                                             extensions=["jinja2.ext.loopcontrols", GenerationExtension])
         env.filters["tojson"] = tojson
         env.globals["raise_exception"] = raise_exception
+        env.globals["strftime_now"] = lambda fmt: datetime.datetime.now().strftime(fmt)   # as transformers gives it
         self.source = Path(path).read_text(encoding="utf-8")
         self.clover_vision = clover_vision
         if clover_vision:
             self.source = _clover_vision_template(self.source)
-        self.call_format = ("lfm2" if "<|tool_call_start|>" in self.source else
+        self.call_format = ("harmony" if all(t in self.source for t in ("<|channel|>", "<|start|>", "<|message|>")) else
+                            "lfm2" if "<|tool_call_start|>" in self.source else
                             "gemma" if "<|turn>" in self.source else "function")
         self.template = env.from_string(self.source)
         self.caps = self._detect_caps()
@@ -100,6 +103,12 @@ class ChatTemplate:
         if self.call_format == "lfm2":
             messages = [{**m, "thinking": m["reasoning_content"]}
                         if "reasoning_content" in m and "thinking" not in m else m for m in messages]
+        elif self.call_format == "harmony":
+            if not messages:
+                raise ValueError("No messages provided")
+            messages = _harmony_messages(messages)
+            tools = [t if "function" in t else {"type": "function", "function": t} for t in tools or []] or None
+            kwargs = _harmony_kwargs(kwargs)
         elif self.call_format == "gemma":
             if not messages:
                 raise ValueError("No messages provided")
@@ -141,6 +150,10 @@ class ChatTemplate:
                 if self.call_format == "lfm2":
                     bodies = re.findall(r"<\|tool_call_start\|>(.*?)<\|tool_call_end\|>", prompt, re.S)
                     parsed = [call for body in bodies for call in parse_lfm2_tool_calls(body)]
+                elif self.call_format == "harmony":
+                    parsed = [ToolCall(name=name, arguments=json.loads(body)) for name, body in re.findall(
+                        r"<\|start\|>assistant to=functions\.(\w+)<\|channel\|>commentary json<\|message\|>(.*?)<\|call\|>",
+                        prompt, re.S)]
                 elif self.call_format == "gemma":
                     bodies = re.findall(r"<\|tool_call>(.*?)<tool_call\|>", prompt, re.S)
                     parsed = [parse_gemma_tool_call(body) for body in bodies]
@@ -155,7 +168,7 @@ class ChatTemplate:
 
         history = [user, {"role": "assistant", "content": "strata_caps_answer",
                           "reasoning_content": "strata_caps_reasoning"}, user]
-        tool_markers = () if self.call_format in ("lfm2", "gemma") else ("<tool_call>", "<function=")
+        tool_markers = () if self.call_format in ("lfm2", "gemma", "harmony") else ("<tool_call>", "<function=")
         reasoning_prompt = self.render(history, preserve_thinking=True) if self.call_format == "lfm2" else render(history)
         return {"supports_tools": all(s in tool_prompt for s in
                                       ("strata_caps_call_0", "strata_caps_description", *tool_markers)),
@@ -164,6 +177,67 @@ class ChatTemplate:
                     [{"role": "system", "content": "strata_caps_system"}, user]),
                 "supports_parallel_tool_calls": calls_supported(2),
                 "supports_preserve_reasoning": "strata_caps_reasoning" in reasoning_prompt}
+
+
+# ------------------------------------------------------------------------------------------------ harmony
+# gpt-oss speaks OpenAI's Harmony format: a message is `<|channel|>NAME[ to=functions.TOOL]<|message|>BODY` and ends
+# with `<|end|>` (more follows), `<|call|>` (a tool call; generation stops) or `<|return|>` (the answer is done).
+HM_MESSAGE = "<|message|>"
+HM_END = ("<|end|>", "<|return|>", "<|call|>")
+HM_HEADER_MAX = 1024     # a header longer than this is not one: the text is the answer
+
+
+def _harmony_messages(messages: list[dict]) -> list[dict]:
+    """The request's messages in the shape the Harmony template reads: text content, `thinking` for the analysis
+    channel, and a tool call's arguments as an object (it writes them as JSON itself).  The template renders one tool
+    call to an assistant message, and refuses both content and thinking beside a call."""
+    result = []
+    for m in messages:
+        if not isinstance(m, dict):
+            result.append(m)
+            continue
+        m = dict(m)
+        if "content" in m:
+            m["content"] = _text_of(m["content"])
+        if m.get("role") == "assistant":
+            if "reasoning_content" in m and "thinking" not in m:
+                m["thinking"] = m["reasoning_content"] or ""
+            m.pop("reasoning_content", None)
+            if m.get("tool_calls"):
+                calls = []
+                for call in m["tool_calls"]:
+                    fn = dict(call.get("function") or call)
+                    if isinstance(fn.get("arguments"), str):
+                        try:
+                            fn["arguments"] = json.loads(fn["arguments"] or "{}")
+                        except ValueError:
+                            fn["arguments"] = {}
+                    calls.append({**call, "function": fn} if "function" in call else fn)
+                m["tool_calls"] = calls
+                if m.get("content") and m.get("thinking"):
+                    m.pop("thinking")
+            elif m.get("thinking") is None:
+                m.pop("thinking", None)
+        result.append(m)
+    return result
+
+
+HARMONY_EFFORT = {"none": "low", "off": "low", "minimal": "low", "disabled": "low", "low": "low", "medium": "medium",
+                  "high": "high", "xhigh": "high", "max": "high", "maximum": "high"}
+
+
+def _harmony_kwargs(kwargs: dict) -> dict:
+    """The template knows reasoning_effort low, medium and high.  The model cannot skip its reasoning: no thinking
+    asks for the least of it."""
+    kwargs = dict(kwargs)
+    off = kwargs.pop("enable_thinking", None) is False
+    effort = kwargs.pop("reasoning_effort", None)
+    effort = HARMONY_EFFORT.get(str(effort).strip().lower()) if effort not in (None, "") else None
+    if off and effort is None:
+        effort = "low"
+    if effort:
+        kwargs["reasoning_effort"] = effort
+    return kwargs
 
 
 # ------------------------------------------------------------------------------------------------ requests
@@ -1179,6 +1253,9 @@ class OutputParser:
         self.gemma_opening = call_format == "gemma" and not opened
         self.state = "reasoning" if thinking and (call_format != "gemma" or opened) else "content"
         self.buf = ""
+        if call_format == "harmony":
+            self.state = "hm_head"      # the model opens with a channel header
+            self.hm_name = ""
         self.lead = call_format == "lfm2" and not thinking
         self.schemas = {t.get("name"): t for t in tools or []}
         # stream_tools: a tool call is also reported while it is being written - "tool_start" (its name and id) as
@@ -1673,7 +1750,83 @@ class OutputParser:
                 self.scall = None
                 self.state, self.lead = "content", True
 
+    def _harmony_call(self, body: str) -> list[Event]:
+        """A whole Harmony tool call: its JSON arguments, or the text it is when they do not parse."""
+        out: list[Event] = []
+        text = body.strip()
+        try:
+            args = json.loads(text) if text else {}
+        except ValueError:
+            try:
+                args = ast.literal_eval(text)
+            except (ValueError, SyntaxError):
+                args = None
+        if not isinstance(args, dict):
+            self.scall = None
+            return [Event("content", body)] if body else []
+        call = ToolCall(name=self.hm_name, arguments=args)
+        if self.scall is not None:
+            call.id = self.scall.id
+            out.append(Event("tool_args", json.dumps(args, ensure_ascii=False), call=self.scall))
+        out.append(Event("tool_call", call=call))
+        self.scall = None
+        return out
+
+    def _feed_harmony(self, delta: str) -> list[Event]:
+        self.buf += delta
+        out: list[Event] = []
+        while True:
+            if self.state == "hm_head":     # `<|start|>assistant<|channel|>final` and so on, up to <|message|>
+                end = self.buf.find(HM_MESSAGE)
+                if end < 0:
+                    if len(self.buf) > HM_HEADER_MAX:
+                        self.state = "content"
+                        continue
+                    return out
+                header, self.buf = self.buf[:end], self.buf[end + len(HM_MESSAGE):]
+                channel = re.search(r"<\|channel\|>\s*([A-Za-z_]+)", header)
+                recipient = re.search(r"\bto=([\w.\-]+)", header)
+                if recipient and recipient.group(1) != "assistant":
+                    self.hm_name = recipient.group(1).split(".", 1)[-1]
+                    self.state = "hm_call"
+                    self._reset_scan()
+                    if self.stream_tools:
+                        self.scall = ToolCall(name=self.hm_name, arguments={})
+                        out.append(Event("tool_start", call=self.scall))
+                else:
+                    self.state = "reasoning" if channel and channel.group(1) == "analysis" else "content"
+                continue
+            end = min((i for i in (self.buf.find(m) for m in HM_END) if i >= 0), default=-1)
+            if end < 0:
+                if self.state == "hm_call":
+                    return out              # a call is delivered whole
+                keep = self._hold(self.buf, HM_END)
+                text, self.buf = self.buf[:len(self.buf) - keep], self.buf[len(self.buf) - keep:]
+                if text:
+                    out.append(Event(self.state, text))
+                return out
+            marker = next(m for m in HM_END if self.buf.startswith(m, end))
+            body, self.buf = self.buf[:end], self.buf[end + len(marker):]
+            if self.state == "hm_call":
+                out.extend(self._harmony_call(body))
+            elif body:
+                out.append(Event(self.state, body))
+            self.state = "hm_head"
+
+    def _finish_harmony(self) -> list[Event]:
+        """The output ended: a stop token such as <|call|> is not part of the text, so a call body is whole."""
+        text, self.buf = self.buf, ""
+        if self.state == "hm_call":
+            return self._harmony_call(text)
+        if self.state == "hm_head":
+            return []                       # a header that never got its message
+        keep = self._hold(text, HM_END)
+        text = text[:len(text) - keep]
+        return [Event(self.state, text)] if text else []
+
     def feed(self, delta: str) -> list[Event]:
+        if self.call_format == "harmony":
+            return self._feed_harmony(delta)
         if self.call_format == "lfm2":
             return self._feed_lfm2(delta)
         if self.call_format == "gemma":
@@ -1905,6 +2058,8 @@ class OutputParser:
         already announced stays unfinished: its JSON is not closed and no "tool_call" follows it, #211).  `reason` is
         how the turn ended: calls waiting from the reasoning become real calls only on a natural stop (None = stop);
         a turn cut by max tokens (or cancelled, or failed) keeps them as reasoning text (#1058)."""
+        if self.call_format == "harmony":
+            return self._finish_harmony()
         if self.call_format in ("lfm2", "gemma"):
             call_state = "gemma_call" if self.call_format == "gemma" else "lfm_call"
             call_mark = GEMMA_CALL if self.call_format == "gemma" else LFM2_CALL

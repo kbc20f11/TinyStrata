@@ -740,7 +740,7 @@ class ModelSwitcher:
                                                  existing_paths=(existing,) if existing is not None else (),
                                                  projector_paths=(Path(projector),) if projector else (),
                                                  _manifests=(artifact, projector_artifact))
-        elif profile.arch in ('lfm2moe', 'clover_moe'):
+        elif profile.arch in ('lfm2moe', 'clover_moe', 'gpt-oss'):
             manager = FixedModelDownloader(directory, on_ready=prepared,
                                            existing_paths=(existing,) if existing is not None else (),
                                            _manifest=artifact)

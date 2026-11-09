@@ -51,8 +51,8 @@ def check(key: str, value, cfg: dict):
     """Validate one CLI engine override; None restores its engine default."""
     if key not in ENGINE_OPTIONS:
         raise ValueError(f"Unknown engine setting: {key!r}")
-    if key in CONVERSATION_CACHE_KEYS and cfg.get("arch", "qwen35moe") not in ("gemma4", "lfm2moe"):
-        raise ValueError(f"{key}: conversation parking settings are supported only by Gemma 4 and LFM2.5")
+    if key in CONVERSATION_CACHE_KEYS and cfg.get("arch", "qwen35moe") not in ("gemma4", "lfm2moe", "gpt-oss"):
+        raise ValueError(f"{key}: conversation parking settings are supported only by Gemma 4, LFM2.5 and gpt-oss")
     if value is None:
         return None
     if key in ("mtp_auto", "lookup_draft"):

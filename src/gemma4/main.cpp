@@ -116,9 +116,12 @@ std::vector<int> stop_tokens(const Engine& e) {
         const int64_t id = e.meta_u(key, -1);
         if (id >= 0 && id < e.n_vocab()) ids.push_back((int) id);
     }
-    const int turn_end = e.token_id("<turn|>");
-    if (turn_end >= 0 && turn_end < e.n_vocab() && std::find(ids.begin(), ids.end(), turn_end) == ids.end())
-        ids.push_back(turn_end);
+    // Gemma's end of turn, and gpt-oss's end of a tool call (its <|return|> is the file's eos)
+    for (const char* marker : {"<turn|>", "<|call|>"}) {
+        const int stop = e.token_id(marker);
+        if (stop >= 0 && stop < e.n_vocab() && std::find(ids.begin(), ids.end(), stop) == ids.end())
+            ids.push_back(stop);
+    }
     return ids;
 }
 
