@@ -4,10 +4,12 @@
   const definitions = {
     toggle: {mode: "toggle", default: "on", options: ["none", "on"]},
     always: {mode: "always", default: "on", options: ["on"]},
-    effort: {mode: "effort", default: "medium", options: ["none", "low", "medium", "xhigh"]}
+    effort: {mode: "effort", default: "medium", options: ["none", "low", "medium", "xhigh"]},
+    effort_always: {mode: "effort_always", default: "medium", options: ["low", "medium", "xhigh"]}
   };
   const modes = {"qwen3.6-35b-a3b": "toggle", "clover-35b-a3b-preview": "toggle",
-    "gemma-4-26b-a4b-it": "toggle", "lfm2.5-24b-a2b": "always", "tiel-coder-35b-a3b": "effort"};
+    "gemma-4-26b-a4b-it": "toggle", "lfm2.5-24b-a2b": "always", "tiel-coder-35b-a3b": "effort",
+    "gpt-oss-20b": "effort_always"};
   function contract(model, metadata) {
     const candidate = definitions[metadata?.mode];
     if (candidate && metadata.default === candidate.default && Array.isArray(metadata.options)
@@ -47,7 +49,7 @@
   }
   function payload(model, settings, metadata, shared = false) {
     const spec = contract(model, metadata), value = choice(model, settings, metadata);
-    if (spec.mode === "effort") return {reasoning_effort: value};
+    if (spec.mode === "effort" || spec.mode === "effort_always") return {reasoning_effort: value};
     const enable_thinking = value === "on";
     return shared ? {enable_thinking} : {chat_template_kwargs: {enable_thinking}};
   }

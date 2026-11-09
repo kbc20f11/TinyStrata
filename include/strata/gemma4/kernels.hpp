@@ -64,11 +64,12 @@ struct Kvq8 {
     const uint16_t* scales = nullptr;
 };
 
-// gpt-oss.  Up to 8 slots' experts' biases (each n values), as the cached experts of moe() are launched.
+// gpt-oss.  The biases (each n values) of the experts in up to 32 slots, as the cached experts of moe() are launched
+// (kSlots: 8 on CUDA, up to 32 on HIP).
 struct ExpertBias {
-    const float* g[8];
-    const float* u[8];
-    const float* d[8];
+    const float* g[32];
+    const float* u[32];
+    const float* d[32];
 };
 void rope_bias(const float* x, const float* bias, float* y, int dim, int heads, int n_rot, float theta_scale,
                const float* freq, float mscale, int64_t pos, int rows, void* stream, const long long* at = nullptr);
