@@ -58,8 +58,8 @@ from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
-from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
-                            effort_kwargs, forced_call, gemma_model_turn, images_of, literal_tags, mark_think_literals, openai_to_messages,
+from serve.frontend import (HM_ANALYSIS, THINK_END, ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
+                            effort_kwargs, forced_call, forced_call_prefill, gemma_model_turn, images_of, literal_tags, mark_think_literals, openai_to_messages,
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import config  # noqa: E402
@@ -1252,7 +1252,7 @@ class StrataEngine:
                 raise EngineDied("the engine did not answer the VRAM command")
 
     @staticmethod
-    def sampling_keys(sampling: dict) -> str:
+    def sampling_keys(sampling: dict, *, arch: str | None = None) -> str:
         keys = ""
         pad = sampling.get("image_pad")
         if isinstance(pad, int) and not isinstance(pad, bool) and pad >= 0:
@@ -1265,8 +1265,9 @@ class StrataEngine:
             keys += f" top_p={float(tp)!r}"
         tk = sampling.get("top_k")
         if isinstance(tk, int) and not isinstance(tk, bool) and tk >= 0:
-            # the engine's sampled path keeps at most 64 candidates: 0 ("off") and wider lists get all 64
-            keys += f" top_k={tk if 1 <= tk <= 64 else 64}"
+            # gpt-oss uses the Gemma-family full-vocabulary sampler. Other
+            # engines retain their existing 64-candidate compatibility behavior.
+            keys += f" top_k={0 if arch == 'gpt-oss' and tk == 0 else tk if 1 <= tk <= 64 else 64}"
         for key, value in config.clover_request_options(sampling).items():
             keys += f" {key}={value!r}" if isinstance(value, float) else f" {key}={value}"
         for key, value in config.speculation_request_options(sampling).items():
@@ -1624,7 +1625,7 @@ class StrataEngine:
             raise EngineDied("the engine is unavailable; this request was not sent")
         self.progress, self.progress_ms, self.reused = None, 0, 0
         born = self.gen                                 # the engine process this request is sent to
-        keys = self.sampling_keys(sampling or {})
+        keys = self.sampling_keys(sampling or {}, arch=getattr(self, "_tinystrata_arch", None))
         out: list[int] = []
         pending: list[int] = []
         prompt, left = list(ids), int(max_new)
@@ -2001,8 +2002,8 @@ class StrataEngine:
         self.progress, self.progress_ms, self.reused = None, 0, 0
         self.prefill_tok_s_mean = None
         # an image request takes the same sampling keys as text (#75: it used to decode greedily whatever was asked)
-        head = f"GENI {int(max_new)}{self.sampling_keys(sampling or {})} {embeddings}" if embeddings else \
-            f"GEN {int(max_new)}{self.sampling_keys(sampling or {})}"
+        keys = self.sampling_keys(sampling or {}, arch=getattr(self, "_tinystrata_arch", None))
+        head = f"GENI {int(max_new)}{keys} {embeddings}" if embeddings else f"GEN {int(max_new)}{keys}"
         try:
             self.proc.stdin.write(f"{head} {','.join(str(int(t)) for t in ids)}\n")
             self.proc.stdin.flush()
@@ -4117,12 +4118,15 @@ class Service:
         self.clover_request_settings(req)
         kw = self.template_defaults(kw, req)
         ids = self.encode_prompt(messages, tools, kw)
-        if force and kw.get("enable_thinking", True) is False:
-            ids += self.tok.encode(force, parse_special=True)
+        prefill = forced_call_prefill(force, kw.get("enable_thinking", True) is not False, self.call_format)
+        if prefill:
+            ids += self.tok.encode(prefill, parse_special=True)
         images = images_of(messages)
         count = len(ids)
         if images:
             if self.vision is None:
+                if getattr(self.engine, "_tinystrata_arch", None) == "gpt-oss":
+                    raise ValueError("gpt-oss-20b is text-only and does not support image input")
                 raise ValueError("this server was started without the vision encoder, so it cannot read images")
             gemma = self.call_format == "gemma"
             mark = "<|image|>" if gemma else IMAGE_PAD
@@ -4224,19 +4228,20 @@ class Service:
         return fetched
 
     def speculation_request_settings(self, req: dict | None = None) -> dict | None:
-        """Validate inherited and explicit Qwen/Gemma controls before request admission."""
+        """Validate inherited and explicit target-verified controls before request admission."""
         options = config.speculation_request_options(req)
         info = getattr(self.engine, "info", {}) or {}
         spawn = getattr(self.engine, "spawn", ())
         args = list(spawn[1]) if len(spawn) > 1 and isinstance(spawn[1], (tuple, list)) else []
         arch = getattr(self.engine, "_tinystrata_arch", None)
-        supported = arch in ("qwen35moe", "gemma4") or (arch is None and
-            self.model.startswith(("qwen3.6", "gemma-4", "tiel-coder")))
+        supported = arch in ("qwen35moe", "gemma4", "gpt-oss") or (arch is None and
+            self.model.startswith(("qwen3.6", "gemma-4", "tiel-coder", "gpt-oss")))
         if not supported:
             if options:
-                raise ValueError(f"{next(iter(options))}: this option requires Qwen35MoE or Gemma 4")
+                raise ValueError(f"{next(iter(options))}: this option requires Qwen35MoE or Gemma 4 or gpt-oss")
             return None
-        cfg = {"args": args}
+        cfg = {"args": args, "arch": "gpt-oss" if arch == "gpt-oss" or
+               (arch is None and self.model.startswith("gpt-oss")) else arch}
         settings = {}
         for key in config.SPECULATION_REQUEST_KEYS:
             value = options.get(key, info.get(key, config.value_of(cfg, key)))
@@ -4245,7 +4250,7 @@ class Service:
                     value = int(value)
                 except ValueError:
                     pass
-            settings[key] = config.check(key, 0 if value is None else value, {})
+            settings[key] = config.check(key, 0 if value is None else value, cfg)
         if settings["lookup_draft"]:
             temperature = (req or {}).get("temperature")
             if temperature is None:
@@ -4366,8 +4371,9 @@ class Service:
         self.embeddings.clover_limit_flexible = False
         fetched = self._note_unreadable_tool_images(messages, cancel)
         ids = self.encode_prompt(messages, tools, kwargs)
-        if force and kwargs.get("enable_thinking", True) is False:
-            ids = ids + self.tok.encode(force, parse_special=True)
+        prefill = forced_call_prefill(force, kwargs.get("enable_thinking", True) is not False, self.call_format)
+        if prefill:
+            ids = ids + self.tok.encode(prefill, parse_special=True)
         self.embeddings.path = None
         self.embeddings.keys = None
         self.embeddings.pad = None
@@ -4379,6 +4385,8 @@ class Service:
             self.embeddings.turn_at = turn_at
         if images:
             if self.vision is None:
+                if getattr(self.engine, "_tinystrata_arch", None) == "gpt-oss":
+                    raise ValueError("gpt-oss-20b is text-only and does not support image input")
                 raise ValueError("this server was started without the vision encoder (run setup again and choose "
                                  "'vision'), so it cannot read images")
             gemma = self.call_format == "gemma"
@@ -4646,8 +4654,10 @@ class Service:
                 budget = max(1, max_new - reserve)
         parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True, recover=self.tool_call_recovery,
                               call_format=self.call_format,
-                              opened=self.call_format == "gemma" and
-                              self.tok.decode(ids[-32:]).endswith("<|channel>thought\n"))
+                              opened=(self.call_format == "gemma" and
+                                      self.tok.decode(ids[-32:]).endswith("<|channel>thought\n")) or
+                                     (self.call_format == "harmony" and
+                                      self.tok.decode(ids[-32:]).endswith(HM_ANALYSIS)))
         detok, n, finish = Detokenizer(self.tok), 0, "length"
         run_tok, run_len, repeated = None, 0, False     # #606: the current run of one repeated token
         thinking_n = 0                                  # tokens written while thinking (Responses' reasoning_tokens)
@@ -4876,6 +4886,9 @@ class Service:
                                     elif parser.state == "content" and not parser.buf and not detok.pending():
                                         opens = True
                                         break
+                                    elif self.call_format == "harmony" and parser.state == "hm_head" and not parser.buf:
+                                        opens = True   # the enforced analysis turn ended at <|end|>
+                                        break
                         except EngineNonFinite:
                             nonfinite = True
                         except EngineDied as e:
@@ -4973,6 +4986,8 @@ class Service:
                         if wrap:
                             budget = st["thinking_budget"] = None
                             text = reasoning_wrap + (force or "")
+                        elif self.call_format == "harmony":
+                            text = "<|start|>assistant" + force
                         else:
                             text = "\n" * (2 - (len(tail) - len(tail.rstrip("\n")))) + force
                         force = None
@@ -6953,6 +6968,8 @@ def clean_shared_defaults(d, model: str | None = None) -> dict:
         raise ValueError("defaults must be an object")
     out = {}
     policy = thinking_api.capabilities(model) if model else None
+    from serve.model_download import is_gpt_oss_model
+    minimum_top_k = 0 if is_gpt_oss_model(model) else 1
     for key, value in d.items():
         if value is None or value == "":
             continue
@@ -6972,8 +6989,8 @@ def clean_shared_defaults(d, model: str | None = None) -> dict:
             if not number or not 0 < value <= 1:
                 raise ValueError("top_p: 0 < top_p <= 1")
         elif key == "top_k":
-            if not number or value != int(value) or not 1 <= value <= 64:
-                raise ValueError("top_k: an integer 1..64")
+            if not number or value != int(value) or not minimum_top_k <= value <= 64:
+                raise ValueError(f"top_k: an integer {minimum_top_k}..64")
             value = int(value)
         elif key in ("seed", "max_tokens"):
             if not number or value != int(value) or value <= 0:
@@ -6990,7 +7007,7 @@ def clean_shared_defaults(d, model: str | None = None) -> dict:
             raise ValueError(f"unknown setting {key!r}")
         out[key] = float(value) if key in ("temperature", "top_p") else value
     if policy is not None:
-        if policy["mode"] != "effort" and "reasoning_effort" in out:
+        if policy["mode"] not in ("effort", "effort_always") and "reasoning_effort" in out:
             out.setdefault("enable_thinking", out.pop("reasoning_effort") != "none")
         if policy["mode"] == "always" and "enable_thinking" in out:
             out["enable_thinking"] = True
@@ -7071,8 +7088,9 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
                 raise SystemExit(f"[strata] config sampling.min_p={value!r}: expected 0 <= min_p <= 1")
             out[key] = float(value)
         elif key == "top_k":
-            if not number or value != int(value) or not 1 <= value <= 64:
-                raise SystemExit(f"[strata] config sampling.top_k={value!r}: the sampled path takes an integer 1..64")
+            minimum_top_k = 0 if cfg.get("arch") == "gpt-oss" else 1
+            if not number or value != int(value) or not minimum_top_k <= value <= 64:
+                raise SystemExit(f"[strata] config sampling.top_k={value!r}: the sampled path takes an integer {minimum_top_k}..64")
             out[key] = int(value)
         elif key == "presence_penalty":
             if not number or value < 0:
@@ -7153,7 +7171,8 @@ def check_request_sampling(req) -> None:
     replaced the configured default in run()'s merge and sampling_keys dropped it, so the reply was greedy.  Only
     types are checked: a number (int or float, never bool) for temperature, top_p, min_p and the three penalties; an
     integer (never bool or float) for top_k, penalty_last_n and seed.  Ranges behave as before (a temperature <= 0 is
-    greedy, top_k 0 or above 64 is clamped, a seed <= 0 is unset), and an absent or null field is not checked."""
+    greedy, top_k above 64 is clamped and 0 is full-vocabulary only for gpt-oss,
+    a seed <= 0 is unset), and an absent or null field is not checked."""
     config.clover_request_options(req)
     config.speculation_request_options(req)
     live_stats = (req or {}).get("return_live_stats")

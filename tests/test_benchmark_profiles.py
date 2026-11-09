@@ -80,10 +80,44 @@ class BenchmarkProfileMigration(unittest.TestCase):
 
     def test_saved_profile_registry_and_generation_counts_are_separate(self):
         self.assertEqual(bench.benchmark_models('all'), list(bench.MODELS))
-        self.assertEqual(bench.benchmark_models('all', True), [*bench.MODELS, 'tiel'])
+        self.assertEqual(bench.benchmark_models('all', True), [*bench.MODELS, 'tiel', 'gptoss'])
+        self.assertEqual(bench.benchmark_models('gptoss'), ['gptoss'])
         with self.assertRaises(ValueError): bench.benchmark_models('tiel')
         self.assertEqual(bench.generation_passes(False), (1, 2))
         self.assertEqual(bench.generation_passes(True), (1,))
+
+    def test_gptoss_profile_is_text_only_without_assistant_or_lookup(self):
+        before = original('gptoss')
+        before['args'] += ['--mtp', '7', '--lookup-draft', '7', '--allow-gpt-oss-hip']
+        snapshot = copy.deepcopy(before)
+        cfg = bench.controlled_config(before, 'gptoss', ROOT / 'unused-output', 18019, CASES)
+        self.assertEqual(cfg['arch'], 'gpt-oss')
+        self.assertEqual(cfg['model_name'], 'gpt-oss-20b')
+        self.assertEqual(cfg['reasoning_effort'], 'medium')
+        self.assertNotIn('vision', cfg)
+        self.assertEqual(cfg['vision_mode'], 'no')
+        self.assertNotIn('--vision', cfg['args'])
+        self.assertNotIn('--draft-model', cfg['args'])
+        for flag in ('--mtp', '--mtp-auto', '--lookup-draft'):
+            self.assertEqual(cfg['args'][cfg['args'].index(flag) + 1], '0')
+        self.assertIn('--allow-gpt-oss-hip', cfg['args'])
+        self.assertNotIn('--allow-gpt-oss-hip', controlled('gptoss')['args'])
+        self.assertEqual(before, snapshot)
+        self.assertEqual((cfg['sampling']['temperature'], cfg['sampling']['top_p'], cfg['sampling']['top_k']), (1.0, 1.0, 0))
+        cfg['sampling']['top_k'] = 9
+        self.assertEqual(bench.model_sampling('gptoss', CASES)['top_k'], 0)
+        self.assertEqual(bench.request_body('gptoss', 'q', 32, CASES)['model'], 'gpt-oss-20b')
+
+    def test_saved_gptoss_preserves_lookup_and_sampling(self):
+        before = original('gptoss')
+        before.pop('vision')
+        before['args'] += ['--mtp', '0', '--lookup-draft', '7', '--allow-gpt-oss-hip']
+        before['sampling'] = {'temperature': .6, 'top_p': .9}
+        snapshot = copy.deepcopy(before)
+        cfg = bench.saved_config(before, 'gptoss', ROOT / 'unused-output', 18019, CASES)
+        self.assertEqual(cfg['args'], snapshot['args'])
+        self.assertEqual(cfg['sampling'], snapshot['sampling'])
+        self.assertEqual(before, snapshot)
 
     def test_saved_sampler_overrides_clover_protocol_without_replacing_workload_controls(self):
         sampling = {'temperature': .37, 'top_k': 17, 'penalty_last_n': 128,

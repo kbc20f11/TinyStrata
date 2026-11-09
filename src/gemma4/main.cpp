@@ -65,6 +65,14 @@ int sample(const float* logits, int vocab, const Sampling& s, const std::vector<
     for (double x : scores)
         if (!std::isfinite(x)) throw std::runtime_error("nonfinite penalized logits");
     if (s.temperature <= 0) return (int) (std::max_element(scores.begin(), scores.end()) - scores.begin());
+    // Unrestricted sampling needs no ranking. Preserve all vocabulary mass;
+    // ordering only maps a random draw to an ID and does not change its law.
+    if (s.top_k == 0 && s.top_p == 1 && s.min_p == 0) {
+        const double maximum = *std::max_element(scores.begin(), scores.end());
+        std::vector<double> probs((size_t) vocab);
+        for (int i = 0; i < vocab; ++i) probs[(size_t) i] = std::exp((scores[(size_t) i] - maximum) / s.temperature);
+        return (int) std::discrete_distribution<size_t>(probs.begin(), probs.end())(rng);
+    }
     std::vector<int> ids((size_t) vocab);
     std::iota(ids.begin(), ids.end(), 0);
     const int k = s.top_k > 0 ? std::min(s.top_k, vocab) : vocab;
@@ -389,9 +397,10 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
           int configured_mtp, int configured_auto, int configured_lookup) {
     cache_options.max_tokens = e.max_context();
     strata::conversation::Cache<Engine> cache(e, cache_options);
-    std::printf("INFO version=0.1.0 family=gemma4 model=gemma-4-26b-a4b-it kv=%s mtp=%d vision=%d expert_slots=%d expert_total=%d "
+    std::printf("INFO version=0.1.0 family=%s model=%s kv=%s mtp=%d vision=%d expert_slots=%d expert_total=%d "
                 "expert_cache_mib=%lld expert_auto=%d chunk=%d vram_reserve_mib=%d graph=%d prompt_logits_first=1 "
                 "kv_grow=%d kv_committed_rows=%lld kv_logical_bytes=%llu kv_mapped_bytes=%llu kv_used_tokens=%lld\n",
+                e.model_family(), e.model_name(),
                 e.kv_format() == strata::gemma4::KvFmt::kFp8 ? "fp8-mma" :
                     e.kv_format() == strata::gemma4::KvFmt::kQ8_0 ? "int8" : "fp16",
                 e.drafts() ? configured_mtp : 0, e.sees(),
@@ -845,7 +854,7 @@ int main(int argc, char** argv) {
                           "  --conversation-cache-min-tokens N  Minimum prefix parked (default 1024)\n"
                           "  --cpu-threads N --no-graph --no-gpu-experts\n"
 #if defined(STRATA_USE_HIP)
-                          "  --allow-gpt-oss-hip   Run gpt-oss, which has only been tried on CUDA (testing)\n"
+                          "  --allow-gpt-oss-hip   Accepted for compatibility; HIP no longer needs this flag\n"
 #endif
 #if defined(STRATA_USE_HIP)
                           "  --kv-type auto|fp8|int8  Auto: INT8; native FP8 is opt-in on RDNA4\n"

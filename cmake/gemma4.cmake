@@ -2,13 +2,14 @@
 if(NOT STRATA_NATIVE_EXPERTS)
   message(FATAL_ERROR "Gemma 4 hybrid inference requires STRATA_NATIVE_EXPERTS=ON")
 endif()
+
 set(_gemma_gg "${STRATA_LLAMA_SOURCE_DIR}/ggml")
 set(_gemma_cuda "${_gemma_gg}/src/ggml-cuda")
 set(_gemma_mmq_sources src/gemma4/mmq.cu src/prefill/ggml_cuda_host.cu
   "${_gemma_cuda}/quantize.cu")
 set(_gemma_mmq_types q4_0 q4_k q6_k q8_0)
-# gpt-oss's MXFP4 experts.  On HIP this instance has not been tried, so it is opt-in there.
-option(STRATA_HIP_MXFP4_MMQ "Build the MXFP4 MMQ instance for gpt-oss on HIP (untested)" OFF)
+# gpt-oss's MXFP4 experts. OFF retains the native matvec prompt fallback on HIP.
+option(STRATA_HIP_MXFP4_MMQ "Build the MXFP4 MMQ instance for gpt-oss on HIP" ON)
 set(_gemma_mmq_mxfp4 OFF)
 if(NOT STRATA_ENABLE_HIP OR STRATA_HIP_MXFP4_MMQ)
   list(APPEND _gemma_mmq_types mxfp4)
@@ -69,3 +70,18 @@ else()
     target_compile_options(gemma_cached_slots_test PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor;-Xcompiler=/utf-8>)
   endif()
 endif()
+
+# Opt-in GPT-OSS fusion parity; no model files required, excluded from normal builds.
+add_executable(gptoss_fused_test EXCLUDE_FROM_ALL tests/gptoss-fused.cu)
+target_include_directories(gptoss_fused_test PRIVATE include)
+target_link_libraries(gptoss_fused_test PRIVATE tinystrata_gemma4 ${_strata_gpu_runtime_target})
+if(STRATA_ENABLE_HIP)
+  set_source_files_properties(tests/gptoss-fused.cu PROPERTIES LANGUAGE HIP)
+elseif(MSVC)
+  target_compile_options(gptoss_fused_test PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor;-Xcompiler=/utf-8>)
+endif()
+
+# Model-backed state/lookup-window regression; run explicitly with a GPT-OSS GGUF.
+add_executable(gptoss_state_test EXCLUDE_FROM_ALL tests/gptoss-state.cpp)
+target_include_directories(gptoss_state_test PRIVATE include src/gemma4)
+target_link_libraries(gptoss_state_test PRIVATE tinystrata_gemma4 ${_strata_gpu_runtime_target})

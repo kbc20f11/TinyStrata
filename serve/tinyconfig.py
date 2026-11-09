@@ -23,8 +23,8 @@ LFM2_SAMPLING = {"temperature": 0.1, "top_p": 1.0, "top_k": 50, "min_p": 0.0,
                  "presence_penalty": 0.0, "repetition_penalty": 1.05}
 GEMMA4_SAMPLING = {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0,
                    "presence_penalty": 0.0, "repetition_penalty": 1.0}
-# OpenAI recommends sampling gpt-oss at temperature 1.0 and top_p 1.0; the sampler's widest top-k, 64, is the closest to none.
-GPT_OSS_SAMPLING = {"temperature": 1.0, "top_p": 1.0, "top_k": 64, "min_p": 0.0,
+# The Gemma-family native sampler accepts top_k=0 for the full vocabulary.
+GPT_OSS_SAMPLING = {"temperature": 1.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0,
                     "presence_penalty": 0.0, "repetition_penalty": 1.0}
 CLOVER_SAMPLING = {"temperature": 0.0, "top_p": 1.0, "top_k": 64, "min_p": 0.0,
                    "presence_penalty": 0.9, "frequency_penalty": 0.0, "repetition_penalty": 1.05}
@@ -420,7 +420,7 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
     if arch != "gemma4" and "--draft-model" in seen:
         raise ValueError("--draft-model is only supported by the Gemma 4 engine")
     if config.value_of(cfg, "lookup_draft"):
-        defaults = GEMMA4_SAMPLING if arch == "gemma4" else DEFAULT_SAMPLING
+        defaults = {"gemma4": GEMMA4_SAMPLING, "gpt-oss": GPT_OSS_SAMPLING}.get(arch, DEFAULT_SAMPLING)
         temperature = (cfg.get("sampling") or {}).get("temperature", defaults["temperature"])
         if temperature is None:
             temperature = defaults["temperature"]

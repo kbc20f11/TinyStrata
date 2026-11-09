@@ -119,8 +119,10 @@ def configure_backend(cfg: dict, requested: str | None = None, *, explicit_kv: s
         result.pop("gpu", None)
         result.pop("hip_ordinal", None)
     if backend == "hip":
-        if explicit_kv not in (None, "auto", "int8", "fp8", "fp8-mma"):
-            raise ValueError("The AMD HIP route supports --kv-type auto, int8 or native fp8")
+        formats = ("auto", "fp16", "int8") if cfg.get("arch") == "gpt-oss" else ("auto", "int8", "fp8", "fp8-mma")
+        if explicit_kv is not None and explicit_kv not in formats:
+            raise ValueError("The gpt-oss HIP route supports --kv-type auto, fp16 or int8" if cfg.get("arch") == "gpt-oss"
+                             else "The AMD HIP route supports --kv-type auto, int8 or native fp8")
         # Let the model engine choose FP8 or INT8 from its actual capabilities.
         # Keep deliberate HIP choices, including auto, across later starts.
         # A profile from another backend starts with hardware-aware auto unless
@@ -128,7 +130,7 @@ def configure_backend(cfg: dict, requested: str | None = None, *, explicit_kv: s
         previous_kv = config.value_of(result, "kv_type")
         if explicit_kv is not None:
             chosen_kv = explicit_kv
-        elif previous_kv in ("auto", "int8", "fp8", "fp8-mma") and (
+        elif previous_kv in formats and (
                 saved == "hip" or (previous_kv == "int8" and cfg.get("arch") == "clover_moe" and
                                     "clover_decode_policy_version" in cfg)):
             chosen_kv = previous_kv

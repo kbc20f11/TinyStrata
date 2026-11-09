@@ -17,7 +17,8 @@
       "Thinks step by step before answering, strong at reasoning", "答える前にじっくり考える、推論に強い"],
   ];
   const iconSources = {qwen: "web/model-logos/qwen.png", gemma: "web/model-logos/gemma.svg",
-    lfm: "web/model-logos/liquid.png", clover: "web/model-logos/diffuspace.jpg", tiel: "web/model-icons.svg"};
+    lfm: "web/model-logos/liquid.png", clover: "web/model-logos/diffuspace.jpg", tiel: "web/model-icons.svg",
+    gptoss: "web/model-logos/openai.png"};
   const MODELS = Object.freeze(definitions.map(([id, name, provider, mark, en, ja]) => Object.freeze({
     id, name, provider,
     descriptionKey: `models.description.${mark}`,

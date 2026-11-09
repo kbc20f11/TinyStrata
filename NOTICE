@@ -141,6 +141,13 @@ Maphist0/llama.cpp-pub dev-clover at 4838ffb0c8ade92f34d9157deea38d92758ab824
 Clover weights are downloaded separately from the official Diffuspace GGUF
 repository and retain their Apache-2.0 model license and upstream Qwen attribution.
 
+OpenAI gpt-oss-20b model weights are licensed under Apache-2.0 and downloaded
+separately as the ggml-org/gpt-oss-20b-GGUF MXFP4 conversion pinned at
+15dcfc7e7c608c6161507211ed43c5b590801b4b. The weight license and upstream
+attribution remain separate from TinyStrata's code and identification artwork.
+See https://huggingface.co/ggml-org/gpt-oss-20b-GGUF and
+https://github.com/openai/gpt-oss/blob/main/LICENSE.
+
 Gemma/LFM same-model conversation parking and bounded private spill files adapt
 VecSzn/PolyStrata conversations.hpp at 6f279e9f4b82ce9c20a27df02b72601e690ce4ea
 (MIT). Copyright (c) 2026 VecSzn and the PolyStrata contributors. TinyStrata adds
@@ -215,7 +222,7 @@ The CPU pool's one-time stall-clock arming adapts Basalt commit
 its atomic claim/completion protocol, park waits, arithmetic and stall diagnostics.
 
 Model identification artwork in ui/web/model-logos is copied from the
-official Qwen, Gemma, Liquid AI and DiffuSpace sources recorded, with exact
+official Qwen, Gemma, Liquid AI, DiffuSpace and OpenAI sources recorded, with exact
 SHA-256 identities, in ui/web/model-logos/PROVENANCE.json. The Gemma icon
 comes from google-deepmind/gemma under Apache-2.0; its license is included
 in ui/web/model-logos/gemma-LICENSE.txt. Other brand artwork has no separate

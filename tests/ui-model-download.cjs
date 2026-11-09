@@ -9,7 +9,7 @@ const sectionStart=source.indexOf('let modelCatalog ='),sectionEnd=source.indexO
 assert(sectionStart>=0&&sectionEnd>sectionStart,'Model controls section not found in app.js');
 const snippet=source.slice(sectionStart,sectionEnd);
 const healthFunction=source.slice(source.indexOf('async function loadHealth()'),source.indexOf('// ------------------------------------------------------------------ Monitor'));
-const IDS=['qwen3.6-35b-a3b','gemma-4-26b-a4b-it','lfm2.5-24b-a2b','clover-35b-a3b-preview','tiel-coder-35b-a3b'];
+const IDS=['qwen3.6-35b-a3b','gemma-4-26b-a4b-it','lfm2.5-24b-a2b','clover-35b-a3b-preview','tiel-coder-35b-a3b','gpt-oss-20b'];
 let checks=0;
 function ok(value,label){assert(value,label);checks++;}
 function fixture(saved=[]){

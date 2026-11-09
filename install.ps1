@@ -585,6 +585,8 @@ function Invoke-TinyStrataPortableBuild {
         $env:VSLANG = '1033'
         $configure = @('-S', $sourceRoot, '-B', $buildRoot, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', "-DTINYSTRATA_BACKEND=$($Backend.ToUpperInvariant())", '-DTINYSTRATA_LFM2=ON', '-DTINYSTRATA_GEMMA4=ON', '-DSTRATA_PORTABLE=ON', "-DCMAKE_MAKE_PROGRAM=$($tools.Ninja)")
         if ($Backend -eq 'hip') {
+            # Override an older build-hip cache that recorded this option OFF.
+            $configure += @('-DSTRATA_HIP_MXFP4_MMQ=ON')
             $env:HIP_PLATFORM = 'amd'
             $env:HIP_PATH = $hipRoot
             $env:ROCM_PATH = $hipRoot
@@ -1205,7 +1207,7 @@ function Invoke-TinyStrataApi {
 
 function Test-TinyStrataInferenceReady {
     param($Health, $Configuration)
-    $requireImages = -not ($Configuration -and ($Configuration.vision_mode -eq 'no' -or $Configuration.arch -eq 'lfm2moe'))
+    $requireImages = -not ($Configuration -and ($Configuration.vision_mode -eq 'no' -or $Configuration.arch -in @('lfm2moe', 'gpt-oss')))
     return [bool]($Health.loaded -and (-not $requireImages -or $Health.images))
 }
 

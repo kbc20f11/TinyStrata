@@ -163,7 +163,7 @@ class ModelProfiles:
                   "args": args, "memory_policy_version": tinyconfig.MEMORY_POLICY_VERSION,
                   **deepcopy(self._hardware)}
         thinking = capabilities(name)
-        if thinking and thinking["mode"] == "effort":
+        if thinking and thinking["mode"] in ("effort", "effort_always"):
             result["reasoning_effort"] = thinking["default"]
         elif thinking:
             result["enable_thinking"] = True

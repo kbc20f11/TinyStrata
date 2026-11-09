@@ -202,6 +202,7 @@ async function loadHealth() {
     health = next;
     if (changed) {
       if (typeof modelHealthChanged === "function") modelHealthChanged();
+      if (typeof syncSamplingInputs === "function") syncSamplingInputs();
       sharedOn = false;
       await loadShared();
     }
@@ -1048,16 +1049,27 @@ function markdown(text) {
 }
 
 // ------------------------------------------------------------------ Chat
-// The sampling shown until the user changes it is the model card's thinking set. Untouched, the page sends NO sampling
-// fields: the server picks the card's set for the request's thinking state (thinking 1.0 / 0.95 / 20, not thinking
-// 0.7 / 0.8 / 20 with a presence penalty). Before 0.1.45 the page sent 0.6 itself; a stored 0.6 with the other two
-// values untouched counts as "not set" too.
+// Untouched controls send no sampling fields: the server uses the model's
+// configured defaults. The legacy tuple remains the browser's default marker;
+// GPT-OSS displays its recommended 1 / 1 / 0 without saving an override.
 const DEFAULTS = {thinkingByModel: {}, temperature: 1.0, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true, math: true,
                   chatList: true, whileBusy: "wait", webSearch: true, autoCompact: true};
 const OLD_DEFAULT_TEMPERATURE = 0.6;
 function samplingUntouched(s) {
   const t = +s.temperature;
   return (t === DEFAULTS.temperature || t === OLD_DEFAULT_TEMPERATURE) && +s.top_p === DEFAULTS.top_p && +s.top_k === DEFAULTS.top_k;
+}
+function modelSamplingDefaults() {
+  return health.model === "gpt-oss-20b" ? {temperature: 1, top_p: 1, top_k: 0}
+    : {temperature: DEFAULTS.temperature, top_p: DEFAULTS.top_p, top_k: DEFAULTS.top_k};
+}
+function displayedSampling(s) {
+  return samplingUntouched(s) ? modelSamplingDefaults() : s;
+}
+function storedSampling(s) {
+  const defaults = modelSamplingDefaults();
+  return Object.keys(defaults).every((key) => +s[key] === defaults[key])
+    ? {temperature: DEFAULTS.temperature, top_p: DEFAULTS.top_p, top_k: DEFAULTS.top_k} : s;
 }
 let settings = StrataThinkingControls.migrate({...DEFAULTS, ...store.get("sampling", {})});
 let globalTools = null, toolSettingsSaving = false;
@@ -1281,7 +1293,8 @@ function thinkingPayload(s = settings, shared = false) {
 }
 function thinkingLabel(value) {
   return {none: tr("drawer.off", "Off"), on: tr("thinking.on", "On"), low: tr("drawer.low", "Low"),
-    medium: tr("drawer.medium", "Medium"), xhigh: tr("thinking.high", "High (xhigh)")}[value] || "";
+    medium: tr("drawer.medium", "Medium"), high: tr("drawer.high", "High"),
+    xhigh: tr("thinking.high", "High (xhigh)")}[value] || "";
 }
 function setThinkingChoice(value, s = settings) {
   return StrataThinkingControls.select(s, thinkingModelId(), value, thinkingMetadata());
@@ -3172,7 +3185,6 @@ const checked = (id) => $(id).type === "checkbox" ? $(id).checked : $(id).getAtt
 const segValue = (id) => { const b = [...$(id).children].find((x) => x.getAttribute("aria-checked") === "true"); return b ? b.dataset.v : null; };
 function loadDrawer(s = settings) {
   syncThinkingControls(s);
-  $("s-temp").value = s.temperature; $("s-topp").value = s.top_p; $("s-topk").value = s.top_k;
   $("s-max").value = s.max; $("s-seed").value = s.seed;
   $("s-math").setAttribute("aria-checked", String(!!s.math));
   $("s-show").setAttribute("aria-checked", String(!!s.show));
@@ -3183,6 +3195,14 @@ function loadDrawer(s = settings) {
   $("s-list").setAttribute("aria-checked", String(!!s.chatList));
   $("s-compact").setAttribute("aria-checked", String(s.autoCompact !== false));
   for (const b of $("s-busy").children) b.setAttribute("aria-checked", String(b.dataset.v === (s.whileBusy || "wait")));
+  syncSamplingInputs(s);
+}
+function syncSamplingInputs(s = settings) {
+  const sampling = displayedSampling(s);
+  $("s-topk").min = health.model === "gpt-oss-20b" ? "0" : "1";
+  $("s-temp").value = sampling.temperature;
+  $("s-topp").value = sampling.top_p;
+  $("s-topk").value = sampling.top_k;
   outputs();
 }
 function renderLocalToolStatus() {
@@ -3318,8 +3338,9 @@ $("s-apply").onclick = async () => {
   const prev = settings;
   // Changing the list replaces the messages on the screen, so wait for an open operation.
   const locked = !!busy || !!resourceOperation || !!panel;
-  settings = {...setThinkingChoice(segValue("s-thinking")), temperature: +$("s-temp").value, top_p: +$("s-topp").value,
-              top_k: +$("s-topk").value, max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
+  const sampling = storedSampling({temperature: +$("s-temp").value, top_p: +$("s-topp").value, top_k: +$("s-topk").value});
+  settings = {...setThinkingChoice(segValue("s-thinking")), ...sampling,
+              max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
               math: checked("s-math"), show: checked("s-show"), esp: checked("s-esp"), mcp: checked("s-mcp"),
               webSearch: prev.webSearch,
               autoCompact: locked ? prev.autoCompact !== false : checked("s-compact"),

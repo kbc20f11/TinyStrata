@@ -48,7 +48,7 @@ struct Options {
     int vram_reserve_mib = -1;    ///< left free after the expert cache is filled; below 0: by the card's size
     std::string profile;          ///< expert use counts; orders the expert cache, and save_profile() adds to it
     bool gpu_experts = true;
-    bool allow_gpt_oss_hip = false;   ///< run gpt-oss on the AMD HIP backend, where it has not been tried (--allow-gpt-oss-hip)
+    bool allow_gpt_oss_hip = false;   ///< legacy --allow-gpt-oss-hip is accepted for existing configurations; no longer required
     double expert_vram_gib = -1; ///< routed Expert cache cap; -1: available VRAM, 0: CPU Experts
     bool dump = false;            ///< print a checksum of every stage, for comparing against llama.cpp
     // A prompt batch.  More tokens a call and a larger staging buffer read a prompt faster, and both take VRAM
@@ -177,6 +177,8 @@ public:
     KvFmt kv_format() const { return opt_.kv_format; }
 
     int n_vocab() const { return n_vocab_; }
+    const char* model_family() const { return oai_ ? "gpt-oss" : "gemma4"; }
+    const char* model_name() const { return oai_ ? "gpt-oss-20b" : "gemma-4-26b-a4b-it"; }
     /// The rows of the output a guess is picked from.  A guess that is never right costs a window's place and no
     /// token, so the rare tokens may be left out, where the vocabulary has the common ones first.
     int draft_rows() const {
@@ -592,6 +594,8 @@ protected:
     void* ev_out_[2] = {};    ///< marks the card done with a call in each half
     float rms_eps_ = 0;
     bool oai_ = false;        ///< gpt-oss's gated unit with its experts' biases (swiglu_oai_*); clamp_exp_ has the limit
+    int oai_fuse_ = 0;        ///< GPT-OSS sets both: bit 0 output bias/residual, bit 1 down bias/ordered sum
+    bool oai_mmq_ = true;     ///< diagnostic: disable prompt MMQ while keeping decode device routing
     float oai_alpha_ = 1.702f;
     bool gelu_ = false;       ///< the routed experts' activation: GELU of the gate, else SiLU within the layer's limits
     std::vector<float> clamp_exp_, clamp_shexp_;   ///< a layer's SwiGLU limits: the routed experts', the shared one's

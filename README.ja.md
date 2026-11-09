@@ -42,13 +42,17 @@ Clover では反復 lookup も任意で使えます。`--clover-lookup N` は提
 
 Qwen・Gemma・Clover・LFM・Tiel Coder はいずれも、空き VRAM に合わせたエキスパートキャッシュ、システム RAM を使った CPU でのエキスパート計算、入力時の重みのストリーミング、CUDA Graph に対応しています。共通の API と起動中のモデル切り替えを利用でき、設定はモデルごとに保存します。モデルが選んだエキスパートは省略しません。また、最大コンテキスト容量を変えずに、会話の長さに応じて KV の物理メモリを自動で増やせます。
 
-| 機能 | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) | [Tiel Coder](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP) |
-| --- | --- | --- | --- | --- | --- |
-| 最大コンテキスト | 256K | 256K | 128K | 256K（拡張） | 256K |
-| 画像入力 | 対応（画像エンコーダは既定で GPU 常駐） | 対応（画像エンコーダは既定で GPU 常駐） | なし | 対応（TinyStrata 拡張・既定で GPU 常駐） | 対応（画像エンコーダは既定で GPU 常駐） |
-| MTP | 3 | 3 | なし | なし（exact 自己投機 D3 は任意選択） | 3 |
-| KV 形式 | FP32 / INT8 / ネイティブ FP8 | FP16 / INT8 / ネイティブ FP8（実験的） | FP16 / INT8 / ネイティブ FP8 | FP32 / INT8 / ネイティブ FP8 | FP32 / INT8 / ネイティブ FP8 |
-| KV の自動選択（既定） | FP8 → INT8 | INT8 | FP8 → INT8 | INT8 | FP8 → INT8 |
+**gpt-oss 20B MXFP4** は固定の [ggml-org GGUF](https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/blob/15dcfc7e7c608c6161507211ed43c5b590801b4b/gpt-oss-20b-MXFP4.gguf)（**12.110 GB**）を使います。テキスト専用で、コンテキスト上限は **128K**、KV の既定は **INT8**、MTP ヘッドはありません。思考は **低／中／高**から選び、初期値は**中**です。`run-api.bat --model-family gpt-oss`（ポート **18085**、`config-gpt-oss.json`）で起動し、Gemma と実行ファイルを共有します。サンプリングの既定は温度 **1.0**、top-p **1.0**、top-k **0**（制限なし）です。
+
+[HIPでの実測と検証結果](benchmark/results/gptoss-adoption-20261110.md)：MXFP4 MMQ は HIP の既定で有効です（`-DSTRATA_HIP_MXFP4_MMQ=OFF` で従来の matvec 経路をビルド、`TINYSTRATA_GPTOSS_MMQ=0` で診断時に MMQ を無効化）。native の `--serve --lookup-draft 7` は任意選択で、確率的生成では一律に速くならないため、既存の lookup の既定は **0** を維持します。
+
+| 機能 | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) | [Tiel Coder](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP) | [gpt-oss](https://huggingface.co/openai/gpt-oss-20b) |
+| --- | --- | --- | --- | --- | --- | --- |
+| 最大コンテキスト | 256K | 256K | 128K | 256K（拡張） | 256K | 128K |
+| 画像入力 | 対応（画像エンコーダは既定で GPU 常駐） | 対応（画像エンコーダは既定で GPU 常駐） | なし | 対応（TinyStrata 拡張・既定で GPU 常駐） | 対応（画像エンコーダは既定で GPU 常駐） | なし |
+| MTP | 3 | 3 | なし | なし（exact 自己投機 D3 は任意選択） | 3 | なし |
+| KV 形式 | FP32 / INT8 / ネイティブ FP8 | FP16 / INT8 / ネイティブ FP8（実験的） | FP16 / INT8 / ネイティブ FP8 | FP32 / INT8 / ネイティブ FP8 | FP32 / INT8 / ネイティブ FP8 | FP16 / INT8 |
+| KV の自動選択（既定） | FP8 → INT8 | INT8 | FP8 → INT8 | INT8 | FP8 → INT8 | INT8 |
 
 Clover の画像入力は TinyStrata の拡張で、公式 Clover の機能ではありません。
 
@@ -58,7 +62,7 @@ Gemma の既定は INT8 です。ネイティブ FP8 は実験的な機能で、
 
 **コンテキスト容量の自動選択**は、下表のように GPU の総 VRAM を基準とし、空き VRAM はエキスパートキャッシュの容量に反映されます。`--max-context N` を指定した場合は、その値を優先します。
 
-| GPU の総 VRAM（目安） | Qwen3.6 / Gemma 4 / Clover / Tiel Coder | LFM2.5 |
+| GPU の総 VRAM（目安） | Qwen3.6 / Gemma 4 / Clover / Tiel Coder | LFM2.5 / gpt-oss |
 | --- | ---: | ---: |
 | 8 GB | 64K | 64K |
 | 12 GB | 128K | 128K |

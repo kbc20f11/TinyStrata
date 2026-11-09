@@ -25,13 +25,6 @@ void GptOss::begin_pass() {
 }
 
 void GptOss::load_geometry() {
-#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
-    // Its kernels have only been run on CUDA.  --allow-gpt-oss-hip lifts this for testing; the MXFP4 prompt kernels
-    // also need a build with -DSTRATA_HIP_MXFP4_MMQ=ON, and without them a prompt runs on the slower path.
-    if (!opt_.allow_gpt_oss_hip)
-        throw std::runtime_error("gpt-oss is not enabled on the AMD HIP backend yet: its kernels have only been run on CUDA "
-                                 "(--allow-gpt-oss-hip to try it)");
-#endif
     load_shape();
     auto find = [&](const char* key) { return meta_in(*gg_, key); };
     auto need = [](bool ok, const char* what) {
@@ -84,6 +77,17 @@ void GptOss::load_geometry() {
          "a KV format other than fp16 or int8 (the sink is not in the FP8 attention yet)");
 
     oai_ = true;
+    // Both bias fusions preserve the unfused kernels' bits and avoid separate launches.
+    // Retain the original path and independent overrides for diagnosis.
+    oai_fuse_ = 3;
+    if (const char* fuse = std::getenv("TINYSTRATA_GPTOSS_FUSE")) {
+        need(fuse[0] >= '0' && fuse[0] <= '3' && fuse[1] == '\0', "TINYSTRATA_GPTOSS_FUSE must be 0..3");
+        oai_fuse_ = fuse[0] - '0';
+    }
+    if (const char* mmq = std::getenv("TINYSTRATA_GPTOSS_MMQ")) {
+        need((mmq[0] == '0' || mmq[0] == '1') && mmq[1] == '\0', "TINYSTRATA_GPTOSS_MMQ must be 0 or 1");
+        oai_mmq_ = mmq[0] == '1';
+    }
     oai_alpha_ = kOaiAlpha;
     clamp_exp_.assign((size_t) n_layer_, kOaiLimit);
     clamp_shexp_ = clamp_exp_;
@@ -308,7 +312,7 @@ void GptOss::attn(Block& B, int64_t pos, int n) {
                at, !at ? 0 : B.swa ? std::min(window_ + n - 1, opt_.max_context) : room(n), 0,
                q8 ? Kvq8{B.k_codes, B.k_scales} : Kvq8{}, q8 ? Kvq8{B.v_codes, B.v_scales} : Kvq8{}, fp(B.sinks));
     lin(B.wo, att_, ao_, n);
-    rope_bias(ao_, fp(B.bo), ao_, n_embd_, 1, 0, 1.f, nullptr, 1.f, 0, n, st_);
+    if (!(oai_fuse_ & 1)) rope_bias(ao_, fp(B.bo), ao_, n_embd_, 1, 0, 1.f, nullptr, 1.f, 0, n, st_);
 }
 
 // A layer from its input to its router's copy: r_ holds the residual with the attention added, normed into xn_
@@ -319,7 +323,8 @@ void GptOss::layer_head(Layer& L, int il, int n) {
     rms_norm(r_, fp(L.attn_norm), xn_, n_embd_, n, rms_eps_, st_);
     kernels::gemma_native_quantize_q8_1(xn_, xq_, all, 1, st_);
     attn(B, pos_, n);
-    axpy(ao_, 1.f, r_, all, true, st_);
+    if (oai_fuse_ & 1) add_bias_residual(ao_, fp(B.bo), r_, n_embd_, n, st_);
+    else axpy(ao_, 1.f, r_, all, true, st_);
     rms_norm(r_, fp(L.ffn_norm), xn_, n_embd_, n, rms_eps_, st_);
     kernels::gemma_native_quantize_q8_1(xn_, xq_, all, 1, st_);
     if (!batched(L, n)) moe_router(L, n);

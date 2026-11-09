@@ -46,6 +46,8 @@
 !/tests/clover-self-spec.cpp
 !/tests/clover-self-spec-gpu.cu
 !/tests/gemma-cached-slots.cu
+!/tests/gptoss-fused.cu
+!/tests/gptoss-state.cpp
 !/tests/hybrid-publish-gpu.cu
 !/tests/clover-attention-gpu.cu
 !/tests/clover-decode-settings.py

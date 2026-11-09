@@ -1977,7 +1977,8 @@ void Engine::alloc() {
     for (int il = 0; il < n_layer_; ++il) {
         Layer& L = layers_[(size_t) il];
         if (!L.moe) continue;
-        L.mmq = opt_.gpu_experts && rows_ >= kStageRows && Mmq::fits((int) L.gu_type, 2 * n_ff_exp_, n_embd_) &&
+        L.mmq = opt_.gpu_experts && (!oai_ || oai_mmq_) && rows_ >= kStageRows &&
+                Mmq::fits((int) L.gu_type, 2 * n_ff_exp_, n_embd_) &&
                 Mmq::fits((int) L.d_type, n_embd_, n_ff_exp_);
         tiles = tiles || L.mmq;
         one_expert = std::max(one_expert, 2 * L.gu_bytes + L.d_bytes);
@@ -2004,6 +2005,18 @@ void Engine::alloc() {
     h_cpu_ = (float*) hmalloc(n * n_embd_ * sizeof(float), "pinned memory");
     h_logits_ = (float*) hmalloc((size_t) n_vocab_ * sizeof(float), "pinned memory");
 
+    // Device-routed decode needs only these tables, not the prompt's MMQ workspace.
+    // The explicit GPT-OSS diagnostic keeps that path when prompt MMQ is disabled.
+    // With no override, allocation and routing retain the build's existing policy.
+    // The compact decode buffers hold kSumRows expert outputs; the gate/up scratch
+    // must have that many rows too. Small prompt batches retain the scalar path.
+    if (mmq_ || (oai_ && !oai_mmq_ && rows_ >= kSumRows)) {
+        const size_t rr = n * n_used_;
+        d_ids_ = (int32_t*) dmalloc(rr * sizeof(int32_t), "scratch");
+        d_wts_ = (float*) dmalloc(rr * sizeof(float), "scratch");
+        h_ids_ = (int32_t*) hmalloc(rr * sizeof(int32_t), "pinned memory");
+        d_slots_ = (void**) dmalloc((size_t) n_layer_ * n_expert_ * sizeof(void*), "scratch");
+    }
     if (mmq_) {
         const size_t rr = n * n_used_;
         mmq_ids::PackedIdsLayout tables;
@@ -2013,16 +2026,12 @@ void Engine::alloc() {
         mq_ = dmalloc(Mmq::q8_bytes((int64_t) rr, n_embd_), "scratch");
         mq2_ = dmalloc(Mmq::q8_bytes((int64_t) rr, n_ff_exp_), "scratch");
         mqx_ = dmalloc(Mmq::q8_bytes(rows_, q_max), "scratch");
-        d_ids_ = (int32_t*) dmalloc(rr * sizeof(int32_t), "scratch");
-        d_wts_ = (float*) dmalloc(rr * sizeof(float), "scratch");
-        h_ids_ = (int32_t*) hmalloc(rr * sizeof(int32_t), "pinned memory");
         if (oai_) {
             d_rowexp_ = (int32_t*) dmalloc(rr * sizeof(int32_t), "scratch");
             d_placeexp_ = (int32_t*) dmalloc(rr * sizeof(int32_t), "scratch");
             h_rowexp_ = (int32_t*) hmalloc(rr * sizeof(int32_t), "pinned memory");
             h_placeexp_ = (int32_t*) hmalloc(rr * sizeof(int32_t), "pinned memory");
         }
-        d_slots_ = (void**) dmalloc((size_t) n_layer_ * n_expert_ * sizeof(void*), "scratch");
         tab_ = (int32_t*) dmalloc(tab, "scratch");
         h_tab_ = (int32_t*) hmalloc(tab, "pinned memory");
         // Destination-map tails are read before MMQ masks an out-of-range row. Keep them initialized and
@@ -2341,7 +2350,9 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
                 return kSlots == 32 && (!value || std::strcmp(value, "1") == 0) ? 32 : 8;
             }();
             const int per = rows_ >= requested ? requested : rows_ >= 8 ? 8 : 1;
-            ScaledRows sum{};
+            BiasedScaledRows biased_sum;
+            ScaledRows& sum = biased_sum.rows;
+            sum = {};
             for (int i0 = 0; i0 < n_cached; i0 += per) {
                 const int m = std::min(per, n_cached - i0);
                 kernels::MmvqSlots gate_up{}, down{};
@@ -2374,7 +2385,7 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
                     for (int j = 0; j < m; ++j)
                         kernels::gemma_native_mmvq((int) L.d_type, down.w[j], down.x[j], down.y[j], n_ff_exp_, n_embd_, 1,
                                              st_);
-                if (oai_)   // each expert's own bias on its output, a row at a time: the rows are not back to back
+                if (oai_ && !(oai_fuse_ & 2))   // each expert's own bias; the rows are not back to back
                     for (int j = 0; j < m; ++j) {
                         ExpertBias eb{};
                         eb.d[0] = L.b_down + (size_t) cached[i0 + j].expert * e_row;
@@ -2386,7 +2397,11 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
                     sum.x[k] = down.y[j];
                     sum.acc[k] = fo_ + (size_t) c.row * e_row;
                     sum.w[k] = c.w;
-                    if (k == kSumRows - 1 || i0 + j == n_cached - 1) add_scaled(sum, k + 1, n_embd_, st_);
+                    if (oai_ && (oai_fuse_ & 2)) biased_sum.bias[k] = L.b_down + (size_t) c.expert * e_row;
+                    if (k == kSumRows - 1 || i0 + j == n_cached - 1) {
+                        if (oai_ && (oai_fuse_ & 2)) add_scaled_bias(biased_sum, k + 1, n_embd_, st_);
+                        else add_scaled(sum, k + 1, n_embd_, st_);
+                    }
                 }
             }
         };
@@ -2456,8 +2471,12 @@ bool Engine::moe_card(Layer& L, int il, int n) {
     const kernels::MmvqIds down{table, d_ids_, 2 * L.gu_bytes, q8_, kernels::gemma_native_q8_1_bytes(n_ff_exp_), 1, d_,
                                 (size_t) n_embd_};
     kernels::gemma_native_mmvq_ids((int) L.d_type, down, rr, n_ff_exp_, n_embd_, st_);
-    if (oai_) add_expert_bias_ids(d_, n_embd_, rr, d_ids_, L.b_down, st_);
-    moe_sum(d_, d_wts_, fo_, n_embd_, n_used_, n, st_);
+    if (oai_ && (oai_fuse_ & 2)) {
+        moe_sum_bias(d_, d_wts_, d_ids_, L.b_down, fo_, n_embd_, n_used_, n, st_);
+    } else {
+        if (oai_) add_expert_bias_ids(d_, n_embd_, rr, d_ids_, L.b_down, st_);
+        moe_sum(d_, d_wts_, fo_, n_embd_, n_used_, n, st_);
+    }
     return true;
 }
 
@@ -2764,7 +2783,7 @@ void Engine::moe_rows(Layer& L, int il, int n) {
                       rows, most, dx_, n_embd_, st_);
         }
         // each expert's own bias on its output; the CPU's places have no weight in the card's sum, so theirs are harmless
-        if (oai_) add_expert_bias_ids(dx_, n_embd_, rr, d_placeexp_, L.b_down, st_);
+        if (oai_ && !(oai_fuse_ & 2)) add_expert_bias_ids(dx_, n_embd_, rr, d_placeexp_, L.b_down, st_);
         ck(cudaEventRecord((cudaEvent_t) ev_free_, cs(st_)), "expert staging");
     };
     if (n_cpu == 0) {
@@ -2793,7 +2812,9 @@ void Engine::moe_rows(Layer& L, int il, int n) {
             share_[size] = std::clamp(0.5 * share_[size] + 0.5 * g / (c + g), 0.05, 0.95);
         }
     }
-    moe_sum(dx_, d_w, fo_, n_embd_, n_used_, n, st_);
+    if (oai_ && (oai_fuse_ & 2))
+        moe_sum_bias(dx_, d_w, d_placeexp_, L.b_down, fo_, n_embd_, n_used_, n, st_);
+    else moe_sum(dx_, d_w, fo_, n_embd_, n_used_, n, st_);
     if (n_cpu > 0) moe_add(n);
     if (ahead && holds >= 0) {
         staged_.assign(group_.begin() + round_[(size_t) holds], group_.begin() + round_[(size_t) holds + 1]);

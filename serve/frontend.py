@@ -183,6 +183,7 @@ class ChatTemplate:
 # gpt-oss speaks OpenAI's Harmony format: a message is `<|channel|>NAME[ to=functions.TOOL]<|message|>BODY` and ends
 # with `<|end|>` (more follows), `<|call|>` (a tool call; generation stops) or `<|return|>` (the answer is done).
 HM_MESSAGE = "<|message|>"
+HM_ANALYSIS = "<|channel|>analysis" + HM_MESSAGE
 HM_END = ("<|end|>", "<|return|>", "<|call|>")
 HM_HEADER_MAX = 1024     # a header longer than this is not one: the text is the answer
 
@@ -204,18 +205,25 @@ def _harmony_messages(messages: list[dict]) -> list[dict]:
                 m["thinking"] = m["reasoning_content"] or ""
             m.pop("reasoning_content", None)
             if m.get("tool_calls"):
+                if len(m["tool_calls"]) != 1:
+                    raise ValueError("gpt-oss Harmony history supports one tool call per assistant message")
                 calls = []
                 for call in m["tool_calls"]:
                     fn = dict(call.get("function") or call)
                     if isinstance(fn.get("arguments"), str):
                         try:
                             fn["arguments"] = json.loads(fn["arguments"] or "{}")
-                        except ValueError:
-                            fn["arguments"] = {}
+                        except ValueError as error:
+                            raise ValueError("gpt-oss tool-call arguments must be a JSON object") from error
+                    if not isinstance(fn.get("arguments", {}), dict):
+                        raise ValueError("gpt-oss tool-call arguments must be a JSON object")
                     calls.append({**call, "function": fn} if "function" in call else fn)
                 m["tool_calls"] = calls
                 if m.get("content") and m.get("thinking"):
-                    m.pop("thinking")
+                    # The pinned template permits one analysis field beside a
+                    # call. Preserve both the previous analysis and preamble.
+                    m["thinking"] = str(m["thinking"]) + "\n\n" + m["content"]
+                    m["content"] = ""
             elif m.get("thinking") is None:
                 m.pop("thinking", None)
         result.append(m)
@@ -1054,16 +1062,29 @@ def forced_call(tool_choice, tools: list[dict] | None, call_format: str = "funct
             return LFM2_CALL + "["
         if call_format == "gemma":
             return GEMMA_CALL + "call:"
+        if call_format == "harmony":
+            return " to="
         return CALL_START + "\n<function="
     if kind == "named" and name in names:
         if call_format == "lfm2":
             return LFM2_CALL + f"[{name}("
         if call_format == "gemma":
             return GEMMA_CALL + f"call:{name}{{"
+        if call_format == "harmony":
+            return f" to=functions.{name}<|channel|>commentary json" + HM_MESSAGE
         return CALL_START + f"\n<function={name}>\n"
     print(f"[strata] tool_choice {json.dumps(tool_choice)[:200]} is not supported here (or names no tool of the "
           "request): the model decides, as with \"auto\"", flush=True)
     return None
+
+
+def forced_call_prefill(force: str | None, thinking: bool, call_format: str) -> str:
+    """Keep Harmony reasoning before an enforced call; other formats keep their existing prefix."""
+    if not force:
+        return ""
+    if not thinking:
+        return force
+    return HM_ANALYSIS if call_format == "harmony" else ""
 
 
 PARAM_START = "<parameter="
@@ -1254,7 +1275,7 @@ class OutputParser:
         self.state = "reasoning" if thinking and (call_format != "gemma" or opened) else "content"
         self.buf = ""
         if call_format == "harmony":
-            self.state = "hm_head"      # the model opens with a channel header
+            self.state = "reasoning" if opened else "hm_head"
             self.hm_name = ""
         self.lead = call_format == "lfm2" and not thinking
         self.schemas = {t.get("name"): t for t in tools or []}
@@ -1785,9 +1806,16 @@ class OutputParser:
                     return out
                 header, self.buf = self.buf[:end], self.buf[end + len(HM_MESSAGE):]
                 channel = re.search(r"<\|channel\|>\s*([A-Za-z_]+)", header)
+                # Some gpt-oss completions put the format separator between
+                # the functions namespace and selected name. Its JSON metadata
+                # elsewhere in the header remains a separator, not name text.
+                header = re.sub(r"(\bto=functions\.)<\|constrain\|>", r"\1", header)
                 recipient = re.search(r"\bto=([\w.\-]+)", header)
                 if recipient and recipient.group(1) != "assistant":
                     self.hm_name = recipient.group(1).split(".", 1)[-1]
+                    if not self.hm_name or self.hm_name not in self.schemas:
+                        self.state = "content"
+                        continue
                     self.state = "hm_call"
                     self._reset_scan()
                     if self.stream_tools:

@@ -34,7 +34,7 @@ def capabilities(model: str, arch: str | None = None) -> dict | None:
         return None
     return {"mode": mode, "default": "medium" if _is_effort(mode) else "on",
             "options": ["none", "low", "medium", "xhigh"] if mode == "effort" else
-                       ["low", "medium", "xhigh"] if mode == "effort_always" else
+                       ["low", "medium", "high"] if mode == "effort_always" else
                        ["on"] if mode == "always" else ["none", "on"]}
 
 
@@ -52,7 +52,7 @@ def normalize_effort(value, policy: dict) -> str:
     elif key == "medium":
         result = "medium" if effort else "high"
     elif key in ("high", "xhigh", "max", "maximum"):
-        result = "xhigh" if effort else "high"
+        result = "xhigh" if policy["mode"] == "effort" else "high"
     else:
         raise ValueError("reasoning_effort: " + ", ".join(policy["options"]))
     return result

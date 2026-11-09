@@ -248,6 +248,15 @@ __global__ void add_scaled_kernel(ScaledRows rows, int count, int n) {
     for (int k = 0; k < count; ++k) rows.acc[k][i] = rows.acc[k][i] + rows.x[k][i] * rows.w[k];
 }
 
+__global__ void add_scaled_bias_kernel(BiasedScaledRows b, int count, int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    for (int k = 0; k < count; ++k) {
+        const float value = b.rows.x[k][i] + b.bias[k][i];
+        b.rows.acc[k][i] = b.rows.acc[k][i] + value * b.rows.w[k];
+    }
+}
+
 __global__ void swiglu_clamp_rows_kernel(const float* __restrict__ gate_up, float* __restrict__ out, int n,
                                          float limit) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -465,6 +474,30 @@ __global__ void add_expert_bias_slots_kernel(float* __restrict__ x, int n, Exper
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
     x[size_t(blockIdx.y) * n + i] += eb.d[blockIdx.y][i];
+}
+
+__global__ void moe_sum_bias_kernel(const float* __restrict__ x, const float* __restrict__ w,
+                                    const int32_t* __restrict__ ids, const float* __restrict__ bias,
+                                    float* __restrict__ acc, int n, int n_used) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const size_t first = size_t(blockIdx.y) * n_used;
+    float s = 0.0f;
+    for (int k = 0; k < n_used; ++k) {
+        const size_t row = first + k;
+        const float value = x[row * n + i] + bias[size_t(ids[row]) * n + i];
+        s += w[row] * value;
+    }
+    acc[size_t(blockIdx.y) * n + i] += s;
+}
+
+__global__ void add_bias_residual_kernel(const float* __restrict__ x, const float* __restrict__ bias,
+                                         float* __restrict__ acc, int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const size_t at = size_t(blockIdx.y) * n + i;
+    const float value = x[at] + bias[i];
+    acc[at] += value;
 }
 
 // The rows the token at position p attends: how many, and the first of them.  They end at its own row, or at row
@@ -1529,6 +1562,11 @@ void add_scaled(const ScaledRows& rows, int count, int n, void* stream) {
     add_scaled_kernel<<<grid(n, 256), 256, 0, cs(stream)>>>(rows, count, n);
 }
 
+void add_scaled_bias(const BiasedScaledRows& rows, int count, int n, void* stream) {
+    if (count < 1 || count > 32) throw std::invalid_argument("add_scaled_bias: 1 to 32 vectors");
+    add_scaled_bias_kernel<<<grid(n, 256), 256, 0, cs(stream)>>>(rows, count, n);
+}
+
 void swiglu_clamp_rows(const float* gate_up, float* out, int n, int rows, float limit, void* stream) {
     swiglu_clamp_rows_kernel<<<dim3(grid(n, 256), rows), 256, 0, cs(stream)>>>(gate_up, out, n, limit);
 }
@@ -1593,6 +1631,15 @@ void add_expert_bias_ids(float* x, int n, int rows, const int32_t* ids, const fl
 
 void add_expert_bias_slots(float* x, int n, int rows, const ExpertBias& eb, void* stream) {
     add_expert_bias_slots_kernel<<<dim3(grid(n, 256), rows), 256, 0, cs(stream)>>>(x, n, eb);
+}
+
+void moe_sum_bias(const float* x, const float* w, const int32_t* ids, const float* bias,
+                  float* acc, int n, int n_used, int rows, void* stream) {
+    moe_sum_bias_kernel<<<dim3(grid(n, 256), rows), 256, 0, cs(stream)>>>(x, w, ids, bias, acc, n, n_used);
+}
+
+void add_bias_residual(const float* x, const float* bias, float* acc, int n, int rows, void* stream) {
+    add_bias_residual_kernel<<<dim3(grid(n, 256), rows), 256, 0, cs(stream)>>>(x, bias, acc, n);
 }
 
 void attend(const float* q, const uint16_t* kcache, const uint16_t* vcache, int64_t pos, int rows, float* score,

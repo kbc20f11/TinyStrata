@@ -41,12 +41,17 @@ MODELS = {
     'lfm': ('config-lfm2.json', 'lfm2moe', 'lfm2.5-24b-a2b'),
     'clover': ('config-clover.json', 'clover_moe', 'clover-35b-a3b-preview'),
 }
-TEXT_ONLY_MODELS = ('lfm', 'clover')
+TEXT_ONLY_MODELS = ('lfm', 'clover', 'gptoss')
 TIEL_MODEL = ('config-tiel-coder.json', 'qwen35moe', 'tiel-coder-35b-a3b')
+GPTOSS_MODEL = ('config-gpt-oss.json', 'gpt-oss', 'gpt-oss-20b')
 # Adding a model must not change the existing v1 texts/image or their hashes.
 CLOVER_SAMPLING = {'temperature': 0.0, 'top_p': 1.0, 'top_k': 64, 'min_p': 0.0,
                    'presence_penalty': 0.9, 'repetition_penalty': 1.05, 'frequency_penalty': 0.0}
-ENGINE_KEYS = ('model', 'version', 'kv', 'kv_grow', 'mtp', 'clover_draft', 'clover_mode',
+GPTOSS_SAMPLING = {'temperature': 1.0, 'top_p': 1.0, 'top_k': 0, 'min_p': 0.0,
+                  'presence_penalty': 0.0, 'repetition_penalty': 1.0, 'frequency_penalty': 0.0}
+ENGINE_KEYS = ('model', 'family', 'version', 'kv', 'kv_grow', 'mtp', 'clover_draft', 'clover_mode',
+               'mtp_auto', 'lookup_draft', 'lookup_capacity', 'last_lookup_draft',
+               'lookup_rounds', 'lookup_skipped', 'lookup_ms_short', 'lookup_ms_strong',
                'clover_accept', 'clover_accept_ratio', 'clover_accept_delta',
                'clover_draft_penalty_gpu', 'clover_gpu_exact_verify',
                'clover_block_size', 'clover_threshold', 'clover_blocks', 'clover_passes',
@@ -59,7 +64,7 @@ ENGINE_KEYS = ('model', 'version', 'kv', 'kv_grow', 'mtp', 'clover_draft', 'clov
                'clover_last_draft_penalty_gpu', 'clover_last_gpu_exact_verify',
                'cpu_workers', 'cpu_threads', 'vision', 'images',
                'max_context', 'context_auto', 'chunk', 'chunk_auto', 'expert_auto',
-               'expert_slots', 'expert_cache_bytes', 'expert_cache_mib',
+               'expert_slots', 'expert_total', 'expert_cache_bytes', 'expert_cache_mib',
                'kv_logical_bytes', 'kv_mapped_bytes', 'kv_committed_rows', 'gpu_cc',
                'q36_mmvq_il', 'q36_mmvq_il_auto', 'q36_int8_fdec',
                'q36_main_mmq', 'q36_main_mmq_auto', 'q36_mtp_mmq',
@@ -145,17 +150,19 @@ def child_environment(environ=None):
 
 
 def model_sampling(model, cases):
+    if model == 'gptoss':
+        return dict(GPTOSS_SAMPLING)
     return dict(CLOVER_SAMPLING if model == 'clover' else cases['sampling']['qwen' if model == 'tiel' else model])
 
 
 def model_definition(model):
-    return TIEL_MODEL if model == 'tiel' else MODELS[model]
+    return TIEL_MODEL if model == 'tiel' else GPTOSS_MODEL if model == 'gptoss' else MODELS[model]
 
 
 def benchmark_models(model, saved_profile=False):
     if model == 'tiel' and not saved_profile:
         raise ValueError('Tiel benchmarking requires --saved-profile')
-    return [*MODELS, *(['tiel'] if saved_profile else [])] if model == 'all' else [model]
+    return [*MODELS, *(['tiel', 'gptoss'] if saved_profile else [])] if model == 'all' else [model]
 
 
 def generation_passes(saved_profile=False):
@@ -221,7 +228,7 @@ def controlled_config(original, model, folder, port, cases, *, clover_mode='caus
                       clover_workers=None, clover_chunk='auto', clover_env=None, clover_thinking=True,
                       clover_draft=None, clover_accept='exact', clover_accept_ratio=0.9, clover_accept_delta=0.6,
                       clover_vision=False):
-    file, arch, name = MODELS[model]
+    file, arch, name = model_definition(model)
     if original.get('arch', 'qwen35moe') != arch:
         raise ValueError(f'{file} does not select {arch}')
     if clover_vision and (model != 'clover' or clover_mode == 'diffusion' or clover_accept != 'exact'):
@@ -243,6 +250,11 @@ def controlled_config(original, model, folder, port, cases, *, clover_mode='caus
         native += ['--draft-model', value('--draft-model')]
     if model not in TEXT_ONLY_MODELS:
         native += ['--mtp', '3', '--vision']
+    elif model == 'gptoss':
+        native += ['--mtp', '0', '--mtp-auto', '0', '--lookup-draft', '0']
+        # Retain an existing legacy compatibility flag; the HIP gate is removed.
+        if '--allow-gpt-oss-hip' in args:
+            native += ['--allow-gpt-oss-hip']
     elif model == 'clover':
         if clover_mode not in ('causal', 'self-spec', 'diffusion'):
             raise ValueError('Benchmark Clover modes are causal, self-spec or diffusion')
@@ -289,6 +301,8 @@ def controlled_config(original, model, folder, port, cases, *, clover_mode='caus
     if model == 'clover':
         # Both on and off are explicit protocol choices, never an old app default.
         cfg['clover_vision_policy_version'] = 1
+    if model == 'gptoss':
+        cfg['reasoning_effort'] = 'medium'
     for key in ('exe', 'tokenizer'):
         if key in cfg:
             cfg[key] = resolved(cfg[key])
@@ -711,9 +725,9 @@ def render_report(report):
 def main():
     local = Path(os.environ.get('LOCALAPPDATA', Path.home() / '.local/share'))
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--model', choices=(*MODELS, 'tiel', 'all'), default='all')
+    parser.add_argument('--model', choices=(*MODELS, 'tiel', 'gptoss', 'all'), default='all')
     parser.add_argument('--saved-profile', action='store_true',
-                        help='Nonstandard variant: retain saved native/sampling/Vision settings, include Tiel in all, run each generation text once')
+                        help='Nonstandard variant: retain saved native/sampling/Vision settings, include Tiel and GPT-OSS in all, run each generation text once')
     parser.add_argument('--config-dir', type=Path, default=local / 'TinyStrata-work/runtime/.tinystrata')
     parser.add_argument('--output', type=Path, default=local / 'TinyStrata-work/benchmarks' / time.strftime('%Y%m%d-%H%M%S'))
     parser.add_argument('--runs', type=int, default=4, help='Protocol v1 uses4; other counts are diagnostic')
@@ -803,9 +817,9 @@ def main():
         commit = None
     diffusion_variant = options.clover_mode == 'diffusion'
     self_spec_variant = options.clover_mode == 'self-spec'
-    variant = options.saved_profile or diffusion_variant or self_spec_variant or manual_variant or options.include_64k
+    variant = options.saved_profile or options.model == 'gptoss' or diffusion_variant or self_spec_variant or manual_variant or options.include_64k
     variant_suffix = ('-saved-profile' if options.saved_profile else '-clover-diffusion' if diffusion_variant else '-clover-self-spec' if self_spec_variant
-                      else '-clover-causal-variant' if manual_variant else '')
+                      else '-clover-causal-variant' if manual_variant else '-gptoss' if options.model == 'gptoss' else '')
     if options.include_64k:
         variant_suffix = (variant_suffix or '-clover-causal') + '-64k'
     if options.clover_vision:

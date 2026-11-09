@@ -142,6 +142,10 @@ def is_tiel_model(model_name: str | None) -> bool:
     return isinstance(model_name, str) and model_name.strip().lower() in ("tiel", "tiel-coder", "tiel-coder-35b-a3b")
 
 
+def is_gpt_oss_model(model_name: str | None) -> bool:
+    return isinstance(model_name, str) and model_name.strip().lower() in ("gpt-oss", "gptoss", "gpt-oss-20b")
+
+
 def manifest_for_arch(arch: str = "qwen35moe", model_name: str | None = None) -> _Manifest:
     """Resolve a supported model family to a fixed, trusted artifact."""
     if is_tiel_model(model_name):

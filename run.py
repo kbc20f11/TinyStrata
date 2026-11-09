@@ -278,7 +278,7 @@ def main() -> int:
                                help="allocate the whole context's KV at load; saved for later starts")
     ap.add_argument("--mtp", type=int)
     ap.add_argument("--mtp-auto", type=int, choices=(0, 1), help="adapt MTP depth using measured throughput; default off")
-    ap.add_argument("--lookup-draft", type=int, choices=range(8), help="Qwen/Gemma exact target-sampled suffix proposals, 0-7; default off")
+    ap.add_argument("--lookup-draft", type=int, choices=range(8), help="Qwen/Gemma/gpt-oss exact target-sampled suffix proposals, 0-7; default off")
     ap.add_argument("--clover-draft", type=int, metavar="N",
                     help="legacy Clover self-speculative draft tokens, 0-31; 0 selects causal, positive values self-spec")
     ap.add_argument("--clover-lookup", type=int, metavar="N",

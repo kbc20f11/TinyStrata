@@ -55,6 +55,12 @@ struct ScaledRows {
 };
 void add_scaled(const ScaledRows& rows, int count, int n, void* stream);
 
+struct BiasedScaledRows {
+    ScaledRows rows;
+    const float* bias[32];
+};
+void add_scaled_bias(const BiasedScaledRows& rows, int count, int n, void* stream);
+
 void head_norm_rope(const float* x, int x_stride, const float* w, float* y, int dim, int heads, int n_rot,
                     float theta_scale, int64_t pos, int rows, float eps, void* stream, const float* freq = nullptr,
                     const int32_t* axes = nullptr, int sections = 1, const long long* at = nullptr);
@@ -79,6 +85,11 @@ void swiglu_oai_slots(const float* gate_up, float* out, int n, int rows, const E
                       void* stream);
 void add_expert_bias_ids(float* x, int n, int rows, const int32_t* ids, const float* bias, void* stream);
 void add_expert_bias_slots(float* x, int n, int rows, const ExpertBias& eb, void* stream);
+// Same float additions and expert order as add_expert_bias_ids() followed by moe_sum().
+void moe_sum_bias(const float* x, const float* w, const int32_t* ids, const float* bias,
+                  float* acc, int n, int n_used, int rows, void* stream);
+// Same two additions as an output bias followed by axpy(..., 1, ..., true).
+void add_bias_residual(const float* x, const float* bias, float* acc, int n, int rows, void* stream);
 
 void attend(const float* q, const uint16_t* kcache, const uint16_t* vcache, int64_t pos, int rows, float* score,
             int chunk, float* out, int dim, int n_head, int kv_heads, float scale, void* stream, int window = 0,

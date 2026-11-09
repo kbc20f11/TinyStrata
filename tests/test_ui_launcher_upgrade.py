@@ -28,6 +28,21 @@ class LauncherUpgradeTests(unittest.TestCase):
         args = argparse.Namespace(api_port=9, port=19191, model_family="clover")
         self.launcher = launch.Launcher(args, self.source, self.work)
 
+    def test_gpt_oss_family_alias_has_independent_model_config_and_state(self):
+        for selected in ("gpt-oss", "gptoss"):
+            args = argparse.Namespace(api_port=9, port=19191, model_family=selected)
+            launcher = launch.Launcher(args, self.source, self.work)
+            self.assertEqual(launcher.family, "gpt-oss")
+            self.assertEqual(launch.PROFILES[launcher.family], ("gpt-oss-20b", "config-gpt-oss.json"))
+            launcher.save_settings()
+            self.assertEqual(launch.read_json(launcher.state_dir / "settings.json")["model_family"], "gpt-oss")
+            config = launcher.runtime / ".tinystrata" / "config-gpt-oss.json"
+            with mock.patch.object(launch, "process_started", return_value="created"):
+                launcher.save_api_process(argparse.Namespace(pid=123), config)
+            state = launch.read_json(launcher.runtime / "server-state-gpt-oss.json")
+            self.assertEqual(state["config"], str(config))
+            self.assertFalse((launcher.runtime / "server-state.json").exists())
+
     def test_tiel_family_alias_has_independent_model_and_config(self):
         for selected in ("tiel", "tiel-coder"):
             args = argparse.Namespace(api_port=9, port=19191, model_family=selected)

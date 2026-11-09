@@ -42,13 +42,17 @@ Clover also offers optional repetition lookup: `--clover-lookup N` proposes at m
 
 The Qwen, Gemma and LFM engines use an automatic VRAM Expert cache, CPU Expert computation from system RAM, prompt weight streaming and CUDA Graphs. They share the same API and support live model switching, with settings saved separately for each model. Selected Experts are not omitted. They also support automatic physical KV growth without changing the maximum context capacity.
 
-| Feature | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) | [Tiel Coder](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP) |
-| --- | --- | --- | --- | --- | --- |
-| Maximum context | 256K | 256K | 128K | 256K (extension) | 256K |
-| Image input | Yes; GPU-resident encoder by default | Yes; GPU-resident encoder by default | No | Yes (TinyStrata extension; GPU-resident encoder by default) | Yes; GPU-resident encoder by default |
-| MTP | 3 | 3 | No | No (exact self-spec D3 optional) | 3 |
-| KV formats | FP32 / INT8 / native FP8 | FP16 / INT8 / native FP8 (experimental) | FP16 / INT8 / native FP8 | FP32 / INT8 / native FP8 | FP32 / INT8 / native FP8 |
-| Automatic KV (default) | FP8 → INT8 | INT8 | FP8 → INT8 | INT8 | FP8 → INT8 |
+**gpt-oss 20B MXFP4** uses the pinned [ggml-org GGUF](https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/blob/15dcfc7e7c608c6161507211ed43c5b590801b4b/gpt-oss-20b-MXFP4.gguf) (**12.110 GB**). It is text-only, supports up to **128K** context, uses **INT8 KV** by default and has no MTP head. Thinking offers **Low / Medium / High**, initially **Medium**. Start it with `run-api.bat --model-family gpt-oss` (port **18085**, `config-gpt-oss.json`); it shares the Gemma executable. Sampling defaults to temperature **1.0**, top-p **1.0** and top-k **0** (unrestricted).
+
+[Local HIP measurements and validation](benchmark/results/gptoss-adoption-20261110.md): MXFP4 MMQ is enabled by default on HIP (`-DSTRATA_HIP_MXFP4_MMQ=OFF` builds the matvec fallback; `TINYSTRATA_GPTOSS_MMQ=0` disables MMQ for diagnosis). Native `--serve --lookup-draft 7` is optional; existing lookup defaults remain **0**, since sampled workloads do not uniformly improve.
+
+| Feature | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) | [Tiel Coder](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP) | [gpt-oss](https://huggingface.co/openai/gpt-oss-20b) |
+| --- | --- | --- | --- | --- | --- | --- |
+| Maximum context | 256K | 256K | 128K | 256K (extension) | 256K | 128K |
+| Image input | Yes; GPU-resident encoder by default | Yes; GPU-resident encoder by default | No | Yes (TinyStrata extension; GPU-resident encoder by default) | Yes; GPU-resident encoder by default | No |
+| MTP | 3 | 3 | No | No (exact self-spec D3 optional) | 3 | No |
+| KV formats | FP32 / INT8 / native FP8 | FP16 / INT8 / native FP8 (experimental) | FP16 / INT8 / native FP8 | FP32 / INT8 / native FP8 | FP32 / INT8 / native FP8 | FP16 / INT8 |
+| Automatic KV (default) | FP8 → INT8 | INT8 | FP8 → INT8 | INT8 | FP8 → INT8 | INT8 |
 
 Image input for Clover is a TinyStrata extension, not an official Clover capability.
 
@@ -58,7 +62,7 @@ Gemma uses INT8 by default. Native FP8 is experimental and can be selected expli
 
 **Automatic context capacity** uses the GPU’s total VRAM as shown below; available free VRAM determines the Expert cache size. An explicit `--max-context N` takes priority.
 
-| Total VRAM (examples) | Qwen3.6 / Gemma 4 / Clover / Tiel Coder | LFM2.5 |
+| Total VRAM (examples) | Qwen3.6 / Gemma 4 / Clover / Tiel Coder | LFM2.5 / gpt-oss |
 | --- | ---: | ---: |
 | 8 GB | 64K | 64K |
 | 12 GB | 128K | 128K |

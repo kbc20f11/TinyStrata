@@ -181,6 +181,11 @@ foreach ($family in @('tiel', 'tiel-coder')) {
     Assert-Entrypoint ($selected.Name -eq 'tiel' -and $selected.ConfigFile -eq 'config-tiel-coder.json' -and $selected.StateFile -eq 'server-state-tiel-coder.json') 'Tiel installer has independent config and state'
     Assert-Entrypoint ($selected.NativeFile -eq 'tinystrata.exe' -and $selected.Port -eq 18084) 'Tiel reuses the Qwen engine with a separate standalone port'
 }
+foreach ($family in @('gpt-oss', 'gptoss')) {
+    $selected = Get-TinyStrataModelFamily -Name $family
+    Assert-Entrypoint ($selected.Name -eq 'gpt-oss' -and $selected.ConfigFile -eq 'config-gpt-oss.json' -and $selected.StateFile -eq 'server-state-gpt-oss.json') 'gpt-oss installer has independent config and state'
+    Assert-Entrypoint ($selected.NativeFile -eq 'tinystrata-gemma4.exe' -and $selected.Port -eq 18085) 'gpt-oss uses the Gemma executable with its own standalone port'
+}
 $readinessFunction = $readinessAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Test-TinyStrataInferenceReady' }, $true)
 if (-not $readinessFunction) { throw 'Installer readiness helper is missing.' }
 Invoke-Expression $readinessFunction.Extent.Text
@@ -192,9 +197,27 @@ foreach ($mode in @('gpu', 'cpu')) {
 foreach ($arch in @('clover_moe', 'lfm2moe')) {
     Assert-Entrypoint (Test-TinyStrataInferenceReady ([pscustomobject]@{ loaded = $true; images = $false }) ([pscustomobject]@{ arch = $arch; vision_mode = 'no' })) 'explicit text-only mode remains ready without encoder'
 }
+Assert-Entrypoint (Test-TinyStrataInferenceReady ([pscustomobject]@{ loaded = $true; images = $false }) ([pscustomobject]@{ arch = 'gpt-oss'; vision_mode = 'gpu' })) 'gpt-oss remains text-only even with a stale vision preference'
 Assert-Entrypoint (-not (Test-TinyStrataInferenceReady ([pscustomobject]@{ loaded = $false; images = $true }) ([pscustomobject]@{ arch = 'clover_moe'; vision_mode = 'gpu' }))) 'Clover readiness still requires loaded language engine'
 
 # Parse only the compiler-version predicates; never execute nvcc or install.
+# Evaluate the real HIP configure argument and replay CMake's explicit -D cache
+# update contract. No native configure, compiler, SDK or GPU is invoked.
+$mxfp4Configure = @($readinessAst.FindAll({ param($node)
+    $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+    $node.Left.Extent.Text -eq '$configure' -and $node.Right.Extent.Text -match 'STRATA_HIP_MXFP4_MMQ'
+}, $true))
+Assert-Entrypoint ($mxfp4Configure.Count -eq 1) 'installer explicitly configures the adopted HIP MXFP4 implementation once'
+$mxfp4Branch = $mxfp4Configure[0].Parent
+while ($mxfp4Branch -and $mxfp4Branch -isnot [System.Management.Automation.Language.IfStatementAst]) { $mxfp4Branch = $mxfp4Branch.Parent }
+Assert-Entrypoint ($mxfp4Branch -and $mxfp4Branch.Clauses[0].Item1.Extent.Text -eq '$Backend -eq ''hip''') 'HIP MXFP4 override is confined to the HIP build branch'
+$mxfp4Arguments = @(Invoke-Expression $mxfp4Configure[0].Right.Extent.Text)
+$cachedOptions = @{ STRATA_HIP_MXFP4_MMQ = 'OFF' }
+foreach ($argument in $mxfp4Arguments) {
+    if ($argument -match '^-D([^=]+)=(.*)$') { $cachedOptions[$Matches[1]] = $Matches[2] }
+}
+Assert-Entrypoint ($cachedOptions.STRATA_HIP_MXFP4_MMQ -eq 'ON') 'HIP configure overrides an existing MXFP4 OFF cache entry'
+
 foreach ($name in @('Get-TinyStrataCudaCompilerVersion', 'Test-TinyStrataCudaCompilerVersion')) {
     $versionFunction = $readinessAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     if (-not $versionFunction) { throw "Installer CUDA version helper is missing: $name" }

@@ -453,6 +453,7 @@ def extract(gguf_path, out_dir) -> dict:
         "pre_pattern_source": "llama.cpp src/llama-vocab.cpp (LLAMA_VOCAB_PRE_TYPE_GEMMA4)" if tk.raw
                               else "llama.cpp src/llama-vocab.cpp (LLAMA_VOCAB_PRE_TYPE_LLAMA3)" if tk.pre == "lfm2"
                               else "llama.cpp src/llama-vocab.cpp (LLAMA_VOCAB_PRE_TYPE_QWEN2)" if tk.pre == "qwen2"
+                              else "llama.cpp src/llama-vocab.cpp (LLAMA_VOCAB_PRE_TYPE_GPT4O)" if tk.pre == "gpt-4o"
                               else ".ref/llama.cpp src/llama-vocab.cpp L396 (LLAMA_VOCAB_PRE_TYPE_QWEN35)",
         "ignore_merges": tk.ignore_merges,
     }

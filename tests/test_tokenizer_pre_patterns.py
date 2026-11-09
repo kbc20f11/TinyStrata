@@ -123,17 +123,20 @@ class DeclaredPreTokenizers(unittest.TestCase):
                 self.assertEqual(restored.pre, "qwen35")
                 self.assertEqual(restored.pre_pattern, QWEN35_PATTERN)
 
-    def test_extract_records_qwen2_and_restores_the_same_tokenizer(self):
+    def test_extract_records_declared_pattern_and_restores_the_same_tokenizer(self):
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "cache"
-            with patch("serve.gguf_reader.GGUFFile", return_value=SimpleNamespace(metadata=metadata("qwen2"))):
-                exported = extract("unused.gguf", path)
-            self.assertEqual(exported["pre"], "qwen2")
-            self.assertEqual(exported["pre_pattern"], QWEN2_PATTERN)
-            self.assertIn("LLAMA_VOCAB_PRE_TYPE_QWEN2", exported["pre_pattern_source"])
-            restored = Tokenizer.from_dir(path / "tokenizer")
-            for text in CORPUS:
-                self.assertEqual(restored.decode(restored.encode(text)), text)
+            for pre, pattern, source in (("qwen2", QWEN2_PATTERN, "QWEN2"),
+                                         ("gpt-4o", GPT4O_PATTERN, "GPT4O")):
+                with self.subTest(pre=pre):
+                    path = Path(temporary) / pre
+                    with patch("serve.gguf_reader.GGUFFile", return_value=SimpleNamespace(metadata=metadata(pre))):
+                        exported = extract("unused.gguf", path)
+                    self.assertEqual(exported["pre"], pre)
+                    self.assertEqual(exported["pre_pattern"], pattern)
+                    self.assertIn(f"LLAMA_VOCAB_PRE_TYPE_{source}", exported["pre_pattern_source"])
+                    restored = Tokenizer.from_dir(path / "tokenizer")
+                    for text in CORPUS:
+                        self.assertEqual(restored.decode(restored.encode(text)), text)
 
     def test_extract_invalid_pre_does_not_create_cache(self):
         with tempfile.TemporaryDirectory() as temporary:

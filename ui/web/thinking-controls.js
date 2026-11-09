@@ -5,7 +5,7 @@
     toggle: {mode: "toggle", default: "on", options: ["none", "on"]},
     always: {mode: "always", default: "on", options: ["on"]},
     effort: {mode: "effort", default: "medium", options: ["none", "low", "medium", "xhigh"]},
-    effort_always: {mode: "effort_always", default: "medium", options: ["low", "medium", "xhigh"]}
+    effort_always: {mode: "effort_always", default: "medium", options: ["low", "medium", "high"]}
   };
   const modes = {"qwen3.6-35b-a3b": "toggle", "clover-35b-a3b-preview": "toggle",
     "gemma-4-26b-a4b-it": "toggle", "lfm2.5-24b-a2b": "always", "tiel-coder-35b-a3b": "effort",
@@ -16,6 +16,9 @@
         && metadata.options.length === candidate.options.length
         && metadata.options.every((value, index) => value === candidate.options[index])) return candidate;
     return definitions[modes[model] || "toggle"];
+  }
+  function nativeChoice(model, value) {
+    return modes[model] === "effort_always" && ["xhigh", "max", "maximum"].includes(value) ? "high" : value;
   }
   function migrate(value) {
     const result = {...value}, saved = value?.thinkingByModel;
@@ -28,7 +31,8 @@
       result.thinkingByModel["tiel-coder-35b-a3b"] = value.thinking;
     }
     if (saved && typeof saved === "object" && !Array.isArray(saved)) {
-      for (const [model, choice] of Object.entries(saved)) {
+      for (const [model, value] of Object.entries(saved)) {
+        const choice = nativeChoice(model, value);
         if (Object.hasOwn(modes, model) && contract(model).options.includes(choice)) result.thinkingByModel[model] = choice;
       }
     }
@@ -38,11 +42,12 @@
     return result;
   }
   function choice(model, settings, metadata) {
-    const spec = contract(model, metadata), value = settings?.thinkingByModel?.[model];
+    const spec = contract(model, metadata), value = nativeChoice(model, settings?.thinkingByModel?.[model]);
     return spec.options.includes(value) ? value : spec.default;
   }
   function select(settings, model, value, metadata) {
     const result = migrate(settings), spec = contract(model, metadata);
+    value = nativeChoice(model, value);
     if (!spec.options.includes(value)) return result;
     result.thinkingByModel[model] = value;
     return result;
