@@ -47,6 +47,7 @@
 #include "strata/qwen35/speculative_sampling.hpp"
 #include "strata/qwen35/vision.hpp"
 #include "strata/qwen35/kv_grow.hpp"
+#include "strata/qwen35/hybrid_publish.cuh"
 #if defined(STRATA_Q36_INT8_FDEC)
 #include "strata/qwen35/int8_fdec.hpp"
 #endif
@@ -1439,6 +1440,11 @@ struct Engine {
 #endif
     float *h_h = nullptr, *cpu_out = nullptr, *ecpu = nullptr;
     int32_t *h_ids = nullptr, *h_miss = nullptr, *d_miss = nullptr, *h_cnt = nullptr;
+    float* h_h_publish = nullptr;
+    int32_t* h_ids_publish = nullptr;
+    int hybrid_publish_mode = 0; // HIP: 0=two DMA copies, 1=fused, 2=conditional per row
+    bool route_publish_active = false;
+    long long route_publish_calls = 0, route_publish_rows = 0, route_publish_skipped_rows = 0;
     // Eager hybrid decode: compact CPU rows are consumed by the combine
     // directly; mapped Graph results retain their indexed output/flag layout.
     bool cpu_compact_enabled = false, cpu_compact_pending = false;
@@ -2971,8 +2977,20 @@ struct Engine {
         } else
 #endif
         {
-            CK(cudaMemcpyAsync(h_ids, ids, (size_t) n_ent * 4, cudaMemcpyDeviceToHost, st));
-            CK(cudaMemcpyAsync(h_h, h, (size_t) T * N * 4, cudaMemcpyDeviceToHost, st));
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
+            route_publish_active = hybrid_publish_mode != 0 &&
+                T <= strata::qwen35::hybrid_publish::kMaxRows;
+            if (route_publish_active) {
+                strata::qwen35::hybrid_publish::publish(h, ids, hy[li].slot_of_d,
+                    h_h_publish, h_ids_publish, T, N, Kp, (int) g.n_expert,
+                    hybrid_publish_mode == 2, st);
+                CK(cudaGetLastError());
+            } else
+#endif
+            {
+                CK(cudaMemcpyAsync(h_ids, ids, (size_t) n_ent * 4, cudaMemcpyDeviceToHost, st));
+                CK(cudaMemcpyAsync(h_h, h, (size_t) T * N * 4, cudaMemcpyDeviceToHost, st));
+            }
             CK(cudaEventRecord(ev_route, st));
         }
         group_entries(L, hy[li].slot_of_d, T);
@@ -3008,7 +3026,10 @@ struct Engine {
         int32_t* host_miss = h_miss;
         float* host_cpu = cpu_out;
 #endif
-        while (!graph_service && cudaEventQuery(ev_route) == cudaErrorNotReady) {
+        if (!graph_service) {
+            cudaError_t status;
+            do { status = cudaEventQuery(ev_route); } while (status == cudaErrorNotReady);
+            CK(status);
         }
         const auto t0 = Clock::now();
         // the missed entries per expert (up to MAXT tokens per job)
@@ -3053,6 +3074,12 @@ struct Engine {
         }
         hy_cpu += n_miss;
         hy_gpu += n_ent - n_miss;
+        if (!graph_service && route_publish_active) {
+            ++route_publish_calls;
+            route_publish_rows += T;
+            if (hybrid_publish_mode == 2)
+                for (int t = 0; t < T; ++t) route_publish_skipped_rows += !quantized[(size_t) t];
+        }
         if (n_miss == 0) return;
         pool->run_split_multi_native(H.fmt, jobs.data(), (int) jobs.size());
         hy_cpu_ms += ms_since(t0);
@@ -3544,6 +3571,9 @@ struct Engine {
         std::printf("INFO q36_hybrid_cpu_entries=%lld q36_hybrid_gpu_entries=%lld q36_hybrid_swaps=%lld "
                     "q36_slot_fingerprint=0x%016llx\n", hy_cpu, hy_gpu, hy_swaps,
                     (unsigned long long) expert_slot_fingerprint());
+        std::printf("INFO q36_route_publish_mode=%d q36_route_publish_calls=%lld "
+                    "q36_route_publish_rows=%lld q36_route_publish_skipped_rows=%lld\n",
+                    hybrid_publish_mode, route_publish_calls, route_publish_rows, route_publish_skipped_rows);
         std::printf("INFO q36_stage_loan_requested=%d q36_stage_loan=%d q36_stage_loan_active=%d "
                     "q36_stage_loan_failed=%d q36_stage_loan_attempts=%llu q36_stage_loan_successes=%llu\n",
                     stage_loan_requested ? 1 : 0, stage_loan ? 1 : 0, stage_loan_active ? 1 : 0,
@@ -4667,9 +4697,37 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         }
     }
     const size_t T = (size_t) E.tmax, N = (size_t) g.n_embd, Kp = (size_t) m.top_k;
-    CK(cudaHostAlloc((void**) &E.h_h, T * N * 4, cudaHostAllocDefault));
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
+    // Windows HIP benefits from the reduced driver handoff. Other HIP hosts
+    // retain DMA by default until their end-to-end costs have been measured.
+    // CUDA's captured graph handoff remains independent.
+    const char* publish = std::getenv("TINYSTRATA_HYBRID_PUBLISH");
+#if defined(_WIN32)
+    constexpr int default_publish_mode = 2;
+#else
+    constexpr int default_publish_mode = 0;
+#endif
+    E.hybrid_publish_mode = !publish ? default_publish_mode : std::strcmp(publish, "2") == 0 ? 2 :
+                           std::strcmp(publish, "1") == 0 ? 1 : 0;
+    if (E.hybrid_publish_mode) {
+        cudaError_t status = cudaHostAlloc((void**) &E.h_h, T * N * 4, cudaHostAllocMapped);
+        if (status == cudaSuccess) status = cudaHostGetDevicePointer((void**) &E.h_h_publish, E.h_h, 0);
+        if (status == cudaSuccess) status = cudaHostAlloc((void**) &E.h_ids, T * Kp * 4, cudaHostAllocMapped);
+        if (status == cudaSuccess) status = cudaHostGetDevicePointer((void**) &E.h_ids_publish, E.h_ids, 0);
+        if (status != cudaSuccess) {
+            if (E.h_h) CK(cudaFreeHost(E.h_h));
+            if (E.h_ids) CK(cudaFreeHost(E.h_ids));
+            E.h_h = E.h_h_publish = nullptr;
+            E.h_ids = E.h_ids_publish = nullptr;
+            E.hybrid_publish_mode = 0;
+            (void) cudaGetLastError();
+            std::fprintf(stderr, "tinystrata: mapped routing unavailable; retaining DMA transfers\n");
+        }
+    }
+#endif
+    if (!E.h_h) CK(cudaHostAlloc((void**) &E.h_h, T * N * 4, cudaHostAllocDefault));
     CK(cudaHostAlloc((void**) &E.cpu_out, T * Kp * N * 4, cudaHostAllocDefault));
-    CK(cudaHostAlloc((void**) &E.h_ids, T * Kp * 4, cudaHostAllocDefault));
+    if (!E.h_ids) CK(cudaHostAlloc((void**) &E.h_ids, T * Kp * 4, cudaHostAllocDefault));
     CK(cudaHostAlloc((void**) &E.h_miss, T * Kp * 4, cudaHostAllocDefault));
     CK(cudaHostAlloc((void**) &E.h_cnt, all.size() * (size_t) ne * 4, cudaHostAllocDefault));
     CK(cudaMalloc(&E.ecpu, T * Kp * N * 4));

@@ -229,3 +229,10 @@ adapts VecSzn/PolyStrata commits 43bbf3f1ffbaa1cb294f8ebd62edd287a3130add
 and 5c0bd2c991de7964b2cd4c9495e1be3346976f2c (MIT; Copyright (c) 2026
 Niko1221 and the Strata contributors). TinyStrata retains CUDA's eight-slot
 payload and its existing per-row arithmetic, Expert selection and ordered sums.
+
+Qwen-family HIP routing payload publication adapts Niko1221/Strata's conditional
+mapped-host publication and HIP system fences from commits
+a36be1db2973b3e110fa2c7582c6393e2971d107 and
+0f1390bd11119ae2875913efb4275842d36e142f (MIT; Copyright (c) 2026
+Niko1221 and the Strata contributors). TinyStrata uses per-row publication,
+retains event-based CPU handoff and limits this path to small hybrid batches.

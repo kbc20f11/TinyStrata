@@ -27,6 +27,8 @@ This separately labelled **`tinystrata-bench-v1-saved-profile`** diagnostic reta
 
 Gemma HIP now batches up to 32 cached token/Expert pairs per launch; CUDA retains eight. A [matched-placement development comparison](results/gemma-hip-cached-slots-20261109.md) on RX 9060 XT measured short generation at **67.55 → 70.25 tok/s (+4.00%)**, with unchanged outputs and near-flat prefill. These results are separate from historical v1 tables. `TINYSTRATA_GEMMA_SLOTS32=0` retains eight-pair scheduling for diagnosis.
 
+Windows HIP also combines small Qwen-family routing transfers. A [matched-work development screen](results/hip-hybrid-publish-20261109.md) with a 6 GiB Expert budget measured short-generation gains of **26.17% for Qwen, 35.42% for causal Clover and 23.84% for Tiel**, with matching output tokens and Expert work. A smaller 4 GiB Qwen budget improved 18.07%. These are development measurements, separate from the standard v1 tables. `TINYSTRATA_HYBRID_PUBLISH=0` retains the old DMA path; CUDA and other OS defaults remain unchanged.
+
 The app defaults to causal decoding without drafts, D0, with INT8 KV and `STRATA_IQ_MT_MIN=1`; exact D3 is optional. Its selected route and the fixed benchmark regulation are separate. The standard benchmark always uses **INT8 causal decoding, D0**, independently of the app profile. Native LowConfidence block diffusion is measured separately:
 
 ```powershell
@@ -204,6 +206,8 @@ $python = "$env:LOCALAPPDATA\TinyStrata-work\runtime\.venv\Scripts\python.exe"
 現在のアプリ設定で一度ずつ測る場合は `--saved-profile --runs 1 --model all` を指定します。Tiel も含む5モデルの保存済み native・温度・KV・CPU・Vision 設定を維持し、生成3問を各1回、4K・16K入力を各1回、画像対応モデルでは画像も1回測ります。アプリで一度もロードしていないダウンロード済みモデルも、ベンチ専用APIでは起動時にロードします。初回ロード待ち・遅延ロードのフラグは専用設定のコピーだけから除きます。名前は別枠の `tinystrata-bench-v1-saved-profile`、`standard: false` です。通常の設定・キーは変更せず、標準 v1 の既存の4モデル・2周・4起動の条件や過去の表は変更しません。
 
 Gemma の HIP 経路は、キャッシュ済み token／Expert を最大32組まとめて実行します。CUDA は8組を維持します。RX 9060 XT の[同配置による開発時比較](results/gemma-hip-cached-slots-20261109.md)では、短文生成が **67.55 → 70.25 tok/s（+4.00%）**、出力は一致し、入力処理はほぼ横ばいでした。過去の v1 表とは別枠の結果です。診断時は `TINYSTRATA_GEMMA_SLOTS32=0` で8組へ戻せます。
+
+Windows HIP では Qwen 系の小さいルーティング転送もまとめます。6 GiB Expert 配置による[同一処理の開発時比較](results/hip-hybrid-publish-20261109.md)で、短文生成は **Qwen +26.17%、Clover 因果 +35.42%、Tiel +23.84%**となり、出力トークン・Expert 処理件数が一致しました。Qwen の4 GiB配置でも18.07%改善しました。標準 v1 表とは別枠の結果です。`TINYSTRATA_HYBRID_PUBLISH=0` で従来 DMA に戻せます。CUDA と他 OS の既定は維持します。
 
 Clover のアプリの既定はドラフトを使わない因果生成 D0・INT8 KV・`STRATA_IQ_MT_MIN=1` で、exact D3 は任意選択です。アプリで選ぶ生成経路と固定ベンチ規約は別で、標準ベンチはアプリのプロファイルにかかわらず、**INT8・因果生成・D0** を使います。LowConfidence 方式のネイティブなブロック拡散は別々に測定します。
 
