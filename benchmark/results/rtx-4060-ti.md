@@ -37,7 +37,7 @@ Per-start values (each start pools its own tokens and milliseconds), minimum–m
 
 ## Earlier run on the same PC
 
-The same protocol was run on **2026-11-05** with engine code [2e51521](https://github.com/kbc20f11/TinyStrata/commit/2e51521df4df3548ccefc989b90ee2ea9df07247), before several background applications were assigned to the integrated GPU (Intel Graphics) in the Windows graphics settings. Between the two runs the engine was updated to 1ea7380; both changed, so the difference below is not attributed to either one.
+The same protocol was run on **2026-11-05** with engine code [2e51521](https://github.com/kbc20f11/TinyStrata/commit/2e51521df4df3548ccefc989b90ee2ea9df07247). Both the engine code and the state of the PC differ from the run above, so the difference is not attributed to a single cause.
 
 | Model | Generation (tok/s) | 4K input (tok/s) | 16K input (tok/s) | Image first / end (s) | Expert cache, startup → after 16K (GiB) |
 | --- | ---: | ---: | ---: | ---: | --- |
@@ -48,8 +48,7 @@ The same protocol was run on **2026-11-05** with engine code [2e51521](https://g
 
 ## Measurement conditions
 
-- Before the runs about 0.7 GiB of the 16 GiB of VRAM was in use, almost all of it by the desktop compositor. A separate inference application that had been holding about 10 GiB of VRAM was stopped first; with it running, the engine could not start (0.14 GiB free at startup).
-- Some background applications were assigned to the integrated GPU (Intel Graphics) in the Windows graphics settings. Other-application usage is not collected by the protocol.
+- Before the runs about 0.7 GiB of the 16 GiB of VRAM was in use, almost all of it by the desktop compositor. Other-application usage is not collected by the protocol.
 - The Windows power plan was Balanced, and the system memory ran at DDR5-4800 (configured clock speed 4800 MT/s).
 - These numbers come from one PC, one run set per row; use them as a reference for what a GeForce RTX 4060 Ti 16 GB can reach, not as a guarantee. Differences of a few percent between single runs are within the spread above.
 
