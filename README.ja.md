@@ -201,6 +201,8 @@ INT8 と FP8 を交互に各 4 回独立起動し、各起動で 3 入力を 2 �
 
 [Basaltの過去コミットの追加検証](benchmark/results/basalt-history-20261107.md#日本語)に、バイト読み出し・CPU停止監視の修正、見送った待機削減案、Radeonでの対照計測を記録しています。大幅な高速化を示す結果ではありません。
 
+Windows HIPでは、Qwen・Clover・Tielのハイブリッド生成で、検証済みの共有ホストメモリからCPU計算結果をGPUへ渡します。gfx1200のINT8 Cloverは、8K以降の1トークン単位の因果生成でKV読み出しも共有します。[8／12／16 GiB条件の対照計測と採否](benchmark/results/other-models-20261110.md)を掲載しています。
+
 [CloverのGDN融合の計測](benchmark/results/gdn-chain-20261105.md#日本語)では、全GPU常駐とExpert予算固定のハイブリッド経路を比較しています。Qwenの既定経路は維持します。
 
 [ハイブリッド実行のCPU結果統合と、実測に基づくワーカー数の調整](benchmark/results/basalt-remaining-20261105.md#日本語)

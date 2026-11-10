@@ -48,6 +48,7 @@
 #include "strata/qwen35/vision.hpp"
 #include "strata/qwen35/kv_grow.hpp"
 #include "strata/qwen35/hybrid_publish.cuh"
+#include "strata/qwen35/hybrid_mapped_output.cuh"
 #if defined(STRATA_Q36_INT8_FDEC)
 #include "strata/qwen35/int8_fdec.hpp"
 #endif
@@ -1331,6 +1332,13 @@ struct Engine {
     long long clover_preview_wmma_calls = 0, clover_preview_simt_calls = 0;
     int clover_query_tile = 0; // HIP INT8 only; zero retains independent-query attention.
     long long clover_query_shared_calls = 0;
+    int clover_gqa_heads = 0; // HIP INT8: tested automatic T1 policy or explicit diagnostic width.
+    bool clover_gqa_auto = false;
+    int clover_gqa_min_prefix = 8192;
+    long long clover_gqa_head_calls = 0;
+    long long clover_gqa_effective_calls = 0, clover_gqa_graph_launches = 0, clover_gqa_graph_invalidations = 0;
+    int clover_gqa_graph_variant = -1; // unknown / short / eligible long prefix
+    std::map<cudaGraphExec_t, long long> clover_gqa_graph_nodes;
     double clover_preview_cpu_ms = 0;
     int64_t* clover_counts = nullptr;
     int32_t* clover_predictions = nullptr;
@@ -1440,6 +1448,12 @@ struct Engine {
 #endif
     float *h_h = nullptr, *cpu_out = nullptr, *ecpu = nullptr;
     int32_t *h_ids = nullptr, *h_miss = nullptr, *d_miss = nullptr, *h_cnt = nullptr;
+    float* cpu_out_mapped = nullptr;
+    int32_t* h_miss_mapped = nullptr;
+    bool mapped_cpu_output_auto = false, mapped_cpu_output_requested = false;
+    bool mapped_cpu_output_enabled = false, mapped_cpu_output_pending = false;
+    long long mapped_cpu_output_calls = 0, mapped_cpu_output_rows = 0;
+    unsigned long long mapped_cpu_output_bytes = 0;
     float* h_h_publish = nullptr;
     int32_t* h_ids_publish = nullptr;
     int hybrid_publish_mode = 0; // HIP: 0=two DMA copies, 1=fused, 2=conditional per row
@@ -1581,6 +1595,31 @@ struct Engine {
                 else if (std::strcmp(value, "2") == 0) clover_query_tile = 2;
                 else if (std::strcmp(value, "4") != 0)
                     throw std::invalid_argument("TINYSTRATA_CLOVER_QUERY_TILE must be 0, 2 or 4");
+            }
+            const char* gqa_value = std::getenv("TINYSTRATA_CLOVER_INT8_GQA_HEADS");
+            clover_gqa_auto = !gqa_value || std::strcmp(gqa_value, "auto") == 0;
+            clover_gqa_min_prefix = clover_gqa_auto ? 8192 : 4096;
+            if (clover_gqa_auto) clover_gqa_heads = 4;
+            else if (const char* value = gqa_value) {
+                if (std::strcmp(value, "2") == 0) clover_gqa_heads = 2;
+                else if (std::strcmp(value, "4") == 0) clover_gqa_heads = 4;
+                else if (std::strcmp(value, "0") != 0)
+                    throw std::invalid_argument("TINYSTRATA_CLOVER_INT8_GQA_HEADS must be auto, 0, 2 or 4");
+            }
+            if (clover_gqa_heads) {
+                int ordinal = 0;
+                cudaDeviceProp properties{};
+                auto status = cudaGetDevice(&ordinal);
+                if (status == cudaSuccess) status = cudaGetDeviceProperties(&properties, ordinal);
+                // Largest variant is 4 heads x4 rows x3 FP32[256] arrays.
+                // No opt-in enlarged LDS allocation or device-wide sync.
+                if (status != cudaSuccess ||
+                    (clover_gqa_auto && !strata::kernels::gfx_arch_is(properties.gcnArchName, "gfx1200")) ||
+                    properties.maxThreadsPerBlock < 256 || properties.sharedMemPerBlock < 49152) {
+                    clover_gqa_heads = 0;
+                    if (status != cudaSuccess) (void) cudaGetLastError();
+                    std::fprintf(stderr, "tinystrata: Clover GQA sharing unavailable; retaining old attention\n");
+                }
             }
         }
 #endif
@@ -2465,9 +2504,12 @@ struct Engine {
                 std::exit(1);
             }
             const bool mkq = wn != nullptr && hout == h;
-            q36k::k_moe_out_cpu_small<<<T, 1024, 0, st>>>(x, eparts, ecpu, d_miss, prow, ewts, Kp, shared, sgate,
+            const float* cpu_source = mapped_cpu_output_pending ? cpu_out_mapped : ecpu;
+            const int32_t* cpu_map = mapped_cpu_output_pending ? h_miss_mapped : d_miss;
+            q36k::k_moe_out_cpu_small<<<T, 1024, 0, st>>>(x, eparts, cpu_source, cpu_map, prow, ewts, Kp, shared, sgate,
                 sgs, wn, hout, N, m->eps, mkq ? (q36k::QB*) xq : nullptr);
             cpu_compact_pending = false;
+            mapped_cpu_output_pending = false;
             ++cpu_compact_calls;
             ++cpu_compact_merges_avoided;
             xq_ready = mkq;
@@ -2609,6 +2651,15 @@ struct Engine {
                 auto launch_part = [&](int nc, int nt, int t0, int visible_end = 0) {
 #if defined(STRATA_USE_HIP) || defined(__HIPCC__)
                     if constexpr (Format == 2) {
+                        if (m->clover && clover_gqa_heads && !clover_preview && nt >= 1 && nt <= 4 &&
+                            (!clover_gqa_auto || (nt == 1 && !verify)) &&
+                            HD == 256 && H == 8 * HKV && p0 + t0 >= clover_gqa_min_prefix) {
+                            CK(strata::qwen35::clover_attention::launch_gqa(q, kv[li], dpos, t0, nt, H, HKV, ctx,
+                                1.f / sqrtf((float) HD), n_chunk, nc, pacc, pm, pl, st, clover_gqa_heads, visible_end));
+                            ++clover_gqa_head_calls;
+                            ++clover_gqa_effective_calls;
+                            return;
+                        }
                         // Short histories retain the old path: partial-chunk query sharing
                         // costs more than it saves. Use the measured conservative 4K crossover.
                         if (m->clover && clover_query_tile && nt >= 2 && nt <= 4 && HD == 256 && H == 8 * HKV &&
@@ -3002,7 +3053,10 @@ struct Engine {
     /// rows uploaded and merged into the entries' rows.
     void moe_hybrid_cpu(size_t li, int T, bool graph_service = false) {
 #if defined(STRATA_Q36_CPU_POOL)
-        if (!graph_service) cpu_compact_pending = false;
+        if (!graph_service) {
+            cpu_compact_pending = false;
+            mapped_cpu_output_pending = false;
+        }
         namespace C = strata::kernels::cpu;
         const auto& g = m->g;
         const int N = (int) g.n_embd, Kp = (int) m->top_k;
@@ -3085,12 +3139,25 @@ struct Engine {
         hy_cpu_ms += ms_since(t0);
         if (graph_service) return; // the captured GPU wait/merge consumes mapped results
         const int rows = compact ? n_miss : n_ent;
-        CK(cudaMemcpyAsync(ecpu, cpu_out, (size_t) rows * N * 4, cudaMemcpyHostToDevice, st));
-        CK(cudaMemcpyAsync(d_miss, h_miss, (size_t) n_ent * 4, cudaMemcpyHostToDevice, st));
+        const bool mapped = compact && mapped_cpu_output_enabled;
+        if (mapped) {
+            strata::qwen35::hybrid_mapped_output::publish_host_writes();
+            mapped_cpu_output_pending = true;
+            ++mapped_cpu_output_calls;
+            mapped_cpu_output_rows += rows;
+            mapped_cpu_output_bytes += (unsigned long long) (rows * N + n_ent) * 4;
+            // The combine is submitted only after the CPU pool has finished.
+            // Before a later layer/request rewrites these host buffers, its
+            // existing route event is completed on this same stream, therefore
+            // every earlier combine reader has finished. No GPU spin is used.
+        } else {
+            CK(cudaMemcpyAsync(ecpu, cpu_out, (size_t) rows * N * 4, cudaMemcpyHostToDevice, st));
+            CK(cudaMemcpyAsync(d_miss, h_miss, (size_t) n_ent * 4, cudaMemcpyHostToDevice, st));
+        }
         if (compact) {
             cpu_compact_pending = true;
             cpu_compact_rows += n_miss;
-            cpu_compact_upload_bytes += (unsigned long long) (rows * N + n_ent) * 4;
+            if (!mapped) cpu_compact_upload_bytes += (unsigned long long) (rows * N + n_ent) * 4;
             cpu_compact_unpacked_bytes += (unsigned long long) (n_ent * N + n_ent) * 4;
         } else k_merge_cpu<<<n_ent, kThreads, 0, st>>>(eparts, ecpu, d_miss, N);
 #else
@@ -3574,6 +3641,17 @@ struct Engine {
         std::printf("INFO q36_route_publish_mode=%d q36_route_publish_calls=%lld "
                     "q36_route_publish_rows=%lld q36_route_publish_skipped_rows=%lld\n",
                     hybrid_publish_mode, route_publish_calls, route_publish_rows, route_publish_skipped_rows);
+        std::printf("INFO clover_gqa_heads=%d clover_gqa_auto=%d clover_gqa_min_prefix=%d "
+                    "clover_gqa_head_calls=%lld clover_gqa_effective_calls=%lld "
+                    "clover_gqa_graph_launches=%lld clover_gqa_graph_invalidations=%lld\n", clover_gqa_heads,
+                    clover_gqa_auto ? 1 : 0, clover_gqa_min_prefix, clover_gqa_head_calls,
+                    clover_gqa_effective_calls, clover_gqa_graph_launches,
+                    clover_gqa_graph_invalidations);
+        std::printf("INFO q36_mapped_cpu_output_auto=%d q36_mapped_cpu_output_requested=%d q36_mapped_cpu_output=%d "
+                    "q36_mapped_cpu_output_calls=%lld q36_mapped_cpu_output_rows=%lld "
+                    "q36_mapped_cpu_output_bytes=%llu\n", mapped_cpu_output_auto ? 1 : 0, mapped_cpu_output_requested ? 1 : 0,
+                    mapped_cpu_output_enabled ? 1 : 0, mapped_cpu_output_calls, mapped_cpu_output_rows,
+                    mapped_cpu_output_bytes);
         std::printf("INFO q36_stage_loan_requested=%d q36_stage_loan=%d q36_stage_loan_active=%d "
                     "q36_stage_loan_failed=%d q36_stage_loan_attempts=%llu q36_stage_loan_successes=%llu\n",
                     stage_loan_requested ? 1 : 0, stage_loan ? 1 : 0, stage_loan_active ? 1 : 0,
@@ -3615,6 +3693,8 @@ struct Engine {
         for (auto& g : gv)
             if (g) { CK(cudaGraphExecDestroy(g)); g = nullptr; }
         graph_steps.clear();
+        clover_gqa_graph_nodes.clear();
+        clover_gqa_graph_variant = -1;
     }
 
     // CUDA only. Keep eager buffers and the HIP path available if mapping fails.
@@ -3718,10 +3798,24 @@ struct Engine {
     template <class F> void graph_run(cudaGraphExec_t& gx, F body, int rows = 1) {
         if (!use_graph) { body(); return; }
         if (hybrid_graph && (rows > kVerify || rows > hybrid_t)) { body(); return; }
+        if (clover_gqa_heads) {
+            // GQA eligibility uses a host-side prefix threshold. Cached g1/gv
+            // graphs otherwise retain the first sequence's choice forever.
+            // Invalidate once when changing class, including long -> short
+            // after prefix replacement; ordinary replays keep the same cache.
+            const int variant = pos >= clover_gqa_min_prefix ? 1 : 0;
+            if (clover_gqa_graph_variant >= 0 && clover_gqa_graph_variant != variant) {
+                CK(cudaStreamSynchronize(st));
+                reset_graphs();
+                ++clover_gqa_graph_invalidations;
+            }
+            clover_gqa_graph_variant = variant;
+        }
         if (!gx) {
             cudaGraph_t graph = nullptr;
             recorded_steps.clear();
             recording_hybrid = hybrid_graph;
+            const auto gqa_before = clover_gqa_head_calls;
             CK(cudaStreamBeginCapture(st, cudaStreamCaptureModeThreadLocal));
             body();
             CK(cudaStreamEndCapture(st, &graph));
@@ -3729,6 +3823,12 @@ struct Engine {
             CK(cudaGraphInstantiate(&gx, graph, 0));
             CK(cudaGraphDestroy(graph));
             if (!recorded_steps.empty()) graph_steps[gx] = recorded_steps;
+            if (const auto nodes = clover_gqa_head_calls - gqa_before; nodes > 0) {
+                clover_gqa_graph_nodes[gx] = nodes;
+                // Capture enqueues no GPU work; only subsequent graph launches
+                // count toward effective kernel dispatches below.
+                clover_gqa_effective_calls -= nodes;
+            }
             std::fprintf(stderr, "tinystrata: captured GPU graph\n");
         }
 #if defined(STRATA_Q36_CPU_POOL) && !defined(__HIPCC__)
@@ -3736,6 +3836,13 @@ struct Engine {
         if (service != graph_steps.end()) { run_hybrid_graph(gx, service->second); return; }
 #endif
         CK(cudaGraphLaunch(gx, st));
+        if (clover_gqa_heads) {
+            const auto it = clover_gqa_graph_nodes.find(gx);
+            if (it != clover_gqa_graph_nodes.end()) {
+                clover_gqa_effective_calls += it->second;
+                ++clover_gqa_graph_launches;
+            }
+        }
     }
 
     /// The tokens at the current position: a prompt in chunks (eager), one token from the decode graph.  The last
@@ -4726,9 +4833,33 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     }
 #endif
     if (!E.h_h) CK(cudaHostAlloc((void**) &E.h_h, T * N * 4, cudaHostAllocDefault));
-    CK(cudaHostAlloc((void**) &E.cpu_out, T * Kp * N * 4, cudaHostAllocDefault));
+    const char* mapped_output = std::getenv("TINYSTRATA_HYBRID_MAPPED_CPU_OUTPUT");
+    E.mapped_cpu_output_auto = !mapped_output || std::strcmp(mapped_output, "auto") == 0;
+    E.mapped_cpu_output_requested = mapped_output && std::strcmp(mapped_output, "1") == 0;
+#if defined(_WIN32) && (defined(STRATA_USE_HIP) || defined(__HIPCC__))
+    // Automatic only on Windows HIP; allocation, actual coherent/mapped flags
+    // and device alias must still pass verification before any direct consume.
+    E.mapped_cpu_output_requested = E.mapped_cpu_output_requested || E.mapped_cpu_output_auto;
+#endif
+    if (E.mapped_cpu_output_requested && E.cpu_compact_enabled) {
+        const char* reason = "not attempted";
+        E.mapped_cpu_output_enabled =
+            strata::qwen35::hybrid_mapped_output::allocate((void**) &E.cpu_out, (void**) &E.cpu_out_mapped,
+                                                         T * Kp * N * 4, reason) &&
+            strata::qwen35::hybrid_mapped_output::allocate((void**) &E.h_miss, (void**) &E.h_miss_mapped,
+                                                         T * Kp * 4, reason);
+        if (!E.mapped_cpu_output_enabled) {
+            if (E.cpu_out) CK(cudaFreeHost(E.cpu_out));
+            if (E.h_miss) CK(cudaFreeHost(E.h_miss));
+            E.cpu_out = E.cpu_out_mapped = nullptr;
+            E.h_miss = E.h_miss_mapped = nullptr;
+        }
+        std::fprintf(stderr, "tinystrata: eager mapped CPU output %s (%s)\n",
+                     E.mapped_cpu_output_enabled ? "enabled" : "unavailable; retaining DMA", reason);
+    }
+    if (!E.cpu_out) CK(cudaHostAlloc((void**) &E.cpu_out, T * Kp * N * 4, cudaHostAllocDefault));
     if (!E.h_ids) CK(cudaHostAlloc((void**) &E.h_ids, T * Kp * 4, cudaHostAllocDefault));
-    CK(cudaHostAlloc((void**) &E.h_miss, T * Kp * 4, cudaHostAllocDefault));
+    if (!E.h_miss) CK(cudaHostAlloc((void**) &E.h_miss, T * Kp * 4, cudaHostAllocDefault));
     CK(cudaHostAlloc((void**) &E.h_cnt, all.size() * (size_t) ne * 4, cudaHostAllocDefault));
     CK(cudaMalloc(&E.ecpu, T * Kp * N * 4));
     CK(cudaMalloc(&E.d_miss, T * Kp * 4));

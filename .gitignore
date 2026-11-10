@@ -119,6 +119,7 @@
 /benchmark/results/**
 !/benchmark/results/*.md
 !/benchmark/results/gptoss-eagle3-20261110.json
+!/benchmark/results/other-models-20261110.json
 /assets/**
 !/assets/memory-sharing.png
 !/assets/automatic-settings.png

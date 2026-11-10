@@ -7,7 +7,9 @@
 int main() { std::puts("SKIP: compact CPU combine requires CUDA or HIP"); return 77; }
 #else
 #include "q36_kernels.cuh"
+#include "strata/qwen35/hybrid_mapped_output.cuh"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -103,10 +105,132 @@ void graph_bench(cudaGraphExec_t old,cudaGraphExec_t direct,int T,int cpu_count,
     std::printf("WARM_DEVICE_GRAPH_ABBA T=%d cpu_per_token=%d old_us=%.3f direct_us=%.3f calls=2x%d excludes_H2D=1\n",
         T,cpu_count,totals[0]*1000/(2*CALLS),totals[1]*1000/(2*CALLS),CALLS);
 }
+
+// Production keeps its existing per-layer route event as the lifetime bound.
+// This fixture uses an event after both combines before rewriting the same
+// mapped rows/map. Repeated changing payloads catch stale host-memory reads.
+struct Mapped {
+    void *host=nullptr,*device=nullptr;
+    explicit Mapped(size_t bytes) {
+        const char* reason="not attempted";
+        if(!strata::qwen35::hybrid_mapped_output::allocate(&host,&device,bytes,reason))
+            std::printf("MAPPED_UNAVAILABLE %s\n",reason);
+    }
+    ~Mapped() {if(host)cudaFreeHost(host);}
+};
+void mapped_launch(Arm& a,const Inputs& in,int T,int mode,const float* cpu,const int32_t* map,cudaStream_t s) {
+    q36k::k_moe_out_cpu_small<<<T,1024,0,s>>>(a.x.as<float>(),a.parts.as<float>(),cpu,map,nullptr,
+        in.weights.as<float>(),TOP,in.shared.as<float>(),in.sg.as<float>(),1,
+        mode?in.norm.as<float>():nullptr,a.h.as<float>(),N,EPS,mode==2?a.q.as<q36k::QB>():nullptr);
+    CK(cudaGetLastError());
+}
+int mapped_test(cudaStream_t s,bool bench) {
+    Mapped host_cpu(size_t(ENTRIES*N+GUARD)*4),host_map(size_t(ENTRIES+GUARD)*4);
+    if(!host_cpu.device||!host_map.device) {
+        std::puts("SKIP: coherent mapped CPU output unavailable; production retains DMA");
+        return 77;
+    }
+    Arm ref,cand;Inputs in;
+    std::vector<float> initial(MAXT*N),gpu(ENTRIES*N),packed(ENTRIES*N),weights(ENTRIES);
+    std::vector<float> shared(MAXT*N),norm(N),gates(MAXT*257);
+    for(size_t i=0;i<initial.size();++i)initial[i]=float(int(i%97)-48)/1024.f;
+    for(size_t i=0;i<gpu.size();++i)gpu[i]=float(int((i*17)%251)-125)/512.f;
+    for(size_t i=0;i<shared.size();++i)shared[i]=float(int(i%31)-15)/512.f;
+    for(size_t i=0;i<norm.size();++i)norm[i]=1.f+float(int(i%13)-6)/32.f;
+    for(size_t i=0;i<weights.size();++i)weights[i]=float(i%TOP+1)/36.f;
+    for(size_t i=0;i<gates.size();++i)gates[i]=float(int(i%19)-9)/32.f;
+    CK(cudaMemcpy(in.weights.p,weights.data(),weights.size()*4,cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(in.shared.p,shared.data(),shared.size()*4,cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(in.norm.p,norm.data(),norm.size()*4,cudaMemcpyHostToDevice));
+    CK(cudaMemcpy(in.sg.p,gates.data(),gates.size()*4,cudaMemcpyHostToDevice));
+    cudaEvent_t consumed{};CK(cudaEventCreateWithFlags(&consumed,cudaEventDisableTiming));
+    int checks=0;
+    for(int T:{1,2,4,8})for(int count:{0,1,4,8})for(int mode=0;mode<3;++mode) {
+        for(int repeat=0;repeat<4;++repeat) {
+            const int entries=T*TOP;
+            std::vector<int32_t> map(entries,-1);
+            std::vector<float> parts(gpu.begin(),gpu.begin()+size_t(entries)*N);
+            int missed=0;
+            for(int e=0;e<entries;++e) {
+                const int per_token=repeat==3?(e/TOP)%9:count;
+                if((e*3+repeat)%TOP>=per_token)continue;
+                map[e]=missed;
+                for(int i=0;i<N;++i)
+                    packed[size_t(missed)*N+i]=float(int((size_t(e)*N+i+repeat*337)%263)-131)/256.f;
+                std::memset(parts.data()+size_t(e)*N,0xff,N*4);
+                ++missed;
+            }
+            std::memset(host_cpu.host,0xff,size_t(ENTRIES*N+GUARD)*4);
+            std::memset(host_map.host,0xff,size_t(ENTRIES+GUARD)*4);
+            std::memcpy(host_cpu.host,packed.data(),size_t(missed)*N*4);
+            std::memcpy(host_map.host,map.data(),size_t(entries)*4);
+            strata::qwen35::hybrid_mapped_output::publish_host_writes();
+            for(auto* a:{&ref,&cand}) {
+                for(auto* d:{&a->x,&a->h,&a->q,&a->parts,&a->cpu,&a->map})d->poison(s);
+                CK(cudaMemcpyAsync(a->x.p,initial.data(),size_t(T)*N*4,cudaMemcpyHostToDevice,s));
+                CK(cudaMemcpyAsync(a->parts.p,parts.data(),size_t(entries)*N*4,cudaMemcpyHostToDevice,s));
+            }
+            if(missed)CK(cudaMemcpyAsync(ref.cpu.p,host_cpu.host,size_t(missed)*N*4,cudaMemcpyHostToDevice,s));
+            CK(cudaMemcpyAsync(ref.map.p,host_map.host,size_t(entries)*4,cudaMemcpyHostToDevice,s));
+            mapped_launch(ref,in,T,mode,ref.cpu.as<float>(),ref.map.as<int32_t>(),s);
+            mapped_launch(cand,in,T,mode,static_cast<float*>(host_cpu.device),static_cast<int32_t*>(host_map.device),s);
+            CK(cudaEventRecord(consumed,s));CK(cudaEventSynchronize(consumed));
+            compare(ref,cand,T,count,repeat,mode,parts,s);
+            if(std::memcmp(host_cpu.host,packed.data(),size_t(missed)*N*4)||
+               std::memcmp(host_map.host,map.data(),size_t(entries)*4))fail("mapped host input changed",T,count,repeat,mode);
+            const auto* cpu_words=static_cast<const uint32_t*>(host_cpu.host);
+            const auto* map_words=static_cast<const uint32_t*>(host_map.host);
+            for(size_t i=size_t(missed)*N;i<ENTRIES*N+GUARD;++i)
+                if(cpu_words[i]!=0xffffffffu)fail("mapped CPU guard",T,count,repeat,mode,i);
+            for(size_t i=entries;i<ENTRIES+GUARD;++i)
+                if(map_words[i]!=0xffffffffu)fail("mapped map guard",T,count,repeat,mode,i);
+            ++checks;
+        }
+    }
+    if(bench)for(int T:{1,4}) {
+        constexpr int CALLS=32;
+        const int entries=T*TOP,missed=T*4;
+        auto* map=static_cast<int32_t*>(host_map.host);
+        for(int e=0;e<entries;++e)map[e]=e%TOP<4?(e/TOP)*4+e%TOP:-1;
+        for(int i=0;i<missed*N;++i)static_cast<float*>(host_cpu.host)[i]=float(i%37-18)/256.f;
+        strata::qwen35::hybrid_mapped_output::publish_host_writes();
+        for(auto* a:{&ref,&cand}) {
+            CK(cudaMemcpyAsync(a->x.p,initial.data(),size_t(T)*N*4,cudaMemcpyHostToDevice,s));
+            CK(cudaMemcpyAsync(a->parts.p,gpu.data(),size_t(entries)*N*4,cudaMemcpyHostToDevice,s));
+        }
+        CK(cudaStreamSynchronize(s));
+        double totals[2]{};
+        for(int arm:{0,1,1,0}) {
+            auto one=[&] {
+                if(!arm) {
+                    CK(cudaMemcpyAsync(ref.cpu.p,host_cpu.host,size_t(missed)*N*4,cudaMemcpyHostToDevice,s));
+                    CK(cudaMemcpyAsync(ref.map.p,host_map.host,size_t(entries)*4,cudaMemcpyHostToDevice,s));
+                }
+                mapped_launch(arm?cand:ref,in,T,2,arm?static_cast<float*>(host_cpu.device):ref.cpu.as<float>(),
+                    arm?static_cast<int32_t*>(host_map.device):ref.map.as<int32_t>(),s);
+                CK(cudaEventRecord(consumed,s));CK(cudaEventSynchronize(consumed));
+            };
+            for(int i=0;i<4;++i)one();
+            const auto begin=std::chrono::steady_clock::now();
+            for(int i=0;i<CALLS;++i)one();
+            totals[arm]+=std::chrono::duration<double,std::micro>(std::chrono::steady_clock::now()-begin).count();
+        }
+        std::printf("MAPPED_EAGER_ROUNDTRIP_ABBA T=%d cpu_per_token=4 dma_us=%.3f mapped_us=%.3f calls=2x%d includes_H2D=1\n",
+            T,totals[0]/(2*CALLS),totals[1]/(2*CALLS),CALLS);
+    }
+    CK(cudaEventDestroy(consumed));
+    std::printf("PASS %d coherent mapped residual/norm/Q8 checks; repeated payload/map rewrites and guards\n",checks);
+    return 0;
+}
 int main(int argc,char** argv) {
     const bool bench=argc==2&&std::strcmp(argv[1],"--bench")==0;
-    if(argc>1&&!bench){std::fputs("usage: q36-cpu-combine [--bench]\n",stderr);return 2;}
+    const bool mapped=argc==2&&(std::strcmp(argv[1],"--mapped")==0||std::strcmp(argv[1],"--mapped-bench")==0);
+    if(argc>1&&!bench&&!mapped){std::fputs("usage: q36-cpu-combine [--bench|--mapped|--mapped-bench]\n",stderr);return 2;}
     cudaStream_t s{};CK(cudaStreamCreateWithFlags(&s,cudaStreamNonBlocking));
+    if(mapped) {
+        const int result=mapped_test(s,std::strcmp(argv[1],"--mapped-bench")==0);
+        CK(cudaStreamDestroy(s));return result;
+    }
     Arm ref,cand;Inputs in;
     uint32_t random=0x31415926u;
     const auto next=[&]() {random=random*1664525u+1013904223u;return random;};

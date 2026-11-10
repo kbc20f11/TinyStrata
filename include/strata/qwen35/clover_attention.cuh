@@ -127,4 +127,131 @@ inline cudaError_t launch(const float* q,A::KvCache cache,const int32_t* pos0,in
     else part<4><<<dim3(grid_chunks,((rows+3)/4)*H),THREADS,0,stream>>>(q,cache,pos0,t0,rows,H,HKV,ctx,scale,n_chunk,pacc,pm,pl,visible_end);
     return cudaGetLastError();
 }
+
+// Experimental head sharing: one CTA reads a KV cell once for several heads
+// belonging to the same GQA group. It also shares across a small token window.
+// The per-query dimension/cell order, 256-lane reduction tree, 256-cell split
+// boundaries and existing merge are exactly those of k_attn_part<2>. In
+// particular this is not an online-softmax or quantized-query implementation.
+template<int Heads,int Rows>
+__global__ void part_gqa(const float* q,A::KvCache cache,const int32_t* pos0,int t0,int valid_rows,
+    int H,int HKV,int ctx,float scale,int n_chunk,float* pacc,float* pm,float* pl,int visible_end=0) {
+    static_assert((Heads==2 || Heads==4) && (Rows==1 || Rows==2 || Rows==4));
+    constexpr int Queries=Heads*Rows;
+    __shared__ float qs[Queries][HD],sc[Queries][CELLS],reduce[Queries][THREADS];
+    const int chunk=blockIdx.x,first_head=blockIdx.y*Heads;
+    const int kvh=first_head/(H/HKV),j=threadIdx.x,p0=chunk*CELLS,p=p0+j;
+    int npos[Queries],maximum_position=0,minimum_live_position=0x7fffffff;
+#pragma unroll
+    for(int r=0;r<Queries;++r) {
+        const int row=r/Heads,t=t0+row;
+        npos[r]=row<valid_rows ? (visible_end>0 ? visible_end : *pos0+t+1) : 0;
+        maximum_position=max(maximum_position,npos[r]);
+        if(row<valid_rows)minimum_live_position=min(minimum_live_position,npos[r]);
+    }
+    if(p0>=maximum_position)return;
+    const bool full_chunk=p0+CELLS<=minimum_live_position;
+#pragma unroll
+    for(int r=0;r<Queries;++r) {
+        const int row=r/Heads,t=t0+row,head=first_head+r%Heads;
+        qs[r][j]=row<valid_rows ? q[((size_t)t*H+head)*HD+j] : 0.f;
+    }
+    __syncthreads();
+    float dots[Queries]={};
+    if(full_chunk) {
+        const size_t offset=((size_t)kvh*ctx+p)*HD;
+        for(int i=0;i<HD;++i) {
+            const float key=A::kv_read<2>(cache.key,cache.key_scale,offset+i,HD,cache.key_scale16);
+#pragma unroll
+            for(int r=0;r<Queries;++r)dots[r]+=qs[r][i]*key;
+        }
+    } else if(p<maximum_position) {
+        const size_t offset=((size_t)kvh*ctx+p)*HD;
+        for(int i=0;i<HD;++i) {
+            const float key=A::kv_read<2>(cache.key,cache.key_scale,offset+i,HD,cache.key_scale16);
+#pragma unroll
+            for(int r=0;r<Queries;++r)
+                if(p<npos[r])dots[r]+=qs[r][i]*key;
+        }
+    }
+#pragma unroll
+    for(int r=0;r<Queries;++r) {
+        dots[r]=p<npos[r] ? dots[r]*scale : -INFINITY;
+        reduce[r][j]=dots[r];
+    }
+    __syncthreads();
+    for(int step=THREADS/2;step>0;step>>=1) {
+        if(j<step) {
+#pragma unroll
+            for(int r=0;r<Queries;++r)reduce[r][j]=fmaxf(reduce[r][j],reduce[r][j+step]);
+        }
+        __syncthreads();
+    }
+    float maximum[Queries];
+#pragma unroll
+    for(int r=0;r<Queries;++r)maximum[r]=reduce[r][0];
+    __syncthreads();
+#pragma unroll
+    for(int r=0;r<Queries;++r) {
+        const float weight=p<npos[r] ? expf(dots[r]-maximum[r]) : 0.f;
+        sc[r][j]=weight;
+        reduce[r][j]=weight;
+    }
+    __syncthreads();
+    for(int step=THREADS/2;step>0;step>>=1) {
+        if(j<step) {
+#pragma unroll
+            for(int r=0;r<Queries;++r)reduce[r][j]+=reduce[r][j+step];
+        }
+        __syncthreads();
+    }
+    float denominator[Queries];
+#pragma unroll
+    for(int r=0;r<Queries;++r)denominator[r]=reduce[r][0];
+    __syncthreads();
+    float accumulators[Queries]={};
+    const int maximum_cells=min(CELLS,maximum_position-p0);
+    const size_t offset=((size_t)kvh*ctx+p0)*HD+j;
+    if(full_chunk) {
+        for(int k=0;k<CELLS;++k) {
+            const float value=A::kv_read<2>(cache.value,cache.value_scale,offset+(size_t)k*HD,HD,cache.value_scale16);
+#pragma unroll
+            for(int r=0;r<Queries;++r)accumulators[r]+=sc[r][k]*value;
+        }
+    } else {
+        for(int k=0;k<maximum_cells;++k) {
+            const float value=A::kv_read<2>(cache.value,cache.value_scale,offset+(size_t)k*HD,HD,cache.value_scale16);
+#pragma unroll
+            for(int r=0;r<Queries;++r)
+                if(k<npos[r]-p0)accumulators[r]+=sc[r][k]*value;
+        }
+    }
+#pragma unroll
+    for(int r=0;r<Queries;++r) {
+        const int row=r/Heads,head=first_head+r%Heads;
+        if(row>=valid_rows || p0>=npos[r])continue;
+        const size_t at=((size_t)row*H+head)*n_chunk+chunk;
+        pacc[at*HD+j]=accumulators[r];
+        if(j==0) {pm[at]=maximum[r];pl[at]=denominator[r];}
+    }
+}
+
+inline cudaError_t launch_gqa(const float* q,A::KvCache cache,const int32_t* pos0,int t0,int rows,
+    int H,int HKV,int ctx,float scale,int n_chunk,int grid_chunks,float* pacc,float* pm,float* pl,
+    cudaStream_t stream,int heads,int visible_end=0) {
+    if(!q || !cache.key || !cache.value || !cache.key_scale16 || !cache.value_scale16 || !pos0 ||
+       !pacc || !pm || !pl || t0<0 || rows<1 || rows>4 || H<=0 || HKV<=0 || H!=8*HKV || ctx<1 ||
+       n_chunk<(ctx+255)/256 || grid_chunks<1 || grid_chunks>n_chunk || visible_end<0 || visible_end>ctx ||
+       (heads!=2 && heads!=4))
+        throw std::invalid_argument("Invalid Clover INT8 GQA-shared shape");
+    const dim3 grid(grid_chunks,H/heads);
+#define CLOVER_GQA(HH) \
+    if(rows==1)part_gqa<HH,1><<<grid,THREADS,0,stream>>>(q,cache,pos0,t0,rows,H,HKV,ctx,scale,n_chunk,pacc,pm,pl,visible_end); \
+    else if(rows==2)part_gqa<HH,2><<<grid,THREADS,0,stream>>>(q,cache,pos0,t0,rows,H,HKV,ctx,scale,n_chunk,pacc,pm,pl,visible_end); \
+    else part_gqa<HH,4><<<grid,THREADS,0,stream>>>(q,cache,pos0,t0,rows,H,HKV,ctx,scale,n_chunk,pacc,pm,pl,visible_end)
+    if(heads==2) { CLOVER_GQA(2); }
+    else { CLOVER_GQA(4); }
+#undef CLOVER_GQA
+    return cudaGetLastError();
+}
 } // namespace strata::qwen35::clover_attention

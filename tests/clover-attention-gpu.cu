@@ -4,6 +4,8 @@
 // HIP: hipcc -std=c++20 -O3 -Iinclude/strata/hip_compat -Iinclude tests/clover-attention-gpu.cu -o clover-attention-gpu
 // Set the compiler GPU architecture option. Do not enable fast-math on just one route.
 // --bench [--reps 32|64] adds host-fenced ABBA timings; GPU events are not primary.
+// --gqa [--bench --reps 4|8|16|32|64] checks head sharing against the current
+// production dispatch, including T1 and 4K/16K/64K. --device selects an ordinal.
 // Complete partial buffers and outputs are checked bitwise against the original
 // independent-query kernel, with a separate FP64 oracle for small contexts.
 #include "strata/qwen35/clover_attention.cuh"
@@ -59,11 +61,11 @@ static void guards(const std::vector<float>& a,const std::string& label) {
     for(size_t i=0;i<GUARD;++i)require(a[i]==SENTINEL && a[a.size()-1-i]==SENTINEL,label+": outer sentinel");
 }
 struct Case {int rows,position,t0,ctx;bool preview,zero=false,full_grid=false;};
-static void one(Case c,int H,int HKV,cudaStream_t stream,bool benchmark,int repetitions) {
+static void one(Case c,int H,int HKV,cudaStream_t stream,bool benchmark,int repetitions,bool head_sharing=false) {
     const int total_queries=c.t0+c.rows+2,chunk_stride=(c.ctx+255)/256;
     const int end=c.position+c.t0+c.rows,visible=c.preview?end:0;
     const int grid=c.full_grid?chunk_stride:(end+255)/256;
-    require(c.rows>=2 && c.rows<=4 && H==8*HKV && end<=c.ctx,"caller shape/context preflight");
+    require(c.rows>=(head_sharing?1:2) && c.rows<=4 && H==8*HKV && end<=c.ctx,"caller shape/context preflight");
     const std::string label="T"+std::to_string(c.rows)+" P"+std::to_string(c.position)+" t0="+std::to_string(c.t0)+(c.preview?" preview":" causal")+(c.zero?" zero":" random");
     const size_t codes=(size_t)HKV*c.ctx*256;
     std::vector<int8_t> key(codes),value(codes);
@@ -90,7 +92,12 @@ static void one(Case c,int H,int HKV,cudaStream_t stream,bool benchmark,int repe
     before.clear(stream);after.clear(stream);
     auto launch=[&](int queries) {
         auto& b=queries?after:before;
-        if(queries)GPU(Q::launch(dq.p,cache,pos.p,c.t0,c.rows,H,HKV,c.ctx,1.f/16,chunk_stride,grid,b.acc(),b.maximum(),b.sum(),stream,visible,queries));
+        if(head_sharing && queries)
+            GPU(Q::launch_gqa(dq.p,cache,pos.p,c.t0,c.rows,H,HKV,c.ctx,1.f/16,chunk_stride,grid,b.acc(),b.maximum(),b.sum(),stream,queries,visible));
+        else if(head_sharing && c.rows>=2 && c.position+c.t0>=4096)
+            // Current production baseline: same-head row sharing at T2/T4.
+            GPU(Q::launch(dq.p,cache,pos.p,c.t0,c.rows,H,HKV,c.ctx,1.f/16,chunk_stride,grid,b.acc(),b.maximum(),b.sum(),stream,visible,c.rows==2?2:4));
+        else if(queries)GPU(Q::launch(dq.p,cache,pos.p,c.t0,c.rows,H,HKV,c.ctx,1.f/16,chunk_stride,grid,b.acc(),b.maximum(),b.sum(),stream,visible,queries));
         else {
             A::k_attn_part<2><<<dim3(grid,c.rows*H),256,0,stream>>>(dq.p,cache,pos.p,c.t0,H,HKV,c.ctx,1.f/16,chunk_stride,b.acc(),b.maximum(),b.sum(),visible);
             GPU(cudaGetLastError());
@@ -101,7 +108,7 @@ static void one(Case c,int H,int HKV,cudaStream_t stream,bool benchmark,int repe
     launch(0);GPU(cudaStreamSynchronize(stream));
     const auto old_acc=before.a.get(stream),old_m=before.m.get(stream),old_l=before.l.get(stream),old_out=before.out.get(stream);
     for(int queries:{2,4}) {
-        if(c.rows==2 && queries==4)continue;
+        if(!head_sharing && c.rows==2 && queries==4)continue;
         after.clear(stream);launch(queries);GPU(cudaStreamSynchronize(stream));
         const auto new_acc=after.a.get(stream),new_m=after.m.get(stream),new_l=after.l.get(stream),new_out=after.out.get(stream);
     equal_arrays(old_acc,new_acc,label+" pacc");equal_arrays(old_m,new_m,label+" pm");
@@ -152,10 +159,34 @@ static void one(Case c,int H,int HKV,cudaStream_t stream,bool benchmark,int repe
             require(std::isfinite(new_out[GUARD+at]) && error<3e-5,label+": new FP64 oracle");
         }
     }
-    if(benchmark && c.position>=65535 && !c.zero && !c.full_grid) {
+    // Capture the new and current routes at one representative small boundary,
+    // then change Q at the same allocation to detect stale captured operands.
+    if(head_sharing && c.position==257 && c.rows==4 && !c.preview) {
+        cudaGraph_t graphs[2]{};cudaGraphExec_t executables[2]{};
+        for(int arm=0;arm<2;++arm) {
+            GPU(cudaStreamBeginCapture(stream,cudaStreamCaptureModeThreadLocal));
+            launch(arm?queries:0);
+            GPU(cudaStreamEndCapture(stream,&graphs[arm]));
+            GPU(cudaGraphInstantiate(&executables[arm],graphs[arm],nullptr,nullptr,0));
+        }
+        for(int replay=0;replay<2;++replay) {
+            std::vector<float> changed=q;
+            for(float& x:changed)x*=replay?-.8125f:1.f;
+            dq.put(changed,stream);before.clear(stream);after.clear(stream);
+            GPU(cudaGraphLaunch(executables[0],stream));GPU(cudaGraphLaunch(executables[1],stream));
+            equal_arrays(before.a.get(stream),after.a.get(stream),label+" GQA Graph pacc");
+            equal_arrays(before.m.get(stream),after.m.get(stream),label+" GQA Graph pm");
+            equal_arrays(before.l.get(stream),after.l.get(stream),label+" GQA Graph pl");
+            equal_arrays(before.out.get(stream),after.out.get(stream),label+" GQA Graph merge");
+        }
+        dq.put(q,stream);GPU(cudaStreamSynchronize(stream));
+        for(int arm=0;arm<2;++arm){GPU(cudaGraphExecDestroy(executables[arm]));GPU(cudaGraphDestroy(graphs[arm]));}
+    }
+    if(benchmark && c.position>=(head_sharing?4096:65535) && !c.zero && !c.full_grid) {
         for(int i=0;i<8;++i){launch(0);launch(queries);}GPU(cudaStreamSynchronize(stream));
         std::vector<double> baseline,shared;
-        for(int round=0;round<3;++round)for(bool which:{false,true,true,false}) {
+        const int rounds=head_sharing?1:3;
+        for(int round=0;round<rounds;++round)for(bool which:{false,true,true,false}) {
             GPU(cudaStreamSynchronize(stream));const auto begin=std::chrono::steady_clock::now();
             for(int repeat=0;repeat<repetitions;++repeat)launch(which?queries:0);
             GPU(cudaStreamSynchronize(stream));const auto end_time=std::chrono::steady_clock::now();
@@ -164,7 +195,7 @@ static void one(Case c,int H,int HKV,cudaStream_t stream,bool benchmark,int repe
         }
         const double b=std::accumulate(baseline.begin(),baseline.end(),0.)/baseline.size();
         const double n=std::accumulate(shared.begin(),shared.end(),0.)/shared.size();
-        std::printf("{\"rows\":%d,\"queries\":%d,\"mode\":\"%s\",\"heads\":%d,\"kv_heads\":%d,\"position\":%d,\"t0\":%d,\"ctx\":%d,\"grid_chunks\":%d,\"repetitions\":%d,\"ABBA_rounds\":3,\"baseline_host_us\":[",c.rows,queries,c.preview?"preview":"causal",H,HKV,c.position,c.t0,c.ctx,grid,repetitions);
+        std::printf("{\"rows\":%d,\"queries\":%d,\"gqa_heads\":%d,\"mode\":\"%s\",\"heads\":%d,\"kv_heads\":%d,\"position\":%d,\"t0\":%d,\"ctx\":%d,\"grid_chunks\":%d,\"repetitions\":%d,\"ABBA_rounds\":%d,\"baseline_host_us\":[",c.rows,head_sharing?0:queries,head_sharing?queries:0,c.preview?"preview":"causal",H,HKV,c.position,c.t0,c.ctx,grid,repetitions,rounds);
         for(size_t i=0;i<baseline.size();++i)std::printf("%s%.6f",i?",":"",baseline[i]);
         std::printf("],\"shared_host_us\":[");for(size_t i=0;i<shared.size();++i)std::printf("%s%.6f",i?",":"",shared[i]);
         std::printf("],\"baseline_mean_us\":%.6f,\"shared_mean_us\":%.6f,\"change_percent\":%.6f}\n",b,n,(n/b-1)*100);
@@ -173,18 +204,21 @@ static void one(Case c,int H,int HKV,cudaStream_t stream,bool benchmark,int repe
 }
 int main(int argc,char** argv) {
     try {
-        bool benchmark=false;int repetitions=32,H=16,HKV=2;
+        bool benchmark=false,head_sharing=false;int repetitions=32,H=16,HKV=2,ordinal=-1;
         for(int i=1;i<argc;++i) {
             const std::string a=argv[i];
             if(a=="--bench")benchmark=true;
+            else if(a=="--gqa")head_sharing=true;
             else if(a=="--reps" && i+1<argc)repetitions=std::stoi(argv[++i]);
+            else if(a=="--device" && i+1<argc)ordinal=std::stoi(argv[++i]);
             else if(a=="--heads" && i+1<argc)H=std::stoi(argv[++i]);
             else if(a=="--kv-heads" && i+1<argc)HKV=std::stoi(argv[++i]);
-            else throw std::invalid_argument("Use --bench [--reps 32|64] [--heads 16 --kv-heads 2]");
+            else throw std::invalid_argument("Use [--gqa] [--bench] [--reps 4|8|16|32|64] [--device N] [--heads 16 --kv-heads 2]");
         }
-        require(repetitions==32 || repetitions==64,"Timing repetitions must be32 or64");
+        require(repetitions==32 || repetitions==64 || (head_sharing&&(repetitions==4 || repetitions==8 || repetitions==16)),"Invalid timing repetitions");
         require(H>0 && HKV>0 && H==8*HKV,"This probe requires GQA8; Clover/Qwen default H16/HKV2");
-        cudaDeviceProp device{};GPU(cudaGetDeviceProperties(&device,0));
+        if(ordinal>=0)GPU(cudaSetDevice(ordinal));else GPU(cudaGetDevice(&ordinal));
+        cudaDeviceProp device{};GPU(cudaGetDeviceProperties(&device,ordinal));
         int runtime_version=0;
 #if defined(__HIPCC__)
         GPU(hipRuntimeGetVersion(&runtime_version));
@@ -194,6 +228,25 @@ int main(int argc,char** argv) {
         std::printf("{\"device\":\"%s\",\"cuda_cc\":%d,\"runtime_version\":%d}\n",device.name,device.major*10+device.minor,runtime_version);
 #endif
         cudaStream_t stream;GPU(cudaStreamCreate(&stream));int cases=0;
+        if(head_sharing) {
+            require(device.sharedMemPerBlock>=49152 && device.maxThreadsPerBlock>=256,"GQA fixture needs48KiB LDS and256threads");
+            for(int rows:{1,2,4}) {
+                for(int position:{0,253,255,257,1024}) {
+                    one({rows,position,position==257?3:0,4099,false},H,HKV,stream,false,repetitions,true);++cases;
+                }
+                for(int position:{4096,16384,65536}) {
+                    one({rows,position,0,position+513,false},H,HKV,stream,benchmark,repetitions,true);++cases;
+                }
+            }
+            one({3,255,1,4099,false},H,HKV,stream,false,repetitions,true);++cases;
+            one({4,65532,0,65536,false},H,HKV,stream,false,repetitions,true);++cases;
+            one({4,65536,0,131081,false,true,true},H,HKV,stream,false,repetitions,true);++cases;
+            cudaFuncAttributes h2{},h4{};GPU(cudaFuncGetAttributes(&h2,Q::part_gqa<2,4>));
+            GPU(cudaFuncGetAttributes(&h4,Q::part_gqa<4,4>));
+            GPU(cudaStreamDestroy(stream));
+            std::printf("{\"passed\":true,\"gqa\":true,\"cases\":%d,\"checks\":%d,\"max_FP64_error\":%.9g,\"H2T4_registers\":%d,\"H2T4_shared_bytes\":%zu,\"H4T4_registers\":%d,\"H4T4_shared_bytes\":%zu,\"baseline\":\"current T1 independent; T2/T4 row-shared\"}\n",cases,checks,max_reference_error,h2.numRegs,h2.sharedSizeBytes,h4.numRegs,h4.sharedSizeBytes);
+            return 0;
+        }
         for(int rows:{2,3,4}) {
             for(int position:{0,253,254,255,256,257,1023,1024})for(bool preview:{false,true}) {
                 const int t0=(position==257 || position==1024)?3:0;

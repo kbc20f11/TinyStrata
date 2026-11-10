@@ -201,6 +201,8 @@ INT8 and FP8 were measured in alternating groups with four independent starts pe
 
 [Further Basalt history review](benchmark/results/basalt-history-20261107.md#english) records packed-byte and CPU-watchdog fixes, the rejected scheduling candidate, and Radeon development comparisons without a headline speedup claim.
 
+Windows HIP hybrid decoding for Qwen, Clover and Tiel uses verified coherent host memory for CPU results. INT8 Clover also shares KV reads from 8K onward for single-row causal decoding on gfx1200. [Controlled 8/12/16 GiB comparisons and adoption decisions](benchmark/results/other-models-20261110.md).
+
 [Clover GDN chain measurements](benchmark/results/gdn-chain-20261105.md#english) cover repeated full-GPU and fixed-budget hybrid comparisons; Qwen retains its existing default path.
 
 [Hybrid CPU result merging and measured worker tuning](benchmark/results/basalt-remaining-20261105.md#english)
