@@ -13,6 +13,8 @@ namespace strata::gemma4 {
 
 class GptOss final : public Engine {
 public:
+    bool prefill_attention_requested() const override { return prefill_attention_; }
+    bool prefill_attention_seen() const override { return prefill_attention_seen_; }
     size_t card_row_bytes() const override;
     void save_card_rows(int64_t first, int64_t n, uint8_t* dst) override;
     void load_card_rows(const uint8_t* src, int64_t from, int64_t count, int64_t first, int64_t n) override;
@@ -63,6 +65,8 @@ private:
     int keep_ = 0;
     int chunk_ = 1;
     bool sink_attention_ = false;   ///< FP32-query long full-attention decode; HIP default, strict env override
+    bool prefill_attention_ = false;
+    bool prefill_attention_seen_ = false;
     std::vector<float> yarn_freq_;   ///< the rotary pairs' divisors: YaRN's blend of interpolation and extrapolation
     float* freq_dev_ = nullptr;
 

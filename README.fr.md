@@ -50,6 +50,8 @@ HIP active par défaut l’attention complète admissible au-delà de 8192 clés
 
 Sur un seul GPU HIP gfx1200, les projections down MXFP4 des Experts GPT-OSS en cache réutilisent par défaut les activations en mémoire partagée, en conservant les codes existants des poids et activations. `TINYSTRATA_GPTOSS_MXFP4_DOWN=0` sélectionne le noyau précédent pour le diagnostic. [Mesures, différences numériques et périmètre](benchmark/results/gptoss-mxfp4-down-20261110.md).
 
+Sous HIP gfx1200, les lots d’entrée GPT-OSS compatibles jusqu’à 16K clés utilisent par défaut une attention fusionnée, avec KV INT8 et précision FP16/FP32 inchangés. Les préfixes plus longs et les chemins non pris en charge conservent le traitement précédent. `TINYSTRATA_GPTOSS_PREFILL_ATTN=0` désactive cette optimisation. [Débit d’entrée et vérifications numériques](benchmark/results/gptoss-prefill-attention-20261110.md).
+
 | Fonction | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) | [gpt-oss](https://huggingface.co/openai/gpt-oss-20b) |
 | --- | --- | --- | --- | --- | --- |
 | Contexte maximal | 256K | 256K | 128K | 256K (extension) | 128K |

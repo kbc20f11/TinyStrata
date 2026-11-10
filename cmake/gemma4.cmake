@@ -41,9 +41,20 @@ else()
   target_link_libraries(tinystrata_gemma4_mmq PUBLIC ggml-base CUDA::cudart)
 endif()
 add_library(tinystrata_gemma4 STATIC src/gemma4/engine.cpp src/gemma4/gemma4.cpp src/gemma4/gptoss.cpp
-  src/gemma4/cpu_experts.cpp src/gemma4/kernels.cu src/gemma4/matvec.cu src/gemma4/sampling.cu src/gemma4/sink_attention.cu src/gemma4/mxfp4_down.cu)
+  src/gemma4/cpu_experts.cpp src/gemma4/kernels.cu src/gemma4/matvec.cu src/gemma4/sampling.cu src/gemma4/sink_attention.cu src/gemma4/mxfp4_down.cu
+  src/gemma4/prefill_attention.cu)
 if(STRATA_ENABLE_HIP)
   set_source_files_properties(src/gemma4/mxfp4_down.cu PROPERTIES LANGUAGE HIP)
+endif()
+
+# Model-free GPT-OSS prompt-attention numerical and timing regression.
+add_executable(gptoss_prefill_attention_test EXCLUDE_FROM_ALL tests/gptoss-prefill-attention.cu)
+target_include_directories(gptoss_prefill_attention_test PRIVATE include)
+target_link_libraries(gptoss_prefill_attention_test PRIVATE tinystrata_gemma4 ${_strata_gpu_runtime_target})
+if(STRATA_ENABLE_HIP)
+  set_source_files_properties(tests/gptoss-prefill-attention.cu PROPERTIES LANGUAGE HIP)
+elseif(MSVC)
+  target_compile_options(gptoss_prefill_attention_test PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor;-Xcompiler=/utf-8>)
 endif()
 if(STRATA_ENABLE_CUDA)
   set_source_files_properties(src/gemma4/matvec.cu PROPERTIES COMPILE_OPTIONS "--use_fast_math")

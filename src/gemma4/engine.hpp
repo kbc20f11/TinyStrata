@@ -220,6 +220,8 @@ public:
     bool mxfp4_down_enabled() const { return oai_down_enabled_; }
     // Persistent path evidence, including graph capture; not per-token replay counters.
     uint32_t mxfp4_down_seen() const { return oai_down_seen_.load(std::memory_order_relaxed); }
+    virtual bool prefill_attention_requested() const { return false; }
+    virtual bool prefill_attention_seen() const { return false; }
     /// Feed n tokens of a prompt, none of them a picture's row, as eval() without logits would in calls of
     /// max_rows(): the same tokens a call.  With experts outside the cache it is faster than those calls, the
     /// more the more of them n is; under stage_ahead tokens it makes those calls.  The result is the calls' own

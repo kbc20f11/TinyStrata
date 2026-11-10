@@ -798,6 +798,8 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
             const uint64_t host_rows = e.logits_host_rows() - host_rows_before;
             std::printf("INFO mxfp4_down_requested=%d mxfp4_down_enabled=%d mxfp4_down_seen=%u\n",
                         e.mxfp4_down_requested(), e.mxfp4_down_enabled(), e.mxfp4_down_seen());
+            std::printf("INFO prefill_attention_requested=%d prefill_attention_seen=%d\n",
+                        e.prefill_attention_requested(), e.prefill_attention_seen());
             std::printf("INFO gpu_sample_requested=%d gpu_sample_eligible=%d gpu_sample_reason=%s "
                         "gpu_sample_tokens=%lld cpu_sample_tokens=%lld gpu_sample_fallback_tokens=%lld "
                         "logits_host_rows=%llu logits_host_bytes=%llu\n",

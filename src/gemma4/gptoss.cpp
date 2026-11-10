@@ -5,6 +5,7 @@
 #include "strata/gemma4/kernels.hpp"
 #include "strata/gemma4/matvec.hpp"
 #include "strata/gemma4/sink_attention.hpp"
+#include "strata/gemma4/prefill_attention.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -100,6 +101,15 @@ void GptOss::load_geometry() {
     if (const char* split = std::getenv("TINYSTRATA_GPTOSS_SINK_ATTN")) {
         need((split[0] == '0' || split[0] == '1') && split[1] == '\0', "TINYSTRATA_GPTOSS_SINK_ATTN must be 0 or 1");
         sink_attention_ = split[0] == '1';
+    }
+    // The kernel itself rejects unvalidated architectures; CUDA keeps its existing route.
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
+    prefill_attention_ = true;
+#endif
+    if (const char* prefill = std::getenv("TINYSTRATA_GPTOSS_PREFILL_ATTN")) {
+        need((prefill[0] == '0' || prefill[0] == '1') && prefill[1] == '\0',
+             "TINYSTRATA_GPTOSS_PREFILL_ATTN must be 0 or 1");
+        prefill_attention_ = prefill[0] == '1';
     }
     oai_alpha_ = kOaiAlpha;
     clamp_exp_.assign((size_t) n_layer_, kOaiLimit);
@@ -341,14 +351,23 @@ void GptOss::attn(Block& B, int64_t pos, int n) {
     // Scratch is reused after the suffix join on this stream; output rows do not overlap.
     // A capacity rejection launches nothing, and takes the complete original path for every row.
     const int old_rows = split_attention ? old_prefix : n;
-    // a prompt batch through cuBLAS; a few tokens with the kernels that give a token the same bits in any company
-    if (!split_attention && n >= kStageRows)
+    // Large causal INT8 batches retain the existing FP16 products/FP32 sums, without global score tiles.
+    // Small-row/window/state math is unchanged; unsupported devices and formats retain the BLAS path.
+    // Keep the measured beneficial range. Long-prefix batches use BLAS instead of the fused kernel's
+    // repeated per-query KV walk; a long prompt still benefits from its earlier <=16K batches.
+    const bool fused_prefill = prefill_attention_ && !at && !B.swa && q8 && dim_ == 64 && n >= kStageRows &&
+        pos >= 0 && pos <= 16384 - int64_t(n) &&
+        prefill_attention::run(q_, B.k_codes, B.k_scales, B.v_codes, B.v_scales, fp(B.sinks), att_,
+                               n_head_, n_kv_, pos, n, scale, st_);
+    if (fused_prefill) prefill_attention_seen_ = true;
+    // a prompt batch through BLAS; a few tokens with the kernels that give a token the same bits in any company
+    if (!fused_prefill && !split_attention && n >= kStageRows)
         attend_batch(blas_, q_, B.keys, B.vals, pos, n, score_, (size_t) chunk_ * n_head_ * opt_.max_context, awork_,
                      att_, dim_, n_head_, n_kv_, scale, st_, window, ring, false,
                      q8 ? Kvq8{B.k_codes, B.k_scales} : Kvq8{}, q8 ? Kvq8{B.v_codes, B.v_scales} : Kvq8{},
                      q8 ? (uint16_t*) q8work_ : nullptr, q8 ? (uint16_t*) q8work_ + work_halves_ : nullptr,
                      q8 ? work_halves_ : 0, fp(B.sinks));
-    else if (old_rows > 0)
+    else if (!fused_prefill && old_rows > 0)
         attend(q_, B.keys, B.vals, pos, old_rows, score_, chunk_, att_, dim_, n_head_, n_kv_, scale, st_, window, ring, false,
                at, !at ? 0 : B.swa ? std::min(window_ + n - 1, opt_.max_context) : room(n), 0,
                q8 ? Kvq8{B.k_codes, B.k_scales} : Kvq8{}, q8 ? Kvq8{B.v_codes, B.v_scales} : Kvq8{}, fp(B.sinks));
