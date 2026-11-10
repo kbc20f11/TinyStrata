@@ -50,7 +50,7 @@ HIP activa por defecto la atención completa compatible para contextos con más 
 
 En una sola GPU HIP gfx1200, las proyecciones down MXFP4 de Experts GPT-OSS en caché reutilizan activaciones en memoria compartida por defecto, conservando los códigos existentes de pesos y activaciones. `TINYSTRATA_GPTOSS_MXFP4_DOWN=0` selecciona el kernel anterior para diagnóstico. [Mediciones, diferencias numéricas y alcance](benchmark/results/gptoss-mxfp4-down-20261110.md).
 
-En HIP gfx1200, los lotes de entrada compatibles de GPT-OSS hasta 16K claves usan atención fusionada por defecto, conservando KV INT8 y la precisión FP16/FP32 existente. Los prefijos posteriores y las rutas no compatibles mantienen el procesamiento anterior. `TINYSTRATA_GPTOSS_PREFILL_ATTN=0` desactiva la optimización. [Velocidad de entrada y comprobaciones numéricas](benchmark/results/gptoss-prefill-attention-20261110.md).
+En una sola GPU HIP gfx1200, GPT-OSS fusiona la atención de entrada INT8 completa y local, incluidos prefijos largos, y la activación MMQ con equivalencia de bytes. Conserva la precisión FP16/FP32 existente; la fusión de activación durante la generación sigue siendo opcional. [Mediciones, diferencias numéricas y alcance](benchmark/results/gptoss-fusions-20261110.md).
 
 | Función | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) | [gpt-oss](https://huggingface.co/openai/gpt-oss-20b) |
 | --- | --- | --- | --- | --- | --- |

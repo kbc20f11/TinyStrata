@@ -6,6 +6,7 @@
 #include "strata/gemma4/matvec.hpp"
 #include "strata/gemma4/sink_attention.hpp"
 #include "strata/gemma4/prefill_attention.hpp"
+#include "strata/gemma4/long_prefill_attention.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -111,6 +112,20 @@ void GptOss::load_geometry() {
              "TINYSTRATA_GPTOSS_PREFILL_ATTN must be 0 or 1");
         prefill_attention_ = prefill[0] == '1';
     }
+    const auto fusion = [&](const char* name, uint32_t bits) {
+        if (const char* value = std::getenv(name)) {
+            if ((value[0] != '0' && value[0] != '1') || value[1] != '\0')
+                throw std::runtime_error(std::string(name) + " must be 0 or 1");
+            if (value[0] == '1') oai_fusion_requested_ |= bits;
+            else oai_fusion_requested_ &= ~bits;
+            oai_fusion_overrides_ |= bits;
+        }
+    };
+    fusion("TINYSTRATA_GPTOSS_SWA_PREFILL", 1);
+    fusion("TINYSTRATA_GPTOSS_LONG_PREFILL", 2);
+    fusion("TINYSTRATA_GPTOSS_ACT_QUANT", 4 | 8);
+    fusion("TINYSTRATA_GPTOSS_ACT_Q8", 4);
+    fusion("TINYSTRATA_GPTOSS_ACT_MMQ", 8);
     oai_alpha_ = kOaiAlpha;
     clamp_exp_.assign((size_t) n_layer_, kOaiLimit);
     clamp_shexp_ = clamp_exp_;
@@ -355,11 +370,21 @@ void GptOss::attn(Block& B, int64_t pos, int n) {
     // Small-row/window/state math is unchanged; unsupported devices and formats retain the BLAS path.
     // Keep the measured beneficial range. Long-prefix batches use BLAS instead of the fused kernel's
     // repeated per-query KV walk; a long prompt still benefits from its earlier <=16K batches.
-    const bool fused_prefill = prefill_attention_ && !at && !B.swa && q8 && dim_ == 64 && n >= kStageRows &&
+    const bool batch_q8 = !at && q8 && dim_ == 64 && n >= kStageRows;
+    const bool fused_swa = batch_q8 && B.swa && (oai_fusion_requested_ & 1) &&
+        prefill_attention::run(q_, B.k_codes, B.k_scales, B.v_codes, B.v_scales, fp(B.sinks), att_,
+                               n_head_, n_kv_, pos, n, scale, st_, window, ring);
+    const bool fused_long = batch_q8 && !B.swa && (oai_fusion_requested_ & 2) && pos + int64_t(n) > 16384 &&
+        long_prefill_attention::run(q_, B.k_codes, B.k_scales, B.v_codes, B.v_scales, fp(B.sinks), att_,
+                                    n_head_, n_kv_, pos, n, scale, st_);
+    if (fused_swa) oai_fusion_seen_.fetch_or(1, std::memory_order_relaxed);
+    if (fused_long) oai_fusion_seen_.fetch_or(2, std::memory_order_relaxed);
+    const bool fused_full = prefill_attention_ && batch_q8 && !B.swa &&
         pos >= 0 && pos <= 16384 - int64_t(n) &&
         prefill_attention::run(q_, B.k_codes, B.k_scales, B.v_codes, B.v_scales, fp(B.sinks), att_,
                                n_head_, n_kv_, pos, n, scale, st_);
-    if (fused_prefill) prefill_attention_seen_ = true;
+    const bool fused_prefill = fused_full || fused_swa || fused_long;
+    if (fused_full) prefill_attention_seen_ = true;
     // a prompt batch through BLAS; a few tokens with the kernels that give a token the same bits in any company
     if (!fused_prefill && !split_attention && n >= kStageRows)
         attend_batch(blas_, q_, B.keys, B.vals, pos, n, score_, (size_t) chunk_ * n_head_ * opt_.max_context, awork_,

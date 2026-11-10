@@ -1,10 +1,12 @@
 # GPT-OSS fused prompt Attention — 2026-11-10
 
+Historical first-stage measurements; the current default policy is described in [SWA/long-prefix/activation fusion](gptoss-fusions-20261110.md).
+
 RX 9060 XT 16 GB (gfx1200), Windows HIP, GPT-OSS 20B MXFP4. This extends `dee730f`; it retains the GPU sampler, cached-Expert down kernel and small-row sink Attention. Native SHA-256: `93724629461cb381b5e4a61ed42e78cfd7299822907ea5264cdcacd9223baf80`.
 
 ## Implementation and scope
 
-The previous large-batch path expands INT8 KV into global FP16 tiles, writes FP32 scores and FP16 probabilities, and launches BLAS/softmax/value operations for each tile. A private, synchronized event diagnostic at 16K input records **6,564.7 ms** of full-Attention stream intervals and **518.6 ms** of SWA intervals. This intrusive diagnostic includes dispatch gaps; its intervals are not an active-kernel profile or normal end-to-end timing.
+The previous large-batch path expands INT8 KV into global FP16 tiles, writes FP32 scores and FP16 probabilities, and launches BLAS/softmax/value operations for each tile. A private, synchronized event diagnostic at 16K input records **6,564.7 ms** of full-Attention stream intervals and **518.6 ms** of SWA intervals. These intrusive GPU-event intervals are not complete end-to-end timing: later synchronized wall measurements show substantial additional BLAS elapsed time. Do not infer a fraction of total prompt time from these event values.
 
 The selected HIP kernel fuses KV expansion, QK, online softmax and PV inside a CTA. It uses **16 query tokens / 256 threads / 32 keys**, with two lanes per softmax row. Queries, restored KV and probabilities retain the existing FP16 rounding; matrix products and online sums retain FP32 accumulation. The learned sink is included once. All keys are retained and causal masks are enforced. The existing INT8 storage, weights, Expert selection and global scratch allocations are unchanged.
 

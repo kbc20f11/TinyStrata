@@ -52,7 +52,7 @@ HIPでは、8192 keysを超える対応する全履歴Attentionを既定で分�
 
 単一GPUのHIP gfx1200では、GPUにキャッシュされたGPT-OSS ExpertのMXFP4 down計算で、活性値を共有メモリから再利用するカーネルを既定で使います。重みと活性値のコードは維持します。診断時は `TINYSTRATA_GPTOSS_MXFP4_DOWN=0` で従来のカーネルへ戻せます。[実測・数値差・確認範囲](benchmark/results/gptoss-mxfp4-down-20261110.md)。
 
-HIP gfx1200では、16K keysまでの対応するGPT-OSS入力バッチを融合Attentionで処理します。INT8 KVと従来のFP16／FP32計算精度を維持し、長い履歴や未対応の経路は従来処理を使います。診断時は `TINYSTRATA_GPTOSS_PREFILL_ATTN=0` で無効化できます。[入力速度・数値検証](benchmark/results/gptoss-prefill-attention-20261110.md)。
+単一GPUのHIP gfx1200では、GPT-OSSの全文・局所Attentionと長い履歴の入力処理、およびMMQ用の活性化・量子化を融合します。従来のFP16／FP32精度と量子化形式を維持し、生成用の活性化融合は明示指定のままです。[実測・数値差・確認範囲](benchmark/results/gptoss-fusions-20261110.md)。
 
 | 機能 | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) | [Tiel Coder](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP) | [gpt-oss](https://huggingface.co/openai/gpt-oss-20b) |
 | --- | --- | --- | --- | --- | --- | --- |

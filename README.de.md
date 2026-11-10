@@ -50,7 +50,7 @@ HIP aktiviert geeignete vollständige Attention für lange Kontexte über 8192 S
 
 Auf einer einzelnen HIP-GPU gfx1200 verwenden gecachte GPT-OSS-MXFP4-Expert-Down-Projektionen standardmäßig gemeinsam bereitgestellte Aktivierungen; bestehende Gewichts- und Aktivierungscodes bleiben erhalten. `TINYSTRATA_GPTOSS_MXFP4_DOWN=0` wählt den bisherigen Kernel zur Diagnose. [Messungen, numerische Unterschiede und Umfang](benchmark/results/gptoss-mxfp4-down-20261110.md).
 
-Unter HIP gfx1200 nutzen geeignete GPT-OSS-Prompt-Batches bis 16K Schlüssel standardmäßig fusionierte Attention mit unverändertem INT8-KV und FP16/FP32-Rechenformat. Längere Präfixe und nicht unterstützte Pfade bleiben unverändert. `TINYSTRATA_GPTOSS_PREFILL_ATTN=0` deaktiviert die Optimierung. [Eingabegeschwindigkeit und numerische Prüfungen](benchmark/results/gptoss-prefill-attention-20261110.md).
+Auf einer einzelnen HIP-GPU gfx1200 nutzt GPT-OSS fusionierte INT8-Eingabe-Attention für vollständige und lokale Schichten einschließlich langer Präfixe sowie bytegleiche MMQ-Aktivierungsfusion. Die bisherige FP16/FP32-Präzision bleibt erhalten; die Aktivierungsfusion beim Decoding bleibt optional. [Messungen, numerische Unterschiede und Umfang](benchmark/results/gptoss-fusions-20261110.md).
 
 | Funktion | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) | [gpt-oss](https://huggingface.co/openai/gpt-oss-20b) |
 | --- | --- | --- | --- | --- | --- |

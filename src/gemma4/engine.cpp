@@ -15,6 +15,7 @@
 #include "strata/gemma4/matvec.hpp"
 #include "strata/gemma4/sampling.hpp"
 #include "strata/gemma4/mxfp4_down.hpp"
+#include "strata/gemma4/activation_quant.hpp"
 #if defined(STRATA_USE_HIP) || defined(__HIPCC__)
 #include "strata/kernels/cpu/pool.hpp"
 #endif
@@ -1777,14 +1778,20 @@ void Engine::load(const Options& o) {
     // (mind_vram()): refilled in one allocation instead, it only ever got smaller.
     ck(cudaGetDevice(&device_), "cudaGetDevice");
 #if defined(STRATA_USE_HIP) || defined(__HIPCC__)
-    if (oai_ && down_mode != 0 && !split_) {
+    if (oai_ && !split_) {
         cudaDeviceProp properties{};
         ck(cudaGetDeviceProperties(&properties, device_), "MXFP4 down device");
         const bool verified = std::strncmp(properties.gcnArchName, "gfx1200", 7) == 0;
         const bool community = std::strncmp(properties.gcnArchName, "gfx1201", 7) == 0;
-        oai_down_requested_ = down_mode == 1 || verified;
-        // gfx1201 is an explicit, unmeasured opt-in; other chips/CUDA retain the generic path.
-        oai_down_enabled_ = oai_down_requested_ && (verified || (down_mode == 1 && community));
+        // Measured single-GPU gfx1200 defaults. Plain decode Q8_1 fusion stays opt-in:
+        // its byte parity passes, but end-to-end decode gains are not established.
+        if (verified && (properties.gcnArchName[7] == '\0' || properties.gcnArchName[7] == ':'))
+            oai_fusion_requested_ |= uint32_t(1 | 2 | 8) & ~oai_fusion_overrides_;
+        if (down_mode != 0) {
+            oai_down_requested_ = down_mode == 1 || verified;
+            // gfx1201 is an explicit, unmeasured opt-in; other chips/CUDA retain the generic path.
+            oai_down_enabled_ = oai_down_requested_ && (verified || (down_mode == 1 && community));
+        }
     }
 #endif
     CUdevice dev = 0;
@@ -2437,6 +2444,7 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
                 for (int j = 0; j < m && !one; ++j)
                     kernels::gemma_native_mmvq((int) L.gu_type, gate_up.w[j], gate_up.x[j], gate_up.y[j], n_embd_,
                                          2 * n_ff_exp_, 1, st_);
+                bool fused_activation = false;
                 if (oai_) {
                     ExpertBias eb{};
                     for (int j = 0; j < m; ++j) {
@@ -2444,10 +2452,13 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
                         eb.g[j] = L.b_gate + at_e;
                         eb.u[j] = L.b_up + at_e;
                     }
-                    swiglu_oai_slots(g_, h_, n_ff_exp_, m, eb, oai_alpha_, limit, st_);
+                    fused_activation = (oai_fusion_requested_ & 4) &&
+                        activation_quant::q8_1_slots(g_, q8_, n_ff_exp_, m, eb, oai_alpha_, limit, st_);
+                    if (fused_activation) oai_fusion_seen_.fetch_or(4, std::memory_order_relaxed);
+                    else swiglu_oai_slots(g_, h_, n_ff_exp_, m, eb, oai_alpha_, limit, st_);
                 } else if (gelu_) geglu_rows(g_, h_, n_ff_exp_, m, st_);
                 else swiglu_clamp_rows(g_, h_, n_ff_exp_, m, limit, st_);
-                kernels::gemma_native_quantize_q8_1(h_, q8_, n_ff_exp_, m, st_);
+                if (!fused_activation) kernels::gemma_native_quantize_q8_1(h_, q8_, n_ff_exp_, m, st_);
                 bool down_done = oai_down_enabled_ && m > 1 &&
                     kernels::mxfp4_down::slots((int) L.d_type, down, m, n_ff_exp_, n_embd_, st_);
                 if (down_done) oai_down_seen_.fetch_or(2, std::memory_order_relaxed);
@@ -2540,10 +2551,16 @@ bool Engine::moe_card(Layer& L, int il, int n) {
     const kernels::MmvqIds gate_up{table, d_ids_, 0, xq_, kernels::gemma_native_q8_1_bytes(n_embd_), n_used_, g_,
                                    2 * (size_t) n_ff_exp_};
     kernels::gemma_native_mmvq_ids((int) L.gu_type, gate_up, rr, n_embd_, 2 * n_ff_exp_, st_);
-    if (oai_) swiglu_oai_ids(g_, h_, n_ff_exp_, rr, d_ids_, L.b_gate, L.b_up, oai_alpha_, clamp_exp_[(size_t) il], st_);
-    else if (gelu_) geglu_rows(g_, h_, n_ff_exp_, rr, st_);
-    else swiglu_clamp_rows(g_, h_, n_ff_exp_, rr, clamp_exp_[(size_t) il], st_);
-    kernels::gemma_native_quantize_q8_1(h_, q8_, n_ff_exp_ * rr, 1, st_);   // the rows back to back, as one vector
+    const bool fused_activation = oai_ && (oai_fusion_requested_ & 4) &&
+        activation_quant::q8_1_ids(g_, q8_, n_ff_exp_, rr, d_ids_, L.b_gate, L.b_up,
+                                  oai_alpha_, clamp_exp_[(size_t) il], st_);
+    if (fused_activation) oai_fusion_seen_.fetch_or(4, std::memory_order_relaxed);
+    else {
+        if (oai_) swiglu_oai_ids(g_, h_, n_ff_exp_, rr, d_ids_, L.b_gate, L.b_up, oai_alpha_, clamp_exp_[(size_t) il], st_);
+        else if (gelu_) geglu_rows(g_, h_, n_ff_exp_, rr, st_);
+        else swiglu_clamp_rows(g_, h_, n_ff_exp_, rr, clamp_exp_[(size_t) il], st_);
+        kernels::gemma_native_quantize_q8_1(h_, q8_, n_ff_exp_ * rr, 1, st_);
+    }
     const kernels::MmvqIds down{table, d_ids_, 2 * L.gu_bytes, q8_, kernels::gemma_native_q8_1_bytes(n_ff_exp_), 1, d_,
                                 (size_t) n_embd_};
     if (oai_down_enabled_ && kernels::mxfp4_down::ids((int) L.d_type, down, rr, n_ff_exp_, n_embd_, st_))
@@ -2816,10 +2833,16 @@ void Engine::moe_rows(Layer& L, int il, int n) {
             mmq_->mul(slot_of(r.j), gt, ff2, n_embd_, L.slot_bytes, r.m, mq_, d_cb + (size_t) r.c * cb_row + r.j, iota_,
                       rg, r.most, gu_, ff2, st_);
         if (rc > 0) {
-            if (oai_) swiglu_oai_ids(gu_, hx_, n_ff_exp_, rc, d_rowexp_, L.b_gate, L.b_up, oai_alpha_, limit, st_);
-            else if (gelu_) geglu_rows(gu_, hx_, n_ff_exp_, rc, st_);
-            else swiglu_clamp_rows(gu_, hx_, n_ff_exp_, rc, limit, st_);
-            Mmq::quantize(hx_, nullptr, mq2_, dt, ff, ff, rc, st_);
+            const bool fused_activation = oai_ && dt == 39 && (oai_fusion_requested_ & 8) &&
+                activation_quant::mmq_mxfp4_ids(gu_, mq2_, n_ff_exp_, rc, d_rowexp_, L.b_gate, L.b_up,
+                                               oai_alpha_, limit, st_);
+            if (fused_activation) oai_fusion_seen_.fetch_or(8, std::memory_order_relaxed);
+            else {
+                if (oai_) swiglu_oai_ids(gu_, hx_, n_ff_exp_, rc, d_rowexp_, L.b_gate, L.b_up, oai_alpha_, limit, st_);
+                else if (gelu_) geglu_rows(gu_, hx_, n_ff_exp_, rc, st_);
+                else swiglu_clamp_rows(gu_, hx_, n_ff_exp_, rc, limit, st_);
+                Mmq::quantize(hx_, nullptr, mq2_, dt, ff, ff, rc, st_);
+            }
         }
         for (const Run& r : runs_)
             mmq_->mul(slot_of(r.j) + gu2, dt, n_embd_, ff, L.slot_bytes, r.m, mq2_, d_cb + (size_t) r.c * cb_row + r.j,
@@ -2851,12 +2874,18 @@ void Engine::moe_rows(Layer& L, int il, int n) {
             int most = 0;
             for (int g = g0; g < g0 + m; ++g) most = std::max(most, rows_of(g));
             mmq_->mul(stage_, gt, ff2, n_embd_, gu2, m, mq_, d_bounds + g0, iota_, rg, most, gu_, ff2, st_);
-            if (oai_)
-                swiglu_oai_ids(gu_ + (size_t) r0 * ff2, hx_ + (size_t) r0 * ff, n_ff_exp_, rows, d_rowexp_ + r0, L.b_gate,
-                               L.b_up, oai_alpha_, limit, st_);
-            else if (gelu_) geglu_rows(gu_ + (size_t) r0 * ff2, hx_ + (size_t) r0 * ff, n_ff_exp_, rows, st_);
-            else swiglu_clamp_rows(gu_ + (size_t) r0 * ff2, hx_ + (size_t) r0 * ff, n_ff_exp_, rows, limit, st_);
-            Mmq::quantize(hx_ + (size_t) r0 * ff, nullptr, mq2_, dt, ff, ff, rows, st_);
+            const bool fused_activation = oai_ && dt == 39 && (oai_fusion_requested_ & 8) &&
+                activation_quant::mmq_mxfp4_ids(gu_ + (size_t) r0 * ff2, mq2_, n_ff_exp_, rows, d_rowexp_ + r0,
+                                               L.b_gate, L.b_up, oai_alpha_, limit, st_);
+            if (fused_activation) oai_fusion_seen_.fetch_or(8, std::memory_order_relaxed);
+            else {
+                if (oai_)
+                    swiglu_oai_ids(gu_ + (size_t) r0 * ff2, hx_ + (size_t) r0 * ff, n_ff_exp_, rows, d_rowexp_ + r0,
+                                   L.b_gate, L.b_up, oai_alpha_, limit, st_);
+                else if (gelu_) geglu_rows(gu_ + (size_t) r0 * ff2, hx_ + (size_t) r0 * ff, n_ff_exp_, rows, st_);
+                else swiglu_clamp_rows(gu_ + (size_t) r0 * ff2, hx_ + (size_t) r0 * ff, n_ff_exp_, rows, limit, st_);
+                Mmq::quantize(hx_ + (size_t) r0 * ff, nullptr, mq2_, dt, ff, ff, rows, st_);
+            }
             mmq_->mul(stage_ + down_at, dt, n_embd_, ff, L.d_bytes, m, mq2_, d_rel + (g0 - n_cached + r), d_place + r0,
                       rows, most, dx_, n_embd_, st_);
         }

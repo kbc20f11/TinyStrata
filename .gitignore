@@ -49,6 +49,8 @@
 !/tests/gptoss-fused.cu
 !/tests/gptoss-sink-attention.cu
 !/tests/gptoss-prefill-attention.cu
+!/tests/gptoss-long-prefill-attention.cu
+!/tests/gptoss-activation-quant.cu
 !/tests/gptoss-state.cpp
 !/tests/gptoss-sampling.cu
 !/tests/gptoss-device-sampling.cpp

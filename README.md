@@ -52,7 +52,7 @@ HIP enables eligible long-context full attention beyond 8192 keys by default, re
 
 On single-GPU HIP gfx1200, cached GPT-OSS MXFP4 Expert down projections reuse staged activations by default, preserving existing weight and activation codes. `TINYSTRATA_GPTOSS_MXFP4_DOWN=0` selects the old kernel for diagnosis. [Measurements, numerical differences and scope](benchmark/results/gptoss-mxfp4-down-20261110.md).
 
-On HIP gfx1200, eligible GPT-OSS prompt batches ending within 16K keys use fused Attention by default, retaining INT8 KV and the existing FP16/FP32 computation precision. Later prefixes and unsupported routes retain the old path. `TINYSTRATA_GPTOSS_PREFILL_ATTN=0` disables this optimization. [Input speed and numerical checks](benchmark/results/gptoss-prefill-attention-20261110.md).
+On single-GPU HIP gfx1200, GPT-OSS uses fused INT8 input Attention for full and sliding-window layers, including long prefixes, plus byte-equivalent MMQ activation fusion. Existing FP16/FP32 precision is retained; plain decode activation fusion remains opt-in. [Measurements, numerical differences and scope](benchmark/results/gptoss-fusions-20261110.md).
 
 | Feature | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) | [Tiel Coder](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP) | [gpt-oss](https://huggingface.co/openai/gpt-oss-20b) |
 | --- | --- | --- | --- | --- | --- | --- |

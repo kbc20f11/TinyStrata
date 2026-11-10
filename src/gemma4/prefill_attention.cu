@@ -19,6 +19,7 @@ namespace strata::gemma4::prefill_attention {
 namespace {
 constexpr int D = 64, GQA = 8, WAVES = 8, THREADS = WAVES * 32;
 constexpr int TOKENS = WAVES * 2, QUERY_ROWS = TOKENS * GQA, KEYS = kKeyTile, KV_STRIDE = D + 8;
+static_assert(TOKENS == kQueryTile);
 using HalfFragment = _Float16 __attribute__((ext_vector_type(8)));
 using FloatFragment = float __attribute__((ext_vector_type(8)));
 
@@ -41,10 +42,12 @@ __device__ __forceinline__ FloatFragment wmma(HalfFragment a, HalfFragment b, Fl
 #endif
 }
 
+template<bool Sliding>
 __global__ void __launch_bounds__(THREADS)
 prefill_kernel(const float* __restrict__ q, const int8_t* __restrict__ kc, const uint16_t* __restrict__ ks,
                const int8_t* __restrict__ vc, const uint16_t* __restrict__ vs, const float* __restrict__ sinks,
-               float* __restrict__ out, int heads, int kv_heads, long long pos, int rows, float scale) {
+               float* __restrict__ out, int heads, int kv_heads, long long pos, int rows, float scale,
+               int window, int ring) {
 #if defined(__gfx1200__)
     __shared__ Shared shared;
     const int tid = int(threadIdx.x), lane = tid & 31, wave = tid >> 5;
@@ -53,6 +56,7 @@ prefill_kernel(const float* __restrict__ q, const int8_t* __restrict__ kc, const
     const int query = q0 + wave * 2 + col / GQA;
     const int head = group * GQA + col % GQA;
     const int last = int(pos) + min(q0 + TOKENS, rows);
+    const int first = Sliding ? max(0, int(pos) + q0 - window + 1) : 0;
     HalfFragment qa[D / 16];
 #pragma unroll
     for (int k = 0; k < D / 16; ++k)
@@ -69,14 +73,14 @@ prefill_kernel(const float* __restrict__ q, const int8_t* __restrict__ kc, const
     }
     __syncthreads();
 
-    for (int k0 = 0; k0 < last; k0 += KEYS) {
+    for (int k0 = first; k0 < last; k0 += KEYS) {
         // The entire cache tile is loaded once per CTA and shared by all its causal query tokens.
         // Predicate before every global load: later reserved KV pages need not be physically mapped.
         for (int index = tid; index < KEYS * D; index += THREADS) {
             const int key = k0 + index / D, d = index % D;
             _Float16 key_value = (_Float16)0.f, value = (_Float16)0.f;
             if (key < last) {
-                const size_t row = size_t(key) * kv_heads + group;
+                const size_t row = size_t(Sliding && ring > 0 ? key % ring : key) * kv_heads + group;
                 key_value = (_Float16)(float(kc[row * D + d]) * __half2float(__ushort_as_half(ks[row * 2 + d / 32])));
                 value = (_Float16)(float(vc[row * D + d]) * __half2float(__ushort_as_half(vs[row * 2 + d / 32])));
             }
@@ -107,15 +111,16 @@ prefill_kernel(const float* __restrict__ q, const int8_t* __restrict__ kc, const
         {
             const int r = tid >> 1, sub = tid & 1, token = q0 + r / GQA;
             const int upper = token < rows ? int(pos) + token + 1 : 0;
+            const int lower = Sliding ? max(0, upper - window) : 0;
             float maximum = -INFINITY;
             for (int j = sub; j < KEYS; j += 2)
-                if (k0 + j < upper) maximum = fmaxf(maximum,shared.score[r][j]);
+                if ((!Sliding || k0 + j >= lower) && k0 + j < upper) maximum = fmaxf(maximum,shared.score[r][j]);
             maximum = fmaxf(maximum,__shfl_xor(maximum,1,32));
             const float before = shared.maximum[r], now = fmaxf(before,maximum);
             const float alpha = before == -INFINITY ? 0.f : expf(before - now);
             float sum = 0.f;
             for (int j = sub; j < KEYS; j += 2) {
-                const _Float16 p = k0 + j < upper && now != -INFINITY
+                const _Float16 p = (!Sliding || k0 + j >= lower) && k0 + j < upper && now != -INFINITY
                                       ? (_Float16)expf(shared.score[r][j] - now) : (_Float16)0.f;
                 shared.probability[r][j] = p;
                 sum += (float)p;
@@ -165,7 +170,7 @@ prefill_kernel(const float* __restrict__ q, const int8_t* __restrict__ kc, const
     }
 #else
     (void)q;(void)kc;(void)ks;(void)vc;(void)vs;(void)sinks;(void)out;
-    (void)heads;(void)kv_heads;(void)pos;(void)rows;(void)scale;
+    (void)heads;(void)kv_heads;(void)pos;(void)rows;(void)scale;(void)window;(void)ring;
 #endif
 }
 
@@ -200,12 +205,20 @@ bool available() {
 }
 
 bool run(const float* q,const int8_t* kc,const uint16_t* ks,const int8_t* vc,const uint16_t* vs,
-         const float* sinks,float* out,int heads,int kv_heads,int64_t pos,int rows,float scale,void* stream) {
+         const float* sinks,float* out,int heads,int kv_heads,int64_t pos,int rows,float scale,void* stream,
+         int window,int ring) {
     if (!q || !kc || !ks || !vc || !vs || !sinks || !out || kv_heads < 1 || kv_heads > 32 || heads < 1 || heads > 256 ||
         heads != GQA * kv_heads || rows < 1 || pos < 0 || pos > INT_MAX - int64_t(rows) ||
+        window < 0 || ring < 0 || (ring > 0 && (window == 0 ||
+            int64_t(ring) < int64_t(rows) + (pos < int64_t(window)-1 ? pos : int64_t(window)-1))) ||
         !(scale > 0.f) || !std::isfinite(scale) || !available()) return false;
-    prefill_kernel<<<dim3((rows-1)/TOKENS+1,kv_heads),THREADS,0,(hipStream_t)stream>>>(
-        q,kc,ks,vc,vs,sinks,out,heads,kv_heads,pos,rows,scale);
+    // Separate specializations leave full attention's hot loop free of ring/lower-mask work.
+    if (window > 0)
+        prefill_kernel<true><<<dim3((rows-1)/TOKENS+1,kv_heads),THREADS,0,(hipStream_t)stream>>>(
+            q,kc,ks,vc,vs,sinks,out,heads,kv_heads,pos,rows,scale,window,ring);
+    else
+        prefill_kernel<false><<<dim3((rows-1)/TOKENS+1,kv_heads),THREADS,0,(hipStream_t)stream>>>(
+            q,kc,ks,vc,vs,sinks,out,heads,kv_heads,pos,rows,scale,window,ring);
     if (const auto error = hipGetLastError(); error != hipSuccess)
         throw std::runtime_error(std::string("prefill attention launch: ")+hipGetErrorString(error));
     return true;
@@ -216,6 +229,6 @@ bool run(const float* q,const int8_t* kc,const uint16_t* ks,const int8_t* vc,con
 namespace strata::gemma4::prefill_attention {
 bool available() { return false; }
 bool run(const float*,const int8_t*,const uint16_t*,const int8_t*,const uint16_t*,const float*,float*,
-         int,int,int64_t,int,float,void*) { return false; }
+         int,int,int64_t,int,float,void*,int,int) { return false; }
 } // namespace strata::gemma4::prefill_attention
 #endif
