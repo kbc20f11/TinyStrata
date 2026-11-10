@@ -174,10 +174,11 @@ class ModelSwitcher:
                     management.update(can_delete=False, delete_reason=conflict)
                 if conflict:
                     management['can_download'] = False
+                images = self.svc.vision_available() if active else row['vision']
                 items.append({'id': model, 'arch': row['arch'], 'installed': row['installed'],
                               'object': 'model', 'active': active,
                               'status': {'value': value},
-                              'architecture': {'input_modalities': ['text', 'image'] if row['vision'] else ['text'],
+                              'architecture': {'input_modalities': ['text', 'image'] if images else ['text'],
                                                'output_modalities': ['text']},
                               'context': context,
                               'thinking': thinking_api.capabilities(model),
@@ -556,7 +557,13 @@ class ModelSwitcher:
         self.svc.check_load_policy()
         if bundle.vision is not None:
             self._set_phase('loading_vision')
-            bundle.vision.restart()
+            try:
+                bundle.vision.restart()
+            except (RuntimeError, OSError) as error:
+                bundle.vision.startup_error = str(error)
+                print(f'[tinystrata] images are unavailable: {error}; continuing with text only', flush=True)
+            else:
+                bundle.vision.startup_error = ''
         self._set_phase('loading')
         bundle.engine.restart(tries=1)
         if bundle.vision is not None and bundle.engine.info.get('vision') != 1:
@@ -691,7 +698,14 @@ class ModelSwitcher:
                         try:
                             if was_loaded:
                                 if old_vision is not None:
-                                    old_vision.restart()
+                                    try:
+                                        old_vision.restart()
+                                    except (RuntimeError, OSError) as vision_error:
+                                        old_vision.startup_error = str(vision_error)
+                                        print(f'[tinystrata] previous image encoder is unavailable: {vision_error}; '
+                                              'restoring text only', flush=True)
+                                    else:
+                                        old_vision.startup_error = ''
                                 old_engine.restart(tries=1)
                             svc.model_available = was_available
                             rollback = True

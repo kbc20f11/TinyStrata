@@ -7,6 +7,7 @@
 #include "strata/common/context_policy.hpp"
 #include "strata/gemma4/vram.hpp"
 #include "strata/gemma4/draft_policy.hpp"
+#include "strata/gemma4/image_text_prefill.hpp"
 #include "strata/qwen35/suffix_lookup.hpp"
 #include <cuda_runtime.h>
 #include <algorithm>
@@ -292,19 +293,63 @@ struct PromptMark {
     bool saved = false;
 };
 
+int image_text_prefill_mode() {
+    // Auto uses actual current staging/cache geometry. 1 retains a forced
+    // measurement path, 0 and invalid values retain the original image path.
+    static const int mode = [] {
+        const char* value = std::getenv("TINYSTRATA_GEMMA_IMAGE_TEXT_PREFILL");
+        if (!value || !*value || std::strcmp(value, "auto") == 0) return -1;
+        return std::strcmp(value, "1") == 0 ? 1 : 0;
+    }();
+    return mode;
+}
+
+bool image_text_prefill_trace() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("TINYSTRATA_GEMMA_IMAGE_TEXT_TRACE");
+        return value && std::strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
 // The final token is evaluated with logits; preceding tokens can use the
 // layer-major read path, staging each missing Expert once for several chunks.
 bool read_prompt_prefix(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop, Clock::time_point start,
-                        bool report, bool pictures, int reused = 0, PromptMark* mark = nullptr, MemoryReporter* memory = nullptr) {
+                        bool report, bool pictures, int reused = 0, PromptMark* mark = nullptr, MemoryReporter* memory = nullptr,
+                        const std::vector<strata::gemma4::Image>* image_spans = nullptr, bool trace_stage = false) {
+    const int mode = image_text_prefill_mode();
+    struct DispatchTrace {
+        bool report;
+        int mode;
+        bool eligible = false;
+        size_t stage_bytes = 0, max_missing_bytes = 0;
+        int reads = 0, evals = 0;
+        int64_t read_rows = 0, eval_rows = 0;
+        ~DispatchTrace() {
+            if (report)
+                std::fprintf(stderr, "gemma4-image-text-prefill: mode=%d eligible=%d stage_bytes=%zu "
+                                     "max_missing_bytes=%zu read_calls=%d read_rows=%lld eval_calls=%d eval_rows=%lld\n",
+                             mode, eligible, stage_bytes, max_missing_bytes, reads, (long long) read_rows,
+                             evals, (long long) eval_rows);
+        }
+    } trace{pictures && trace_stage, mode};
     int done = 0;
     while (done < n - 1) {
         if (stop.load()) return false;
-        int limit = std::min(n - 1 - done, pictures ? e.max_rows() : e.max_read());
-        // A picture is indivisible, but the surrounding text can stop at a
-        // turn boundary. Serving validates that no mark lies inside a picture.
-        if (pictures && mark && !mark->saved && mark->at > e.pos())
-            limit = (int) std::min<int64_t>(limit, mark->at - e.pos());
-        const int count = (int) e.whole(e.pos(), limit);
+        // Image eval(), growing KV and cache adaptation can change residency.
+        // Recheck host metadata at each committed piece, never on the GPU.
+        size_t missing_bytes = 0;
+        const bool eligible = pictures && (mode < 0 || trace_stage) && e.image_text_prefill_eligible(&missing_bytes);
+        const bool text_prefill = mode > 0 || (mode < 0 && eligible);
+        trace.eligible = eligible;
+        trace.stage_bytes = e.staging_bytes();
+        trace.max_missing_bytes = std::max(trace.max_missing_bytes, missing_bytes);
+        const auto piece = strata::gemma4::image_prompt_piece(e.pos(), n - 1 - done, e.max_rows(), e.max_read(),
+            pictures, text_prefill, image_spans ? image_spans->data() : nullptr,
+            image_spans ? image_spans->size() : 0, mark && !mark->saved ? mark->at : -1);
+        // whole() still keeps image embeddings indivisible. Serving validates
+        // that no checkpoint lies inside an image; text read() receives marks.
+        const int count = (int) e.whole(e.pos(), piece.limit);
         if (count <= 0 || count > n - 1 - done) throw std::logic_error("invalid image span in prompt");
         const std::function<bool(int, int)> progress = [&](int layers, int total) {
             if (memory) memory->progress();
@@ -318,8 +363,12 @@ bool read_prompt_prefix(Engine& e, const int32_t* ids, int n, const std::atomic<
         };
         const int64_t first = e.pos();
         const bool inside = mark && !mark->saved && mark->at > first && mark->at < first + count;
-        if (pictures) e.eval(ids + done, count, false);
+        if (!piece.read) {
+            ++trace.evals; trace.eval_rows += count;
+            e.eval(ids + done, count, false);
+        }
         else {
+            ++trace.reads; trace.read_rows += count;
             const Engine::Mark m{inside ? (int) (mark->at - first) : 0, inside ? mark->state : nullptr};
             if (!e.read(ids + done, count, inside ? &m : nullptr, inside ? 1 : 0, &progress)) return false;
             if (inside) mark->saved = true;
@@ -336,7 +385,8 @@ bool read_prompt_prefix(Engine& e, const int32_t* ids, int n, const std::atomic<
 
 bool prompt(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop, Clock::time_point start,
             bool report, bool pictures = false, bool trace_stage = false, int reused = 0, PromptMark* mark = nullptr,
-            MemoryReporter* memory = nullptr, const std::function<void()>* before_logits = nullptr) {
+            MemoryReporter* memory = nullptr, const std::function<void()>* before_logits = nullptr,
+            const std::vector<strata::gemma4::Image>* image_spans = nullptr) {
     const size_t before_stage = trace_stage ? e.staging_bytes() : 0;
     const double before_cache = trace_stage ? e.cached_gib() * 1024 : 0;
     bool ended = false;
@@ -356,7 +406,8 @@ bool prompt(Engine& e, const int32_t* ids, int n, const std::atomic<bool>& stop,
                          e.staging_bytes(), before_cache, during_cache, e.cached_gib() * 1024, elapsed(t0));
     };
     try {
-        const bool complete = read_prompt_prefix(e, ids, n, stop, start, report, pictures, reused, mark, memory);
+        const bool complete = read_prompt_prefix(e, ids, n, stop, start, report, pictures, reused, mark, memory,
+                                                 image_spans, trace_stage || image_text_prefill_trace());
         end_read();
         if (!complete || stop.load()) return false;
         if (before_logits) (*before_logits)();
@@ -618,7 +669,7 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
                 cache.capture(ids);
             };
             if (!prompt(e, ids.data() + reuse, fresh, box->stop, p0, true, fresh_pictures, o.stage_read_mib > 0,
-                        (int) reuse, &mark, &memory, cache.enabled() ? &before_logits : nullptr)) {
+                        (int) reuse, &mark, &memory, cache.enabled() ? &before_logits : nullptr, &pictures.at)) {
                 if (cache.enabled()) {
                     if (mark.saved) cache.publish_mark(ids); else cache.discard_mark();
                     cache.rewind(); live = cache.seq(); cache.release(); cache.info();

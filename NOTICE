@@ -276,3 +276,28 @@ and the Basalt-derived down arithmetic credited above. It changes matrix
 reads and dispatch only, preserving each row's arithmetic and output order.
 The Q5_1 draft helper uses TinyStrata's existing GGML-derived Q5_1 dot and
 reduction, preserving per-row arithmetic while sharing weight reads.
+
+The native command reader's owned stop/join lifetime in
+include/strata/common/command_inbox.hpp follows jesdga95/basalt commit
+4039751fbd0e3535236fd5989ff9e20480ae3a76 (MIT; Copyright (c) 2026
+Jesús Gulfo). TinyStrata retains its queued line protocol and cancellation
+epochs, with bounded pipe/console shutdown on Windows and POSIX.
+
+Gemma picture-prompt text-run scheduling in
+include/strata/gemma4/image_text_prefill.hpp and src/gemma4/main.cpp adapts
+simplexai-labs/PolyStrata commit f0aab99757ee49bf0d9b95385fa875048f23a90a
+(MIT; Copyright (c) 2026 VecSzn and the PolyStrata contributors). Picture
+rows still use the original image path; ordinary text runs use prompt
+reading without changing image spans or checkpoint positions.
+
+Image-worker startup resilience in serve/server.py and serve/model_switch.py follows aflin/momoe
+commit b7d04596a8597b4bb3a93cb5f817e328208a6d5a (MIT), retaining text
+inference after an image-worker startup failure. TinyStrata keeps failure
+and retry state per Service and preserves its HIP SDK identity checks.
+The READY pipe's single reader, total deadline and stray-line diagnostics
+adapt Niko1221/Strata commit 4cce1ee4d0057ff718cb0219e0114e5ddf73f296.
+Quiet child crash environments and HTTP binding without reverse DNS follow
+Strata commits 38ad0bcbd107fd92c77376f4715e5d54c3af8e7a and
+3e1fcaaf67e04c096b8172682817f427883515a0 (MIT; Copyright (c) 2026
+Niko1221 and the Strata contributors). Explicit developer backtrace
+settings remain effective. The upstream MIT license is retained in LICENSE.

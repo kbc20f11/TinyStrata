@@ -49,6 +49,7 @@
 #include "strata/qwen35/kv_grow.hpp"
 #include "strata/qwen35/hybrid_publish.cuh"
 #include "strata/qwen35/hybrid_mapped_output.cuh"
+#include "strata/common/command_inbox.hpp"
 #if defined(STRATA_Q36_INT8_FDEC)
 #include "strata/qwen35/int8_fdec.hpp"
 #endif
@@ -5120,27 +5121,8 @@ int serve(Engine& E) {
 #endif
     std::printf("READY %d stop\n", E.ctx);
     std::fflush(stdout);
-    std::mutex mu;
-    std::condition_variable cv;
-    struct Command { std::string text; uint64_t cancel_epoch; };
-    std::deque<Command> lines;
-    bool eof = false;
-    uint64_t cancel_epoch = 0;
-    std::atomic<bool> stop{false};
-    std::thread reader([&] {
-        std::string l;
-        while (std::getline(std::cin, l)) {
-            if (!l.empty() && l.back() == '\r') l.pop_back();
-            std::lock_guard<std::mutex> lk(mu);
-            if (l == "STOP") { ++cancel_epoch; stop.store(true); continue; }
-            lines.push_back({l, cancel_epoch});
-            cv.notify_one();
-        }
-        std::lock_guard<std::mutex> lk(mu);
-        eof = true;
-        cv.notify_one();
-    });
-    reader.detach();
+    strata::common::CommandInbox inbox;
+    auto& stop = inbox.cancelled();
     std::vector<int32_t> live;   // the tokens whose state the engine holds (cell i = live[i])
     std::vector<int32_t> turn_ids;
     Engine::TurnState turn_state; // one recent turn; bounded RAM, no duplicate full KV cache
@@ -5156,17 +5138,7 @@ int serve(Engine& E) {
     bool qwen_policy_valid = false;
     for (;;) {
         std::string line;
-        {
-            std::unique_lock<std::mutex> lk(mu);
-            cv.wait(lk, [&] { return eof || !lines.empty(); });
-            if (lines.empty()) return 0;
-            auto command = std::move(lines.front());
-            line = std::move(command.text);
-            lines.pop_front();
-            // A STOP received after this GEN was queued must not be cleared.
-            // A later GEN starts normally even when the preceding one stopped.
-            stop.store(command.cancel_epoch != cancel_epoch);
-        }
+        if (!inbox.next(line) || line == "QUIT") return 0;
         if (line.empty()) continue;
         // Invalid commands/requests leave this exact prefix intact, including
         // unsupported session-file restores; do not infer usage from new IDs.

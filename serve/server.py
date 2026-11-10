@@ -41,6 +41,7 @@ import re
 import select
 import signal
 import socket
+import socketserver
 import struct
 import shutil
 import subprocess
@@ -2316,7 +2317,7 @@ def network_path(path: str) -> bool:
 
 
 def vision_start_error(line: str, log=None, *, exit_code: int | None = None,
-                       log_start: int = 0, reason: str | None = None) -> str:
+                       log_start: int = 0, reason: str | None = None, strays=()) -> str:
     """The message when the image encoder answered something other than READY.  #1445: a card in the Exclusive_Process
     compute mode (or one another process holds) refuses the encoder's CUDA context with "busy or unavailable"; that
     cause is named instead of leaving the user the first line of a traceback.  `log` is the encoder's stderr file, whose
@@ -2332,7 +2333,7 @@ def vision_start_error(line: str, log=None, *, exit_code: int | None = None,
                 tail = f.read().decode("utf-8", "replace")
     except (OSError, ValueError):
         pass
-    if "busy or unavailable" in (text + tail).lower():
+    if "busy or unavailable" in (text + tail + "\n".join(strays)).lower():
         message = ("the vision encoder did not start: the GPU refused a second CUDA context (\"CUDA-capable device(s) "
                 "is/are busy or unavailable\"). This is usually the compute mode Exclusive_Process: only one process "
                 "may use the card, and the engine already holds it. Check with: nvidia-smi --query-gpu=compute_mode "
@@ -2353,6 +2354,8 @@ def vision_start_error(line: str, log=None, *, exit_code: int | None = None,
     last_lines = [x.rstrip() for x in tail.splitlines() if x.strip()][-8:]
     if last_lines:
         message += "\nthe vision encoder log's last lines from this start:\n" + "\n".join("  " + x for x in last_lines)
+    if strays:
+        message += "\nthe image encoder also printed: " + " | ".join(x[:200] for x in list(strays)[-3:])
     return message
 
 
@@ -2398,6 +2401,7 @@ class Vision:
         self.spawn = (args, log, env)                   # to start it again after an unload
         self.proc = None
         self.stopped = True
+        self.startup_error = ""
         self.lock = threading.Lock()
         self.cache: dict[str, tuple[Path, int]] = {}
         # opt-in (the vision section's "elastic": true, with the config's "vram_elastic"): the encoder starts with the
@@ -2407,7 +2411,12 @@ class Vision:
         self.elastic_mib = int(cfg.get("elastic_mib") or 2048)
         self.elastic_idle_s = float(cfg.get("elastic_idle_s") or 120)
         if not lazy and not self.elastic:
-            self._start()
+            try:
+                self.restart()
+            except (RuntimeError, OSError):
+                # Keep this configured encoder for an explicit load retry. Text
+                # inference remains available; images are refused with a reason.
+                print(f"[tinystrata] {self.startup_error}; continuing with text only", flush=True)
 
     def _start(self):
         args, log, env = self.spawn
@@ -2424,8 +2433,9 @@ class Vision:
                           stderr=log or subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", bufsize=1, env=env,
                           cwd=self.dir)
         contain(self.proc)
+        strays = []
         try:
-            line = self._readline(VISION_READY_S, "the vision encoder did not start")
+            line = self._await_ready(VISION_READY_S, strays)
         except RuntimeError as e:                       # silent for VISION_READY_S: it was ended, and it is not left half-started
             proc = self.proc
             try:
@@ -2433,10 +2443,10 @@ class Vision:
             except (OSError, subprocess.TimeoutExpired):
                 pass
             self.proc, self.stopped = None, True
-            # _readline killed the timed-out process; that cleanup status is
+            # _await_ready killed the timed-out process; that cleanup status is
             # not an encoder failure code. Keep the timeout and its log tail.
-            raise RuntimeError(vision_start_error("", log, log_start=log_start, reason=str(e))) from None
-        if not line.startswith("READY"):
+            raise RuntimeError(vision_start_error("", log, log_start=log_start, reason=str(e), strays=strays)) from None
+        if self._startup_kind(line) != "READY":
             proc, self.proc = self.proc, None
             self.stopped = True
             # EOF may reach the reader just before Windows publishes the exit
@@ -2454,8 +2464,74 @@ class Vision:
                     proc.wait(timeout=5)
             except (OSError, subprocess.TimeoutExpired):
                 pass
-            raise RuntimeError(vision_start_error(line, log, exit_code=code, log_start=log_start))
+            raise RuntimeError(vision_start_error(line, log, exit_code=code, log_start=log_start, strays=strays))
         self.stopped = False
+
+    READY_GRACE_S = 2.0
+    STRAY_KEEP = 20
+
+    @staticmethod
+    def _startup_kind(line: str) -> str:
+        match = re.match(r"^(READY|ERR)(?=\s|$)", line)
+        return match[1] if match else ""
+
+    def _await_ready(self, timeout: float, strays: list) -> str:
+        """One reader/queue and one total deadline; stdout banners do not reset it.
+
+        Stop reading at READY/ERR so no later encode reply is consumed. A dead
+        parent whose child holds stdout open gets a bounded exit grace.
+        """
+        proc, got, stopped = self.proc, queue.Queue(maxsize=64), threading.Event()
+
+        def read():
+            while not stopped.is_set():
+                try:
+                    line = proc.stdout.readline()
+                except (OSError, ValueError):
+                    line = ""
+                while not stopped.is_set():
+                    try:
+                        got.put(line, timeout=0.1)
+                        break
+                    except queue.Full:
+                        pass
+                if not line or self._startup_kind(line):
+                    return
+
+        threading.Thread(target=read, daemon=True).start()
+        deadline, ended_at, said = time.monotonic() + timeout, None, 0
+        try:
+            while True:
+                now = time.monotonic()
+                if now >= deadline:
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+                    raise RuntimeError(f"the vision encoder did not start: READY was not received within {timeout:g} s")
+                if proc.poll() is not None:
+                    ended_at = now if ended_at is None else ended_at
+                    if now - ended_at >= self.READY_GRACE_S:
+                        return ""
+                try:
+                    line = got.get(timeout=min(0.1, deadline - now))
+                except queue.Empty:
+                    continue
+                if not line or self._startup_kind(line):
+                    return line
+                stray = line.strip()
+                if stray:
+                    strays.append(stray[:300])
+                    del strays[:-self.STRAY_KEEP]
+                    said += 1
+                    if said <= self.STRAY_KEEP:
+                        log = self.spawn[1]
+                        print(f"[tinystrata] image encoder stdout before READY: {stray[:200]}", file=log or sys.stderr, flush=True)
+        finally:
+            stopped.set()
+            # An inherited writer can outlive the encoder. Closing a buffered
+            # stdout from this thread can deadlock its read lock; the captured
+            # old reader remains isolated until EOF, never reading a new proc.
 
     def _readline(self, timeout: float, what: str) -> str:
         """One line from the encoder, waiting at most `timeout` s (#1317).  On a timeout the encoder is killed, so the
@@ -2496,7 +2572,12 @@ class Vision:
                 pass
         self.proc = None
         self.stopped = True
-        self._start()
+        try:
+            self._start()
+        except (RuntimeError, OSError) as error:
+            self.startup_error = str(error)
+            raise
+        self.startup_error = ""
 
     @staticmethod
     def load(source: str) -> bytes:
@@ -2996,6 +3077,16 @@ def child_env(cfg: dict) -> dict:
         from serve.hip_runtime import runtime_environment
         env = runtime_environment(cfg, env)
         hip_env_guard(env, cfg)
+    return quiet_child_env(env)
+
+
+def quiet_child_env(env: dict) -> dict:
+    """Do not spawn ggml's debugger on a product child; explicit developer settings win."""
+    env = dict(env)
+    backtrace = any(str(source.get("STRATA_BACKTRACE", "")).strip().lower() not in ("", "0", "no", "off", "false")
+                    for source in (env, os.environ))
+    if not backtrace:
+        env.setdefault("GGML_NO_BACKTRACE", "1")
     return env
 
 
@@ -3044,6 +3135,7 @@ def vision_env(cfg: dict, env: dict) -> dict:
     """The image encoder's environment: the engine's, unless the config's vision section names its own "cuda_device"
     (numbered like nvidia-smi) - then the encoder runs on that card alone, so a spare GPU can hold it while the engine
     keeps all of its own cards' VRAM (#408, Efs-O).  Without it, nothing changes."""
+    env = quiet_child_env(env)
     vision = cfg.get("vision") or {}
     if cfg.get("backend") == "hip" and os.name == "nt" and (vision.get("exe") or cfg.get("vision_exe")):
         from serve.hip_runtime import resolve_hip_runtime, runtime_environment
@@ -3478,8 +3570,19 @@ class Service:
     def _vision_down(self) -> bool:
         """The encoder should run and does not (the engine's load starts it again).  An elastic encoder is down
         between pictures by design: it starts in the image turn (_vision_up), not with the engine."""
-        return (self.vision is not None and hasattr(self.vision, "alive") and not self.vision.alive()
+        return (self.vision is not None and not self.vision_error and hasattr(self.vision, "alive") and not self.vision.alive()
                 and not getattr(self.vision, "elastic", False))
+
+    @property
+    def vision_error(self) -> str:
+        return getattr(self.vision, "startup_error", "") if self.vision is not None else ""
+
+    def vision_available(self) -> bool:
+        return self.vision is not None and not self.vision_error
+
+    def vision_off_reason(self) -> str:
+        return (f"images are unavailable: {self.vision_error}; retry loading the model to retry the image encoder"
+                if self.vision_error else "this server was started without the vision encoder, so it cannot read images")
 
     def _engine_reserve(self) -> int | None:
         """The VRAM the engine keeps free for other programs outside an elastic encoder's turn: the last POST /v1/vram
@@ -3507,7 +3610,20 @@ class Service:
         if self.vision_held:
             time.sleep(0.2)          # the driver's free-VRAM counter shows the cache's release a moment later
         free0, t0 = self.free_vram_mib(), time.time()
-        v.restart()
+        try:
+            v.restart()
+        except (RuntimeError, OSError) as error:
+            v.startup_error = str(error)
+            if self.vision_held:
+                try:
+                    if hasattr(self.engine, "vram"):
+                        self.engine.vram(self._engine_reserve())
+                except (ValueError, EngineDied) as restore_error:
+                    print(f"[tinystrata] the image encoder's VRAM reserve was not restored: {restore_error}",
+                          file=sys.stderr, flush=True)
+                finally:
+                    self.vision_held = False
+            raise ValueError(self.vision_off_reason()) from error
         free1 = self.free_vram_mib()
         took = f", {free0 - free1} MiB of VRAM" if free0 is not None and free1 is not None else ""
         print(f"[strata] images: the image encoder started in {time.time() - t0:.1f} s{took}", flush=True)
@@ -3621,14 +3737,18 @@ class Service:
                 print(f"[strata] the before_load command failed ({hook_failed}), but {free} MiB of VRAM is free: "
                       "loading", flush=True)
 
-    def ensure_loaded(self):
+    def ensure_loaded(self, *, retry_vision=False):
         """Start the engine if it is not running (unloaded, or it died - issue #27), after the before_load hook and
         the free-VRAM check.  The caller holds self.fifo."""
         if not self.model_available:
             raise GpuBusy("the model is not ready; POST /v1/model/download, then poll GET /v1/model/download")
-        if self.loaded() and not self._vision_down():
+        retry_image = retry_vision and bool(self.vision_error)
+        vision_down = self._vision_down() or (retry_image and not getattr(self.vision, "elastic", False))
+        if self.loaded() and not vision_down:
+            if retry_image:                            # elastic: re-arm its next image turn, not a permanent allocation
+                self.vision.startup_error = ""
             return
-        if self.loaded() and self._vision_down() and getattr(self.vision, "gpu", False):
+        if self.loaded() and vision_down and getattr(self.vision, "gpu", False):
             # A crashed GPU encoder released its allocation. The language engine
             # may now occupy that room; restore the original load order rather
             # than starting a large image workspace beside a full Expert cache.
@@ -3637,13 +3757,18 @@ class Service:
                   "its VRAM is reserved before Expert placement", flush=True)
         self.check_load_policy()
         vision_started = False
-        if self._vision_down():                         # first, as at a start: a GPU encoder takes its VRAM before
+        if vision_down:                                # first, as at a start: a GPU encoder takes its VRAM before
             print("[strata] starting the vision encoder ...", flush=True)   # the engine sizes its cache
             try:
                 self.vision.restart()
-            except Exception as e:
-                raise EngineDied(f"the vision encoder failed to start: {e}") from e
-            vision_started = True
+            except (RuntimeError, OSError) as e:
+                self.vision.startup_error = str(e)
+                print(f"[tinystrata] {self.vision_off_reason()}; continuing with text only", flush=True)
+            else:
+                self.vision.startup_error = ""
+                vision_started = True
+        elif retry_image:
+            self.vision.startup_error = ""              # elastic encoder retries with the next picture
         if self.loaded():
             return
         if getattr(self.engine, "unloaded", False):
@@ -3707,11 +3832,11 @@ class Service:
         print(f"[strata] {e}. {note} The next request starts the engine again."
               f"{' Its log: ' + log if log else ''}", flush=True)
 
-    def load(self):
+    def load(self, *, retry_vision=False):
         """POST /load and every generation request: start the engine now if it is unloaded (raises GpuBusy)."""
         # a request is on its way: the idle thread must not unload between this and the request's own start
         self.last_request_at = time.time()
-        if self.loaded() and not self._vision_down():
+        if self.loaded() and not self._vision_down() and not (retry_vision and self.vision_error):
             return
         with self.status_lock:                          # #1603: waiting for the fifo to start the engine is queued, not nothing
             self.status["queued"] += 1
@@ -3721,7 +3846,7 @@ class Service:
                 with self.status_lock:
                     self.status["queued"] -= 1
                 counted = False
-                self.ensure_loaded()
+                self.ensure_loaded(retry_vision=retry_vision)
         finally:
             if counted:
                 with self.status_lock:
@@ -3963,8 +4088,9 @@ class Service:
                 live["state"] = "generating"
         if hasattr(self.engine, "replica_view"):        # opt-in replicas: each one's state and requests routed to it
             live["replicas"] = self.engine.replica_view()
-        engine = {"model": self.model, "max_context": self.reported_ctx(), "images": self.vision is not None,
+        engine = {"model": self.model, "max_context": self.reported_ctx(),
                   **dict(getattr(self.engine, "info", {}) or {})}
+        engine["images"] = self.vision_available()
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
@@ -4016,7 +4142,7 @@ class Service:
             return round(v / unit, digits) if isinstance(v, (int, float)) else None
 
         busy, ctx = bool(s.get("busy")), self.reported_ctx()
-        images = self.vision is not None
+        images = self.vision_available()
         return {
             "service": "strata", "model": self.model,
             "loaded": self.loaded(), "auto_load": hasattr(self.engine, "restart"),
@@ -4030,7 +4156,8 @@ class Service:
             "concurrency": {"serving": max(1, int(getattr(self.engine, "batch", 0) or 0)),
                             "requested": max(1, int(getattr(self.engine, "batch", 0) or 0))},
             "dialects": ["/v1/chat/completions", "/v1/messages", "/v1/responses"],
-            "vision": {"enabled": images, "available": images, "error": None},
+            "vision": {"enabled": images, "configured": self.vision is not None,
+                       "available": images, "error": self.vision_error or None},
             "image_generation": self.images.status() if self.images is not None else {"enabled": False},
             "activity": {"requests": totals["requests"] + int(busy), "in_flight": int(busy) + int(s.get("queued") or 0),
                          "last_request_at": int(last_at) if last_at else None},
@@ -4124,10 +4251,10 @@ class Service:
         images = images_of(messages)
         count = len(ids)
         if images:
-            if self.vision is None:
+            if not self.vision_available():
                 if getattr(self.engine, "_tinystrata_arch", None) == "gpt-oss":
                     raise ValueError("gpt-oss-20b is text-only and does not support image input")
-                raise ValueError("this server was started without the vision encoder, so it cannot read images")
+                raise ValueError(self.vision_off_reason())
             gemma = self.call_format == "gemma"
             mark = "<|image|>" if gemma else IMAGE_PAD
             def one(text):
@@ -4210,7 +4337,7 @@ class Service:
             for n, item in enumerate(content):
                 if not isinstance(item, dict) or item.get("type") != "image":
                     continue
-                why = "this server has no image encoder" if self.vision is None else None
+                why = self.vision_off_reason() if not self.vision_available() else None
                 if why is None:
                     src = item["source"]
                     try:
@@ -4398,11 +4525,10 @@ class Service:
         if not images:
             self.embeddings.turn_at = turn_at
         if images:
-            if self.vision is None:
+            if not self.vision_available():
                 if getattr(self.engine, "_tinystrata_arch", None) == "gpt-oss":
                     raise ValueError("gpt-oss-20b is text-only and does not support image input")
-                raise ValueError("this server was started without the vision encoder (run setup again and choose "
-                                 "'vision'), so it cannot read images")
+                raise ValueError(self.vision_off_reason())
             gemma = self.call_format == "gemma"
             mark = "<|image|>" if gemma else IMAGE_PAD
             def one(text):
@@ -5942,7 +6068,7 @@ def make_handler(svc: Service):
                                      "max_context": 0, "api_key": bool(svc.api_key), "service": "strata"})
                     return
                 self._json(200, {"status": "ok", "max_context": svc.reported_ctx(), "model": svc.model,
-                                 "images": svc.vision is not None, "api_key": bool(svc.api_key),
+                                 "images": svc.vision_available(), "api_key": bool(svc.api_key),
                                  "image_generation": svc.images is not None,
                                  "loaded": svc.loaded(), "service": "strata"})
             elif path.startswith("/v1/images/files/"):
@@ -5980,7 +6106,7 @@ def make_handler(svc: Service):
                     loaded = svc.loaded()
                     model = {"id": svc.model, "object": "model", "status": {"value": "loaded"},
                              "meta": {"n_ctx": svc.reported_ctx()},
-                             "architecture": {"input_modalities": ["text", "image"] if svc.vision is not None else ["text"],
+                             "architecture": {"input_modalities": ["text", "image"] if svc.vision_available() else ["text"],
                                               "output_modalities": ["text"]}}
                     if (thinking := thinking_api.capabilities(svc.model)) is not None:
                         model["thinking"] = thinking
@@ -6064,7 +6190,7 @@ def make_handler(svc: Service):
                 return
             if path == "/load":                              # load now, e.g. ahead of a request
                 try:
-                    svc.load()
+                    svc.load(retry_vision=True)
                     self._json(200, {"status": "loaded"})
                 except GpuBusy as e:
                     ra = getattr(e, "retry_after", None)
@@ -6154,7 +6280,7 @@ def make_handler(svc: Service):
                             with svc.status_lock:
                                 if svc.status.get("busy") or svc.status.get("queued"):
                                     raise ModelBusy("a request is running or queued")
-                            svc.ensure_loaded()
+                            svc.ensure_loaded(retry_vision=True)
                             svc.last_request_at = time.time()
                         finally:
                             svc.fifo.release()
@@ -6284,7 +6410,7 @@ def make_handler(svc: Service):
                      "total_slots": max(1, int(getattr(svc.engine, "batch", 0) or 0)),   # #1004: the batch slots
                      "model_alias": svc.model, "chat_template": svc.template.source,
                      "chat_template_caps": svc.template.caps,
-                     "modalities": {"vision": svc.vision is not None}, "models_autoload": hasattr(svc.engine, "restart"),
+                     "modalities": {"vision": svc.vision_available()}, "models_autoload": hasattr(svc.engine, "restart"),
                      "is_sleeping": not svc.loaded()}
             if getattr(svc.engine, "model_path", None):
                 props["model_path"] = svc.engine.model_path
@@ -6683,6 +6809,10 @@ class Server(ThreadingHTTPServer):
     # first ones (measured on 4 x R9700, also with one request at a time); the requests wait in the server, not the kernel
     # (STRATA_HTTP_BACKLOG overrides it)
     request_queue_size = max(5, int(os.environ.get("STRATA_HTTP_BACKLOG") or 256))
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
     def handle_error(self, request, client_address):
         if not isinstance(sys.exc_info()[1], ConnectionError):   # a client that hangs up needs no stack trace
@@ -7320,7 +7450,10 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
                     svc.model_available = False
                 svc.check_load_policy()
                 if image_candidate is not None:
-                    image_candidate.restart()
+                    try:
+                        image_candidate.restart()
+                    except (RuntimeError, OSError) as error:
+                        print(f"[tinystrata] images are unavailable: {error}; continuing with text only", flush=True)
                 candidate.restart()
                 if image_candidate is not None and candidate.info.get("vision") != 1:
                     raise ValueError("the native engine does not support image embeddings; rebuild TinyStrata")

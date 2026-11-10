@@ -1,0 +1,303 @@
+{
+  "schema": 1,
+  "date": "2026-11-11",
+  "baseline": "162d299bf1de6f570e3add4d4fc5f8c6bfdcf02d",
+  "references": [
+    {
+      "name": "Strata",
+      "baseline": "146df3c468739147f520ac3816de806f71232571",
+      "head": "dbb2d168cffa8cf793d9325358809d5263c7c6b0",
+      "new_commits": 307,
+      "new_non_merge_commits": 269,
+      "audit": "strata-decision.json"
+    },
+    {
+      "name": "MoMoE",
+      "baseline": "4a4a0dca5ab307c65d4a780a1210aaa9a357cfde",
+      "head": "bb30c69524d18028fe1ff80497ccdabb05e9f970",
+      "new_commits": 5,
+      "new_non_merge_commits": 5,
+      "audit": "momoe-audit.json"
+    },
+    {
+      "name": "PolyStrata",
+      "baseline": "4de79331b49e553406860470fa3e96b5256e2e50",
+      "head": "83a7a33272413bf87b8d2742dc557c165e2cb2d2",
+      "new_commits": 12,
+      "new_non_merge_commits": 9,
+      "audit": "polystrata-audit.json"
+    },
+    {
+      "name": "Basalt",
+      "baseline": "f19f69e68cdb5e6203a20b5c5563b1288fcb35a7",
+      "head": "db0be88e91c3cf135e9ec23efffe6d203574910c",
+      "new_commits": 40,
+      "new_non_merge_commits": 40,
+      "audit": "basalt-audit.json"
+    }
+  ],
+  "gemma_mixed_inputs": [
+    {
+      "capacity_gib": 8,
+      "expert_budget_gib": 1.5,
+      "binary_sha256": "a51e1c83681831070d34896dc0e9ec2176b95139cadcc97de0cf2419c6e475e8",
+      "artifact_sha256": "b784485296ae358a0ed55abf3a8b7792476c0bebb7eb0bf40cc960478fdfdd52",
+      "startup_geometry": [
+        {
+          "expert_slots": 132,
+          "expert_total": 3840,
+          "expert_cache_mib": 421,
+          "kv": "int8",
+          "mtp": 0,
+          "chunk": 1120,
+          "max_context": 32768
+        },
+        {
+          "expert_slots": 132,
+          "expert_total": 3840,
+          "expert_cache_mib": 421,
+          "kv": "int8",
+          "mtp": 0,
+          "chunk": 1120,
+          "max_context": 32768
+        }
+      ],
+      "dispatch": [
+        [
+          "gemma4-image-text-prefill: mode=0 eligible=0 stage_bytes=268435456 max_missing_bytes=414830592 read_calls=0 read_rows=0 eval_calls=3 eval_rows=374",
+          "gemma4-image-text-prefill: mode=0 eligible=0 stage_bytes=268435456 max_missing_bytes=414830592 read_calls=0 read_rows=0 eval_calls=6 eval_rows=4458",
+          "gemma4-image-text-prefill: mode=0 eligible=0 stage_bytes=268435456 max_missing_bytes=414830592 read_calls=0 read_rows=0 eval_calls=6 eval_rows=4457"
+        ],
+        [
+          "gemma4-image-text-prefill: mode=-1 eligible=0 stage_bytes=268435456 max_missing_bytes=414830592 read_calls=0 read_rows=0 eval_calls=3 eval_rows=374",
+          "gemma4-image-text-prefill: mode=-1 eligible=0 stage_bytes=268435456 max_missing_bytes=414830592 read_calls=0 read_rows=0 eval_calls=6 eval_rows=4458",
+          "gemma4-image-text-prefill: mode=-1 eligible=0 stage_bytes=268435456 max_missing_bytes=414830592 read_calls=0 read_rows=0 eval_calls=6 eval_rows=4457"
+        ]
+      ],
+      "comparisons": [
+        {
+          "name": "image-only",
+          "rates": {
+            "A": 210.79258010118045,
+            "B": 210.28430437952113
+          },
+          "prefill_pct": -0.24112600235517423,
+          "content_equal": true
+        },
+        {
+          "name": "image-first-4096",
+          "rates": {
+            "A": 927.8371967206292,
+            "B": 934.0762930221841
+          },
+          "prefill_pct": 0.672434380040654,
+          "content_equal": true
+        },
+        {
+          "name": "image-last-4096",
+          "rates": {
+            "A": 875.1300524135764,
+            "B": 872.1169082692646
+          },
+          "prefill_pct": -0.3443081557994332,
+          "content_equal": true
+        },
+        {
+          "name": "text-control",
+          "rates": {
+            "A": 93.9119170984456,
+            "B": 95.30069010844561
+          },
+          "prefill_pct": 1.4788038120275848,
+          "content_equal": true
+        }
+      ]
+    },
+    {
+      "capacity_gib": 12,
+      "expert_budget_gib": 3.0,
+      "binary_sha256": "a51e1c83681831070d34896dc0e9ec2176b95139cadcc97de0cf2419c6e475e8",
+      "artifact_sha256": "6e0a403e7cd4db49ee12b198188d7d922059752c8cfbcb0a6359a1be580f58db",
+      "startup_geometry": [
+        {
+          "expert_slots": 962,
+          "expert_total": 3840,
+          "expert_cache_mib": 3069,
+          "kv": "int8",
+          "mtp": 0,
+          "chunk": 1120,
+          "max_context": 32768
+        },
+        {
+          "expert_slots": 962,
+          "expert_total": 3840,
+          "expert_cache_mib": 3069,
+          "kv": "int8",
+          "mtp": 0,
+          "chunk": 1120,
+          "max_context": 32768
+        }
+      ],
+      "dispatch": [
+        [
+          "gemma4-image-text-prefill: mode=0 eligible=0 stage_bytes=268435456 max_missing_bytes=321159168 read_calls=0 read_rows=0 eval_calls=3 eval_rows=374",
+          "gemma4-image-text-prefill: mode=0 eligible=0 stage_bytes=268435456 max_missing_bytes=321159168 read_calls=0 read_rows=0 eval_calls=6 eval_rows=4458",
+          "gemma4-image-text-prefill: mode=0 eligible=0 stage_bytes=268435456 max_missing_bytes=321159168 read_calls=0 read_rows=0 eval_calls=6 eval_rows=4457"
+        ],
+        [
+          "gemma4-image-text-prefill: mode=-1 eligible=0 stage_bytes=268435456 max_missing_bytes=321159168 read_calls=0 read_rows=0 eval_calls=3 eval_rows=374",
+          "gemma4-image-text-prefill: mode=-1 eligible=0 stage_bytes=268435456 max_missing_bytes=321159168 read_calls=0 read_rows=0 eval_calls=6 eval_rows=4458",
+          "gemma4-image-text-prefill: mode=-1 eligible=0 stage_bytes=268435456 max_missing_bytes=321159168 read_calls=0 read_rows=0 eval_calls=6 eval_rows=4457"
+        ]
+      ],
+      "comparisons": [
+        {
+          "name": "image-only",
+          "rates": {
+            "A": 250.16677785190126,
+            "B": 245.91776509935076
+          },
+          "prefill_pct": -1.6984720309528578,
+          "content_equal": true
+        },
+        {
+          "name": "image-first-4096",
+          "rates": {
+            "A": 1137.3839404142434,
+            "B": 1133.8266331019402
+          },
+          "prefill_pct": -0.31276222442596646,
+          "content_equal": true
+        },
+        {
+          "name": "image-last-4096",
+          "rates": {
+            "A": 1073.8804711777034,
+            "B": 1063.5049382127008
+          },
+          "prefill_pct": -0.966172050193248,
+          "content_equal": true
+        },
+        {
+          "name": "text-control",
+          "rates": {
+            "A": 119.98345055854365,
+            "B": 108.0879612374208
+          },
+          "prefill_pct": -9.914275065225498,
+          "content_equal": true
+        }
+      ]
+    },
+    {
+      "capacity_gib": 16,
+      "expert_budget_gib": 6.0,
+      "binary_sha256": "a51e1c83681831070d34896dc0e9ec2176b95139cadcc97de0cf2419c6e475e8",
+      "artifact_sha256": "123550a19a23a86b3de7d2a7993c6a998d5dbcc9aa2ca7cac3064c7e2d943b13",
+      "startup_geometry": [
+        {
+          "expert_slots": 1925,
+          "expert_total": 3840,
+          "expert_cache_mib": 6142,
+          "kv": "int8",
+          "mtp": 0,
+          "chunk": 1120,
+          "max_context": 32768
+        },
+        {
+          "expert_slots": 1925,
+          "expert_total": 3840,
+          "expert_cache_mib": 6142,
+          "kv": "int8",
+          "mtp": 0,
+          "chunk": 1120,
+          "max_context": 32768
+        }
+      ],
+      "dispatch": [
+        [
+          "gemma4-image-text-prefill: mode=0 eligible=1 stage_bytes=268435456 max_missing_bytes=214106112 read_calls=0 read_rows=0 eval_calls=3 eval_rows=374",
+          "gemma4-image-text-prefill: mode=0 eligible=1 stage_bytes=268435456 max_missing_bytes=214106112 read_calls=0 read_rows=0 eval_calls=17 eval_rows=16746",
+          "gemma4-image-text-prefill: mode=0 eligible=1 stage_bytes=268435456 max_missing_bytes=214106112 read_calls=0 read_rows=0 eval_calls=17 eval_rows=16745"
+        ],
+        [
+          "gemma4-image-text-prefill: mode=-1 eligible=1 stage_bytes=268435456 max_missing_bytes=214106112 read_calls=0 read_rows=0 eval_calls=3 eval_rows=374",
+          "gemma4-image-text-prefill: mode=-1 eligible=1 stage_bytes=268435456 max_missing_bytes=214106112 read_calls=1 read_rows=16405 eval_calls=2 eval_rows=341",
+          "gemma4-image-text-prefill: mode=-1 eligible=1 stage_bytes=268435456 max_missing_bytes=214106112 read_calls=1 read_rows=16376 eval_calls=2 eval_rows=369"
+        ]
+      ],
+      "comparisons": [
+        {
+          "name": "image-only",
+          "rates": {
+            "A": 309.89174448392697,
+            "B": 305.69821472242603
+          },
+          "prefill_pct": -1.3532240971712794,
+          "content_equal": true
+        },
+        {
+          "name": "image-first-16384",
+          "rates": {
+            "A": 1657.9382443496252,
+            "B": 2302.689473105269
+          },
+          "prefill_pct": 38.88873611263888,
+          "content_equal": true
+        },
+        {
+          "name": "image-last-16384",
+          "rates": {
+            "A": 1629.7017176779718,
+            "B": 2232.0559813395535
+          },
+          "prefill_pct": 36.96101299566812,
+          "content_equal": true
+        },
+        {
+          "name": "text-control",
+          "rates": {
+            "A": 140.23210831721468,
+            "B": 138.5570950788342
+          },
+          "prefill_pct": -1.1944577161968284,
+          "content_equal": true
+        }
+      ]
+    }
+  ],
+  "final_auto_policy": "Current per-layer missing Expert bytes fit current staging buffer; split/external draft excluded; no predicted stage loan",
+  "not_standard_v1": true,
+  "adoption": {
+    "decision": "Accept stability fixes and resource-auto Gemma image/text scheduling",
+    "all_six_model_api_pass": true,
+    "gemma_real_start_failure_text_recovery": true,
+    "gemma_explicit_load_image_recovery": true,
+    "gemma_two_images_checkpoint_continuation_cancel_recovery": true,
+    "native_executable_sha256": {
+      "tinystrata.exe": "b2811d509000c7f289237dde752f0f6bde3a63a769b4b7a45dd2a101e98fee35",
+      "tinystrata-gemma4.exe": "a51e1c83681831070d34896dc0e9ec2176b95139cadcc97de0cf2419c6e475e8"
+    },
+    "qa_artifact_sha256": "0dc86eacb9fa9d92cd16b2dd888660b6b3d7b6c54ed386be8331d313c4092993",
+    "cuda_compile_checks": 4,
+    "physical_nvidia_tested": false,
+    "cpu_discovery": {
+      "run": 420,
+      "passed": 419,
+      "skipped": 1
+    },
+    "additional_switch_regressions_passed": 3,
+    "scheduler_assertions": 12398153,
+    "raw_receipt_sha256": {
+      "qwen-family-api-smoke/result.json": "94bbe3516964ecf5ffed4a44aaa1cd6967abef351df7bd1d6072cf74203933d8",
+      "gemma-api-smoke/result.json": "f0ea64eb71b6d136704d33e2c1afb19f8399cea0d189e4749d82fc02331f0786",
+      "gptoss-api-smoke/result.json": "7c38cdf87341a476d53fdb5578d32d671a1c87ac22ec67336a906c663c710ca7",
+      "final-cpu-validation.json": "1b3c06b0824006beac22a072f685d9f816615f183df3cd1b54255e2bd6482dcd",
+      "final-scheduler-validation.json": "c22da680d1ed567a96bcd537afa5afbbe1ad9319b4a45de0a5bdf5135835c11c",
+      "inbox-test/validation.json": "c218989659df72447d82bbe3bfe5dac7802020cd57ce6eebd1b9bf18e4a698f4",
+      "final-performance.json": "6ea39d3b66ba323f6fe666beb435c347906772f3b32f5eebbe825ef1030d1244",
+      "cuda-check/build.json": "41cd66ffb5e50f31c87eae0f33ce3bb7edfffcd62791352a3a2cd076d0859a5a",
+      "final-build.json": "4152be8150252a28bbb8b966665e3714dba8ca13cf89e4febf69df163407330a"
+    }
+  }
+}

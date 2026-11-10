@@ -4,6 +4,7 @@
 // src/poly/engine.cpp - see the header.  What every architecture shares: the files, the weights' way to VRAM, the
 // routed experts (the cache, the CPU, a prompt batch), the sequence's state, and the calls that feed tokens.
 #include "engine.hpp"
+#include "strata/gemma4/image_text_prefill.hpp"
 
 #include "gemma4.hpp"
 #include "gptoss.hpp"
@@ -2389,6 +2390,23 @@ void Engine::lin(const Dev& w, const float* x, float* y, int n, const void* xq, 
 }
 
 void Engine::router_scores(const Layer& L, int n) { lin(L.gate_inp, xn_, rl_, n, xq_); }
+
+bool Engine::image_text_prefill_eligible(size_t* max_missing) const {
+    size_t most = 0;
+    bool eligible = !split_ && !next_ && bool(mmq_) && read_rows_ > rows_ && !external_draft_enabled();
+    for (int il = lo_; il < hi_; ++il) {
+        const Layer& L = layers_[(size_t) il];
+        if (!L.moe) continue;
+        size_t missing = 0;
+        for (const auto* slot : L.slot) missing += slot == nullptr;
+        size_t bytes = 0;
+        const bool fits = image_text_stage_fits(stage_bytes_, missing, L.gu_bytes, L.d_bytes, &bytes);
+        most = std::max(most, bytes);
+        eligible = eligible && L.mmq && L.slot.size() == (size_t) n_expert_ && fits;
+    }
+    if (max_missing) *max_missing = most;
+    return eligible;
+}
 
 bool Engine::batched(const Layer& L, int n) const { return mmq_ && L.mmq && n >= kStageRows; }
 

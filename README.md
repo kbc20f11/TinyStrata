@@ -40,6 +40,8 @@ Clover also offers optional repetition lookup: `--clover-lookup N` proposes at m
 
 **Tiel Coder 35B-A3B UD-IQ3_XXS** uses the [Tiel MTP GGUF](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP), based on Ornith-1.5. The model is **13.601 GB**, with its own **0.903 GB** Ornith vision projector (**14.503 GB** total), tokenizer and Sharp chat template. It shares the Qwen35MoE engine while keeping separate model settings. Select **Tiel Coder** in the chat's model dropdown or use `run-api.bat --model-family tiel`; its standalone profile uses port **18084** and `config-tiel-coder.json`. Sampling follows the author's `temperature 1.0`, `top_p 0.95`, `top_k 20`; temperature **0.6** is the author's coding setting. MTP defaults to **3**; `--mtp 0` disables it and `--mtp 1` selects a shorter draft.
 
+Gemma automatically groups long text around fresh images when its current Expert/staging layout supports weight reuse. Low-residency layouts retain the original image path. [Upstream changes, 8/12/16 GiB measurements and recovery tests](benchmark/results/upstream-refresh-20261111.md).
+
 The Qwen, Gemma and LFM engines use an automatic VRAM Expert cache, CPU Expert computation from system RAM, prompt weight streaming and CUDA Graphs. They share the same API and support live model switching, with settings saved separately for each model. Selected Experts are not omitted. They also support automatic physical KV growth without changing the maximum context capacity.
 
 **gpt-oss 20B MXFP4** uses the pinned [ggml-org GGUF](https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/blob/15dcfc7e7c608c6161507211ed43c5b590801b4b/gpt-oss-20b-MXFP4.gguf) (**12.110 GB**). It is text-only, supports up to **128K** context, uses **INT8 KV** by default and has no MTP head. Thinking offers **Low / Medium / High**, initially **Medium**. Start it with `run-api.bat --model-family gpt-oss` (port **18085**, `config-gpt-oss.json`); it shares the Gemma executable. Sampling defaults to temperature **1.0**, top-p **1.0** and top-k **0** (unrestricted).
@@ -260,7 +262,7 @@ The reduced-memory rows reserve and touch 8, 12 or 16 GiB on the same 24 GB GPU,
 
 Speed on Radeon cards, measured with [tinystrata-bench-v1](benchmark/README.md#english). Each card has its own page with the hardware, driver, engine commit, settings and every column: [`benchmark/results/`](benchmark/results/). Values are generation / 4K input / 16K input, in tok/s. Clover uses the exact D3 variant.
 
-**Latest saved settings:** [RX 9060 XT, 2026-11-09 (five models, one pass)](benchmark/results/rx-9060-xt.md#current-saved-settings--2026-11-09-one-pass). The table below retains the historical fixed-v1 comparison.
+**Latest saved settings:** [RX 9060 XT, 2026-11-11 (six models, one pass)](benchmark/results/rx-9060-xt.md). The table below retains the historical fixed-v1 comparison.
 
 | GPU | Qwen3.6 UD-IQ3_XXS | Gemma 4 QAT Q4_0 | LFM2.5 Q4_K_M | Clover IQ3_XXS (exact D3, Vision GPU) |
 | --- | ---: | ---: | ---: | ---: |
