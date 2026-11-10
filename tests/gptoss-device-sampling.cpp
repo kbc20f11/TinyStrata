@@ -16,6 +16,7 @@ using strata::gemma4::KvFmt;
 using strata::gemma4::Options;
 static unsigned checks = 0;
 static unsigned samples = 0;
+static unsigned boundary_cases = 0;
 static void need(bool ok, const char* why) {
     if (!ok) throw std::runtime_error(why);
     ++checks;
@@ -108,23 +109,98 @@ struct Snapshot {
         need(e.pos() == position, "restored position differs");
     }
 };
-static void prefix(Engine& e, const std::vector<int32_t>& ids) {
+static void prefix(Engine& e, const std::vector<int32_t>& ids, int chunk) {
     e.reset();
     const uint64_t before = e.logits_host_rows();
     for (size_t at = 0; at < ids.size();) {
-        const int n = (int) std::min<size_t>(64, ids.size() - at);
+        const int n = (int) std::min<size_t>((size_t) chunk, ids.size() - at);
         e.eval(ids.data() + at, n, false);
         at += (size_t) n;
     }
     copies(e, before, "prefix without logits");
 }
-static void regression(Engine& e, int position) {
+// Every reference below comes from independent one-token evals, never another
+// window. Width and offset cases include a two-token threshold crossing when
+// --position 8188 makes base.position 8190 and offset 1 starts at 8191.
+static void boundary_windows(Engine& e, const Snapshot& base) {
+    const auto ids = sequence(9, 113);
+    uint64_t count = e.logits_host_rows();
+    e.bind(0);
+    base.restore(e);
+    std::vector<std::vector<float>> expected;
+    for (int row = 0; row < 9; ++row) {
+        e.eval(ids.data() + row, 1, true);
+        copies(e, count, "boundary serial oracle stays deferred");
+        expected.push_back(latest(e));
+        copies(e, ++count, "boundary serial oracle copied once");
+    }
+    for (int width : {2, 3, 4, 8}) {
+        for (int offset : {0, 1}) {
+            if (offset + width > 8) continue;
+            std::vector<int> kept_rows{1, width / 2, width};
+            std::sort(kept_rows.begin(), kept_rows.end());
+            kept_rows.erase(std::unique(kept_rows.begin(), kept_rows.end()), kept_rows.end());
+            for (int kept : kept_rows) {
+                char stage[160];
+                std::snprintf(stage, sizeof(stage), "boundary base=%lld width=%d offset=%d keep=%d",
+                              (long long) base.position, width, offset, kept);
+                base.restore(e);
+                if (offset) e.eval(ids.data(), 1, false);
+                const int64_t start = e.pos();
+                e.window(ids.data() + offset, width);
+                copies(e, count, stage);
+                for (int row = 0; row < width; ++row) {
+                    draw(e, row, expected[(size_t) (offset + row)], stage);
+                    equal(expected[(size_t) (offset + row)], e.logits_of(row), stage);
+                    copies(e, ++count, stage);
+                    equal(expected[(size_t) (offset + row)], e.logits_of(row), stage);
+                    copies(e, count, stage);
+                }
+                e.keep(kept);
+                need(e.pos() == start + kept, "boundary keep position differs");
+                e.eval(ids.data() + offset + kept, 1, true);
+                copies(e, count, stage);
+                draw(e, -1, expected[(size_t) (offset + kept)], stage);
+                equal(expected[(size_t) (offset + kept)], e.logits(), stage);
+                copies(e, ++count, stage);
+                ++boundary_cases;
+            }
+            // A rejected suffix must also continue with a DIFFERENT token,
+            // rather than accidentally passing because the old proposal is reused.
+            const int32_t replacement = 899 + 3 * width + offset;
+            base.restore(e);
+            for (int row = 0; row < offset + 1; ++row) e.eval(ids.data() + row, 1, false);
+            e.eval(&replacement, 1, true);
+            copies(e, count, "rejected-suffix serial oracle stays deferred");
+            const auto rejected_expected = latest(e);
+            copies(e, ++count, "rejected-suffix serial oracle copied once");
+            base.restore(e);
+            if (offset) e.eval(ids.data(), 1, false);
+            const int64_t start = e.pos();
+            e.window(ids.data() + offset, width);
+            copies(e, count, "rejected-suffix window stays deferred");
+            e.keep(1);
+            need(e.pos() == start + 1, "rejected-suffix keep position differs");
+            e.eval(&replacement, 1, true);
+            copies(e, count, "replacement eval stays deferred");
+            draw(e, -1, rejected_expected, "replacement after rejected suffix");
+            equal(rejected_expected, e.logits(), "replacement after rejected suffix");
+            copies(e, ++count, "replacement copied once");
+            ++boundary_cases;
+        }
+    }
+    base.restore(e);
+    e.eval(ids.data(), 1, true);
+    equal(expected[0], e.logits(), "boundary snapshot restores original sequence");
+    copies(e, ++count, "final boundary restoration copied once");
+}
+static void regression(Engine& e, int position, int chunk, bool check_boundaries) {
     int32_t sentinel = -17;
     rejected<std::logic_error>([&] { e.sample_device(-1, 1, 0.2, &sentinel); }, "initial latest row accepted");
     rejected<std::logic_error>([&] { e.sample_device(0, 1, 0.2, &sentinel); }, "initial window row accepted");
     need(sentinel == -17, "rejected sample changed output token");
 
-    prefix(e, sequence(position));
+    prefix(e, sequence(position), chunk);
     const int32_t first = 611, no_head = 612;
     uint64_t count = e.logits_host_rows();
     e.eval(&first, 1, true);
@@ -196,7 +272,7 @@ static void regression(Engine& e, int position) {
     copies(e, count, "read without head does not copy logits");
 
     e.bind(1);
-    prefix(e, sequence(17, 271));
+    prefix(e, sequence(17, 271), chunk);
     equal(expected[4], e.logits(), "bind/reset preserves global latest output");
     equal(expected[7], e.logits_of(7), "bind/reset preserves global window output");
     copies(e, count, "sequence switch preserves copy readiness");
@@ -265,10 +341,11 @@ static void regression(Engine& e, int position) {
     copies(e, count, "invalid calls never materialize logits");
     // Nonfinite device logits are injected and rejected by the model-free gptoss_sampling_test;
     // production Engine logits remain read-only here, and every materialized model row is checked finite.
+    if (check_boundaries) boundary_windows(e, base);
 }
 int main(int argc, char** argv) {
     try {
-        need(argc >= 2, "usage: gptoss_device_sampling_test MODEL [--graphs 0|1] [--expert-gib N] [--kv int8|fp16] [--position N]");
+        need(argc >= 2, "usage: gptoss_device_sampling_test MODEL [--graphs 0|1] [--expert-gib N] [--kv int8|fp16] [--context N] [--chunk N] [--position N]");
         const char* mode = std::getenv("TINYSTRATA_GPTOSS_GPU_SAMPLE");
         need(!mode || std::strcmp(mode, "1") == 0, "leave TINYSTRATA_GPTOSS_GPU_SAMPLE unset or set it to 1");
         need(std::getenv("STRATA_FREEZE_EXPERTS") != nullptr, "set STRATA_FREEZE_EXPERTS=1");
@@ -295,18 +372,23 @@ int main(int argc, char** argv) {
                 need(value == "int8" || value == "fp16", "kv must be int8 or fp16");
                 o.kv_format = value == "int8" ? KvFmt::kQ8_0 : KvFmt::kFp16;
             } else if (key == "--position") position = std::stoi(value);
+            else if (key == "--context") o.max_context = std::stoi(value);
+            else if (key == "--chunk") o.prompt_batch = std::stoi(value);
             else throw std::runtime_error("unknown option: " + key);
         }
-        need(position > 0 && position <= 700, "position must be 1..700");
+        need(position > 0 && (int64_t) o.max_context > (int64_t) position + 32,
+             "context must exceed position+32 and position must be positive");
+        need(o.prompt_batch >= 8 && o.prompt_batch <= o.max_context, "chunk must be 8..context for window-8 coverage");
         auto e = Engine::open(o);
         need(e->device_sampling_requested() && e->device_sampling_enabled(), "device sampling is unavailable");
         need(e->n_vocab() > 1024 && e->max_window() == 8 && e->sequences() == 2 && !e->drafts(),
              "unexpected model/window/sequence geometry");
         need(e->meta_u("gpt-oss.attention.sliding_window", -1) == 128, "expected GPT-OSS sliding window 128");
-        regression(*e, position);
-        std::printf("PASS GPT-OSS device sampling checks=%u samples=%u host_rows=%llu position=%d graph=%d cached=%d/%d\n",
+        need(e->max_context() > (int64_t) position + 32, "model context limit leaves insufficient test room");
+        regression(*e, position, o.prompt_batch, o.max_context > 8192);
+        std::printf("PASS GPT-OSS device sampling checks=%u samples=%u host_rows=%llu position=%d graph=%d cached=%d/%d context=%d chunk=%d boundary_cases=%u\n",
                     checks, samples, (unsigned long long) e->logits_host_rows(), position, int(o.graphs),
-                    e->cached_experts(), e->total_experts());
+                    e->cached_experts(), e->total_experts(), o.max_context, o.prompt_batch, boundary_cases);
         return 0;
     } catch (const std::exception& ex) {
         std::fprintf(stderr, "gptoss_device_sampling_test: %s\n", ex.what());

@@ -46,6 +46,8 @@ Die Qwen-, Gemma- und LFM-Engines verwenden einen automatischen VRAM-Expertencac
 
 Geeignete GPT-OSS-Anfragen auf einer einzelnen GPU nutzen standardmäßig GPU-Sampling über das gesamte Vokabular. Greedy-Sampling, Filter und aktive Strafen bleiben auf dem CPU-Pfad. `TINYSTRATA_GPTOSS_GPU_SAMPLE=0` wählt CPU-Sampling zur Diagnose. [Messungen und Prüfungen des GPU-Samplings](benchmark/results/gptoss-gpu-sampling-20261110.md).
 
+HIP aktiviert geeignete vollständige Attention für lange Kontexte über 8192 Schlüssel standardmäßig; FP32-Abfragen, alle KV-Zeilen und gelernte Sinks bleiben erhalten. Unter CUDA ist sie standardmäßig aus; `TINYSTRATA_GPTOSS_SINK_ATTN=1` aktiviert sie ausdrücklich. `TINYSTRATA_GPTOSS_SINK_ATTN=0` wählt den bisherigen Pfad zur Diagnose. [Messungen, numerische Unterschiede und Prüfungsumfang](benchmark/results/gptoss-sink-attention-20261110.md).
+
 | Funktion | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) | [gpt-oss](https://huggingface.co/openai/gpt-oss-20b) |
 | --- | --- | --- | --- | --- | --- |
 | Maximaler Kontext | 256K | 256K | 128K | 256K (Erweiterung) | 128K |

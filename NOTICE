@@ -4,6 +4,16 @@ Base commit: 296b59d2f73c8f04a805df29c2fa97655adace78
 Copyright (c) 2026 Niko1221 and the Strata contributors.
 The upstream MIT license is preserved in LICENSE.
 
+GPT-OSS long-context full-attention key splitting and grouped value reuse in
+src/gemma4/sink_attention.cu adapt PolyStrata's src/poly/hip_split_attend.cuh
+at 221be3e61a87d20e6c70c86907e0504ec429134b and value mapping at
+b7e169988f13902b74acba2a6bf732315ac29d5d (MIT):
+https://github.com/simplexai-labs/PolyStrata
+Copyright (c) 2026 VecSzn and the PolyStrata contributors.
+TinyStrata specializes D64/GQA8, retains FP32 queries and all INT8 KV rows,
+and includes the learned attention sink once per head in the final join.
+The original MIT license and file-level copyright notices are retained.
+
 The Windows AMD HIP build/runtime route and GPU image-backend selection adapt
 Niko1221/Strata at cbfd5b926b794b356195d3cb600191b0c3567540 (MIT), including
 the WDDM memory-budget query and ROCm toolchain configuration. Existing AMD

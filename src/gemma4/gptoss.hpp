@@ -48,6 +48,7 @@ private:
         uint16_t *k_scales = nullptr, *v_scales = nullptr;
     };
 
+    bool sink_attention_ready() const;
     void attn(Block& B, int64_t pos, int n);
     void store(const float* x, uint16_t* cache, const Block& B, int64_t pos, int n);
     template <class F>
@@ -61,6 +62,7 @@ private:
     int ring_ = 0;
     int keep_ = 0;
     int chunk_ = 1;
+    bool sink_attention_ = false;   ///< FP32-query long full-attention decode; HIP default, strict env override
     std::vector<float> yarn_freq_;   ///< the rotary pairs' divisors: YaRN's blend of interpolation and extrapolation
     float* freq_dev_ = nullptr;
 

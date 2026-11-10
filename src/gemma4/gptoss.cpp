@@ -4,6 +4,7 @@
 #include "runtime.hpp"
 #include "strata/gemma4/kernels.hpp"
 #include "strata/gemma4/matvec.hpp"
+#include "strata/gemma4/sink_attention.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -17,6 +18,8 @@ namespace {
 constexpr size_t kScoreFloats = size_t(16) << 20;  // the attention's scores of the tokens it takes at a time
 constexpr float kOaiLimit = 7.0f;                  // llama.cpp's build_moe_ffn_from_probs for openai-moe
 constexpr float kOaiAlpha = 1.702f;
+constexpr int kSinkCutoff = 8192;
+int sink_old_prefix(int64_t pos, int n) { return int(std::clamp<int64_t>(kSinkCutoff - pos, 0, n)); }
 
 }  // namespace
 
@@ -87,6 +90,16 @@ void GptOss::load_geometry() {
     if (const char* mmq = std::getenv("TINYSTRATA_GPTOSS_MMQ")) {
         need((mmq[0] == '0' || mmq[0] == '1') && mmq[1] == '\0', "TINYSTRATA_GPTOSS_MMQ must be 0 or 1");
         oai_mmq_ = mmq[0] == '1';
+    }
+    // This long-context path is measured on HIP; CUDA retains its existing default.
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
+    sink_attention_ = true;
+#else
+    sink_attention_ = false;
+#endif
+    if (const char* split = std::getenv("TINYSTRATA_GPTOSS_SINK_ATTN")) {
+        need((split[0] == '0' || split[0] == '1') && split[1] == '\0', "TINYSTRATA_GPTOSS_SINK_ATTN must be 0 or 1");
+        sink_attention_ = split[0] == '1';
     }
     oai_alpha_ = kOaiAlpha;
     clamp_exp_.assign((size_t) n_layer_, kOaiLimit);
@@ -267,7 +280,21 @@ void GptOss::load_extra(const uint8_t* src, int64_t pos) {
     }
 }
 
-int GptOss::head_key(int il, int n) const { return swa_[(size_t) il] ? 0 : room_key(n); }
+bool GptOss::sink_attention_ready() const {
+    // The policy is fixed for the Engine: eval and every supported window must take identical row math.
+    if (!sink_attention_ || opt_.window < 1 || opt_.window > 8 || dim_ != 64 || n_head_ != 8 * n_kv_ ||
+        opt_.kv_format != KvFmt::kQ8_0) return false;
+    return sink_attention_workspace_floats(n_head_, opt_.max_context, std::min(8, rows_)) <=
+           size_t(chunk_) * n_head_ * opt_.max_context;
+}
+
+int GptOss::head_key(int il, int n) const {
+    if (swa_[(size_t) il]) return 0;
+    const int key = room_key(n);
+    // A window straddling 8K needs old-prefix/new-suffix launches. Key that prefix explicitly;
+    // the Engine uses this key for both per-layer and whole-pass graphs.
+    return sink_attention_ready() && n >= 1 && n <= 8 ? key * 9 + sink_old_prefix(pos_, n) : key;
+}
 
 void GptOss::store(const float* x, uint16_t* cache, const Block& B, int64_t pos, int n) {
     const int width = n_kv_ * dim_;
@@ -301,15 +328,28 @@ void GptOss::attn(Block& B, int64_t pos, int n) {
     } else { store(k_, B.keys, B, pos, n); store(v_, B.vals, B, pos, n); }
     const int window = B.swa ? window_ : 0, ring = B.swa ? ring_ : 0;
     const float scale = 1.f / std::sqrt((float) dim_);
+    const int capacity = at ? room(n) : int(pos + n);
+    // All supported small batches share exactly the same per-row split math, including speculative
+    // windows and short prompt remainders that straddle the 8K eligibility boundary.
+    const int old_prefix = sink_old_prefix(pos, n);
+    const bool eligible = !B.swa && sink_attention_ready() && n >= 1 && n <= 8 && n < kStageRows && old_prefix < n;
+    const bool split_attention = eligible &&
+        sink_attention_q8(q_ + size_t(old_prefix) * widest(), B.k_codes, B.k_scales, B.v_codes, B.v_scales,
+                            fp(B.sinks), att_ + size_t(old_prefix) * widest(), score_,
+                            size_t(chunk_) * n_head_ * opt_.max_context, n_head_, n_kv_, pos + old_prefix,
+                            at ? at + 2 * old_prefix : nullptr, at ? capacity : 0, scale, st_, n - old_prefix);
+    // Scratch is reused after the suffix join on this stream; output rows do not overlap.
+    // A capacity rejection launches nothing, and takes the complete original path for every row.
+    const int old_rows = split_attention ? old_prefix : n;
     // a prompt batch through cuBLAS; a few tokens with the kernels that give a token the same bits in any company
-    if (n >= kStageRows)
+    if (!split_attention && n >= kStageRows)
         attend_batch(blas_, q_, B.keys, B.vals, pos, n, score_, (size_t) chunk_ * n_head_ * opt_.max_context, awork_,
                      att_, dim_, n_head_, n_kv_, scale, st_, window, ring, false,
                      q8 ? Kvq8{B.k_codes, B.k_scales} : Kvq8{}, q8 ? Kvq8{B.v_codes, B.v_scales} : Kvq8{},
                      q8 ? (uint16_t*) q8work_ : nullptr, q8 ? (uint16_t*) q8work_ + work_halves_ : nullptr,
                      q8 ? work_halves_ : 0, fp(B.sinks));
-    else
-        attend(q_, B.keys, B.vals, pos, n, score_, chunk_, att_, dim_, n_head_, n_kv_, scale, st_, window, ring, false,
+    else if (old_rows > 0)
+        attend(q_, B.keys, B.vals, pos, old_rows, score_, chunk_, att_, dim_, n_head_, n_kv_, scale, st_, window, ring, false,
                at, !at ? 0 : B.swa ? std::min(window_ + n - 1, opt_.max_context) : room(n), 0,
                q8 ? Kvq8{B.k_codes, B.k_scales} : Kvq8{}, q8 ? Kvq8{B.v_codes, B.v_scales} : Kvq8{}, fp(B.sinks));
     lin(B.wo, att_, ao_, n);

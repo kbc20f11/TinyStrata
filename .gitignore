@@ -47,6 +47,7 @@
 !/tests/clover-self-spec-gpu.cu
 !/tests/gemma-cached-slots.cu
 !/tests/gptoss-fused.cu
+!/tests/gptoss-sink-attention.cu
 !/tests/gptoss-state.cpp
 !/tests/gptoss-sampling.cu
 !/tests/gptoss-device-sampling.cpp

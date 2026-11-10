@@ -48,6 +48,8 @@ Qwen・Gemma・Clover・LFM・Tiel Coder はいずれも、空き VRAM に合わ
 
 単一GPUのGPT-OSSでは、対応する設定の全語彙サンプリングを既定でGPU上で行います。温度0、候補の絞り込み、有効な生成ペナルティを使う場合はCPUで処理します。診断時は `TINYSTRATA_GPTOSS_GPU_SAMPLE=0` でCPU処理へ戻せます。[実測と検証](benchmark/results/gptoss-gpu-sampling-20261110.md)。
 
+HIPでは、8192 keysを超える対応する全履歴Attentionを既定で分割処理し、FP32のquery・すべてのKV・学習済みsinkを維持します。CUDAは既定OFFで、`TINYSTRATA_GPTOSS_SINK_ATTN=1` により明示的に有効化できます。診断時は `TINYSTRATA_GPTOSS_SINK_ATTN=0` で従来経路へ戻せます。[実測・数値差・確認範囲](benchmark/results/gptoss-sink-attention-20261110.md)。
+
 | 機能 | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) | [Tiel Coder](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP) | [gpt-oss](https://huggingface.co/openai/gpt-oss-20b) |
 | --- | --- | --- | --- | --- | --- | --- |
 | 最大コンテキスト | 256K | 256K | 128K | 256K（拡張） | 256K | 128K |
