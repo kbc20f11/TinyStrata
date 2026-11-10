@@ -54,6 +54,8 @@ On single-GPU HIP gfx1200, cached GPT-OSS MXFP4 Expert down projections reuse st
 
 On single-GPU HIP gfx1200, GPT-OSS uses fused INT8 input Attention for full and sliding-window layers, including long prefixes, plus byte-equivalent MMQ activation fusion. Existing FP16/FP32 precision is retained; plain decode activation fusion remains opt-in. [Measurements, numerical differences and scope](benchmark/results/gptoss-fusions-20261110.md).
 
+GPT-OSS also offers native opt-in EAGLE-3 D1/D2 drafting with exact target verification; autoregressive D0 remains the default because prompt processing and long-context results vary. Repeated cached Experts are reused across verification rows by default on single-GPU HIP gfx1200. [8/12/16 GiB measurements, acceptance rules and validation](benchmark/results/gptoss-eagle3-20261110.md).
+
 | Feature | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) | [Tiel Coder](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP) | [gpt-oss](https://huggingface.co/openai/gpt-oss-20b) |
 | --- | --- | --- | --- | --- | --- | --- |
 | Maximum context | 256K | 256K | 128K | 256K (extension) | 256K | 128K |

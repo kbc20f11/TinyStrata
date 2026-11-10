@@ -404,7 +404,13 @@ void memory_info(const Engine& e, int64_t used) {
 }
 
 int serve(Engine& e, const Options& o, strata::conversation::Options cache_options,
-          int configured_mtp, int configured_auto, int configured_lookup) {
+          int configured_mtp, int configured_auto, int configured_lookup, int configured_eagle,
+          bool configured_rejection) {
+    const int configured_external = configured_eagle;
+    const char* external_kind = configured_eagle ? "eagle3" : "none";
+    // External draft context comes from target hidden rows. A parked target-only
+    // checkpoint cannot restore it; the experimental route starts each GEN fresh.
+    if (e.external_draft_enabled()) { cache_options.bytes = 0; cache_options.disk_bytes = 0; }
     cache_options.max_tokens = e.max_context();
     strata::conversation::Cache<Engine> cache(e, cache_options);
     std::printf("INFO version=0.1.0 family=%s model=%s kv=%s mtp=%d vision=%d expert_slots=%d expert_total=%d "
@@ -418,6 +424,11 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
                 e.max_rows(), e.reserve_mib(), o.graphs, e.kv_growing(), (long long) e.kv_committed_rows(),
                 (unsigned long long) e.kv_logical_bytes(), (unsigned long long) e.kv_mapped_bytes(), (long long) e.pos());
     std::printf("INFO mtp_auto=%d lookup_draft=%d lookup_capacity=%d\n", configured_auto, configured_lookup, e.max_window() - 1);
+    std::printf("INFO eagle=%d eagle_loaded=%d eagle_prefix_reuse=%d eagle_accept=%s\n", configured_eagle,
+                configured_eagle && e.external_draft_enabled(), !e.external_draft_enabled(),
+                configured_eagle && configured_rejection ? "rejection" : "target");
+    std::printf("INFO external_draft_kind=%s external_draft_depth=%d\n", external_kind, configured_external);
+    std::printf("INFO grouped_mxfp4_enabled=%d\n", e.grouped_mxfp4_enabled());
     if (cache.enabled()) cache.info();
     std::printf("READY %d stop\n", e.max_context());
     std::fflush(stdout);
@@ -515,12 +526,14 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
                 }
                 else sampling_key(smp, word);
             }
-            // Every emitted token is an ordinary target draw; equality with a
-            // proposal only saves forward work, including during sampling.
+            // Ordinary target draws or exact p/q rejection preserve the target
+            // distribution. Proposals only save forward work.
             if (request_lookup && (!std::isfinite(smp.temperature) || smp.temperature < 0.0))
                 throw std::invalid_argument("lookup_draft requires a finite nonnegative temperature");
             if (request_lookup && (size_t) e.max_context() + 64 > strata::qwen35::SuffixLookup::kMaxCapacity)
                 throw std::invalid_argument("lookup_draft context exceeds suffix capacity");
+            if (configured_external && (request_lookup || request_auto))
+                throw std::invalid_argument("an external drafter cannot be combined with lookup_draft or mtp_auto");
             std::string file, tokens = remaining;
             if (geni) {
                 const auto split = remaining.find_last_of(" \t");
@@ -549,7 +562,9 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
             e.images(pictures.at.data(), (int) pictures.at.size());
             const auto cache_start = Clock::now();
             size_t reuse = 0;
-            if (cache.enabled()) {
+            if (e.external_draft_enabled()) {
+                e.reset(); live.clear(); checkpoint_ids.clear(); checkpoint = false;
+            } else if (cache.enabled()) {
                 reuse = (size_t) cache.resume(ids, checkpoint);
                 live = cache.seq();
             } else {
@@ -622,6 +637,7 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
             std::vector<int32_t> history = ids;
             if (geni) std::replace_if(history.begin(), history.end(), [](int32_t id) { return id < 0; }, image_pad);
             std::mt19937_64 rng(smp.seed);
+            std::mt19937_64 draft_rng(smp.seed ^ 0x44464c4153485f31ULL);
             const auto d0 = Clock::now();
             std::unique_ptr<strata::qwen35::SuffixLookup> lookup;
             if (request_lookup) {
@@ -632,16 +648,23 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
             strata::gemma4::LookupDraftGate lookup_gate;
             long long lookup_rounds = 0, auto_rounds = 0, auto_d0 = 0, auto_d1 = 0, auto_dmax = 0;
             long long lookup_skipped = 0;
+            long long external_rounds = 0;
+            long long rejection_tokens = 0;
+            double external_ms = 0, external_verify_ms = 0, external_commit_ms = 0, target_draw_ms = 0;
             int produced = 0;
             int evaluated = 0;
             const char* finish = "length";
             int64_t guessed = 0, accepted = 0;
             const char* gpu_reason = gpu_sample_reason(e, smp);
             const bool gpu_eligible = std::strcmp(gpu_reason, "enabled") == 0;
+            // Exact p/q is supported for the full-vocabulary, neutral target
+            // distribution. Other samplers retain target-draw verification.
+            const bool rejection_eligible = configured_rejection && gpu_eligible;
             long long gpu_samples = 0, cpu_samples = 0, fallback_samples = 0;
             // Select the row before touching a host accessor: an eligible device sample copies only its result.
             // A trial RNG also preserves the CPU failure contract when a device logit is nonfinite.
             const auto pick = [&](int row) {
+                const auto draw_start = Clock::now();
                 if (gpu_eligible) {
                     auto trial_rng = rng;
                     const double uniform = std::generate_canonical<double, 53>(trial_rng);
@@ -649,12 +672,14 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
                     if (e.sample_device(row, smp.temperature, uniform, &id)) {
                         rng = trial_rng;
                         ++gpu_samples;
+                        target_draw_ms += elapsed(draw_start);
                         return (int) id;
                     }
                 }
                 const int id = sample(row < 0 ? e.logits() : e.logits_of(row), e.n_vocab(), smp, history, rng);
                 ++cpu_samples;
                 if (e.device_sampling_requested()) ++fallback_samples;
+                target_draw_ms += elapsed(draw_start);
                 return id;
             };
             const auto show = [&](int32_t token) {
@@ -667,7 +692,7 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
                 return false;
             };
             int32_t token = pick(-1);
-            if (!request_auto && !request_lookup) {
+            if (!request_auto && !request_lookup && !configured_external) {
                 while (show(token)) {
                     const int width = e.drafts() ? std::min<int64_t>({configured_mtp + 1, e.max_window(), e.max_context() - e.pos(),
                                                                      max_new - produced + 1}) : 1;
@@ -720,6 +745,7 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
                     int32_t w[8]; w[0] = token;
                     int count = 0, lookup_match = 0;
                     bool from_lookup = false;
+                    bool from_external = false;
                     if (lookup && lookup_capacity > 1) {
                         count = lookup->propose(std::min(request_lookup, lookup_capacity - 1), w + 1);
                         lookup_match = lookup->last_match();
@@ -735,7 +761,21 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
                         from_lookup = count > 0;
                     }
                     int selected_depth = 0;
-                    if (!from_lookup && e.drafts()) {
+                    if (!from_lookup && configured_external && capacity > 1) {
+                        count = std::min(configured_external, capacity - 1);
+                        const auto draft_start = Clock::now();
+                        if (rejection_eligible) {
+                            auto trial = draft_rng;
+                            double uniforms[7];
+                            for (int i = 0; i < count; ++i)
+                                uniforms[i] = std::generate_canonical<double, 53>(trial);
+                            count = e.external_draft_sample_propose(token, count, smp.temperature, uniforms, w + 1);
+                            if (count) draft_rng = trial;
+                        } else count = e.external_draft_propose(token, count, w + 1);
+                        external_ms += elapsed(draft_start);
+                        from_external = count > 0;
+                    }
+                    if (!from_lookup && !from_external && e.drafts()) {
                         const int maximum = std::min(configured_mtp, capacity - 1);
                         selected_depth = request_auto ? policy.choose(maximum) : maximum;
                         for (int i = 0; i < selected_depth; ++i) {
@@ -753,18 +793,41 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
                         token = pick(-1);
                     } else {
                         const int width = count + 1;
+                        const auto verify_start = Clock::now();
                         e.window(w, width);
+                        if (from_external) external_verify_ms += elapsed(verify_start);
                         int right = 0;
                         bool more = true;
-                        token = pick(0);
-                        while (right < width - 1 && token == w[right + 1] && (more = emit(token)))
-                            token = pick(++right);
+                        bool matched = false;
+                        const auto verify_pick = [&](int row) {
+                            if (from_external && rejection_eligible && row < width - 1) {
+                                const auto draw_start = Clock::now();
+                                auto trial = rng;
+                                const double ua = std::generate_canonical<double, 53>(trial);
+                                const double ur = std::generate_canonical<double, 53>(trial);
+                                int32_t id = -1;
+                                if (!e.external_draft_verify(row, w[row + 1], smp.temperature, ua, ur, &matched, &id))
+                                    throw std::logic_error("sampled external proposal has no target verifier");
+                                rng = trial; ++gpu_samples; ++rejection_tokens;
+                                target_draw_ms += elapsed(draw_start);
+                                return int(id);
+                            }
+                            const int id = pick(row);
+                            matched = row < width - 1 && id == w[row + 1];
+                            return id;
+                        };
+                        token = verify_pick(0);
+                        while (right < width - 1 && matched && (more = emit(token)))
+                            token = verify_pick(++right);
+                        const auto commit_start = Clock::now();
                         e.keep(right + 1);
+                        if (from_external) external_commit_ms += elapsed(commit_start);
                         live.insert(live.end(), w, w + right + 1); evaluated += right + 1;
                         memory.changed();
                         guessed += count;
                         accepted += right + (!more && std::strcmp(finish, "cancel") != 0 ? 1 : 0);
                         if (from_lookup) ++lookup_rounds;
+                        if (from_external) ++external_rounds;
                         if (!more) continue_generation = false;
                     }
                     const int emitted = 1 + produced - shown_before;
@@ -802,6 +865,25 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
                         e.prefill_attention_requested(), e.prefill_attention_seen());
             std::printf("INFO gptoss_fusion_requested=%u gptoss_fusion_seen=%u\n",
                         e.gptoss_fusion_requested(), e.gptoss_fusion_seen());
+            std::printf("INFO grouped_mxfp4_enabled=%d grouped_mxfp4_seen=%u\n",
+                        e.grouped_mxfp4_enabled(), e.grouped_mxfp4_seen());
+            std::printf("INFO target_draw_ms=%.6f\n", target_draw_ms);
+            std::printf("INFO eagle_rounds=%lld eagle_depth=%d eagle_position=%lld eagle_vram_bytes=%llu\n",
+                        configured_eagle ? external_rounds : 0, configured_eagle,
+                        (long long) (configured_eagle ? e.external_draft_pos() : 0),
+                        (unsigned long long) (configured_eagle ? e.external_draft_vram_bytes() : 0));
+            std::printf("INFO eagle_ms=%.6f eagle_verify_ms=%.6f eagle_commit_cpu_ms=%.6f "
+                        "eagle_rejection_eligible=%d eagle_rejection_tokens=%lld\n",
+                        configured_eagle ? external_ms : 0, configured_eagle ? external_verify_ms : 0,
+                        configured_eagle ? external_commit_ms : 0, configured_eagle && rejection_eligible,
+                        configured_eagle ? rejection_tokens : 0);
+            std::printf("INFO external_draft_kind=%s external_draft_depth=%d external_draft_rounds=%lld "
+                        "external_draft_ms=%.6f external_draft_verify_ms=%.6f external_draft_commit_cpu_ms=%.6f "
+                        "external_draft_rejection_eligible=%d external_draft_rejection_tokens=%lld "
+                        "external_draft_position=%lld external_draft_vram_bytes=%llu\n",
+                        external_kind, configured_external, external_rounds, external_ms, external_verify_ms,
+                        external_commit_ms, configured_external && rejection_eligible, rejection_tokens,
+                        (long long) e.external_draft_pos(), (unsigned long long) e.external_draft_vram_bytes());
             std::printf("INFO gpu_sample_requested=%d gpu_sample_eligible=%d gpu_sample_reason=%s "
                         "gpu_sample_tokens=%lld cpu_sample_tokens=%lld gpu_sample_fallback_tokens=%lld "
                         "logits_host_rows=%llu logits_host_bytes=%llu\n",
@@ -854,7 +936,8 @@ int main(int argc, char** argv) {
         cache_options.slots = 2;
         bool cache_budget_explicit = false;
         std::string ids_text, force_text, dump, ctx = "auto", chunk = "auto";
-        int n_gen = 64, mtp = 3, mtp_auto = 0, lookup_draft = 0;
+        int n_gen = 64, mtp = 3, mtp_auto = 0, lookup_draft = 0, eagle = 0;
+        bool eagle_rejection = true, eagle_accept_explicit = false;
         bool server = false, require_vision = false;
         opt.draft = false;
         opt.window = 1;
@@ -886,6 +969,8 @@ int main(int argc, char** argv) {
                           "  --draft-model GGUF --mtp 0..7  Matching assistant and proposal count (default 3)\n"
                           "  --mtp-auto 0|1         Opt-in measured D0/D1/Dmax selection (default 0)\n"
                           "  --lookup-draft 0..7    Opt-in exact suffix proposals (default 0)\n"
+                          "  --eagle-model GGUF --eagle 1..2  Experimental one-layer GPT-OSS EAGLE3 (fresh prompts)\n"
+                          "  --eagle-accept target|rejection  Target draws or exact stochastic p/q (default rejection)\n"
                           "  --vision              Require the native image-embedding input path\n"
                           "  --model GGUF --tokens IDS --n N [--dump-full-logits FILE] [--force IDS]\n"
                           "  --max-context auto|N   Context capacity; auto by total VRAM: 8 GB 64K, 12 GB 128K, 16+ GB 256K\n"
@@ -913,6 +998,14 @@ int main(int argc, char** argv) {
             else if (arg == "--serve") server = true;
             else if (arg == "--vision") require_vision = true;
             else if (arg == "--draft-model") opt.draft_model = next();
+            else if (arg == "--eagle-model") opt.eagle_model = next();
+            else if (arg == "--eagle-accept") {
+                eagle_accept_explicit = true;
+                const auto mode = next();
+                if (mode != "target" && mode != "rejection")
+                    throw std::invalid_argument("--eagle-accept must be target or rejection");
+                eagle_rejection = mode == "rejection";
+            }
             else if (arg == "--tokens") ids_text = next();
             else if (arg == "--force") force_text = next();
             else if (arg == "--dump-full-logits") dump = next();
@@ -950,14 +1043,22 @@ int main(int argc, char** argv) {
                 else throw std::invalid_argument("Gemma KV supports auto/fp8/int8/fp16 only");
             } else if (arg == "--mtp-auto") mtp_auto = bounded_integer(next(), "mtp-auto", 0, 1);
             else if (arg == "--lookup-draft") lookup_draft = bounded_integer(next(), "lookup-draft", 0, 7);
+            else if (arg == "--eagle") eagle = bounded_integer(next(), "eagle", 0, 2);
             else if (arg == "--mtp") {
                 mtp = bounded_integer(next(), "MTP draft count", 0, 7);
             } else throw std::invalid_argument("unknown option: " + arg);
         }
+        if (eagle_accept_explicit && !eagle) throw std::invalid_argument("--eagle-accept requires EAGLE3");
         if (mtp > 0 && opt.draft_model.empty())
             throw std::invalid_argument("MTP requires --draft-model pointing to the matching Gemma assistant GGUF; use --mtp 0 otherwise");
         opt.draft = mtp > 0;
         opt.window = std::max(mtp + 1, lookup_draft + 1);
+        if (eagle && (opt.eagle_model.empty() || mtp || mtp_auto || lookup_draft || !server))
+            throw std::invalid_argument("EAGLE3 requires --serve --mtp 0 --eagle-model GGUF and no other drafter");
+        if (!eagle && !opt.eagle_model.empty())
+            throw std::invalid_argument("--eagle-model requires --eagle 1..2");
+        opt.eagle_tokens = eagle;
+        opt.window = std::max(opt.window, eagle + 1);
         if (!server && (mtp_auto || lookup_draft))
             throw std::invalid_argument("--mtp-auto and --lookup-draft require --serve");
         if (opt.model.empty()) throw std::invalid_argument("--model is required");
@@ -991,7 +1092,7 @@ int main(int argc, char** argv) {
         if (server && !cache_budget_explicit) cache_options.bytes = size_t(1024) << 20;
 #endif
         if (cache_options.bytes && !server) throw std::invalid_argument("conversation cache requires --serve");
-        if (server) return serve(*e, opt, cache_options, mtp, mtp_auto, lookup_draft);
+        if (server) return serve(*e, opt, cache_options, mtp, mtp_auto, lookup_draft, eagle, eagle_rejection);
         const auto ids = parse_ids(ids_text), forced = parse_ids(force_text);
         check_ids(ids, *e);
         for (int id : forced) if (id >= e->n_vocab()) throw std::invalid_argument("forced token outside vocabulary");

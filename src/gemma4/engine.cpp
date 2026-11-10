@@ -7,6 +7,7 @@
 
 #include "gemma4.hpp"
 #include "gptoss.hpp"
+#include "eagle3.hpp"
 #include "mmq.hpp"
 #include "strata/prefill/mmq_ids_margin.hpp"
 #include "runtime.hpp"
@@ -15,6 +16,7 @@
 #include "strata/gemma4/matvec.hpp"
 #include "strata/gemma4/sampling.hpp"
 #include "strata/gemma4/mxfp4_down.hpp"
+#include "strata/gemma4/grouped_mxfp4.hpp"
 #include "strata/gemma4/activation_quant.hpp"
 #if defined(STRATA_USE_HIP) || defined(__HIPCC__)
 #include "strata/kernels/cpu/pool.hpp"
@@ -409,6 +411,7 @@ Engine::~Engine() {
     if (up_) cudaStreamSynchronize(cs(up_));
     if (rs_) cudaStreamSynchronize(cs(rs_));
     if (st_) cudaStreamSynchronize(cs(st_));
+    eagle_.reset();
     workers_.reset();
     mmq_.reset();
     for (void* p : dev_allocs_) cudaFree(p);
@@ -1724,6 +1727,11 @@ void Engine::load(const Options& o) {
     if (!opt_.draft_model.empty() && opt_.draft && opt_.window != 1) dg_ = std::make_unique<Shards>(opt_.draft_model);
     load_geometry();
     gpu_sample_requested_ = oai_;
+    if (opt_.eagle_tokens < 0 || opt_.eagle_tokens > 2)
+        throw std::invalid_argument("EAGLE-3 proposal count must be 0..2");
+    if (opt_.eagle_tokens > 0 && (opt_.eagle_model.empty() || !oai_ || split_ ||
+        !opt_.layer_split.empty() || opt_.batch != 0 || opt_.draft || opt_.dump || opt_.window < 2 || opt_.prompt_batch < 3))
+        throw std::invalid_argument("EAGLE-3 requires its GGUF, one GPT-OSS GPU/sequence, chunk>=3, and no other drafter");
     if (const char* value = std::getenv("TINYSTRATA_GPTOSS_GPU_SAMPLE")) {
         if (oai_ && std::strcmp(value, "0") != 0 && std::strcmp(value, "1") != 0)
             throw std::invalid_argument("TINYSTRATA_GPTOSS_GPU_SAMPLE must be 0 or 1");
@@ -1739,6 +1747,13 @@ void Engine::load(const Options& o) {
         else if (std::strcmp(value, "1") == 0) down_mode = 1;
     }
     oai_down_requested_ = down_mode == 1;
+    int grouped_mode = -1; // auto: measured single-GPU gfx1200 only
+    if (const char* value = std::getenv("TINYSTRATA_GPTOSS_GROUPED_MXFP4")) {
+        if (oai_ && std::strcmp(value, "0") != 0 && std::strcmp(value, "1") != 0)
+            throw std::invalid_argument("TINYSTRATA_GPTOSS_GROUPED_MXFP4 must be 0 or 1");
+        grouped_mode = std::strcmp(value, "1") == 0 ? 1 : 0;
+    }
+    oai_grouped_enabled_ = oai_ && !split_ && grouped_mode == 1;
     if (block_ != dg_.get()) dg_.reset();
     hi_ = end_ < 0 ? n_layer_ : end_;
 
@@ -1785,8 +1800,10 @@ void Engine::load(const Options& o) {
         const bool community = std::strncmp(properties.gcnArchName, "gfx1201", 7) == 0;
         // Measured single-GPU gfx1200 defaults. Plain decode Q8_1 fusion stays opt-in:
         // its byte parity passes, but end-to-end decode gains are not established.
-        if (verified && (properties.gcnArchName[7] == '\0' || properties.gcnArchName[7] == ':'))
+        if (verified && (properties.gcnArchName[7] == '\0' || properties.gcnArchName[7] == ':')) {
             oai_fusion_requested_ |= uint32_t(1 | 2 | 8) & ~oai_fusion_overrides_;
+            if (grouped_mode < 0) oai_grouped_enabled_ = true;
+        }
         if (down_mode != 0) {
             oai_down_requested_ = down_mode == 1 || verified;
             // gfx1201 is an explicit, unmeasured opt-in; other chips/CUDA retain the generic path.
@@ -1859,6 +1876,19 @@ void Engine::load(const Options& o) {
     if (opt_.window == 0) opt_.window = recurrent_floats() == 0 || snaps_spread() ? 8 : 4;
     opt_.window = std::min({opt_.window, opt_.prompt_batch, opt_.max_context});
     alloc();
+    if (oai_grouped_enabled_) {
+        oai_grouped_workspace_bytes_ = kernels::grouped_mxfp4::workspace_bytes();
+        oai_grouped_workspace_ = dmalloc(oai_grouped_workspace_bytes_, "grouped MXFP4 metadata");
+    }
+    if (opt_.eagle_tokens > 0) {
+        eagle_ = std::make_unique<Eagle3>(*this);
+        eagle_->load(opt_.eagle_model, opt_.max_context);
+        if (eagle_->tap_width() != 3 * n_embd_)
+            throw std::runtime_error("the GPT-OSS EAGLE-3 model must have three target feature taps");
+        external_features_ = (float*) dmalloc(size_t(rows_) * eagle_->tap_width() * sizeof(float),
+                                            "EAGLE-3 target features");
+        external_prefix_valid_ = true;
+    }
     if (gpu_sample_enabled_) {
         // Charge this scratch before the expert cache chooses how much VRAM it may occupy.
         sample_workspace_bytes_ = full_vocab_sample_workspace_bytes(n_vocab_);
@@ -2188,6 +2218,10 @@ void Engine::reset() {
     ck(cudaMemsetAsync(state_, 0, state_n_ * sizeof(float), cs(st_)), "reset");
     pos_ = 0;
     ahead_pos_ = -1;
+    if (eagle_) {
+        eagle_->reset();
+        external_prefix_valid_ = true;
+    }
     if (next_) next_->reset();
 }
 
@@ -2232,6 +2266,10 @@ void Engine::load_state(const uint8_t* src, int64_t pos) {
     load_extra(src + state_n_ * sizeof(float), pos);
     pos_ = pos;
     ahead_pos_ = -1;
+    if (eagle_) {
+        eagle_->reset();
+        external_prefix_valid_ = pos == 0;
+    }
     if (next_) next_->load_state(src + card_state_bytes(), pos);
 }
 
@@ -2244,6 +2282,7 @@ void Engine::save_rows(int64_t first, int64_t n, uint8_t* dst) {
 void Engine::load_rows(const uint8_t* src, int64_t from, int64_t count, int64_t first, int64_t n) {
     OnCard here(device_, split_);
     load_card_rows(src, from, count, first, n);
+    if (external_draft_enabled()) external_prefix_valid_ = false;
     if (next_) next_->load_rows(src + (size_t) count * card_row_bytes(), from, count, first, n);
 }
 
@@ -2439,8 +2478,17 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
                     down.x[j] = (const uint8_t*) q8_ + (size_t) j * q8_row;
                     down.y[j] = d_ + (size_t) ((i0 + j) % kSumRows) * e_row;
                 }
-                const bool one = m > 1 && kernels::gemma_native_mmvq_slots((int) L.gu_type, gate_up, m, n_embd_,
-                                                                      2 * n_ff_exp_, st_);
+                bool repeated = false;
+                if (oai_grouped_enabled_ && n > 1 && L.gu_type == 39 && L.d_type == 39)
+                    for (int j = 1; j < m && !repeated; ++j)
+                        for (int k = 0; k < j; ++k) repeated |= gate_up.w[j] == gate_up.w[k];
+                const bool grouped = repeated && kernels::grouped_mxfp4::prepare_slots(
+                    gate_up, m, oai_grouped_workspace_, oai_grouped_workspace_bytes_, st_);
+                const bool grouped_up = grouped && kernels::grouped_mxfp4::slots((int) L.gu_type, gate_up,
+                    m, n_embd_, 2 * n_ff_exp_, oai_grouped_workspace_, false, st_);
+                if (grouped_up) oai_grouped_seen_.fetch_or(2, std::memory_order_relaxed);
+                const bool one = grouped_up || (m > 1 && kernels::gemma_native_mmvq_slots((int) L.gu_type,
+                    gate_up, m, n_embd_, 2 * n_ff_exp_, st_));
                 for (int j = 0; j < m && !one; ++j)
                     kernels::gemma_native_mmvq((int) L.gu_type, gate_up.w[j], gate_up.x[j], gate_up.y[j], n_embd_,
                                          2 * n_ff_exp_, 1, st_);
@@ -2459,9 +2507,12 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
                 } else if (gelu_) geglu_rows(g_, h_, n_ff_exp_, m, st_);
                 else swiglu_clamp_rows(g_, h_, n_ff_exp_, m, limit, st_);
                 if (!fused_activation) kernels::gemma_native_quantize_q8_1(h_, q8_, n_ff_exp_, m, st_);
-                bool down_done = oai_down_enabled_ && m > 1 &&
-                    kernels::mxfp4_down::slots((int) L.d_type, down, m, n_ff_exp_, n_embd_, st_);
-                if (down_done) oai_down_seen_.fetch_or(2, std::memory_order_relaxed);
+                bool down_done = grouped && kernels::grouped_mxfp4::slots((int) L.d_type, down, m,
+                    n_ff_exp_, n_embd_, oai_grouped_workspace_, oai_down_enabled_, st_);
+                if (down_done) oai_grouped_seen_.fetch_or(2, std::memory_order_relaxed);
+                down_done = down_done || (oai_down_enabled_ && m > 1 &&
+                    kernels::mxfp4_down::slots((int) L.d_type, down, m, n_ff_exp_, n_embd_, st_));
+                if (down_done && oai_down_enabled_) oai_down_seen_.fetch_or(2, std::memory_order_relaxed);
                 if (!down_done)
                     down_done = m > 1 && kernels::gemma_native_mmvq_slots((int) L.d_type, down, m, n_ff_exp_, n_embd_, st_);
                 if (!down_done)
@@ -2550,7 +2601,13 @@ bool Engine::moe_card(Layer& L, int il, int n) {
     const void* const* table = d_slots_ + (size_t) il * n_expert_;
     const kernels::MmvqIds gate_up{table, d_ids_, 0, xq_, kernels::gemma_native_q8_1_bytes(n_embd_), n_used_, g_,
                                    2 * (size_t) n_ff_exp_};
-    kernels::gemma_native_mmvq_ids((int) L.gu_type, gate_up, rr, n_embd_, 2 * n_ff_exp_, st_);
+    const bool grouped = oai_grouped_enabled_ && n > 1 && L.gu_type == 39 && L.d_type == 39 &&
+        kernels::grouped_mxfp4::prepare_ids(d_ids_, rr, n_expert_, oai_grouped_workspace_,
+                                           oai_grouped_workspace_bytes_, st_);
+    if (grouped && kernels::grouped_mxfp4::ids((int) L.gu_type, gate_up, rr, n_embd_, 2 * n_ff_exp_,
+                                             oai_grouped_workspace_, false, st_))
+        oai_grouped_seen_.fetch_or(1, std::memory_order_relaxed);
+    else kernels::gemma_native_mmvq_ids((int) L.gu_type, gate_up, rr, n_embd_, 2 * n_ff_exp_, st_);
     const bool fused_activation = oai_ && (oai_fusion_requested_ & 4) &&
         activation_quant::q8_1_ids(g_, q8_, n_ff_exp_, rr, d_ids_, L.b_gate, L.b_up,
                                   oai_alpha_, clamp_exp_[(size_t) il], st_);
@@ -2563,7 +2620,12 @@ bool Engine::moe_card(Layer& L, int il, int n) {
     }
     const kernels::MmvqIds down{table, d_ids_, 2 * L.gu_bytes, q8_, kernels::gemma_native_q8_1_bytes(n_ff_exp_), 1, d_,
                                 (size_t) n_embd_};
-    if (oai_down_enabled_ && kernels::mxfp4_down::ids((int) L.d_type, down, rr, n_ff_exp_, n_embd_, st_))
+    if (grouped && kernels::grouped_mxfp4::ids((int) L.d_type, down, rr, n_ff_exp_, n_embd_,
+                                             oai_grouped_workspace_, oai_down_enabled_, st_)) {
+        oai_grouped_seen_.fetch_or(1, std::memory_order_relaxed);
+        if (oai_down_enabled_) oai_down_seen_.fetch_or(4, std::memory_order_relaxed);
+    }
+    else if (oai_down_enabled_ && kernels::mxfp4_down::ids((int) L.d_type, down, rr, n_ff_exp_, n_embd_, st_))
         oai_down_seen_.fetch_or(4, std::memory_order_relaxed);
     else kernels::gemma_native_mmvq_ids((int) L.d_type, down, rr, n_ff_exp_, n_embd_, st_);
     if (oai_ && (oai_fuse_ & 2)) {
@@ -2969,6 +3031,7 @@ void Engine::run(const int32_t* tokens, int n) {
     if (pos_ + n > opt_.max_context)
         throw std::runtime_error("the context is full (" + std::to_string(opt_.max_context) + " tokens)");
     cover(pos_ + n);
+    external_residual_base_ = r_;
 
     // h_r_ and h_cpu_ may still be the source of the previous call's copies
     ck(cudaStreamSynchronize(cs(st_)), "eval");
@@ -3180,6 +3243,7 @@ void Engine::run(const int32_t* tokens, int n) {
 // rows from the one before it, a row a sequence in the same order (pass_ from its start), and the last one gives the
 // logits.
 void Engine::step(const int* seqs, const int32_t* tokens, int n) {
+    if (external_draft_enabled()) throw std::logic_error("external drafters support eval/window on one sequence, not step");
     if (n < 1 || n > std::min(rows_, sequences())) throw std::logic_error("step takes 1 to sequences() tokens");
     OnCard here(device_, split_);
     window_logits_rows_ = 0;
@@ -3415,6 +3479,65 @@ bool Engine::sample_device(int row, double temperature, double uniform, int32_t*
     return true;
 }
 
+bool Engine::external_draft_enabled() const { return bool(eagle_); }
+
+size_t Engine::external_draft_vram_bytes() const {
+    return eagle_ ? eagle_->vram_bytes() + size_t(rows_) * eagle_->tap_width() * sizeof(float) : 0;
+}
+
+int64_t Engine::external_draft_pos() const { return eagle_ ? eagle_->pos() : -1; }
+
+int Engine::external_draft_propose(int32_t anchor, int depth, int32_t* out) {
+    if (!eagle_) return 0;
+    if (depth < 0 || depth > 2 || (depth && !out) || anchor < 0 || anchor >= n_vocab_)
+        throw std::invalid_argument("invalid EAGLE-3 proposal arguments");
+    if (!depth || !external_prefix_valid_ || eagle_->pos() != pos_ || pos_ >= opt_.max_context) return 0;
+    OnCard here(device_, split_);
+    const int capacity = int(std::min<int64_t>({depth, opt_.window - 1, opt_.max_context - pos_}));
+    cover(pos_ + capacity);
+    return eagle_->propose(anchor, out, capacity);
+}
+
+int Engine::external_draft_sample_propose(int32_t anchor, int depth, double temperature,
+                                          const double* uniforms, int32_t* out) {
+    if (!eagle_) return 0;
+    if (depth < 0 || depth > 2 || (depth && (!out || !uniforms)) || anchor < 0 || anchor >= n_vocab_ ||
+        !(temperature > 0) || !std::isfinite(temperature))
+        throw std::invalid_argument("invalid sampled EAGLE-3 proposal arguments");
+    if (!depth || !external_prefix_valid_ || eagle_->pos() != pos_ || pos_ >= opt_.max_context) return 0;
+    OnCard here(device_, split_);
+    const int capacity = int(std::min<int64_t>({depth, opt_.window - 1, opt_.max_context - pos_}));
+    cover(pos_ + capacity);
+    return eagle_->sample_propose(anchor, out, capacity, temperature, uniforms);
+}
+
+bool Engine::external_draft_verify(int row, int32_t proposed, double temperature, double accept_uniform,
+                                   double residual_uniform, bool* accepted, int32_t* out) {
+    if (!eagle_) return false;
+    if (row < 0 || row >= window_logits_rows_ || !accepted || !out || !external_prefix_valid_ || eagle_->pos() != pos_)
+        throw std::invalid_argument("invalid EAGLE-3 verification state or row");
+    OnCard here(device_, split_);
+    return eagle_->verify(wlogits_ + size_t(row) * n_vocab_, row, proposed, temperature,
+                           accept_uniform, residual_uniform, accepted, out);
+}
+
+void Engine::capture_external(int il, int n) {
+    if (!external_draft_enabled()) return;
+    const auto& taps = eagle_->tap_layers();
+    const auto found = std::find(taps.begin(), taps.end(), il);
+    if (found == taps.end()) return;
+    const ptrdiff_t offset = r_ - external_residual_base_;
+    if (offset < 0 || offset % n_embd_ != 0 || offset / n_embd_ > rows_ - n)
+        throw std::logic_error("external draft residual feature rows are outside this call");
+    const size_t stride = size_t(eagle_->tap_width());
+    float* dst = external_features_ + size_t(offset / n_embd_) * stride + size_t(found - taps.begin()) * n_embd_;
+    // This copy is part of the target's existing layer/whole-pass graph. Both
+    // addresses stay stable; a split hybrid window writes its own row span.
+    ck(cudaMemcpy2DAsync(dst, stride * sizeof(float), r_, size_t(n_embd_) * sizeof(float),
+                           size_t(n_embd_) * sizeof(float), n, cudaMemcpyDeviceToDevice, cs(st_)),
+       "external draft target feature tap");
+}
+
 void Engine::eval(const int32_t* tokens, int n, bool want_logits) {
     OnCard here(device_, split_);
     if (want_logits) latest_logits_valid_ = false;
@@ -3456,6 +3579,7 @@ void Engine::eval(const int32_t* tokens, int n, bool want_logits) {
     }
     // behind the logits: the caller has them while the card does this
     if (draft_) draft_rows(tokens, ahead_pos_ == pos_ && tokens[0] == ahead_tok_ ? 1 : 0, n);
+    if (eagle_ && external_prefix_valid_) eagle_->append(external_features_, tokens, pos_, n);
     pos_ += n;
     stats_.tokens += n;
 }
@@ -3522,7 +3646,7 @@ bool Engine::read(const int32_t* tokens, int n, const Mark* marks, int n_marks,
         share = [&, to](int done, int of) { return (*asked)(lo_ * of + done * (to - lo_), n_layer_ * of); };
         return (const std::function<bool(int, int)>*) &share;
     };
-    if (n_calls == 1 || !mmq_ || all_cached() || n < opt_.stage_ahead) {
+    if (n_calls == 1 || !mmq_ || all_cached() || n < opt_.stage_ahead || external_draft_enabled()) {
         turn = share_to(n_layer_);   // eval() takes the calls through the cards after this one
         // On several cards the next one takes a call on a thread of its own, while this one runs the call after
         // it.  Each card runs the calls as eval() does, in the same order.
@@ -3799,6 +3923,7 @@ void Engine::keep(int n) {
         }
     }
     if (draft_) draft_rows(win_tok_, ahead_pos_ == pos_ && win_tok_[0] == ahead_tok_ ? 1 : 0, n);
+    if (eagle_ && external_prefix_valid_) eagle_->append(external_features_, win_tok_, pos_, n);
     if (next_) next_->keep(n);
     pos_ += n;
     stats_.tokens += n;

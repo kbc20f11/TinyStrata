@@ -262,3 +262,17 @@ activation layout and four-rows-per-warp down layout from jesdga95/basalt commit
 permission notice. TinyStrata retains the stored MXFP4/Q8_1 codes and scales,
 uses absolute addressing for 1530-byte rows, and preserves its original scale
 conversion and multiplication association. No donor activation or drafter is used.
+
+The optional single-layer GPT-OSS EAGLE-3 runner independently implements the
+equations documented in SafeAILab/EAGLE (Apache-2.0), Nebius's
+nebius/EAGLE3-gpt-oss-20b model (CC-BY-4.0), and llama.cpp's EAGLE3 graph and
+GGUF conversion (MIT). The matching weights are downloaded separately and
+are not distributed with TinyStrata. The GGUF vocabulary mapping and rotary
+row convention are validated explicitly; target verification retains every
+Expert and the full target vocabulary.
+
+Grouped GPT-OSS MXFP4 verification reuses TinyStrata's existing native dot
+and the Basalt-derived down arithmetic credited above. It changes matrix
+reads and dispatch only, preserving each row's arithmetic and output order.
+The Q5_1 draft helper uses TinyStrata's existing GGML-derived Q5_1 dot and
+reduction, preserving per-row arithmetic while sharing weight reads.

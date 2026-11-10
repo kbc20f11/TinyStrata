@@ -36,6 +36,7 @@ struct MetaValue;
 namespace strata::gemma4 {
 
 class Shards;
+class Eagle3;
 struct Likeliest;
 
 /// Auto selects Q8_0 INT8; native E4M3 FP8 Attention is experimental and opt-in.
@@ -83,6 +84,8 @@ struct Options {
                                   ///< -1: as many as the architecture's vocabulary has in order of use (guess_vocab())
     std::string draft_model;      ///< a file of the same model to take that block from, when the model's has none;
                                   ///< for an architecture that guesses with a model of its own, that model's file
+    std::string eagle_model;      ///< matching single-layer EAGLE-3 GGUF
+    int eagle_tokens = 0;         ///< 0 disables it; 1..2 target-verified autoregressive proposals
     std::string layer_split;      ///< the layers across the CUDA devices this process sees, in their order: "auto"
                                   ///< (by each card's free VRAM) or the first layer of each later card ("20,30");
                                   ///< empty, or one device: the current card alone
@@ -164,6 +167,7 @@ struct Image {
 };
 
 class Engine {
+    friend class Eagle3;
 public:
     Engine();
     virtual ~Engine();
@@ -220,6 +224,8 @@ public:
     bool mxfp4_down_enabled() const { return oai_down_enabled_; }
     // Persistent path evidence, including graph capture; not per-token replay counters.
     uint32_t mxfp4_down_seen() const { return oai_down_seen_.load(std::memory_order_relaxed); }
+    bool grouped_mxfp4_enabled() const { return oai_grouped_enabled_; }
+    uint32_t grouped_mxfp4_seen() const { return oai_grouped_seen_.load(std::memory_order_relaxed); }
     uint32_t gptoss_fusion_requested() const { return oai_fusion_requested_; }
     // 1=SWA prefill, 2=long prefill, 4=plain Q8_1 activation, 8=MMQ activation. Includes capture.
     uint32_t gptoss_fusion_seen() const { return oai_fusion_seen_.load(std::memory_order_relaxed); }
@@ -278,6 +284,16 @@ public:
     /// context.  logits() is left alone.  An architecture may guess with a small model of its own instead of a
     /// block (draft_step()); the calls are the same.
     bool drafts() const { return next_ ? next_->drafts() : draft_; }
+    /// A separate, target-verified EAGLE-3 drafter. A restored prefix whose
+    /// features have not been rebuilt safely returns no proposals.
+    bool external_draft_enabled() const;
+    int external_draft_propose(int32_t anchor, int depth, int32_t* out);
+    int external_draft_sample_propose(int32_t anchor, int depth, double temperature,
+                                      const double* uniforms, int32_t* out);
+    bool external_draft_verify(int row, int32_t proposed, double temperature, double accept_uniform,
+                                double residual_uniform, bool* accepted, int32_t* out);
+    size_t external_draft_vram_bytes() const;
+    int64_t external_draft_pos() const;
     /// Test only: the calls read()'s layer-major path gave the draft block's rows (draft_rows()) on the card that has
     /// the block, since load.  Two or more in one read are back-to-back refills of its pinned input rows.
     int64_t read_draft_calls_for_test() const { return next_ ? next_->read_draft_calls_for_test() : read_draft_calls_; }
@@ -489,6 +505,7 @@ protected:
     bool pick_way(int t);
     void took_way(int t, double ms);
     void layer(int il, int n);
+    void capture_external(int il, int n);
     void save_last(uint8_t* dst);
     void moe_router(const Layer& L, int n);
     bool moe(Layer& L, int il, int n, const std::function<void()>* first = nullptr);
@@ -563,6 +580,10 @@ protected:
     int end_ = -1;                        ///< what open() asked for hi_; -1: the model's end
     bool split_ = false;                  ///< one of several engines: a call sets its card first
     std::unique_ptr<Engine> next_;
+    std::unique_ptr<Eagle3> eagle_;
+    float* external_features_ = nullptr; ///< this call's row-major selected residuals; no full-context feature store
+    const float* external_residual_base_ = nullptr;
+    bool external_prefix_valid_ = false;
     int64_t read_draft_calls_ = 0;               ///< read_draft_calls_for_test()
     const float* pass_ = nullptr;
     int64_t pass_at_ = 0;
@@ -704,6 +725,10 @@ protected:
     bool gpu_sample_requested_ = false, gpu_sample_enabled_ = false;
     bool gpu_sample_allocation_failed_ = false;
     bool oai_down_requested_ = false, oai_down_enabled_ = false;
+    bool oai_grouped_enabled_ = false;
+    void* oai_grouped_workspace_ = nullptr;
+    size_t oai_grouped_workspace_bytes_ = 0;
+    std::atomic<uint32_t> oai_grouped_seen_{0}; // 1=device IDs, 2=mixed-cache slots
     uint32_t oai_fusion_requested_ = 0;
     uint32_t oai_fusion_overrides_ = 0;
     std::atomic<uint32_t> oai_fusion_seen_{0};

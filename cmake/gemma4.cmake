@@ -40,11 +40,60 @@ if(STRATA_ENABLE_HIP)
 else()
   target_link_libraries(tinystrata_gemma4_mmq PUBLIC ggml-base CUDA::cudart)
 endif()
-add_library(tinystrata_gemma4 STATIC src/gemma4/engine.cpp src/gemma4/gemma4.cpp src/gemma4/gptoss.cpp
-  src/gemma4/cpu_experts.cpp src/gemma4/kernels.cu src/gemma4/matvec.cu src/gemma4/sampling.cu src/gemma4/sink_attention.cu src/gemma4/mxfp4_down.cu
-  src/gemma4/prefill_attention.cu src/gemma4/long_prefill_attention.cu src/gemma4/activation_quant.cu)
+add_library(tinystrata_gemma4 STATIC src/gemma4/engine.cpp src/gemma4/gemma4.cpp src/gemma4/gptoss.cpp src/gemma4/eagle3.cpp
+  src/gemma4/cpu_experts.cpp src/gemma4/kernels.cu src/gemma4/matvec.cu src/gemma4/sampling.cu src/gemma4/sink_attention.cu src/gemma4/mxfp4_down.cu src/gemma4/draft_q51.cu
+  src/gemma4/prefill_attention.cu src/gemma4/long_prefill_attention.cu src/gemma4/activation_quant.cu
+  src/gemma4/eagle3.cu src/gemma4/grouped_mxfp4.cu)
 if(STRATA_ENABLE_HIP)
-  set_source_files_properties(src/gemma4/mxfp4_down.cu PROPERTIES LANGUAGE HIP)
+  set_source_files_properties(src/gemma4/mxfp4_down.cu src/gemma4/draft_q51.cu src/gemma4/eagle3.cu
+    src/gemma4/grouped_mxfp4.cu PROPERTIES LANGUAGE HIP)
+endif()
+
+add_executable(gptoss_grouped_mxfp4_test EXCLUDE_FROM_ALL tests/gptoss-grouped-mxfp4.cu)
+target_include_directories(gptoss_grouped_mxfp4_test PRIVATE include src/gemma4)
+target_link_libraries(gptoss_grouped_mxfp4_test PRIVATE tinystrata_gemma4 ${_strata_gpu_runtime_target})
+if(STRATA_ENABLE_HIP)
+  set_source_files_properties(tests/gptoss-grouped-mxfp4.cu PROPERTIES LANGUAGE HIP)
+elseif(MSVC)
+  target_compile_options(gptoss_grouped_mxfp4_test PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor;-Xcompiler=/utf-8>)
+endif()
+
+add_executable(gptoss_draft_q51_test EXCLUDE_FROM_ALL tests/gptoss-draft-q51.cu)
+target_include_directories(gptoss_draft_q51_test PRIVATE include src/gemma4)
+target_link_libraries(gptoss_draft_q51_test PRIVATE tinystrata_gemma4 ${_strata_gpu_runtime_target})
+if(STRATA_ENABLE_HIP)
+  set_source_files_properties(tests/gptoss-draft-q51.cu PROPERTIES LANGUAGE HIP)
+elseif(MSVC)
+  target_compile_options(gptoss_draft_q51_test PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor;-Xcompiler=/utf-8>)
+endif()
+
+# The sparse draft vocabulary must preserve its sampled q exactly, including
+# zero mass outside its support. No model files are needed for this unit.
+add_executable(gptoss_eagle3_sampling_test EXCLUDE_FROM_ALL tests/gptoss-eagle3-sampling.cu)
+target_include_directories(gptoss_eagle3_sampling_test PRIVATE include)
+target_link_libraries(gptoss_eagle3_sampling_test PRIVATE tinystrata_gemma4 ${_strata_gpu_runtime_target})
+if(STRATA_ENABLE_HIP)
+  set_source_files_properties(tests/gptoss-eagle3-sampling.cu PROPERTIES LANGUAGE HIP)
+elseif(MSVC)
+  target_compile_options(gptoss_eagle3_sampling_test PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor;-Xcompiler=/utf-8>)
+endif()
+
+# Explicit model-backed target/state parity checks. Run the graph, KV and
+# placement arms independently; they are excluded from normal user builds.
+add_executable(gptoss_eagle3_state_test EXCLUDE_FROM_ALL tests/gptoss-eagle3-state.cpp)
+target_include_directories(gptoss_eagle3_state_test PRIVATE include src/gemma4)
+target_link_libraries(gptoss_eagle3_state_test PRIVATE tinystrata_gemma4 ${_strata_gpu_runtime_target})
+add_executable(gptoss_grouped_state_test EXCLUDE_FROM_ALL tests/gptoss-grouped-state.cpp)
+target_include_directories(gptoss_grouped_state_test PRIVATE include src/gemma4)
+target_link_libraries(gptoss_grouped_state_test PRIVATE tinystrata_gemma4 ${_strata_gpu_runtime_target})
+
+add_executable(gptoss_speculative_sampling_test EXCLUDE_FROM_ALL tests/gptoss-speculative-sampling.cu)
+target_include_directories(gptoss_speculative_sampling_test PRIVATE include src/gemma4)
+target_link_libraries(gptoss_speculative_sampling_test PRIVATE tinystrata_gemma4 ${_strata_gpu_runtime_target})
+if(STRATA_ENABLE_HIP)
+  set_source_files_properties(tests/gptoss-speculative-sampling.cu PROPERTIES LANGUAGE HIP)
+elseif(MSVC)
+  target_compile_options(gptoss_speculative_sampling_test PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor;-Xcompiler=/utf-8>)
 endif()
 
 # Model-free GPT-OSS prompt-attention numerical and timing regression.

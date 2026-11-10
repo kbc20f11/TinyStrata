@@ -118,6 +118,7 @@
 !/benchmark/results/
 /benchmark/results/**
 !/benchmark/results/*.md
+!/benchmark/results/gptoss-eagle3-20261110.json
 /assets/**
 !/assets/memory-sharing.png
 !/assets/automatic-settings.png
@@ -264,3 +265,9 @@ CMakeFiles/
 !/tests/hip-vmm-policy.cpp
 
 !/tests/gptoss-mxfp4-down.cu
+!/tests/gptoss-grouped-mxfp4.cu
+!/tests/gptoss-speculative-sampling.cu
+!/tests/gptoss-draft-q51.cu
+!/tests/gptoss-eagle3-sampling.cu
+!/tests/gptoss-eagle3-state.cpp
+!/tests/gptoss-grouped-state.cpp

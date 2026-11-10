@@ -314,11 +314,12 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
     values = {"--model", "--draft-model", "--max-context", "--kv-type", "--chunk", "--mtp", "--expert-vram",
               "--expert-slots", "--cpu-threads", "--hybrid-rows", "--vram-reserve-mib", "--clover-draft",
               "--clover-mode", "--clover-lookup", "--mtp-auto", "--lookup-draft", "--clover-block-size", "--clover-threshold", "--clover-accept",
-              "--clover-accept-ratio", "--clover-accept-delta"}
+              "--clover-accept-ratio", "--clover-accept-delta", "--eagle-model", "--eagle", "--eagle-accept"}
     values.update(config.ENGINE_OPTIONS[key][0] for key in config.CONVERSATION_CACHE_KEYS)
     switches = {"--no-graph", "--no-warmup", "--hybrid-graph", "--no-hybrid-graph", "--vision",
                 "--kv-grow", "--kv-whole", "--no-kv-grow", "--allow-gpt-oss-hip"}
     seen = set()
+    option_values = {}
     i = 0
     while i < len(args):
         flag = args[i]
@@ -328,6 +329,7 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         if flag in switches:
             i += 1
         elif flag in values and i + 1 < len(args) and not args[i + 1].startswith("--"):
+            option_values[flag] = args[i + 1]
             i += 2
         else:
             raise ValueError(f"Unsupported or incomplete TinyStrata engine option: {flag}")
@@ -341,6 +343,30 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         value = config.value_of(cfg, key)
         if value is not None:
             config.check(key, value, cfg)
+    # EAGLE3 is an explicit raw-profile option, not a managed setting or a
+    # per-request control. Preserve its spelling and the native rejection
+    # default instead of adding it to ENGINE_OPTIONS or stock profiles.
+    eagle_options = seen.intersection({"--eagle", "--eagle-model", "--eagle-accept"})
+    if eagle_options:
+        if arch != "gpt-oss":
+            raise ValueError("EAGLE3 engine options require gpt-oss")
+        depth = option_values.get("--eagle", "0")
+        if depth not in ("0", "1", "2"):
+            raise ValueError("--eagle requires a whole number from 0 to 2")
+        if option_values.get("--eagle-accept", "rejection") not in ("target", "rejection"):
+            raise ValueError("--eagle-accept must be target or rejection")
+        if depth == "0":
+            if "--eagle-model" in seen or "--eagle-accept" in seen:
+                raise ValueError("--eagle-model and --eagle-accept require --eagle 1 or 2")
+        else:
+            if not option_values.get("--eagle-model"):
+                raise ValueError("EAGLE3 requires --eagle-model pointing to its matching GGUF")
+            if any(config.value_of(cfg, key) not in (None, 0) for key in ("mtp", "mtp_auto", "lookup_draft")):
+                raise ValueError("EAGLE3 cannot be combined with MTP, mtp_auto or lookup_draft")
+            cards = cfg.get("gpu")
+            cards = cards if isinstance(cards, (list, tuple)) else str(cards).split(",") if cards is not None else []
+            if sum(bool(str(card).strip()) for card in cards) > 1:
+                raise ValueError("EAGLE3 requires one GPU and one resident engine")
     kv = config.value_of(cfg, "kv_type")
     clover_options = seen.intersection({"--clover-draft", "--clover-mode", "--clover-block-size", "--clover-threshold",
                                        "--clover-accept", "--clover-accept-ratio", "--clover-accept-delta"})
@@ -455,3 +481,10 @@ def check_files(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         if path is None or not path.is_file():
             if not allow_uninstalled:
                 raise ValueError("Gemma 4 QAT assistant is missing; download the model bundle first")
+    args = cfg.get("args", [])
+    if cfg.get("arch") == "gpt-oss" and "--eagle-model" in args[:-1] and not allow_uninstalled:
+        path = Path(args[args.index("--eagle-model") + 1])
+        if not path.is_absolute():
+            path = base / path
+        if not path.is_file():
+            raise ValueError(f"EAGLE3 draft model not found: {path}")

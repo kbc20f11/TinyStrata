@@ -4242,6 +4242,18 @@ class Service:
             return None
         cfg = {"args": args, "arch": "gpt-oss" if arch == "gpt-oss" or
                (arch is None and self.model.startswith("gpt-oss")) else arch}
+        # A lazy/unloaded engine may not have INFO yet. Its saved spawn still
+        # identifies the resident EAGLE route; an explicit zero request control
+        # is allowed, but enabling another drafter must fail before native GEN.
+        try:
+            eagle_active = int(info.get("eagle") or 0) > 0
+        except (TypeError, ValueError):
+            eagle_active = False
+        if "--eagle" in args[:-1]:
+            try:
+                eagle_active = eagle_active or int(args[args.index("--eagle") + 1]) > 0
+            except (TypeError, ValueError):
+                pass
         settings = {}
         for key in config.SPECULATION_REQUEST_KEYS:
             value = options.get(key, info.get(key, config.value_of(cfg, key)))
@@ -4250,6 +4262,8 @@ class Service:
                     value = int(value)
                 except ValueError:
                     pass
+            if eagle_active and isinstance(value, (int, float)) and value > 0:
+                raise ValueError(f"{key}: EAGLE3 cannot be combined with lookup_draft or mtp_auto")
             settings[key] = config.check(key, 0 if value is None else value, cfg)
         if settings["lookup_draft"]:
             temperature = (req or {}).get("temperature")

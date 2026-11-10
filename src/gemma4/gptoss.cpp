@@ -426,7 +426,10 @@ void GptOss::moe_shared(const Layer&, int, int n) {
     ck(cudaMemsetAsync(fo_, 0, (size_t) n * n_embd_ * sizeof(float), cs(st_)), "experts");
 }
 
-void GptOss::layer_tail(Layer&, int, int n) { axpy(fo_, 1.f, r_, n * n_embd_, true, st_); }
+void GptOss::layer_tail(Layer&, int il, int n) {
+    axpy(fo_, 1.f, r_, n * n_embd_, true, st_);
+    capture_external(il, n);
+}
 
 void GptOss::output_rows(int first, int rows, float* h) {
     rms_norm(r_ + (size_t) first * n_embd_, fp(out_norm_), h, n_embd_, rows, rms_eps_, st_);
