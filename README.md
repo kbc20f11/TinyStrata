@@ -46,6 +46,8 @@ The Qwen, Gemma and LFM engines use an automatic VRAM Expert cache, CPU Expert c
 
 [Local HIP measurements and validation](benchmark/results/gptoss-adoption-20261110.md): MXFP4 MMQ is enabled by default on HIP (`-DSTRATA_HIP_MXFP4_MMQ=OFF` builds the matvec fallback; `TINYSTRATA_GPTOSS_MMQ=0` disables MMQ for diagnosis). Native `--serve --lookup-draft 7` is optional; existing lookup defaults remain **0**, since sampled workloads do not uniformly improve.
 
+Eligible single-GPU GPT-OSS requests sample the full vocabulary on GPU by default; greedy sampling, filters and active penalties retain the CPU path. `TINYSTRATA_GPTOSS_GPU_SAMPLE=0` selects CPU sampling for diagnosis. [GPU sampling measurements and checks](benchmark/results/gptoss-gpu-sampling-20261110.md).
+
 | Feature | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) | [Tiel Coder](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP) | [gpt-oss](https://huggingface.co/openai/gpt-oss-20b) |
 | --- | --- | --- | --- | --- | --- | --- |
 | Maximum context | 256K | 256K | 128K | 256K (extension) | 256K | 128K |

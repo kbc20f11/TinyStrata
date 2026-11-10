@@ -46,6 +46,8 @@ Qwen・Gemma・Clover・LFM・Tiel Coder はいずれも、空き VRAM に合わ
 
 [HIPでの実測と検証結果](benchmark/results/gptoss-adoption-20261110.md)：MXFP4 MMQ は HIP の既定で有効です（`-DSTRATA_HIP_MXFP4_MMQ=OFF` で従来の matvec 経路をビルド、`TINYSTRATA_GPTOSS_MMQ=0` で診断時に MMQ を無効化）。native の `--serve --lookup-draft 7` は任意選択で、確率的生成では一律に速くならないため、既存の lookup の既定は **0** を維持します。
 
+単一GPUのGPT-OSSでは、対応する設定の全語彙サンプリングを既定でGPU上で行います。温度0、候補の絞り込み、有効な生成ペナルティを使う場合はCPUで処理します。診断時は `TINYSTRATA_GPTOSS_GPU_SAMPLE=0` でCPU処理へ戻せます。[実測と検証](benchmark/results/gptoss-gpu-sampling-20261110.md)。
+
 | 機能 | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) | [Tiel Coder](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP) | [gpt-oss](https://huggingface.co/openai/gpt-oss-20b) |
 | --- | --- | --- | --- | --- | --- | --- |
 | 最大コンテキスト | 256K | 256K | 128K | 256K（拡張） | 256K | 128K |

@@ -44,6 +44,8 @@ Los motores Qwen, Gemma y LFM utilizan caché automática de expertos en VRAM, c
 
 [Mediciones y validación locales en HIP](benchmark/results/gptoss-adoption-20261110.md): MXFP4 MMQ está activado por defecto en HIP (`-DSTRATA_HIP_MXFP4_MMQ=OFF` compila la ruta matvec; `TINYSTRATA_GPTOSS_MMQ=0` desactiva MMQ para diagnóstico). La opción nativa `--serve --lookup-draft 7` es voluntaria; lookup sigue en **0** por defecto porque el muestreo no mejora de forma uniforme.
 
+Las solicitudes GPT-OSS compatibles con una sola GPU muestrean todo el vocabulario en GPU de forma predeterminada; el muestreo voraz, los filtros y las penalizaciones activas conservan la ruta CPU. `TINYSTRATA_GPTOSS_GPU_SAMPLE=0` selecciona el muestreo CPU para diagnóstico. [Mediciones y comprobaciones del muestreo GPU](benchmark/results/gptoss-gpu-sampling-20261110.md).
+
 | Función | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) | [gpt-oss](https://huggingface.co/openai/gpt-oss-20b) |
 | --- | --- | --- | --- | --- | --- |
 | Contexto máximo | 256K | 256K | 128K | 256K (extensión) | 128K |

@@ -48,6 +48,8 @@
 !/tests/gemma-cached-slots.cu
 !/tests/gptoss-fused.cu
 !/tests/gptoss-state.cpp
+!/tests/gptoss-sampling.cu
+!/tests/gptoss-device-sampling.cpp
 !/tests/hybrid-publish-gpu.cu
 !/tests/clover-attention-gpu.cu
 !/tests/clover-decode-settings.py

@@ -141,7 +141,8 @@ void GptOss::alloc_caches() {
         if (!runs(il)) continue;
         const size_t row = (size_t) n_kv_ * dim_;
         const auto buffer = [&](size_t bytes) -> void* {
-            return B.swa ? dmalloc(bytes * ring_, "the window attention cache") : kv_alloc(bytes, 1);
+            // bind() must restore this sequence's ring, just as it restores the full-attention rows.
+            return B.swa ? seq_alloc(bytes * ring_, "the window attention cache") : kv_alloc(bytes, 1);
         };
         if (opt_.kv_format != KvFmt::kFp16) {
             B.k_codes = (int8_t*) buffer(row); B.v_codes = (int8_t*) buffer(row);

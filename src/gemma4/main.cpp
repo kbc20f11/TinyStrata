@@ -47,6 +47,16 @@ struct Sampling {
     uint64_t seed = 0;
 };
 
+const char* gpu_sample_reason(const Engine& e, const Sampling& s) {
+    if (!e.device_sampling_enabled()) return e.device_sampling_reason();
+    if (!std::isfinite(s.temperature) || s.temperature <= 0) return "temperature";
+    if (s.top_k != 0) return "top_k";
+    if (s.top_p != 1) return "top_p";
+    if (s.min_p != 0) return "min_p";
+    if (s.last_n && (s.repeat != 1 || s.frequency != 0 || s.presence != 0)) return "penalties";
+    return "enabled";
+}
+
 int sample(const float* logits, int vocab, const Sampling& s, const std::vector<int32_t>& history,
            std::mt19937_64& rng) {
     std::vector<double> scores(logits, logits + vocab);
@@ -565,6 +575,7 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
             e.mind_vram();
             memory.changed(true);
             const auto before = e.stats();
+            const uint64_t host_rows_before = e.logits_host_rows();
             const auto p0 = cache.enabled() ? cache_start : Clock::now();
             const int fresh = (int) (ids.size() - reuse);
             PromptMark mark;
@@ -625,7 +636,27 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
             int evaluated = 0;
             const char* finish = "length";
             int64_t guessed = 0, accepted = 0;
-            const auto pick = [&](const float* logits) { return sample(logits, e.n_vocab(), smp, history, rng); };
+            const char* gpu_reason = gpu_sample_reason(e, smp);
+            const bool gpu_eligible = std::strcmp(gpu_reason, "enabled") == 0;
+            long long gpu_samples = 0, cpu_samples = 0, fallback_samples = 0;
+            // Select the row before touching a host accessor: an eligible device sample copies only its result.
+            // A trial RNG also preserves the CPU failure contract when a device logit is nonfinite.
+            const auto pick = [&](int row) {
+                if (gpu_eligible) {
+                    auto trial_rng = rng;
+                    const double uniform = std::generate_canonical<double, 53>(trial_rng);
+                    int32_t id = -1;
+                    if (e.sample_device(row, smp.temperature, uniform, &id)) {
+                        rng = trial_rng;
+                        ++gpu_samples;
+                        return (int) id;
+                    }
+                }
+                const int id = sample(row < 0 ? e.logits() : e.logits_of(row), e.n_vocab(), smp, history, rng);
+                ++cpu_samples;
+                if (e.device_sampling_requested()) ++fallback_samples;
+                return id;
+            };
             const auto show = [&](int32_t token) {
                 if (box->stop.load()) { finish = "cancel"; return false; }
                 std::printf("T %d\n", token); std::fflush(stdout);
@@ -635,7 +666,7 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
                 else return produced < max_new;
                 return false;
             };
-            int32_t token = pick(e.logits());
+            int32_t token = pick(-1);
             if (!request_auto && !request_lookup) {
                 while (show(token)) {
                     const int width = e.drafts() ? std::min<int64_t>({configured_mtp + 1, e.max_window(), e.max_context() - e.pos(),
@@ -643,7 +674,7 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
                     if (width <= 1) {
                         e.eval(&token, 1, true); ++evaluated; live.push_back(token);
                         memory.changed();
-                        token = pick(e.logits()); continue;
+                        token = pick(-1); continue;
                     }
                     int32_t w[8]; w[0] = token;
                     for (int i = 1; i < width; ++i) {
@@ -655,9 +686,9 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
                     e.window(w, width);
                     int right = 0;
                     bool more = true;
-                    token = pick(e.logits_of(0));
+                    token = pick(0);
                     while (right < width - 1 && token == w[right + 1] && (more = show(token)))
-                        token = pick(e.logits_of(++right));
+                        token = pick(++right);
                     e.keep(right + 1);
                     live.insert(live.end(), w, w + right + 1); evaluated += right + 1;
                     memory.changed();
@@ -719,15 +750,15 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
                     if (!count) {
                         e.eval(&token, 1, true); ++evaluated; live.push_back(token);
                         memory.changed();
-                        token = pick(e.logits());
+                        token = pick(-1);
                     } else {
                         const int width = count + 1;
                         e.window(w, width);
                         int right = 0;
                         bool more = true;
-                        token = pick(e.logits_of(0));
+                        token = pick(0);
                         while (right < width - 1 && token == w[right + 1] && (more = emit(token)))
-                            token = pick(e.logits_of(++right));
+                            token = pick(++right);
                         e.keep(right + 1);
                         live.insert(live.end(), w, w + right + 1); evaluated += right + 1;
                         memory.changed();
@@ -764,6 +795,13 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
                 cache.release(); cache.info();
             }
             memory_info(e);
+            const uint64_t host_rows = e.logits_host_rows() - host_rows_before;
+            std::printf("INFO gpu_sample_requested=%d gpu_sample_eligible=%d gpu_sample_reason=%s "
+                        "gpu_sample_tokens=%lld cpu_sample_tokens=%lld gpu_sample_fallback_tokens=%lld "
+                        "logits_host_rows=%llu logits_host_bytes=%llu\n",
+                        e.device_sampling_requested(), gpu_eligible, gpu_reason, gpu_samples, cpu_samples,
+                        fallback_samples, (unsigned long long) host_rows,
+                        (unsigned long long) (host_rows * (uint64_t) e.n_vocab() * sizeof(float)));
             std::printf("INFO last_mtp_auto=%d last_lookup_draft=%d lookup_rounds=%lld "
                         "mtp_auto_rounds=%lld mtp_auto_d0=%lld mtp_auto_d1=%lld mtp_auto_dmax=%lld\n",
                         request_auto, request_lookup, lookup_rounds, auto_rounds, auto_d0, auto_d1, auto_dmax);

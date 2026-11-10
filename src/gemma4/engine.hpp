@@ -207,7 +207,15 @@ public:
     /// Feed n tokens from position pos().  With want_logits, logits() then holds the scores of the token after the
     /// last one.
     void eval(const int32_t* tokens, int n, bool want_logits);
-    const float* logits() const { return next_ ? next_->logits() : h_logits_; }
+    const float* logits() const;
+    /// GPT-OSS full-vocabulary device sampling. Row -1 uses eval()'s latest output;
+    /// a nonnegative row uses window()/step()'s output. Unsupported engines return false.
+    /// Invalid arguments, unavailable rows and nonfinite logits throw without selecting a token.
+    bool sample_device(int row, double temperature, double uniform, int32_t* token);
+    bool device_sampling_requested() const { return gpu_sample_requested_; }
+    bool device_sampling_enabled() const { return gpu_sample_enabled_; }
+    const char* device_sampling_reason() const;
+    uint64_t logits_host_rows() const { return next_ ? next_->logits_host_rows() : logits_host_rows_; }
     /// Feed n tokens of a prompt, none of them a picture's row, as eval() without logits would in calls of
     /// max_rows(): the same tokens a call.  With experts outside the cache it is faster than those calls, the
     /// more the more of them n is; under stage_ahead tokens it makes those calls.  The result is the calls' own
@@ -250,7 +258,7 @@ public:
     /// What a kept token computed is what eval() would have computed for it.
     int max_window() const { return opt_.window; }
     void window(const int32_t* tokens, int t);
-    const float* logits_of(int i) const { return next_ ? next_->logits_of(i) : h_wlogits_ + (size_t) i * n_vocab_; }
+    const float* logits_of(int i) const;
     void keep(int n);
 
     /// Some files carry a block that guesses ahead: one layer that takes a token and the model's output for the
@@ -682,6 +690,17 @@ protected:
     int way_backoff_[9] = {};    ///< the way behind waits kWayAgain << this many windows of the size
     bool halves_ = false;        ///< the way of the window under way
     float *wlogits_ = nullptr, *h_wlogits_ = nullptr;   ///< a window's logits, token after token: VRAM and pinned
+    // The load-time flag fixes the tail graph's copy policy across all requests. CPU callers materialize
+    // only the row they use; the device sampler never needs the vocabulary copied to the host.
+    bool gpu_sample_requested_ = false, gpu_sample_enabled_ = false;
+    bool gpu_sample_allocation_failed_ = false;
+    bool latest_logits_valid_ = false;
+    mutable bool latest_logits_host_ready_ = false;
+    int window_logits_rows_ = 0;
+    mutable std::vector<unsigned char> window_logits_host_ready_;
+    mutable uint64_t logits_host_rows_ = 0;
+    void *sample_workspace_ = nullptr, *sample_result_ = nullptr, *h_sample_result_ = nullptr;
+    size_t sample_workspace_bytes_ = 0;
     int cached_ = 0;
 
     // device scratch: a layer's input streams, one stream, the normed input, the attention's and the FFN's output

@@ -44,6 +44,8 @@ Qwen、Gemma 和 LFM 引擎均支持根据空闲显存自动调整的专家缓�
 
 [HIP 本地实测与验证](benchmark/results/gptoss-adoption-20261110.md)：HIP 默认启用 MXFP4 MMQ（`-DSTRATA_HIP_MXFP4_MMQ=OFF` 编译 matvec 回退路径；`TINYSTRATA_GPTOSS_MMQ=0` 可在诊断时禁用 MMQ）。原生 `--serve --lookup-draft 7` 为可选项；采样生成并非总能加速，因此现有 lookup 默认值保持 **0**。
 
+单 GPU 的 GPT-OSS 请求在符合条件时默认使用 GPU 对完整词表采样；贪心采样、过滤器或有效惩罚项仍使用 CPU 路径。诊断时可用 `TINYSTRATA_GPTOSS_GPU_SAMPLE=0` 切回 CPU 采样。[GPU 采样实测与验证](benchmark/results/gptoss-gpu-sampling-20261110.md)。
+
 | 功能 | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) | [gpt-oss](https://huggingface.co/openai/gpt-oss-20b) |
 | --- | --- | --- | --- | --- | --- |
 | 最大上下文 | 256K | 256K | 128K | 256K（扩展） | 128K |

@@ -41,7 +41,7 @@ else()
   target_link_libraries(tinystrata_gemma4_mmq PUBLIC ggml-base CUDA::cudart)
 endif()
 add_library(tinystrata_gemma4 STATIC src/gemma4/engine.cpp src/gemma4/gemma4.cpp src/gemma4/gptoss.cpp
-  src/gemma4/cpu_experts.cpp src/gemma4/kernels.cu src/gemma4/matvec.cu)
+  src/gemma4/cpu_experts.cpp src/gemma4/kernels.cu src/gemma4/matvec.cu src/gemma4/sampling.cu)
 if(STRATA_ENABLE_CUDA)
   set_source_files_properties(src/gemma4/matvec.cu PROPERTIES COMPILE_OPTIONS "--use_fast_math")
 endif()
@@ -85,3 +85,18 @@ endif()
 add_executable(gptoss_state_test EXCLUDE_FROM_ALL tests/gptoss-state.cpp)
 target_include_directories(gptoss_state_test PRIVATE include src/gemma4)
 target_link_libraries(gptoss_state_test PRIVATE tinystrata_gemma4 ${_strata_gpu_runtime_target})
+
+# Model-free and saved-logit full-vocabulary categorical regression; no model load is performed.
+add_executable(gptoss_sampling_test EXCLUDE_FROM_ALL tests/gptoss-sampling.cu)
+target_include_directories(gptoss_sampling_test PRIVATE include)
+target_link_libraries(gptoss_sampling_test PRIVATE tinystrata_gemma4 ${_strata_gpu_runtime_target})
+if(STRATA_ENABLE_HIP)
+  set_source_files_properties(tests/gptoss-sampling.cu PROPERTIES LANGUAGE HIP)
+elseif(MSVC)
+  target_compile_options(gptoss_sampling_test PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor;-Xcompiler=/utf-8>)
+endif()
+
+# Explicit model-backed regression for device sampling and lazy CPU logit access.
+add_executable(gptoss_device_sampling_test EXCLUDE_FROM_ALL tests/gptoss-device-sampling.cpp)
+target_include_directories(gptoss_device_sampling_test PRIVATE include src/gemma4)
+target_link_libraries(gptoss_device_sampling_test PRIVATE tinystrata_gemma4 ${_strata_gpu_runtime_target})

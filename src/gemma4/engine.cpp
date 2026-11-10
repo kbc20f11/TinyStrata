@@ -13,6 +13,7 @@
 #include "strata/gemma4/vram.hpp"
 #include "strata/gemma4/kernels.hpp"
 #include "strata/gemma4/matvec.hpp"
+#include "strata/gemma4/sampling.hpp"
 #if defined(STRATA_USE_HIP) || defined(__HIPCC__)
 #include "strata/kernels/cpu/pool.hpp"
 #endif
@@ -1720,6 +1721,14 @@ void Engine::load(const Options& o) {
     gg_ = std::make_unique<Shards>(opt_.model);
     if (!opt_.draft_model.empty() && opt_.draft && opt_.window != 1) dg_ = std::make_unique<Shards>(opt_.draft_model);
     load_geometry();
+    gpu_sample_requested_ = oai_;
+    if (const char* value = std::getenv("TINYSTRATA_GPTOSS_GPU_SAMPLE")) {
+        if (oai_ && std::strcmp(value, "0") != 0 && std::strcmp(value, "1") != 0)
+            throw std::invalid_argument("TINYSTRATA_GPTOSS_GPU_SAMPLE must be 0 or 1");
+        gpu_sample_requested_ = std::strcmp(value, "1") == 0;
+    }
+    // A split keeps the existing host path. Its output lives on another engine/card.
+    gpu_sample_enabled_ = gpu_sample_requested_ && oai_ && !split_;
     if (block_ != dg_.get()) dg_.reset();
     hi_ = end_ < 0 ? n_layer_ : end_;
 
@@ -1823,6 +1832,43 @@ void Engine::load(const Options& o) {
     if (opt_.window == 0) opt_.window = recurrent_floats() == 0 || snaps_spread() ? 8 : 4;
     opt_.window = std::min({opt_.window, opt_.prompt_batch, opt_.max_context});
     alloc();
+    if (gpu_sample_enabled_) {
+        // Charge this scratch before the expert cache chooses how much VRAM it may occupy.
+        sample_workspace_bytes_ = full_vocab_sample_workspace_bytes(n_vocab_);
+        struct Pending {
+            void *workspace = nullptr, *result = nullptr, *host = nullptr;
+            void clear() noexcept {
+                if (host) (void) cudaFreeHost(host);
+                if (result) (void) cudaFree(result);
+                if (workspace) (void) cudaFree(workspace);
+                workspace = result = host = nullptr;
+            }
+            ~Pending() { clear(); }
+        } pending;
+        cudaError_t error = cudaMalloc(&pending.workspace, std::max<size_t>(sample_workspace_bytes_, 256));
+        if (error == cudaSuccess) error = cudaMalloc(&pending.result, std::max<size_t>(sizeof(FullVocabResult), 256));
+        if (error == cudaSuccess) error = cudaMallocHost(&pending.host, std::max<size_t>(sizeof(FullVocabResult), 256));
+        if (error == cudaErrorMemoryAllocation) {
+            pending.clear();
+            (void) cudaGetLastError();
+            gpu_sample_enabled_ = false;
+            gpu_sample_allocation_failed_ = true;
+            sample_workspace_bytes_ = 0;
+            std::fprintf(stderr, "tinystrata-gemma4: no memory for optional device sampling; using CPU sampling\n");
+        } else {
+            ck(error, "full-vocabulary sampling allocation");
+            // Reserve first: if host bookkeeping throws, Pending still owns every allocation.
+            dev_allocs_.reserve(dev_allocs_.size() + 2);
+            host_allocs_.reserve(host_allocs_.size() + 1);
+            dev_allocs_.push_back(pending.workspace);
+            dev_allocs_.push_back(pending.result);
+            host_allocs_.push_back(pending.host);
+            sample_workspace_ = pending.workspace;
+            sample_result_ = pending.result;
+            h_sample_result_ = pending.host;
+            pending.workspace = pending.result = pending.host = nullptr;
+        }
+    }
     if (!opt_.profile.empty()) read_profile(opt_.profile, (int) layers_.size(), n_expert_, prior_);
     fill_expert_cache();
     // The weights and the expert cache are written on st_ now (h2d(), zero_vram()): the load is not over until
@@ -1949,6 +1995,7 @@ void Engine::alloc() {
     const size_t logit_rows = (size_t) std::max(opt_.window, opt_.batch + 1);   // window()'s, step()'s
     wlogits_ = (float*) dmalloc(logit_rows * n_vocab_ * sizeof(float), "scratch");
     h_wlogits_ = (float*) hmalloc(logit_rows * n_vocab_ * sizeof(float), "pinned memory");
+    if (gpu_sample_enabled_) window_logits_host_ready_.resize(logit_rows);
     alloc_caches();
     cover(1);   // a short conversation's rows, before the expert cache is sized
     // --batch: the other sequences, each with a state and caches of its own (bind())
@@ -3075,6 +3122,7 @@ void Engine::run(const int32_t* tokens, int n) {
 void Engine::step(const int* seqs, const int32_t* tokens, int n) {
     if (n < 1 || n > std::min(rows_, sequences())) throw std::logic_error("step takes 1 to sequences() tokens");
     OnCard here(device_, split_);
+    window_logits_rows_ = 0;
     end_read();
     const int home = bound_;
     const auto use = [&](int s) { hold(s); };
@@ -3191,10 +3239,14 @@ void Engine::step(const int* seqs, const int32_t* tokens, int n) {
         output_rows(0, n, xn_);
         lin(output_, xn_, wlogits_, n);
         finish_logits(wlogits_, n);
-        ck(cudaMemcpyAsync(h_wlogits_, wlogits_, (size_t) n * n_vocab_ * sizeof(float), cudaMemcpyDeviceToHost,
-                           cs(st_)),
-           "logits");
+        if (!gpu_sample_enabled_)
+            ck(cudaMemcpyAsync(h_wlogits_, wlogits_, (size_t) n * n_vocab_ * sizeof(float), cudaMemcpyDeviceToHost,
+                               cs(st_)), "logits");
         ck(cudaStreamSynchronize(cs(st_)), "step");
+        window_logits_rows_ = n;
+        if (gpu_sample_enabled_)
+            std::fill_n(window_logits_host_ready_.begin(), n, 0);
+        else logits_host_rows_ += n;
     }
     for (int i = 0; i < n; ++i) {
         use(seqs[i]);
@@ -3243,8 +3295,69 @@ void Engine::hand_on(int64_t pos, int n, float* h) {
     next_->pass_at_ = pos;
 }
 
+const char* Engine::device_sampling_reason() const {
+    if (!gpu_sample_requested_) return "disabled";
+    if (!oai_) return "model";
+    if (split_) return "split";
+    if (gpu_sample_allocation_failed_) return "allocation";
+    return "enabled";
+}
+
+const float* Engine::logits() const {
+    if (next_) return next_->logits();
+    if (gpu_sample_enabled_) {
+        if (!latest_logits_valid_) throw std::logic_error("logits: no current eval output");
+        if (!latest_logits_host_ready_) {
+            OnCard here(device_, split_);
+            ck(cudaMemcpyAsync(h_logits_, logits_, (size_t) n_vocab_ * sizeof(float), cudaMemcpyDeviceToHost,
+                               cs(st_)), "lazy logits");
+            ck(cudaStreamSynchronize(cs(st_)), "lazy logits");
+            latest_logits_host_ready_ = true;
+            ++logits_host_rows_;
+        }
+    }
+    return h_logits_;
+}
+
+const float* Engine::logits_of(int i) const {
+    if (next_) return next_->logits_of(i);
+    if (gpu_sample_enabled_) {
+        if (i < 0 || i >= window_logits_rows_) throw std::logic_error("logits_of: no such output row");
+        if (!window_logits_host_ready_[(size_t) i]) {
+            OnCard here(device_, split_);
+            ck(cudaMemcpyAsync(h_wlogits_ + (size_t) i * n_vocab_, wlogits_ + (size_t) i * n_vocab_,
+                               (size_t) n_vocab_ * sizeof(float), cudaMemcpyDeviceToHost, cs(st_)),
+               "lazy window logits");
+            ck(cudaStreamSynchronize(cs(st_)), "lazy window logits");
+            window_logits_host_ready_[(size_t) i] = 1;
+            ++logits_host_rows_;
+        }
+    }
+    return h_wlogits_ + (size_t) i * n_vocab_;
+}
+
+bool Engine::sample_device(int row, double temperature, double uniform, int32_t* token) {
+    if (!gpu_sample_enabled_) return false;
+    if (!token || row < -1) throw std::invalid_argument("sample_device: invalid token pointer or row");
+    if (row == -1 ? !latest_logits_valid_ : row >= window_logits_rows_)
+        throw std::logic_error("sample_device: no current output row");
+    OnCard here(device_, split_);
+    sample_full_vocab(row < 0 ? logits_ : wlogits_ + (size_t) row * n_vocab_, n_vocab_, temperature, uniform,
+                      sample_workspace_, sample_workspace_bytes_, (FullVocabResult*) sample_result_, st_);
+    ck(cudaMemcpyAsync(h_sample_result_, sample_result_, sizeof(FullVocabResult), cudaMemcpyDeviceToHost,
+                       cs(st_)), "sampling result");
+    ck(cudaStreamSynchronize(cs(st_)), "sampling result");
+    const auto& result = *(const FullVocabResult*) h_sample_result_;
+    if (result.status == kSampleNonFinite) throw std::runtime_error("nonfinite logits");
+    if (result.status != kSampleOk || result.token < 0 || result.token >= n_vocab_)
+        throw std::runtime_error("invalid full-vocabulary sampling result");
+    *token = result.token;
+    return true;
+}
+
 void Engine::eval(const int32_t* tokens, int n, bool want_logits) {
     OnCard here(device_, split_);
+    if (want_logits) latest_logits_valid_ = false;
     run(tokens, n);
     if (next_) {
         hand_on(pos_, n, pass_rows(n));
@@ -3264,9 +3377,9 @@ void Engine::eval(const int32_t* tokens, int n, bool want_logits) {
             if (!want_logits) return;
             lin(output_, h + (size_t) (m - 1) * n_embd_, logits_, 1);
             finish_logits(logits_, 1);
-            ck(cudaMemcpyAsync(h_logits_, logits_, (size_t) n_vocab_ * sizeof(float), cudaMemcpyDeviceToHost,
-                               cs(st_)),
-               "logits");
+            if (!gpu_sample_enabled_)
+                ck(cudaMemcpyAsync(h_logits_, logits_, (size_t) n_vocab_ * sizeof(float), cudaMemcpyDeviceToHost,
+                                   cs(st_)), "logits");
         };
         if (replay) {
             if (!tail_) tail_ = record(tail);
@@ -3274,7 +3387,12 @@ void Engine::eval(const int32_t* tokens, int n, bool want_logits) {
         } else {
             tail();
         }
-        if (want_logits) ck(cudaStreamSynchronize(cs(st_)), "eval");
+        if (want_logits) {
+            ck(cudaStreamSynchronize(cs(st_)), "eval");
+            latest_logits_valid_ = true;
+            latest_logits_host_ready_ = !gpu_sample_enabled_;
+            if (!gpu_sample_enabled_) ++logits_host_rows_;
+        }
     }
     // behind the logits: the caller has them while the card does this
     if (draft_) draft_rows(tokens, ahead_pos_ == pos_ && tokens[0] == ahead_tok_ ? 1 : 0, n);
@@ -3524,6 +3642,7 @@ unsigned Engine::snap_tokens(int t) const {
 void Engine::window(const int32_t* tokens, int t) {
     if (t < 1 || t > opt_.window) throw std::logic_error("a window takes 1 to max_window() tokens");
     OnCard here(device_, split_);
+    window_logits_rows_ = 0;
     end_read();
     // the two ways are a choice only with experts on the CPU; a call that records launches says nothing of them
     const bool timed = t > 1 && !all_cached();
@@ -3558,9 +3677,14 @@ void Engine::window(const int32_t* tokens, int t) {
     output_rows(0, t, h);
     lin(output_, h, wlogits_, t);
     finish_logits(wlogits_, t);
-    ck(cudaMemcpyAsync(h_wlogits_, wlogits_, (size_t) t * n_vocab_ * sizeof(float), cudaMemcpyDeviceToHost, cs(st_)),
-       "logits");
+    if (!gpu_sample_enabled_)
+        ck(cudaMemcpyAsync(h_wlogits_, wlogits_, (size_t) t * n_vocab_ * sizeof(float), cudaMemcpyDeviceToHost,
+                           cs(st_)), "logits");
     ck(cudaStreamSynchronize(cs(st_)), "window");
+    window_logits_rows_ = t;
+    if (gpu_sample_enabled_)
+        std::fill_n(window_logits_host_ready_.begin(), t, 0);
+    else logits_host_rows_ += t;
     if (timed && !recorded_ && !freeze_experts_) took_way(t, ms_since(t0));
     recorded_ = recorded_ || recorded;
     win_ = t;
