@@ -259,3 +259,5 @@ CMakeCache.txt
 CMakeFiles/
 
 !/tests/hip-vmm-policy.cpp
+
+!/tests/gptoss-mxfp4-down.cu

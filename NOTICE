@@ -253,3 +253,12 @@ a36be1db2973b3e110fa2c7582c6393e2971d107 and
 0f1390bd11119ae2875913efb4275842d36e142f (MIT; Copyright (c) 2026
 Niko1221 and the Strata contributors). TinyStrata uses per-row publication,
 retains event-based CPU handoff and limits this path to small hybrid batches.
+
+The GPT-OSS MXFP4 cached-Expert down kernel adapts the staged Q8_1
+activation layout and four-rows-per-warp down layout from jesdga95/basalt commit
+30ad59a67a9447449f0c2afa5251e356fb07837b, src/models/deepseek41/dspark_kernels.cu
+(MIT; Copyright (c) 2026 Jesús Gulfo). Its E2M1 byte lookup follows ggml
+(MIT; Copyright (c) 2023-2026 The ggml authors). The source includes the MIT
+permission notice. TinyStrata retains the stored MXFP4/Q8_1 codes and scales,
+uses absolute addressing for 1530-byte rows, and preserves its original scale
+conversion and multiplication association. No donor activation or drafter is used.

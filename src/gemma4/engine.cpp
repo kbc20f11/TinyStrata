@@ -14,6 +14,7 @@
 #include "strata/gemma4/kernels.hpp"
 #include "strata/gemma4/matvec.hpp"
 #include "strata/gemma4/sampling.hpp"
+#include "strata/gemma4/mxfp4_down.hpp"
 #if defined(STRATA_USE_HIP) || defined(__HIPCC__)
 #include "strata/kernels/cpu/pool.hpp"
 #endif
@@ -1729,6 +1730,14 @@ void Engine::load(const Options& o) {
     }
     // A split keeps the existing host path. Its output lives on another engine/card.
     gpu_sample_enabled_ = gpu_sample_requested_ && oai_ && !split_;
+    int down_mode = -1; // auto: verified gfx1200 only; explicit 0/1 override
+    if (const char* value = std::getenv("TINYSTRATA_GPTOSS_MXFP4_DOWN")) {
+        if (oai_ && std::strcmp(value, "0") != 0 && std::strcmp(value, "1") != 0)
+            throw std::invalid_argument("TINYSTRATA_GPTOSS_MXFP4_DOWN must be 0 or 1");
+        if (std::strcmp(value, "0") == 0) down_mode = 0;
+        else if (std::strcmp(value, "1") == 0) down_mode = 1;
+    }
+    oai_down_requested_ = down_mode == 1;
     if (block_ != dg_.get()) dg_.reset();
     hi_ = end_ < 0 ? n_layer_ : end_;
 
@@ -1767,6 +1776,17 @@ void Engine::load(const Options& o) {
     // allocation each (kv_alloc()) and the expert cache still gives VRAM to other programs and takes it back
     // (mind_vram()): refilled in one allocation instead, it only ever got smaller.
     ck(cudaGetDevice(&device_), "cudaGetDevice");
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
+    if (oai_ && down_mode != 0 && !split_) {
+        cudaDeviceProp properties{};
+        ck(cudaGetDeviceProperties(&properties, device_), "MXFP4 down device");
+        const bool verified = std::strncmp(properties.gcnArchName, "gfx1200", 7) == 0;
+        const bool community = std::strncmp(properties.gcnArchName, "gfx1201", 7) == 0;
+        oai_down_requested_ = down_mode == 1 || verified;
+        // gfx1201 is an explicit, unmeasured opt-in; other chips/CUDA retain the generic path.
+        oai_down_enabled_ = oai_down_requested_ && (verified || (down_mode == 1 && community));
+    }
+#endif
     CUdevice dev = 0;
     int vmm = 0;
     if (cuDeviceGet(&dev, device_) == CUDA_SUCCESS &&
@@ -2428,10 +2448,19 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
                 } else if (gelu_) geglu_rows(g_, h_, n_ff_exp_, m, st_);
                 else swiglu_clamp_rows(g_, h_, n_ff_exp_, m, limit, st_);
                 kernels::gemma_native_quantize_q8_1(h_, q8_, n_ff_exp_, m, st_);
-                if (!(m > 1 && kernels::gemma_native_mmvq_slots((int) L.d_type, down, m, n_ff_exp_, n_embd_, st_)))
-                    for (int j = 0; j < m; ++j)
-                        kernels::gemma_native_mmvq((int) L.d_type, down.w[j], down.x[j], down.y[j], n_ff_exp_, n_embd_, 1,
-                                             st_);
+                bool down_done = oai_down_enabled_ && m > 1 &&
+                    kernels::mxfp4_down::slots((int) L.d_type, down, m, n_ff_exp_, n_embd_, st_);
+                if (down_done) oai_down_seen_.fetch_or(2, std::memory_order_relaxed);
+                if (!down_done)
+                    down_done = m > 1 && kernels::gemma_native_mmvq_slots((int) L.d_type, down, m, n_ff_exp_, n_embd_, st_);
+                if (!down_done)
+                    for (int j = 0; j < m; ++j) {
+                        const bool dot = oai_down_enabled_ && kernels::mxfp4_down::direct((int) L.d_type,
+                            down.w[j], down.x[j], down.y[j], n_ff_exp_, n_embd_, 1, st_);
+                        if (dot) oai_down_seen_.fetch_or(1, std::memory_order_relaxed);
+                        else kernels::gemma_native_mmvq((int) L.d_type, down.w[j], down.x[j], down.y[j], n_ff_exp_, n_embd_, 1,
+                                                      st_);
+                    }
                 if (oai_ && !(oai_fuse_ & 2))   // each expert's own bias; the rows are not back to back
                     for (int j = 0; j < m; ++j) {
                         ExpertBias eb{};
@@ -2517,7 +2546,9 @@ bool Engine::moe_card(Layer& L, int il, int n) {
     kernels::gemma_native_quantize_q8_1(h_, q8_, n_ff_exp_ * rr, 1, st_);   // the rows back to back, as one vector
     const kernels::MmvqIds down{table, d_ids_, 2 * L.gu_bytes, q8_, kernels::gemma_native_q8_1_bytes(n_ff_exp_), 1, d_,
                                 (size_t) n_embd_};
-    kernels::gemma_native_mmvq_ids((int) L.d_type, down, rr, n_ff_exp_, n_embd_, st_);
+    if (oai_down_enabled_ && kernels::mxfp4_down::ids((int) L.d_type, down, rr, n_ff_exp_, n_embd_, st_))
+        oai_down_seen_.fetch_or(4, std::memory_order_relaxed);
+    else kernels::gemma_native_mmvq_ids((int) L.d_type, down, rr, n_ff_exp_, n_embd_, st_);
     if (oai_ && (oai_fuse_ & 2)) {
         moe_sum_bias(d_, d_wts_, d_ids_, L.b_down, fo_, n_embd_, n_used_, n, st_);
     } else {

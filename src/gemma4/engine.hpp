@@ -216,6 +216,10 @@ public:
     bool device_sampling_enabled() const { return gpu_sample_enabled_; }
     const char* device_sampling_reason() const;
     uint64_t logits_host_rows() const { return next_ ? next_->logits_host_rows() : logits_host_rows_; }
+    bool mxfp4_down_requested() const { return oai_down_requested_; }
+    bool mxfp4_down_enabled() const { return oai_down_enabled_; }
+    // Persistent path evidence, including graph capture; not per-token replay counters.
+    uint32_t mxfp4_down_seen() const { return oai_down_seen_.load(std::memory_order_relaxed); }
     /// Feed n tokens of a prompt, none of them a picture's row, as eval() without logits would in calls of
     /// max_rows(): the same tokens a call.  With experts outside the cache it is faster than those calls, the
     /// more the more of them n is; under stage_ahead tokens it makes those calls.  The result is the calls' own
@@ -694,6 +698,8 @@ protected:
     // only the row they use; the device sampler never needs the vocabulary copied to the host.
     bool gpu_sample_requested_ = false, gpu_sample_enabled_ = false;
     bool gpu_sample_allocation_failed_ = false;
+    bool oai_down_requested_ = false, oai_down_enabled_ = false;
+    std::atomic<uint32_t> oai_down_seen_{0};  // 1=direct, 2=host slots, 4=device IDs
     bool latest_logits_valid_ = false;
     mutable bool latest_logits_host_ready_ = false;
     int window_logits_rows_ = 0;

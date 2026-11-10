@@ -50,6 +50,8 @@ Eligible single-GPU GPT-OSS requests sample the full vocabulary on GPU by defaul
 
 HIP enables eligible long-context full attention beyond 8192 keys by default, retaining FP32 queries, all KV rows and learned sinks. CUDA defaults off; `TINYSTRATA_GPTOSS_SINK_ATTN=1` explicitly opts in. `TINYSTRATA_GPTOSS_SINK_ATTN=0` selects the old path for diagnosis. [Measurements, numerical differences and validation scope](benchmark/results/gptoss-sink-attention-20261110.md).
 
+On single-GPU HIP gfx1200, cached GPT-OSS MXFP4 Expert down projections reuse staged activations by default, preserving existing weight and activation codes. `TINYSTRATA_GPTOSS_MXFP4_DOWN=0` selects the old kernel for diagnosis. [Measurements, numerical differences and scope](benchmark/results/gptoss-mxfp4-down-20261110.md).
+
 | Feature | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) | [Tiel Coder](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP) | [gpt-oss](https://huggingface.co/openai/gpt-oss-20b) |
 | --- | --- | --- | --- | --- | --- | --- |
 | Maximum context | 256K | 256K | 128K | 256K (extension) | 256K | 128K |

@@ -48,6 +48,8 @@ Las solicitudes GPT-OSS compatibles con una sola GPU muestrean todo el vocabular
 
 HIP activa por defecto la atención completa compatible para contextos con más de 8192 claves, conservando consultas FP32, todas las filas KV y los sumideros aprendidos. En CUDA está desactivada por defecto; `TINYSTRATA_GPTOSS_SINK_ATTN=1` la activa explícitamente. `TINYSTRATA_GPTOSS_SINK_ATTN=0` selecciona la ruta anterior para diagnóstico. [Mediciones, diferencias numéricas y alcance de validación](benchmark/results/gptoss-sink-attention-20261110.md).
 
+En una sola GPU HIP gfx1200, las proyecciones down MXFP4 de Experts GPT-OSS en caché reutilizan activaciones en memoria compartida por defecto, conservando los códigos existentes de pesos y activaciones. `TINYSTRATA_GPTOSS_MXFP4_DOWN=0` selecciona el kernel anterior para diagnóstico. [Mediciones, diferencias numéricas y alcance](benchmark/results/gptoss-mxfp4-down-20261110.md).
+
 | Función | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) | [gpt-oss](https://huggingface.co/openai/gpt-oss-20b) |
 | --- | --- | --- | --- | --- | --- |
 | Contexto máximo | 256K | 256K | 128K | 256K (extensión) | 128K |

@@ -48,6 +48,8 @@ Qwen、Gemma 和 LFM 引擎均支持根据空闲显存自动调整的专家缓�
 
 HIP 默认启用超过 8192 键的受支持完整注意力分块路径，保留 FP32 query、全部 KV 行和学习得到的 sink。CUDA 默认关闭，可用 `TINYSTRATA_GPTOSS_SINK_ATTN=1` 显式启用；诊断时可用 `TINYSTRATA_GPTOSS_SINK_ATTN=0` 切回原有路径。[实测、数值差异与验证范围](benchmark/results/gptoss-sink-attention-20261110.md)。
 
+在单 GPU HIP gfx1200 上，GPU 缓存中的 GPT-OSS MXFP4 Expert down 投影默认复用共享内存中的激活值，保留原有权重和激活编码。诊断时可用 `TINYSTRATA_GPTOSS_MXFP4_DOWN=0` 切回原有内核。[实测、数值差异与验证范围](benchmark/results/gptoss-mxfp4-down-20261110.md)。
+
 | 功能 | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) | [gpt-oss](https://huggingface.co/openai/gpt-oss-20b) |
 | --- | --- | --- | --- | --- | --- |
 | 最大上下文 | 256K | 256K | 128K | 256K（扩展） | 128K |
