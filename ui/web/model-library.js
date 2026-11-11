@@ -14,7 +14,7 @@
     ["tiel-coder-35b-a3b", "Tiel Coder 35B-A3B", "peculiar-ragdoll", "tiel",
       "Specialized in programming questions", "プログラミングの質問に特化"],
     ["gpt-oss-20b", "gpt-oss 20B", "OpenAI", "gptoss",
-      "Thinks step by step before answering, strong at reasoning", "答える前にじっくり考える、推論に強い"],
+      "Older, but relatively fast and stable", "古いが比較的高速で安定して動作する"],
   ];
   const iconSources = {qwen: "web/model-logos/qwen.png", gemma: "web/model-logos/gemma.svg",
     lfm: "web/model-logos/liquid.png", clover: "web/model-logos/diffuspace.jpg", tiel: "web/model-icons.svg",

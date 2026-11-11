@@ -665,7 +665,7 @@
   "models.description.lfm": "O mais rápido e ágil, sem suporte a imagens",
   "models.description.clover": "Equilíbrio entre conversa e raciocínio, o mais lento",
   "models.description.tiel": "Especializado em dúvidas de programação",
-  "models.description.gptoss": "Raciocina passo a passo antes de responder, forte em lógica",
+  "models.description.gptoss": "Mais antigo, mas relativamente rápido e estável",
   "models.deleteActive": "Mude para outro modelo para excluir.",
   "models.deleteBusy": "Aguarde a conclusão da operação atual.",
   "models.deleteDownloading": "Aguarde a conclusão do download.",

@@ -659,7 +659,7 @@
   "models.description.lfm": "最も軽快で高速に動作する、画像は非対応",
   "models.description.clover": "会話能力と知能のバランスがよい、最も低速で動作",
   "models.description.tiel": "プログラミングの質問に特化",
-  "models.description.gptoss": "答える前にじっくり考える、推論に強い",
+  "models.description.gptoss": "古いが比較的高速で安定して動作する",
   "models.deleteActive": "別のモデルへ切り替えてから削除できます。",
   "models.deleteBusy": "実行中の処理が完了するまでお待ちください。",
   "models.deleteDownloading": "ダウンロードの完了後に削除できます。",
