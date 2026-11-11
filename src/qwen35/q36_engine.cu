@@ -63,6 +63,10 @@
 #include <cublas_v2.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
+#include "strata/qwen35/hybrid_buffer_policy.hpp"
+#if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
+#include "strata/qwen35/hybrid_buffer_dma.cuh"
+#endif
 #if defined(_WIN32) && !defined(STRATA_USE_HIP) && !defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
 #include <windows.h>
 #endif
@@ -94,6 +98,7 @@
 #include <mutex>
 #include <new>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -1449,6 +1454,7 @@ struct Engine {
     std::vector<strata::kernels::cpu::ExpertJobMulti> jobs;
 #endif
     float *h_h = nullptr, *cpu_out = nullptr, *ecpu = nullptr;
+    int cpu_output_rows = 0;
     int32_t *h_ids = nullptr, *h_miss = nullptr, *d_miss = nullptr, *h_cnt = nullptr;
     float* cpu_out_mapped = nullptr;
     int32_t* h_miss_mapped = nullptr;
@@ -3055,6 +3061,10 @@ struct Engine {
     /// rows uploaded and merged into the entries' rows.
     void moe_hybrid_cpu(size_t li, int T, bool graph_service = false) {
 #if defined(STRATA_Q36_CPU_POOL)
+#if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
+        if (!graph_service && (T <= 0 || T > cpu_output_rows))
+            throw std::out_of_range("hybrid CPU rows exceed the allocated result buffers");
+#endif
         if (!graph_service) {
             cpu_compact_pending = false;
             mapped_cpu_output_pending = false;
@@ -3153,8 +3163,13 @@ struct Engine {
             // existing route event is completed on this same stream, therefore
             // every earlier combine reader has finished. No GPU spin is used.
         } else {
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
             CK(cudaMemcpyAsync(ecpu, cpu_out, (size_t) rows * N * 4, cudaMemcpyHostToDevice, st));
             CK(cudaMemcpyAsync(d_miss, h_miss, (size_t) n_ent * 4, cudaMemcpyHostToDevice, st));
+#else
+            CK(strata::qwen35::hybrid_buffer_policy::upload(ecpu, d_miss, cpu_out, h_miss,
+                cpu_output_rows, T, (size_t) rows, (size_t) Kp, (size_t) N, st));
+#endif
         }
         if (compact) {
             cpu_compact_pending = true;
@@ -4680,12 +4695,25 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
             while (S > 0 && mapped_for(S) > slot_bytes) --S;
         }
     };
+    E.cpu_output_rows = E.tmax;
+    const auto cpu_result_layout = [&]() {
+        strata::qwen35::hybrid_buffer_policy::Layout bytes;
+        if (!strata::qwen35::hybrid_buffer_policy::layout((size_t) E.cpu_output_rows,
+                (size_t) m.top_k, (size_t) g.n_embd, bytes))
+            throw std::overflow_error("hybrid CPU result buffer size overflow");
+        return bytes;
+    };
     const auto hybrid_need = [&]() {
-        const size_t Tn = (size_t) E.tmax, Nn = (size_t) g.n_embd, Kn = (size_t) m.top_k;
-        size_t need = staging + Tn * Kn * Nn * 4 + Tn * Kn * 4;
+        const size_t cpu_bytes = cpu_result_layout().total_bytes;
+        if (cpu_bytes > std::numeric_limits<size_t>::max() - staging)
+            throw std::overflow_error("hybrid CPU result and staging size overflow");
+        size_t need = staging + cpu_bytes;
         for (Layer* L : all) {
-            if (mtp_only && L != &m.mtp) need += L->stride * (size_t) ne + kMmqTail;
-            else need += slot_allocation(L, S);
+            const size_t layer_bytes = mtp_only && L != &m.mtp
+                ? L->stride * (size_t) ne + kMmqTail : slot_allocation(L, S);
+            if (layer_bytes > std::numeric_limits<size_t>::max() - need)
+                throw std::overflow_error("hybrid Expert buffer size overflow");
+            need += layer_bytes;
         }
         return need;
     };
@@ -4700,6 +4728,19 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
         std::fprintf(stderr, "tinystrata: hybrid staging capacity check selected one buffer\n");
     }
     E.stage_buffers_preferred = E.stage_buffers;
+    // A permanent MMQ ring handles every larger prompt batch. CPU work is
+    // bounded by hybrid_t, plus Clover's separately bounded verify window.
+    // Only rescue an otherwise failing allocation; fitting configurations keep
+    // their original scratch sizes and Expert placement unchanged.
+#if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
+    E.cpu_output_rows = strata::qwen35::hybrid_buffer_policy::capacity_rows(
+        hybrid_need(), fr, E.tmax, E.hybrid_t, E.verify_capacity,
+        E.main_hybrid, E.use_mmq, E.stage_loan);
+    if (E.cpu_output_rows != E.tmax)
+        std::fprintf(stderr, "tinystrata: bounded hybrid CPU result scratch: %d -> %d rows, %zu MiB; "
+                             "prompt chunk, host routing arrays and Expert slots unchanged\n",
+                     E.tmax, E.cpu_output_rows, cpu_result_layout().total_bytes >> 20);
+#endif
     {   // what the hybrid mode allocates next (staging, the CPU part's outputs, the slots) against the VRAM the
         // sessions and the context left: said with the numbers instead of a cudaMalloc failure (8 slots on a 12 GB card)
         const size_t need = hybrid_need();
@@ -4863,8 +4904,14 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     if (!E.h_ids) CK(cudaHostAlloc((void**) &E.h_ids, T * Kp * 4, cudaHostAllocDefault));
     if (!E.h_miss) CK(cudaHostAlloc((void**) &E.h_miss, T * Kp * 4, cudaHostAllocDefault));
     CK(cudaHostAlloc((void**) &E.h_cnt, all.size() * (size_t) ne * 4, cudaHostAllocDefault));
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
     CK(cudaMalloc(&E.ecpu, T * Kp * N * 4));
     CK(cudaMalloc(&E.d_miss, T * Kp * 4));
+#else
+    const auto cpu_result_bytes = cpu_result_layout();
+    CK(cudaMalloc(&E.ecpu, cpu_result_bytes.values_bytes));
+    CK(cudaMalloc(&E.d_miss, cpu_result_bytes.map_bytes));
+#endif
     E.acts = (uint8_t*) std::malloc(T * C::kNativeActBytes + 64);
     if (!E.acts) { err = "no host memory for expert activations"; return false; }
     CK(cudaEventCreateWithFlags(&E.ev_route, cudaEventDisableTiming));

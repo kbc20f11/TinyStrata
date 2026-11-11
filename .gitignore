@@ -291,3 +291,5 @@ CMakeFiles/
 !/tests/gptoss-mmq-q8.cu
 !/benchmark/results/cuda-mxfp4-build-20261111.json
 !/benchmark/results/unicode-paths-20261111.json
+!/tests/q36-hybrid-buffer-policy.cpp
+!/tests/q36-hybrid-buffer-dma.cu

@@ -277,6 +277,9 @@ install(FILES third_party/licenses/FlashInfer-BSD-3-Clause.txt DESTINATION share
 add_executable(q36_chunk_policy_test EXCLUDE_FROM_ALL tests/q36-chunk-policy.cpp)
 target_include_directories(q36_chunk_policy_test PRIVATE include)
 
+add_executable(q36_hybrid_buffer_policy_test EXCLUDE_FROM_ALL tests/q36-hybrid-buffer-policy.cpp)
+target_include_directories(q36_hybrid_buffer_policy_test PRIVATE include)
+
 add_executable(q36_suffix_lookup_test EXCLUDE_FROM_ALL tests/q36-suffix-lookup.cpp)
 target_include_directories(q36_suffix_lookup_test PRIVATE include)
 
@@ -309,11 +312,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_executable(q36_cpu_combine_test EXCLUDE_FROM_ALL tests/q36-cpu-combine.cu)
   target_include_directories(q36_cpu_combine_test PRIVATE include src/qwen35)
   target_link_libraries(q36_cpu_combine_test PRIVATE ${_strata_gpu_runtime_target})
+  add_executable(q36_hybrid_buffer_dma_test EXCLUDE_FROM_ALL tests/q36-hybrid-buffer-dma.cu)
+  target_include_directories(q36_hybrid_buffer_dma_test PRIVATE include)
+  target_link_libraries(q36_hybrid_buffer_dma_test PRIVATE ${_strata_gpu_runtime_target})
   add_executable(clover_attention_gpu_test EXCLUDE_FROM_ALL tests/clover-attention-gpu.cu)
   target_include_directories(clover_attention_gpu_test PRIVATE include)
   target_link_libraries(clover_attention_gpu_test PRIVATE ${_strata_gpu_runtime_target})
   if(STRATA_ENABLE_HIP)
-    set_source_files_properties(tests/q36-q8-pair.cu tests/q36-cpu-combine.cu tests/clover-attention-gpu.cu
+    set_source_files_properties(tests/q36-q8-pair.cu tests/q36-cpu-combine.cu tests/q36-hybrid-buffer-dma.cu tests/clover-attention-gpu.cu
       tests/native-q5-offset.cu tests/native-iq-packed-bytes.cu tests/native-kq-grouped-parity.cu PROPERTIES LANGUAGE HIP)
   else()
     foreach(target native_q5_offset_test native_iq_packed_test native_kq_grouped_test)
