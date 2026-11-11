@@ -26,6 +26,23 @@ int main() {
     check(H::capacity_rows(388, 387, 2048, 128, 32, true, true, false) == 128, "failure rescue");
     check(H::capacity_rows(388, 387, 2048, 8, 32, true, true, false) == 32, "verify bound");
     check(H::capacity_rows(388, 387, 16, 128, 32, true, true, false) == 16, "tmax cap");
+    const bool unbacked = H::protect_unbacked_kv_growth(0, true, 16384, 32768);
+    check(unbacked, "zero-slot lazy KV needs growth headroom");
+    check(H::capacity_rows(443, 545, 2048, 128, 32, true, true, false, unbacked) == 128,
+          "fitting startup retains otherwise unbacked future KV headroom");
+    check(!H::protect_unbacked_kv_growth(1, true, 16384, 32768), "Expert backing is reclaimable");
+    check(!H::protect_unbacked_kv_growth(0, false, 16384, 32768), "whole KV unchanged");
+    check(!H::protect_unbacked_kv_growth(0, true, 32768, 32768), "full KV already committed");
+    check(!H::protect_unbacked_kv_growth(-1, true, 16384, 32768), "invalid Expert slot count not treated as zero");
+    check(!H::protect_unbacked_kv_growth(0, true, -1, 32768), "invalid KV count");
+    check(H::capacity_rows(443, 545, 2048, 128, 32, true, true, false,
+          H::protect_unbacked_kv_growth(1533, true, 16384, 32768)) == 2048, "fitting12GB cache-backed path unchanged");
+    check(H::capacity_rows(443, 545, 2048, 128, 32, true, true, false,
+          H::protect_unbacked_kv_growth(0, true, 32768, 32768)) == 2048, "fitting fully committed path unchanged");
+    for (int unavailable = 0; unavailable < 3; ++unavailable)
+        check(H::capacity_rows(443, 545, 2048, 128, 32,
+            unavailable != 0, unavailable != 1, unavailable == 2, unbacked) == 2048,
+            "future-KV protection cannot shrink unbounded CPU fallback routes");
     H::Layout invalid;
     const auto maximum = std::numeric_limits<size_t>::max();
     check(!H::layout(0, 8, 2048, invalid), "zero rows");

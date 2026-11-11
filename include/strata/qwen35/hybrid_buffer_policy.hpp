@@ -33,10 +33,19 @@ inline bool layout(size_t rows, size_t top_k, size_t width, Layout& result) {
     return true;
 }
 
+// With zero Expert slots, lazy KV cannot borrow any Expert backing later.
+// Preserve its growth headroom even when the full scratch happens to fit now.
+inline bool protect_unbacked_kv_growth(int expert_slots, bool kv_grow,
+                                       int64_t committed_rows, int64_t context_rows) {
+    return expert_slots == 0 && kv_grow && committed_rows >= 0 &&
+           context_rows > 0 && committed_rows < context_rows;
+}
+
 inline int capacity_rows(size_t full_need, size_t free_bytes, int tmax,
                          int hybrid_rows, int verify_rows,
-                         bool main_hybrid, bool mmq, bool stage_loan) {
-    if (full_need <= free_bytes || !main_hybrid || !mmq || stage_loan ||
+                         bool main_hybrid, bool mmq, bool stage_loan,
+                         bool protect_unbacked_growth = false) {
+    if ((full_need <= free_bytes && !protect_unbacked_growth) || !main_hybrid || !mmq || stage_loan ||
         tmax <= 0 || hybrid_rows <= 0 || verify_rows <= 0)
         return tmax;
     return std::min(tmax, std::max(hybrid_rows, verify_rows));

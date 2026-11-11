@@ -4730,16 +4730,20 @@ bool place_experts(Model& m, Engine& E, double vram_gib, int threads, int hybrid
     E.stage_buffers_preferred = E.stage_buffers;
     // A permanent MMQ ring handles every larger prompt batch. CPU work is
     // bounded by hybrid_t, plus Clover's separately bounded verify window.
-    // Only rescue an otherwise failing allocation; fitting configurations keep
-    // their original scratch sizes and Expert placement unchanged.
+    // Rescue a failing allocation, or retain future lazy-KV headroom when no
+    // Expert slots can return backing. Other fitting configurations keep their
+    // original scratch sizes and Expert placement unchanged.
 #if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
+    const bool protect_unbacked_kv = strata::qwen35::hybrid_buffer_policy::protect_unbacked_kv_growth(
+        S, E.kv_grow, E.kv_committed_rows, E.ctx);
     E.cpu_output_rows = strata::qwen35::hybrid_buffer_policy::capacity_rows(
         hybrid_need(), fr, E.tmax, E.hybrid_t, E.verify_capacity,
-        E.main_hybrid, E.use_mmq, E.stage_loan);
+        E.main_hybrid, E.use_mmq, E.stage_loan, protect_unbacked_kv);
     if (E.cpu_output_rows != E.tmax)
         std::fprintf(stderr, "tinystrata: bounded hybrid CPU result scratch: %d -> %d rows, %zu MiB; "
-                             "prompt chunk, host routing arrays and Expert slots unchanged\n",
-                     E.tmax, E.cpu_output_rows, cpu_result_layout().total_bytes >> 20);
+                             "prompt chunk, host routing arrays and Expert slots unchanged%s\n",
+                     E.tmax, E.cpu_output_rows, cpu_result_layout().total_bytes >> 20,
+                     protect_unbacked_kv ? "; future KV growth has no Expert backing to reclaim" : "");
 #endif
     {   // what the hybrid mode allocates next (staging, the CPU part's outputs, the slots) against the VRAM the
         // sessions and the context left: said with the numbers instead of a cudaMalloc failure (8 slots on a 12 GB card)
