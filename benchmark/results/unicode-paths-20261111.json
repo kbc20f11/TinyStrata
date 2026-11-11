@@ -1,0 +1,281 @@
+{
+  "schema": 1,
+  "complete": true,
+  "date": "2026-11-11",
+  "source_base": "f1ae4c68f5f1030e200add4a4c0d232324f173d1",
+  "platform": "Windows CP932 / RX 9060 XT / gfx1200 / frozen HIP 7.17.26391 / verified 64 KiB VMM",
+  "compiled_native_closure_matches_final": true,
+  "whole_tree_unchanged_during_build": false,
+  "whole_tree_difference_explanation": "Python tests/packaging were added while native build ran; compiled native closure is separately identical. Later CPU/BAT/UI evidence binds final Python/bootstrap.",
+  "native_sha256": {
+    "tinystrata-gemma4.exe": "5e4dd41c9fa6f25fc7bdc2deb086c95aa4e1484c365b352f0a673bc00ee326fd",
+    "tinystrata-lfm2.exe": "d8cb356ba136923c302ce6e89d2d07a19b9de65dd6da86d20535caa3c74cee93",
+    "tinystrata-vision.exe": "f68377ad4f3e178f0b101c6a6d85aae2c4b2d2820760fc760922cfc496fe3348",
+    "tinystrata.exe": "1991cba2c17e6f3ff1302ecdf2191032fd2b0706e53e9ba34c863ab49d6998fb"
+  },
+  "baseline_reproduced": [
+    "Japanese only",
+    "Japanese, spaces, emoji, supplementary character"
+  ],
+  "model_facts": [
+    {
+      "model": "qwen",
+      "pass": true,
+      "long_appendix": true,
+      "format": {
+        "json_object_parses": true,
+        "raw_json_only": false,
+        "markdown_fence_despite_json_only_prompt": true
+      },
+      "generation": {
+        "elapsed_s": 56.5045997000052,
+        "first_output_s_includes_reasoning": 10.943276800004242,
+        "prompt_tokens": 5143,
+        "generated_tokens_including_reasoning": 4886,
+        "output_cap": 8192,
+        "finish": "stop",
+        "reasoning_recoveries": 0,
+        "native_reasoning_repeat_coverage": 0.0
+      },
+      "native_sha256": "1991cba2c17e6f3ff1302ecdf2191032fd2b0706e53e9ba34c863ab49d6998fb"
+    },
+    {
+      "model": "gemma",
+      "pass": true,
+      "long_appendix": true,
+      "format": {
+        "json_object_parses": true,
+        "raw_json_only": false,
+        "markdown_fence_despite_json_only_prompt": true
+      },
+      "generation": {
+        "elapsed_s": 47.66137570000137,
+        "first_output_s_includes_reasoning": 2.675295699998969,
+        "prompt_tokens": 5027,
+        "generated_tokens_including_reasoning": 3495,
+        "output_cap": 8192,
+        "finish": "stop",
+        "reasoning_recoveries": 0,
+        "native_reasoning_repeat_coverage": 0.0
+      },
+      "native_sha256": "5e4dd41c9fa6f25fc7bdc2deb086c95aa4e1484c365b352f0a673bc00ee326fd"
+    },
+    {
+      "model": "lfm",
+      "pass": true,
+      "long_appendix": false,
+      "format": {
+        "json_object_parses": true,
+        "raw_json_only": true,
+        "markdown_fence_despite_json_only_prompt": false
+      },
+      "generation": {
+        "elapsed_s": 74.05597729999863,
+        "first_output_s_includes_reasoning": 1.1116889000040828,
+        "prompt_tokens": 1093,
+        "generated_tokens_including_reasoning": 6023,
+        "output_cap": 8192,
+        "finish": "stop",
+        "reasoning_recoveries": 0,
+        "native_reasoning_repeat_coverage": 0.0
+      },
+      "native_sha256": "d8cb356ba136923c302ce6e89d2d07a19b9de65dd6da86d20535caa3c74cee93"
+    },
+    {
+      "model": "clover",
+      "pass": true,
+      "long_appendix": false,
+      "format": {
+        "json_object_parses": true,
+        "raw_json_only": true,
+        "markdown_fence_despite_json_only_prompt": false
+      },
+      "generation": {
+        "elapsed_s": 66.58208529999683,
+        "first_output_s_includes_reasoning": 2.747321099996043,
+        "prompt_tokens": 1102,
+        "generated_tokens_including_reasoning": 3621,
+        "output_cap": 8192,
+        "finish": "stop",
+        "reasoning_recoveries": 0,
+        "native_reasoning_repeat_coverage": 0.0
+      },
+      "native_sha256": "1991cba2c17e6f3ff1302ecdf2191032fd2b0706e53e9ba34c863ab49d6998fb"
+    },
+    {
+      "model": "tiel",
+      "pass": true,
+      "long_appendix": false,
+      "format": {
+        "json_object_parses": true,
+        "raw_json_only": false,
+        "markdown_fence_despite_json_only_prompt": true
+      },
+      "generation": {
+        "elapsed_s": 18.94343320000189,
+        "first_output_s_includes_reasoning": 3.1152316000006977,
+        "prompt_tokens": 1281,
+        "generated_tokens_including_reasoning": 1508,
+        "output_cap": 8192,
+        "finish": "stop",
+        "reasoning_recoveries": 0,
+        "native_reasoning_repeat_coverage": 0.0
+      },
+      "native_sha256": "1991cba2c17e6f3ff1302ecdf2191032fd2b0706e53e9ba34c863ab49d6998fb"
+    },
+    {
+      "model": "gptoss",
+      "pass": true,
+      "long_appendix": false,
+      "format": {
+        "json_object_parses": true,
+        "raw_json_only": true,
+        "markdown_fence_despite_json_only_prompt": false
+      },
+      "generation": {
+        "elapsed_s": 36.43007420000504,
+        "first_output_s_includes_reasoning": 1.3386100999996415,
+        "prompt_tokens": 1282,
+        "generated_tokens_including_reasoning": 2121,
+        "output_cap": 8192,
+        "finish": "stop",
+        "reasoning_recoveries": 0,
+        "native_reasoning_repeat_coverage": 0.0
+      },
+      "native_sha256": "5e4dd41c9fa6f25fc7bdc2deb086c95aa4e1484c365b352f0a673bc00ee326fd"
+    }
+  ],
+  "ui": {
+    "content_check": true,
+    "persistence": true,
+    "image": true,
+    "reload": true,
+    "provided_form": "Actual run-ui.bat -> ui/start.ps1 -> Unicode private Python -> UI/API/native",
+    "business_stats": {
+      "cachedTokens": 0,
+      "decodeRate": 75.99623829011928,
+      "elapsedMs": 60682.5,
+      "finalCount": true,
+      "firstTokenMs": 3003.7999999970198,
+      "generated": 4388,
+      "generatedOffset": 0,
+      "inputTokens": 5387,
+      "promptProgress": {
+        "cache": 0,
+        "processed": 5212,
+        "time_ms": 2854,
+        "total": 5387
+      },
+      "promptRate": 1868.1509224580386,
+      "rateSource": "native",
+      "readTokens": 5387,
+      "roundGenerating": true,
+      "roundHasToken": true,
+      "startedAt": 1794402146671,
+      "streamDone": true,
+      "streamGenerated": 4388,
+      "streamLive": true,
+      "streamRound": 0
+    },
+    "image_stats": {
+      "cachedTokens": 5384,
+      "decodeRate": 71.75955721457073,
+      "elapsedMs": 4537,
+      "finalCount": true,
+      "firstTokenMs": 1476.8000000044703,
+      "generated": 223,
+      "generatedOffset": 0,
+      "inputTokens": 6247,
+      "promptRate": 1031.063321385902,
+      "rateSource": "native",
+      "readTokens": 863,
+      "roundGenerating": true,
+      "roundHasToken": true,
+      "startedAt": 1794402239388,
+      "streamDone": true,
+      "streamGenerated": 223,
+      "streamLive": true,
+      "streamRound": 0
+    },
+    "reload_stats": {
+      "cachedTokens": 0,
+      "decodeRate": 65.08903249802408,
+      "elapsedMs": 6189.5,
+      "finalCount": true,
+      "firstTokenMs": 4095.7000000029802,
+      "generated": 140,
+      "generatedOffset": 0,
+      "inputTokens": 6292,
+      "promptProgress": {
+        "cache": 0,
+        "processed": 5714,
+        "time_ms": 2825,
+        "total": 6292
+      },
+      "promptRate": 1825.3024281279918,
+      "rateSource": "native",
+      "readTokens": 6292,
+      "roundGenerating": true,
+      "roundHasToken": true,
+      "startedAt": 1794402343415,
+      "streamDone": true,
+      "streamGenerated": 140,
+      "streamLive": true,
+      "streamRound": 0
+    },
+    "visual_review": {
+      "screenshots": [
+        "ui-business.png",
+        "ui-restored.png"
+      ],
+      "inspected_by_root": true,
+      "horizontal_overflow": false,
+      "notes": "Japanese text, filename badges, syntax-highlighted JSON, controls and restored messages readable; scrollable long code block is intentional"
+    }
+  },
+  "checks": {
+    "cpu": "457 passed, 1 symlink privilege skip",
+    "final_bootstrap": "10 passed after output cleanup",
+    "cuda": "8 compile-only checks; no physical NVIDIA runtime"
+  },
+  "limits": [
+    "No maximum Windows path-length claim",
+    "No physical NVIDIA or POSIX runtime",
+    "No full installer in Unicode directory",
+    "No new OS account",
+    "No native desktop Save dialog",
+    "Full split model not exercised; valid small GGUF fixtures tested",
+    "Optional EAGLE output runtime not exercised",
+    "Opt-in HIP tuning table outside ANSI code page remains a separate fallback-only limitation"
+  ],
+  "raw_root": "TinyStrata-work/unicode-paths-20261111",
+  "evidence_sha256": {
+    "build/build.json": "cba54efa8fad5a1ea4fb65a2dfbe07b883e16a74b2abdce8b5142abf9d7deaaf",
+    "final-cpu-validation.json": "b23585b9babc11669e8d5cc4a72b3541109e3401798511bb38bdb224f94d286a",
+    "cuda-check/build.json": "aa68674d7cb31ba741c30460946e50cb8ef2a707421e39ff5712b040335a37f7",
+    "six-model-content-review.json": "33a70941a020f301cf3cc59c2a49109fc80e751e07cfaed970416175834e9a47",
+    "batch-bootstrap-quiet-supplement.json": "b6037e5b50d7449e46058a5940f241e01d8a316761559e8723ed52be891d8c6a",
+    "ui-e2e-result.json": "39cd6436cebd1d1ce9943f3923919d7a8e6baed6d2e61ed8490010a96e679c1d",
+    "ui-business-dom.json": "29d9372eb158489b6e7c84147efd97716ca143976dba9b62d45dc42fd65a4ee6",
+    "ui-restored-dom.json": "6a6b51cce266ce0dcdeeaefbbb1d16ab22f60960ba472df6ac96eb4b275032a3",
+    "ui-business.png": "d5ff80a5a802592ece6502d22ae8adce4fcd6d637a2aa1f1d01c9814a155f94c",
+    "ui-restored.png": "fa9d642390cadbbaed7f6c2d841b6de7e5daca5a73b0f145a4a5deb345a7168c",
+    "ui-final-sqlite.json": "10d4ab9afb058b1504d3bf5d5642ce7ef224dbae669933cc102fc64f93ccb93a",
+    "manual-review.json": "91c73088937fd1e74e03ceb8acd79da73efad210a20f235ecafd4fd34d5cc060",
+    "runs/baseline-gemma-japanese/result.json": "ca2dfbfa7803720e44357e34d8e3f10386aa57290c7102e669abaa90d3b3f09f",
+    "runs/baseline-gemma-extended/result.json": "7c0618d616a399531f74beca3fb352a95aadfc379fe81c51d90daafc8e3ea8be",
+    "実行 記録🙂/qwen-supported-long-retry/result.json": "5a62005ed70da3838f8db67c70e52128ae5552900df673084eebaeaf64ed1f48",
+    "実行 記録🙂/qwen-supported-long-retry/business-input.json": "53505f4788cf4bf16c1d1f33cf4dd4df97afd2a1bec38b087233fb5f7cdf1ada",
+    "実行 記録🙂/gemma-default-long/result.json": "3e84fbcddbac856bf60dcdf25de6bd6a5474d646e92d060c276f7cda198cd786",
+    "実行 記録🙂/gemma-default-long/business-input.json": "53505f4788cf4bf16c1d1f33cf4dd4df97afd2a1bec38b087233fb5f7cdf1ada",
+    "実行 記録🙂/lfm-default/result.json": "aee40c2ef0a6db3f544b8b630d57f6ececd0f4545b4efb4c630a25dcc6bab3be",
+    "実行 記録🙂/lfm-default/business-input.json": "53592c468f6eb1e4e84bb1aaf2c6ec563be516e9dac2fd8aa60465b443fd28d9",
+    "実行 記録🙂/lfm-persistent-reopen/result.json": "14029bf53bf18c5fe4319c25df6ccba35aa37c6911474af76b2514f496c2da9b",
+    "実行 記録🙂/clover-default/result.json": "1fb96efde98d4f51e2c4666f9cb4b4cbb118563e7c36692acb5b101b86d6c890",
+    "実行 記録🙂/clover-default/business-input.json": "53592c468f6eb1e4e84bb1aaf2c6ec563be516e9dac2fd8aa60465b443fd28d9",
+    "実行 記録🙂/tiel-default/result.json": "a00d08afa713942e90826adbeb581acc27db5e61ea27c67ef04a8a2ce84e1977",
+    "実行 記録🙂/tiel-default/business-input.json": "53592c468f6eb1e4e84bb1aaf2c6ec563be516e9dac2fd8aa60465b443fd28d9",
+    "実行 記録🙂/gptoss-default/result.json": "d5b7fe6b054ea6ac0166826175d1001c15b88ae9a5480950e36c7a8576b220a0",
+    "実行 記録🙂/gptoss-default/business-input.json": "53592c468f6eb1e4e84bb1aaf2c6ec563be516e9dac2fd8aa60465b443fd28d9"
+  }
+}

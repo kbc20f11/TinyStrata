@@ -3,6 +3,7 @@
 // 26e4cb5df7996edfb5ff549a63b82d8581e1e658. See LICENSE and NOTICE.
 // Copyright (c) 2026 Niko1221 and the Strata contributors.
 #include "engine.hpp"
+#include "strata/common/utf8_args.hpp"
 #include "strata/common/conversations.hpp"
 #include "strata/common/context_policy.hpp"
 #include "strata/lfm2/vram.hpp"
@@ -510,6 +511,8 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
 
 int main(int argc, char** argv) {
     try {
+        strata::paths::Utf8Arguments arguments(argc, argv);
+        argc = arguments.argc(); argv = arguments.argv();
         Options opt;
         strata::conversation::Options cache_options;
         cache_options.slots = 2;
@@ -648,7 +651,7 @@ int main(int argc, char** argv) {
         const double pp = elapsed(p0);
         std::ofstream out;
         if (!dump.empty()) {
-            out.open(dump, std::ios::binary);
+            out.open(strata::paths::native_path(dump), std::ios::binary);
             if (!out) throw std::runtime_error("cannot open logits output");
         }
         const auto eos = stop_tokens(*e);

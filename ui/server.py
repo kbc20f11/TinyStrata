@@ -333,6 +333,9 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main():
+    from ui.stdio import configure_utf8_stdio
+
+    configure_utf8_stdio()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=port_number, default=3000)
     parser.add_argument("--api-port", type=port_number, default=18080)

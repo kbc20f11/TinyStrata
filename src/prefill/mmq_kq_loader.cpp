@@ -3,6 +3,7 @@
 // which the engine does before it sizes the expert cache (src/program/generate.cpp).  Without the library, or with an
 // interface of another version, the K-quants keep the FP16 prompt path and the engine says so once.
 #include "strata/prefill/mmq_kq_abi.hpp"
+#include "strata/common/utf8_path.hpp"
 
 #include <cuda_runtime.h>
 
@@ -33,9 +34,11 @@ struct Lib {
 
 std::string own_folder() {
 #if defined(_WIN32)
-    char p[MAX_PATH] = {};
-    const DWORD n = GetModuleFileNameA(nullptr, p, MAX_PATH);
-    std::string s(p, n);
+    std::wstring p(32768, L'\0');
+    const DWORD n = GetModuleFileNameW(nullptr, p.data(), (DWORD) p.size());
+    if (!n || n >= p.size()) return {};
+    p.resize(n);
+    std::string s = strata::paths::wide_to_utf8(p);
     const size_t k = s.find_last_of("\\/");
     return k == std::string::npos ? std::string() : s.substr(0, k + 1);
 #else
@@ -59,7 +62,7 @@ Lib open_lib() {
     Lib L;
     const std::string path = own_folder() + STRATA_KQ_LIB_NAME;
 #if defined(_WIN32)
-    void* h = (void*) LoadLibraryA(path.c_str());
+    void* h = (void*) LoadLibraryW(strata::paths::utf8_to_wide(path).c_str());
 #else
     void* h = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
 #endif

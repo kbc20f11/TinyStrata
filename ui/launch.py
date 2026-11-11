@@ -28,7 +28,7 @@ FAMILY_ALIASES = {"tiel-coder": "tiel", "gptoss": "gpt-oss"}
 def backend_revision(source):
     """Identify Python code loaded by a UI, independently of changing web assets."""
     digest = hashlib.sha256()
-    for name in ("server.py", "launch.py", "chat_history.py", "web_search.py", "tool_settings.py", "sandbox_runtime.py"):
+    for name in ("server.py", "launch.py", "stdio.py", "chat_history.py", "web_search.py", "tool_settings.py", "sandbox_runtime.py"):
         digest.update(name.encode("ascii") + b"\0")
         digest.update((Path(source) / "ui" / name).read_bytes())
     return digest.hexdigest()
@@ -450,6 +450,13 @@ class Launcher:
 
 
 def main():
+    # Also works when this file is launched directly from a Unicode install.
+    root = str(Path(__file__).resolve().parents[1])
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from ui.stdio import configure_utf8_stdio
+
+    configure_utf8_stdio()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-dir", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--work-dir", type=Path, help="state directory (default: source directory's sibling ending in -work)")

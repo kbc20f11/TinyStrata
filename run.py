@@ -251,6 +251,9 @@ def prepare(a) -> tuple[dict, Path]:
 
 def main() -> int:
     from serve import config
+    from serve.stdio import configure_utf8_stdio
+
+    configure_utf8_stdio()
 
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", type=Path, help="existing supported GGUF (the local header selects its model family)")

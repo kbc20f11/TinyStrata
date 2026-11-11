@@ -7517,6 +7517,9 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
 
 
 def main() -> int:
+    from serve.stdio import configure_utf8_stdio
+
+    configure_utf8_stdio()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--engine", choices=["mock", "tinystrata", "strata"], default="mock")
     ap.add_argument("--config", help="engine config (JSON: exe, args, cwd, tokenizer, model_name)")

@@ -4,6 +4,7 @@
 // src/poly/engine.cpp - see the header.  What every architecture shares: the files, the weights' way to VRAM, the
 // routed experts (the cache, the CPU, a prompt batch), the sequence's state, and the calls that feed tokens.
 #include "engine.hpp"
+#include "strata/common/utf8_path.hpp"
 #include "strata/gemma4/image_text_prefill.hpp"
 
 #include "gemma4.hpp"
@@ -211,7 +212,7 @@ void map_pages(const std::vector<std::pair<const uint8_t*, size_t>>& spans, cons
 
 // Lines of "layer expert count".  A missing file is not an error: the first run writes it.
 void read_profile(const std::string& path, int n_layer, int n_expert, std::vector<int64_t>& out) {
-    FILE* f = std::fopen(path.c_str(), "r");
+    FILE* f = strata::paths::fopen(path.c_str(), "r");
     if (!f) return;
     out.assign((size_t) n_layer * n_expert, 0);
     int il = 0, e = 0;
@@ -2200,7 +2201,7 @@ void Engine::save_profile() const {
         if (all.size() < e->use_.size()) all.resize(e->use_.size(), 0);
         for (size_t i = 0; i < e->use_.size(); ++i) all[i] += e->use_[i];
     }
-    FILE* f = std::fopen(tmp.c_str(), "w");
+    FILE* f = strata::paths::fopen(tmp.c_str(), "w");
     if (!f) throw std::runtime_error("cannot write " + tmp);
     for (size_t i = 0; i < all.size(); ++i) {
         const int64_t n = all[i];
@@ -2210,7 +2211,7 @@ void Engine::save_profile() const {
     }
     const bool written = std::fclose(f) == 0;
     std::error_code ec;
-    if (written) std::filesystem::rename(tmp, opt_.profile, ec);   // std::rename replaces no file on Windows
+    if (written) std::filesystem::rename(strata::paths::native_path(tmp), strata::paths::native_path(opt_.profile), ec);
     if (!written || ec) throw std::runtime_error("cannot write " + opt_.profile);
 }
 

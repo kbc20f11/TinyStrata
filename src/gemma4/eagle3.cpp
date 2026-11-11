@@ -3,6 +3,7 @@
 // This runner uses TinyStrata's existing math primitives. Target computation,
 // sampling and verification are unchanged. See LICENSE and NOTICE.
 #include "eagle3.hpp"
+#include "strata/common/utf8_path.hpp"
 
 #include "runtime.hpp"
 #include "strata/gemma4/eagle3.hpp"
@@ -272,9 +273,9 @@ void Eagle3::load(const std::string& path, int max_context) {
                                                    "EAGLE3 target vocabulary probabilities"));
     verify_accepted_ = static_cast<uint32_t*>(allocate(sizeof(uint32_t), "EAGLE3 rejection flag"));
     verify_accepted_host_ = static_cast<uint32_t*>(target_.hmalloc(sizeof(uint32_t), "EAGLE3 rejection staging"));
-    if (const char* dir = std::getenv("TINYSTRATA_EAGLE3_DUMP_DIR")) {
-        dump_dir_ = dir;
-        if (!dump_dir_.empty()) std::filesystem::create_directories(dump_dir_);
+    if (const auto dir = strata::paths::getenv("TINYSTRATA_EAGLE3_DUMP_DIR")) {
+        dump_dir_ = *dir;
+        if (!dump_dir_.empty()) std::filesystem::create_directories(strata::paths::native_path(dump_dir_));
     }
     ck(cudaStreamSynchronize(cs(target_.st_)), "EAGLE3 load completion");
     reset();
@@ -553,11 +554,11 @@ void Eagle3::dump(const std::string& name, const float* device, int rows, int wi
     ck(cudaMemcpyAsync(values.data(), device, values.size() * sizeof(float), cudaMemcpyDeviceToHost,
                        cs(target_.st_)), "EAGLE3 diagnostic copy");
     ck(cudaStreamSynchronize(cs(target_.st_)), "EAGLE3 diagnostic completion");
-    const auto path = std::filesystem::path(dump_dir_) / file;
+    const auto path = strata::paths::native_path(dump_dir_) / strata::paths::native_path(file);
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    need(bool(out), "cannot write diagnostic " + path.string());
+    need(bool(out), "cannot write diagnostic " + strata::paths::utf8_path(path));
     out.write(reinterpret_cast<const char*>(values.data()), std::streamsize(values.size() * sizeof(float)));
-    need(bool(out), "short diagnostic write " + path.string());
+    need(bool(out), "short diagnostic write " + strata::paths::utf8_path(path));
     dumps_.push_back({name, file, rows, width});
 }
 
@@ -567,7 +568,7 @@ void Eagle3::finish_dump() {
 }
 
 void Eagle3::dump_manifest() {
-    const auto path = std::filesystem::path(dump_dir_) / "fixture.json";
+    const auto path = strata::paths::native_path(dump_dir_) / "fixture.json";
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     need(bool(out), "cannot write diagnostic manifest");
     out << "{\"context_pos\":" << dump_context_pos_ << ",\"context_rows\":" << dump_context_rows_

@@ -50,6 +50,7 @@
 #include "strata/qwen35/hybrid_publish.cuh"
 #include "strata/qwen35/hybrid_mapped_output.cuh"
 #include "strata/common/command_inbox.hpp"
+#include "strata/common/utf8_path.hpp"
 #if defined(STRATA_Q36_INT8_FDEC)
 #include "strata/qwen35/int8_fdec.hpp"
 #endif
@@ -1219,7 +1220,7 @@ EP::Identity expert_artifact_identity(const Model& model) {
     const auto text = [&](const std::string& value) { mix(value.data(), value.size()); const char zero = 0; mix(&zero, 1); };
     for (size_t i = 0; i < model.file->size(); ++i) {
         const auto& shard = model.file->shard(i);
-        const auto path = std::filesystem::absolute(std::filesystem::path(shard.path())).lexically_normal();
+        const auto path = std::filesystem::absolute(strata::paths::native_path(shard.path())).lexically_normal();
         const auto changed = std::filesystem::last_write_time(path);
         const auto utf8 = path.generic_u8string();
         text(std::string(utf8.begin(), utf8.end())); text(std::to_string(shard.file_size()));
@@ -6099,7 +6100,7 @@ int strata::qwen35::run(int argc, char** argv) {
             clover_diffusion_option = true;
         }
         else if (a == "--expert-profile") {
-            expert_profile = next();
+            expert_profile = strata::paths::native_path(next());
             expert_profile_dir.clear();
         }
         else if (a == "--expert-topic-cache") {
@@ -6456,7 +6457,7 @@ int strata::qwen35::run(int argc, char** argv) {
     const std::vector<int32_t> prompt = parse_ids(tokens.c_str()), forced = parse_ids(force.c_str());
     if (prompt.empty()) { std::fprintf(stderr, "tinystrata: --tokens, --serve or --bench-pp is required\n"); return 2; }
     if (!forced.empty()) n_gen = (int) forced.size() + 1;
-    FILE* ff = dump_full.empty() ? nullptr : std::fopen(dump_full.c_str(), "wb");
+    FILE* ff = dump_full.empty() ? nullptr : strata::paths::fopen(dump_full.c_str(), "wb");
     std::vector<float> lg;
     std::vector<int32_t> gen;
     const auto t0 = Clock::now();

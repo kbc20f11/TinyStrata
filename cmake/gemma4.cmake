@@ -130,6 +130,7 @@ target_link_libraries(tinystrata_gemma4 PRIVATE tinystrata_fp8_attention)
 add_executable(tinystrata-gemma4 src/gemma4/main.cpp)
 target_include_directories(tinystrata-gemma4 PRIVATE include)
 target_link_libraries(tinystrata-gemma4 PRIVATE tinystrata_gemma4 tinystrata_conversations ${_strata_gpu_runtime_target})
+target_link_libraries(tinystrata-gemma4 PRIVATE strata_native_paths)
 install(TARGETS tinystrata-gemma4 RUNTIME DESTINATION bin)
 
 # Opt-in numerical regression for cached Expert batching; not part of user builds.

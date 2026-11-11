@@ -278,3 +278,12 @@ CMakeFiles/
 !/tests/test_vision_startup_resilience.py
 !/benchmark/results/upstream-refresh-20261111.json
 !/tests/test_model_switch_vision_resilience.py
+!/tests/test_python_unicode_handoff.py
+!/tests/test_ui_batch_bootstrap.py
+!/ui/stdio.py
+!/ui/start.ps1
+!/tests/unicode-paths.cpp
+!/tests/test_unicode_paths.py
+!/tests/native-utf8-args.cpp
+!/tests/test_native_utf8_args.py
+!/benchmark/results/unicode-paths-20261111.json

@@ -23,6 +23,7 @@
 #include "llama.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
+#include "strata/common/utf8_args.hpp"
 
 #include <algorithm>
 #if !defined(_WIN32)
@@ -95,7 +96,7 @@ bool parse_enc(const std::string& line, std::string& img, std::string& out) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int vision_main(int argc, char** argv) {
     std::string mmproj, model, device_name;
     bool gpu = false, capabilities = false;
     int threads = 0, max_tokens = 0, min_tokens = 0;
@@ -389,7 +390,7 @@ int main(int argc, char** argv) {
                 (gemma && (last.x != (uint32_t) (n - 1) || last.y != (uint32_t) (n - 1))))
                 err = "the image decoder positions do not match the model (" + std::to_string(n) + " tokens)";
             const float* embd = mtmd_get_output_embd(ctx);
-            FILE* f = err.empty() ? std::fopen(out.c_str(), "wb") : nullptr;
+            FILE* f = err.empty() ? strata::paths::fopen(out.c_str(), "wb") : nullptr;
             if (err.empty() && !f) err = "cannot write " + out;
             if (f) {
                 const int32_t hdr[5] = {0x31455653, n, nx, ny, n_embd};
@@ -411,4 +412,15 @@ int main(int argc, char** argv) {
     llama_model_free(text);
     llama_backend_free();
     return 0;
+}
+
+int main(int argc, char** argv) {
+    try {
+        // GGML/MTMD filename arguments already follow a UTF-8 contract.
+        strata::paths::Utf8Arguments arguments(argc, argv);
+        return vision_main(arguments.argc(), arguments.argv());
+    } catch (const std::exception& error) {
+        std::fprintf(stderr, "tinystrata-vision: %s\n", error.what());
+        return 2;
+    }
 }

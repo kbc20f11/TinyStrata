@@ -1,5 +1,5 @@
 // include/strata/artifact/gguf_split.hpp - the shards of a split model.  Separate from gguf_reader.hpp, which
-// includes <windows.h>, so any translation unit can resolve a model's shards.
+// maps/parses their contents, so a translation unit can resolve shards on its own.
 //
 // From eddoursul/Strata 8029fa9 (gguf_split_paths), with one change of contract: upstream's model_shards()
 // skipped a shard it could not open and returned the rest, so a download that was still running (or a shard
@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include "strata/common/utf8_path.hpp"
 
 namespace strata {
 
@@ -41,7 +42,7 @@ inline std::vector<std::string> gguf_split_paths(const std::string& any) {
         std::snprintf(num, sizeof num, "%05d", i);
         std::string p = any;
         p.replace(at - 5, 5, num);
-        if (!std::ifstream(p, std::ios::binary))
+        if (!std::ifstream(paths::native_path(p), std::ios::binary))
             throw std::runtime_error("missing model shard " + p + " (shard " + std::to_string(i) + " of " +
                                      std::to_string(n) + "; is the download complete?)");
         out.push_back(std::move(p));

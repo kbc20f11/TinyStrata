@@ -398,17 +398,24 @@ public:
 
 private:
     void open() {
+        const auto native = paths::native_path(path_);
 #ifdef _WIN32
-        HANDLE h = CreateFileA(path_.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+        HANDLE h = CreateFileW(native.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                                FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (h == INVALID_HANDLE_VALUE) throw std::runtime_error("cannot open " + path_);
+        if (h == INVALID_HANDLE_VALUE)
+            throw std::runtime_error("cannot open " + path_ + " (Windows error " + std::to_string(GetLastError()) + ")");
         LARGE_INTEGER li{};
-        GetFileSizeEx(h, &li);
-        size_ = (uint64_t)li.QuadPart;
-        HANDLE m = CreateFileMappingA(h, nullptr, PAGE_READONLY, 0, 0, nullptr);
-        if (!m) {
+        if (!GetFileSizeEx(h, &li)) {
+            const DWORD error = GetLastError();
             CloseHandle(h);
-            throw std::runtime_error("CreateFileMapping failed");
+            throw std::runtime_error("cannot get the size of " + path_ + " (Windows error " + std::to_string(error) + ")");
+        }
+        size_ = (uint64_t)li.QuadPart;
+        HANDLE m = CreateFileMappingW(h, nullptr, PAGE_READONLY, 0, 0, nullptr);
+        if (!m) {
+            const DWORD error = GetLastError();
+            CloseHandle(h);
+            throw std::runtime_error("cannot map " + path_ + " (Windows error " + std::to_string(error) + ")");
         }
         base_ = (const uint8_t*)MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0);
         if (!base_) {
@@ -419,7 +426,7 @@ private:
         map_ = m;
         file_ = h;
 #else
-        int fd = ::open(path_.c_str(), O_RDONLY);
+        int fd = ::open(native.c_str(), O_RDONLY);
         if (fd < 0) throw std::runtime_error("cannot open " + path_);
         fd_ = fd;
         struct stat st{};
