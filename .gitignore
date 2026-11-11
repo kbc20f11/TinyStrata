@@ -2,6 +2,10 @@
 /*
 !/.gitattributes
 !/.gitignore
+!/AGENTS.md
+!/docs/
+/docs/**
+!/docs/development-memory.md
 !/CMakeLists.txt
 !/LICENSE
 !/NOTICE
