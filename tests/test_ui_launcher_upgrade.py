@@ -95,14 +95,18 @@ class LauncherUpgradeTests(unittest.TestCase):
             self.launcher.restart_previous_ui({"pid": 42})
         stop.assert_not_called()
 
-    def test_backend_match_requires_correct_source_and_data_directory(self):
+    def test_backend_match_requires_correct_source_data_and_private_python(self):
         valid = {"backend_revision": "revision", "source_dir": str(self.source),
-                 "data_dir": str(self.launcher.state_dir)}
+                 "data_dir": str(self.launcher.state_dir), "python_executable": str(self.launcher.python)}
         with mock.patch.object(launch, "backend_revision", return_value="revision"):
             self.assertTrue(self.launcher.current_ui(valid))
             for field in valid:
                 invalid = {**valid, field: "different"}
                 self.assertFalse(self.launcher.current_ui(invalid))
+            legacy = {key: value for key, value in valid.items() if key != "python_executable"}
+            self.assertFalse(self.launcher.current_ui(legacy))
+            for value in (None, 42, []):
+                self.assertFalse(self.launcher.current_ui({**valid, "python_executable": value}))
 
     def test_incomplete_source_update_preserves_old_ui(self):
         with mock.patch.object(self.launcher, "existing_ui", return_value={"pid": 42}), \
@@ -241,6 +245,7 @@ class LauncherUpgradeTests(unittest.TestCase):
             self.assertEqual(health["backend_revision"], "startup-revision")
             self.assertEqual(Path(health["source_dir"]), ROOT)
             self.assertEqual(Path(health["data_dir"]), self.work / "http-state")
+            self.assertEqual(Path(health["python_executable"]), Path(sys.executable).resolve())
         finally:
             instance.shutdown()
             thread.join(3)

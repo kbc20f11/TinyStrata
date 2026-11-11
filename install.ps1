@@ -1322,7 +1322,12 @@ for raw in open(sys.argv[1], encoding='utf-8-sig'):
     if not match or importlib.metadata.version(match[1]) != match[2]:
         raise SystemExit(1)
 '@
+    # DDGS exposes a lazy proxy from its package root. Import the implementation
+    # as well: metadata/pip check alone cannot detect missing package files or a
+    # dependency which cannot actually load in this private interpreter.
+    $importCheck = 'from ddgs.ddgs import DDGS; assert callable(DDGS)'
     $healthy = $false
+    $repairUiPackages = $false
     try {
         $requirementCheck | & $Python -I -B - $requirements 2>$null | Out-Null
         $healthy = $LASTEXITCODE -eq 0
@@ -1330,14 +1335,27 @@ for raw in open(sys.argv[1], encoding='utf-8-sig'):
             & $Python -I -B -m pip --isolated --require-virtualenv --disable-pip-version-check check 2>$null | Out-Null
             $healthy = $LASTEXITCODE -eq 0
         }
+        if ($healthy) {
+            $repairUiPackages = $true # Also retain repair intent if native stderr throws in Windows PowerShell.
+            & $Python -I -B -c $importCheck 2>$null | Out-Null
+            $healthy = $LASTEXITCODE -eq 0
+            $repairUiPackages = -not $healthy
+        }
     } catch { $healthy = $false }
     if ($healthy) { Write-Host 'Reusing the optional UI dependencies.'; return }
     Write-Host 'Installing optional UI search dependencies in the private environment...'
-    & $Python -I -B -m pip --isolated --require-virtualenv --disable-pip-version-check --no-input install `
-        --index-url https://pypi.org/simple --only-binary=:all: -r $requirements | Out-Host
+    $installArguments = @('-I', '-B', '-m', 'pip', '--isolated', '--require-virtualenv', '--disable-pip-version-check', '--no-input', 'install',
+                          '--index-url', 'https://pypi.org/simple', '--only-binary=:all:')
+    if ($repairUiPackages) { $installArguments += '--force-reinstall' }
+    $installArguments += @('-r', $requirements)
+    & $Python @installArguments | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'Optional UI dependency installation failed. The API was left unchanged.' }
     & $Python -I -B -m pip --isolated --require-virtualenv --disable-pip-version-check check | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'Optional UI dependency verification failed. The API was left unchanged.' }
+    $requirementCheck | & $Python -I -B - $requirements | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw 'Optional UI dependency version verification failed. The API was left unchanged.' }
+    & $Python -I -B -c $importCheck | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "DDGS could not be loaded by the UI's private Python: $Python. The UI was not started; inspect the import error above." }
 }
 
 function Initialize-TinyStrataDesktopShortcut {

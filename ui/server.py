@@ -112,6 +112,7 @@ class Handler(SimpleHTTPRequestHandler):
             body = json.dumps({"app": APP_ID, "pid": os.getpid(), "status": "ok",
                                "api_port": self.server.api_port,
                                "backend_revision": self.server.backend_revision,
+                               "python_executable": str(Path(sys.executable).resolve()),
                                "source_dir": str(ROOT), "data_dir": str(self.server.data_dir),
                                "api": f"http://127.0.0.1:{self.server.api_port}/v1"}).encode()
             self.send_response(200)

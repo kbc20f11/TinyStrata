@@ -418,7 +418,8 @@ class Launcher:
         try:
             return (health.get("backend_revision") == backend_revision(self.source) and
                     Path(health["source_dir"]).resolve() == self.source.resolve() and
-                    Path(health["data_dir"]).resolve() == self.state_dir.resolve())
+                    Path(health["data_dir"]).resolve() == self.state_dir.resolve() and
+                    Path(health["python_executable"]).resolve() == self.python.resolve())
         except (OSError, KeyError, TypeError, ValueError):
             return False
 

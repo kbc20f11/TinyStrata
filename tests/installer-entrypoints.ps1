@@ -244,28 +244,38 @@ $uiDependenciesFunction = $readinessAst.Find({ param($node) $node -is [System.Ma
 $optionalUiFunction = $readinessAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Initialize-TinyStrataOptionalUI' }, $true)
 if (-not $uiDependenciesFunction -or -not $optionalUiFunction) { throw 'Optional UI dependency helpers are missing.' }
 function Invoke-MockedUiDependencies {
-    param([string]$FunctionText, [bool]$PinsHealthy = $true, [bool]$Private = $true, [bool]$InstallFails = $false)
+    param([string]$FunctionText, [bool]$PinsHealthy = $true, [bool]$Private = $true, [bool]$InstallFails = $false,
+          [bool]$ImportHealthy = $true, [bool]$ImportFailsAfterInstall = $false, [bool]$ImportThrowsBeforeInstall = $false)
     & {
-        param($probeFunction, $probePins, $probePrivate, $probeInstallFails)
+        param($probeFunction, $probePins, $probePrivate, $probeInstallFails, $probeImport, $probePostImportFails, $probeImportThrows)
         $probeCalls = New-Object 'System.Collections.Generic.List[object]'
+        $probeState = [pscustomobject]@{ Installed = $false }
         function Test-Path { param($LiteralPath, $PathType) return $true }
         function Invoke-MockedUiPython {
             $probeArguments = @($args)
             $probeCalls.Add($probeArguments)
-            if ($probeArguments -contains '-c') { $global:LASTEXITCODE = $(if ($probePrivate) { 0 } else { 1 }) }
-            elseif ($probeArguments -contains 'install') { $global:LASTEXITCODE = $(if ($probeInstallFails) { 1 } else { 0 }) }
+            if ($probeArguments -contains '-c' -and $probeArguments[-1] -like 'from ddgs.ddgs import DDGS*') {
+                if ($probeImportThrows -and -not $probeState.Installed) { throw 'fixture: importing DDGS wrote native stderr' }
+                $importReady = if ($probeState.Installed) { -not $probePostImportFails } else { $probeImport }
+                $global:LASTEXITCODE = $(if ($importReady) { 0 } else { 1 })
+            }
+            elseif ($probeArguments -contains '-c') { $global:LASTEXITCODE = $(if ($probePrivate) { 0 } else { 1 }) }
+            elseif ($probeArguments -contains 'install') {
+                $global:LASTEXITCODE = $(if ($probeInstallFails) { 1 } else { 0 })
+                if (-not $probeInstallFails) { $probeState.Installed = $true }
+            }
             elseif ($probeArguments -contains 'check') { $global:LASTEXITCODE = 0 }
-            else { $global:LASTEXITCODE = $(if ($probePins) { 0 } else { 1 }) }
+            else { $global:LASTEXITCODE = $(if ($probePins -or $probeState.Installed) { 0 } else { 1 }) }
         }
         Invoke-Expression $probeFunction
         $caught = $null
         try { Initialize-TinyStrataUiDependencies -SourceRoot 'C:\UI source' -WorkRoot 'C:\UI work' -Python 'Invoke-MockedUiPython' }
         catch { $caught = $_.Exception.Message }
         return [pscustomobject]@{ Calls = $probeCalls.ToArray(); Error = $caught }
-    } $FunctionText $PinsHealthy $Private $InstallFails
+    } $FunctionText $PinsHealthy $Private $InstallFails $ImportHealthy $ImportFailsAfterInstall $ImportThrowsBeforeInstall
 }
 $result = Invoke-MockedUiDependencies -FunctionText $uiDependenciesFunction.Extent.Text
-Assert-Entrypoint (-not $result.Error -and $result.Calls.Count -eq 3) 'healthy UI dependencies are checked and reused'
+Assert-Entrypoint (-not $result.Error -and $result.Calls.Count -eq 4) 'healthy UI dependencies and real DDGS import are checked and reused'
 Assert-Entrypoint (@($result.Calls | Where-Object { $_ -contains 'install' }).Count -eq 0) 'healthy UI does not run pip install'
 Assert-Entrypoint ($result.Calls[0][-1] -eq 'C:\UI work\runtime\.venv') 'private environment identity checks the installation venv'
 $result = Invoke-MockedUiDependencies -FunctionText $uiDependenciesFunction.Extent.Text -PinsHealthy $false
@@ -277,6 +287,15 @@ $result = Invoke-MockedUiDependencies -FunctionText $uiDependenciesFunction.Exte
 Assert-Entrypoint ($result.Error -like '*private Python virtual environment*' -and $result.Calls.Count -eq 1) 'global interpreter is refused before dependency or pip commands'
 $result = Invoke-MockedUiDependencies -FunctionText $uiDependenciesFunction.Extent.Text -PinsHealthy $false -InstallFails $true
 Assert-Entrypoint ($result.Error -like '*dependency installation failed*' -and $result.Calls.Count -eq 3) 'UI install failure prevents launch and later verification'
+$result = Invoke-MockedUiDependencies -FunctionText $uiDependenciesFunction.Extent.Text -ImportHealthy $false
+$installCalls = @($result.Calls | Where-Object { $_ -contains 'install' })
+Assert-Entrypoint (-not $result.Error -and $installCalls.Count -eq 1 -and $installCalls[0] -contains '--force-reinstall') 'metadata-healthy but unimportable DDGS is repaired once'
+Assert-Entrypoint ($result.Calls[-1][-1] -like 'from ddgs.ddgs import DDGS*') 'repaired UI verifies the real DDGS implementation after installation'
+$result = Invoke-MockedUiDependencies -FunctionText $uiDependenciesFunction.Extent.Text -ImportThrowsBeforeInstall $true
+$installCalls = @($result.Calls | Where-Object { $_ -contains 'install' })
+Assert-Entrypoint (-not $result.Error -and $installCalls.Count -eq 1 -and $installCalls[0] -contains '--force-reinstall') 'native import stderr also retains the package repair intent'
+$result = Invoke-MockedUiDependencies -FunctionText $uiDependenciesFunction.Extent.Text -PinsHealthy $false -ImportFailsAfterInstall $true
+Assert-Entrypoint ($result.Error -like '*DDGS could not be loaded*') 'a failed real DDGS import after pip prevents UI launch'
 
 # Intercept only the launcher call in the actual optional-UI function. Source
 # and dependencies remain separate mocked steps, for both start and NoStart.
