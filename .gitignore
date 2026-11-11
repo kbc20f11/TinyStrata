@@ -293,3 +293,4 @@ CMakeFiles/
 !/benchmark/results/unicode-paths-20261111.json
 !/tests/q36-hybrid-buffer-policy.cpp
 !/tests/q36-hybrid-buffer-dma.cu
+!/benchmark/results/cuda-revalidation-20261112.json
