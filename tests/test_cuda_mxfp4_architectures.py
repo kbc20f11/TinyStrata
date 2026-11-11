@@ -81,8 +81,9 @@ class CudaMxfp4Architectures(unittest.TestCase):
         self.assertEqual(props[regular + 'CUDA_ARCHITECTURES'], '86;89;120')
         self.assertEqual(props[fp4 + 'CUDA_ARCHITECTURES'], '86;89;120a')
         self.assertEqual(props[fp4 + 'TYPE'], 'OBJECT_LIBRARY')
-        self.assertTrue(props[fp4 + 'SOURCES'].endswith('/mmq-instance-mxfp4.cu'))
+        self.assertTrue(props[fp4 + 'SOURCES'].endswith('src/gemma4/mmq_mxfp4_q8.cu'))
         self.assertNotIn('mmq-instance-mxfp4.cu', props[regular + 'SOURCES'])
+        self.assertNotIn('mmq_mxfp4_q8.cu', props[regular + 'SOURCES'])
         self.assertIn('$<TARGET_OBJECTS:tinystrata_gemma4_mmq_mxfp4>', props[regular + 'SOURCES'])
         for quant in ('q4_0', 'q4_k', 'q6_k', 'q8_0'):
             self.assertIn(f'mmq-instance-{quant}.cu', props[regular + 'SOURCES'])

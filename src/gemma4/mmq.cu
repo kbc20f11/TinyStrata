@@ -55,7 +55,13 @@ bool Mmq::fits(int type, int64_t w_rows, int64_t w_cols) {
     const bool fallback = w_rows % 128 != 0;
     const auto& dev = ggml_cuda_info().devices[ggml_cuda_get_device()];
     for (int J = 8; J <= 128; J += 8) {
-        const ggml_cuda_mmq_config c = ggml_cuda_mmq_get_config(t, J, fallback, dev.cc);
+        ggml_cuda_mmq_config c = ggml_cuda_mmq_get_config(t, J, fallback, dev.cc);
+#if !defined(GGML_USE_HIP)
+        // The dedicated MXFP4 instance deliberately consumes Q8 activations,
+        // including on Blackwell. Check the same configuration it will launch.
+        if (t == GGML_TYPE_MXFP4 && blackwell_mma_available(dev.cc))
+            c = ggml_cuda_mmq_get_config_ampere(t, J, fallback);
+#endif
         if (c.type != GGML_TYPE_COUNT && mmq_get_nbytes_shared(c, dev.cc) <= dev.smpbo) return true;
     }
     return false;

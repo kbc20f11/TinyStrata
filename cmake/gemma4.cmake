@@ -29,10 +29,10 @@ set(_gemma_mmq_targets tinystrata_gemma4_mmq)
 if(NOT STRATA_ENABLE_HIP)
   include("${CMAKE_CURRENT_LIST_DIR}/cuda_mxfp4.cmake")
   strata_cuda_mxfp4_architectures(_gemma_mxfp4_archs ${CMAKE_CUDA_ARCHITECTURES})
-  # Only this instance emits mma.kind::mxf4.block_scale, which requires 12xa
-  # rather than generic 12x. Other MMQ instances retain the requested targets.
+  # Keep MXFP4's activation contract isolated from ordinary MMQ instances.
+  # This instance retains Q8 activations on Blackwell, matching Mmq::quantize.
   add_library(tinystrata_gemma4_mmq_mxfp4 OBJECT
-    "${_gemma_cuda}/template-instances/mmq-instance-mxfp4.cu")
+    src/gemma4/mmq_mxfp4_q8.cu)
   set_target_properties(tinystrata_gemma4_mmq_mxfp4 PROPERTIES
     CUDA_ARCHITECTURES "${_gemma_mxfp4_archs}")
   target_sources(tinystrata_gemma4_mmq PRIVATE $<TARGET_OBJECTS:tinystrata_gemma4_mmq_mxfp4>)
@@ -150,6 +150,14 @@ target_include_directories(tinystrata-gemma4 PRIVATE include)
 target_link_libraries(tinystrata-gemma4 PRIVATE tinystrata_gemma4 tinystrata_conversations ${_strata_gpu_runtime_target})
 target_link_libraries(tinystrata-gemma4 PRIVATE strata_native_paths)
 install(TARGETS tinystrata-gemma4 RUNTIME DESTINATION bin)
+
+# Model-free, independent MXFP4-weight/Q8-activation layout regression.
+add_executable(gptoss_mmq_q8_test EXCLUDE_FROM_ALL tests/gptoss-mmq-q8.cu)
+target_include_directories(gptoss_mmq_q8_test PRIVATE include src/gemma4)
+target_link_libraries(gptoss_mmq_q8_test PRIVATE tinystrata_gemma4 ${_strata_gpu_runtime_target})
+if(STRATA_ENABLE_HIP)
+  set_source_files_properties(tests/gptoss-mmq-q8.cu PROPERTIES LANGUAGE HIP)
+endif()
 
 # Opt-in numerical regression for cached Expert batching; not part of user builds.
 add_executable(gemma_cached_slots_test EXCLUDE_FROM_ALL tests/gemma-cached-slots.cu)
