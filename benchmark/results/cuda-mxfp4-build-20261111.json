@@ -1,0 +1,102 @@
+{
+  "schema": 1,
+  "complete": true,
+  "date": "2026-11-11",
+  "source_base": "81071e87b0511bbf75bd698fb4f3ba23b5a92887",
+  "scope": "CUDA build correctness and Windows compiler source/execution charset; no inference or throughput claim",
+  "reported_failure": {
+    "sha256": "bf2422e60a5d0fe54e76f53f3e3f1d64504f30b6046343f64b43b2f09dd783c6",
+    "bytes": 1273392,
+    "c4819_warnings": 86,
+    "ptx_errors": 7168,
+    "failed_units": [
+      "CMakeFiles/tinystrata_gemma4_mmq.dir/_deps/strata_llamacpp-src/ggml/src/ggml-cuda/template-instances/mmq-instance-mxfp4.cu.obj\r"
+    ],
+    "generic_sm120_command": true
+  },
+  "toolchain": {
+    "nvcc": "13.2.86",
+    "host": "MSVC 19.51",
+    "architecture_request": "120",
+    "cmake_abi_flow": "ordinary compile/link/device-count detection"
+  },
+  "actual_mxfp4_counterfactual": [
+    {
+      "architectures": [
+        "120"
+      ],
+      "exit": 255,
+      "seconds": 16.05498957633972,
+      "c4819": 0
+    },
+    {
+      "architectures": [
+        "86",
+        "89",
+        "120a"
+      ],
+      "exit": 0,
+      "seconds": 52.333823919296265,
+      "c4819": 0
+    }
+  ],
+  "full_build": {
+    "all_four_executables_linked": true,
+    "exes_sha256": {
+      "tinystrata.exe": "a6ad96cd8fb2f6171a2fc42d03653922824cec1dbebed5232f43c9cbb174d3c6",
+      "tinystrata-gemma4.exe": "7b84f976e7d594cb877de377596336c0b17e896ec9b4c48670b8a10158933774",
+      "tinystrata-lfm2.exe": "3fcf50ba8e79818629c226ab81c6974af31556801789750d4983617a6053a9cc",
+      "tinystrata-vision.exe": "60f68f52feeca1573305a9aa4ffe8be9981c5edb0df44cfe0809c1eb84854d66"
+    },
+    "seconds": 1038.7528624534607,
+    "c4819_warnings": 0,
+    "other_warnings_left_visible": 3215,
+    "native_closure_unchanged": true,
+    "existing_cache_and_ggml_unchanged": true
+  },
+  "build_selection": {
+    "mxfp4_only": "compute_120a / sm_120a",
+    "ordinary_gemma_mmq": "compute_120 / sm_120",
+    "portable_object_compiled": [
+      "86",
+      "89",
+      "120a"
+    ],
+    "hip": "unchanged source list/definitions, real CMake graph fixtures; no HIP rebuild this task"
+  },
+  "checks": {
+    "mxfp4": "4 tests, 15 actual CMake configurations",
+    "charset": "7 tests against generated commands and negative profiles",
+    "installer_entrypoints": "107 checks, no install/network/native processes"
+  },
+  "source_sha256": {
+    "CMakeLists.txt": "987308b70e0c8653d9dd27e12911134dd2989cbda463c79ff1eb1635b2fa4d9c",
+    "cmake/gemma4.cmake": "942f5e964b4e3ab21af7d12a97c16e29488874522b1568d099c38732015aa416",
+    "cmake/cuda_mxfp4.cmake": "4160bdbe19e177c3f19fc24ae7f60cf4eeae6767a9c1145b327250ec7e540cf3",
+    "tests/test_cuda_mxfp4_architectures.py": "212f13706d31a03a7dc55812e60e20d64f8e710768cb21f39d090b7eece2f227",
+    "tests/test_msvc_utf8_config.py": "9a87a3f18cb23c5bdb5d82468e01ddb13b18a1642ad08de0b552b76fa2fef657"
+  },
+  "runtime_validation": {
+    "cuda_inference": false,
+    "reason": "Discrete NVIDIA adapter reported Microsoft Basic Display Adapter and nvcuda.dll could not be loaded at validation time",
+    "model_quality_or_speed_tested": false,
+    "full_installer_execution_tested": false,
+    "installed_profiles_switched": false
+  },
+  "raw_root": "TinyStrata-work/cuda-mxfp4-target-20261111",
+  "evidence_sha256": {
+    "reported-build.log": "bf2422e60a5d0fe54e76f53f3e3f1d64504f30b6046343f64b43b2f09dd783c6",
+    "reported-build-analysis.json": "6d1d263d8a9de7431a6dbb49e133ef69a6b090507c672f6056580e2764eddd0b",
+    "mxfp4-smoke/result.json": "bb0a2173e587711bba4ebb73683acdbbc187bfc90222ce7e4b49fed5cd05db8b",
+    "mxfp4-smoke/generic120-reproduce.log": "83d671eaca841ff31dd1f8351614a6ed809698a0a0449f33950f9391eb5e885b",
+    "mxfp4-smoke/portable-fixed.log": "ffd8f5c78c0df05acbeec3fcc7633c664ccef8939534ecea958ea3cc125bec55",
+    "builds/sm120/build.json": "6df545b082913aad66349cccba3fb97989ab638fa3ce83a636b1e2576042b8b7",
+    "installer-utf8-audit.json": "58f76cc893a70b10f82ce931df0e815124ed3c186285e9c78c3ba23949bb4d9d",
+    "cuda-driver-status.json": "e37df23ca0727d85dfbdb29dc02a2a46d87532fa9e39688783ab606d7a69111f",
+    "mxfp4-target-tests.log": "559836ecb64a7ecf57ae111006171a31ca3654f1e75f796d47bb3bc14dd72881",
+    "cuda-config-tests.log": "dd96f5c0fbfa7fb5309a1cc3aa971712665d9315a188ac459e17021282a05ec8",
+    "installer-entrypoints.log": "c7245f0da1b5bdbdb92597ff2268589746a6ef02b4f23e7782eca0cdeb066720",
+    "builds\\sm120\\1794406607331614600-configure.log": "ff8466948d43ae92980f881f31f0bfd27c79c031704d7ba27862f29164af11ec",
+    "builds\\sm120\\1794406607331614600-compile-link.log": "2b7338061f419149b76ea7d5648e4f814f1bc250ecb6f272da1a8c019527e446"
+  }
+}

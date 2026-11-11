@@ -286,4 +286,7 @@ CMakeFiles/
 !/tests/test_unicode_paths.py
 !/tests/native-utf8-args.cpp
 !/tests/test_native_utf8_args.py
+!/tests/test_msvc_utf8_config.py
+!/tests/test_cuda_mxfp4_architectures.py
+!/benchmark/results/cuda-mxfp4-build-20261111.json
 !/benchmark/results/unicode-paths-20261111.json

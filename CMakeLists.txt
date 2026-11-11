@@ -1,6 +1,16 @@
 cmake_minimum_required(VERSION 3.24)
 project(TinyStrata VERSION 0.1.0 LANGUAGES C CXX)
 
+# Apply before creating targets or adding GGML: BOM-less UTF-8 sources and CUDA
+# headers otherwise use the Windows user code page under MSVC (for example 932).
+# /utf-8 sets both source and execution charsets; do not suppress C4819 instead.
+if(WIN32)
+  add_compile_options(
+    "$<$<COMPILE_LANG_AND_ID:C,MSVC>:/utf-8>"
+    "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/utf-8>"
+    "$<$<AND:$<COMPILE_LANG_AND_ID:CUDA,NVIDIA>,$<CXX_COMPILER_ID:MSVC>>:-Xcompiler=/utf-8>")
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
