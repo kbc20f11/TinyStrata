@@ -140,13 +140,9 @@ void gemma_native_iq4_nl_mmvq(const void* weights, const void* x_q8_1, float* y,
 void gemma_native_iq4_nl_f32(const void* weights, const float* x, void* scratch_q8_1,
                       float* y, int n_in, int n_out, int ncols, void* stream);
 
-// The HIP cached-Expert path can quantize/batch up to 32 independent rows. Ordinary
+// The cached-Expert path can quantize/batch up to 32 independent rows. Ordinary
 // multi-column MMVQ and its byte-count helper retain their existing 1..8 contract.
-#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
 constexpr int kMmvqSlotsMax = 32;
-#else
-constexpr int kMmvqSlotsMax = 8;
-#endif
 // Up to kMmvqSlotsMax matrices of one format and shape in one launch: matrix i times its own Q8_1 column x[i] into y[i], as
 // gemma_native_mmvq(type, w[i], x[i], y[i], n_in, n_out, 1, stream) would each.  A launch costs the calling thread more
 // than a small product costs the card, which is what this saves.  False, with nothing launched: there is no

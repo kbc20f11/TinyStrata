@@ -2476,11 +2476,22 @@ bool Engine::moe(Layer& L, int il, int n, const std::function<void()>* first) {
             const size_t ff = (size_t) n_ff_exp_, q8_row = kernels::gemma_native_q8_1_bytes(n_ff_exp_);
             // Adapted from PolyStrata 43bbf3f1 / 5c0bd2c9: batch independent cached
             // pairs without changing their arithmetic or ordered 32-row sum.
-            // The diagnostic override compares both widths in the same binary.
-            static const int requested = [] {
+            // Parse only the explicit override once. The model-dependent default
+            // stays per Engine, including processes that host different models.
+            static_assert(kSlots == kernels::kMmvqSlotsMax, "cached-Expert slot capacities must match");
+            static const int forced = [] {
                 const char* value = std::getenv("TINYSTRATA_GEMMA_SLOTS32");
-                return kSlots == 32 && (!value || std::strcmp(value, "1") == 0) ? 32 : 8;
+                if (!value) return 0;
+                if (std::strcmp(value, "0") == 0) return 8;
+                if (std::strcmp(value, "1") == 0) return kSlots;
+                throw std::invalid_argument("TINYSTRATA_GEMMA_SLOTS32 must be 0 or 1");
             }();
+#if defined(STRATA_USE_HIP) || defined(__HIPCC__)
+            const int requested = forced ? forced : kSlots;
+#else
+            // CUDA: Gemma's verified cached batching uses 32; GPT-OSS retains 8.
+            const int requested = forced ? forced : (oai_ ? 8 : kSlots);
+#endif
             const int per = rows_ >= requested ? requested : rows_ >= 8 ? 8 : 1;
             BiasedScaledRows biased_sum;
             ScaledRows& sum = biased_sum.rows;

@@ -22,7 +22,7 @@ namespace G = strata::gemma4;
 static constexpr int kType = 2; // GGUF Q4_0, the deployed Gemma expert format.
 static constexpr int kCapacity = K::kMmvqSlotsMax;
 static constexpr int kTokens = 4;
-static_assert(kCapacity >= 8 && kCapacity <= 32, "slot capacity");
+static_assert(kCapacity == 32, "both backends must exercise the 32-slot payload");
 static unsigned cases = 0;
 static uint64_t checksum = 1469598103934665603ull;
 static double maximum_scalar_error = 0;
@@ -184,7 +184,7 @@ static void pipeline_case(int n, int ff, const std::vector<int>& counts, cudaStr
     for (size_t i = 0; i < initial.size(); ++i) initial[i] = float(int(i % 17) - 8) / 1024.0f;
     Pipeline p(n, ff);
     for (int count : counts) {
-        if (count > kCapacity) continue; // CUDA retains its eight-slot contract.
+        CHECK(count <= kCapacity);
         p.reset(initial, s);
         for (int j = 0; j < count; ++j) {
             float* gate = p.gate_up.as<float>() + size_t(j) * 2 * ff;
@@ -227,7 +227,6 @@ static void pipeline_case(int n, int ff, const std::vector<int>& counts, cudaStr
             equal_bytes(expected.down, got.down, size_t(count) * n * 4, true, "down", count, split);
             equal_bytes(expected.sum, got.sum, got.sum.size(), true, "ordered add", count, split);
             p.guards(); ++cases;
-            if (kCapacity == 8) break;
         }
     }
     for (const Device* d : {&gate_weights, &down_weights, &dx, &xq}) d->check_guards();

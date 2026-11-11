@@ -71,7 +71,7 @@ struct Kvq8 {
 };
 
 // gpt-oss.  The biases (each n values) of the experts in up to 32 slots, as the cached experts of moe() are launched
-// (kSlots: 8 on CUDA, up to 32 on HIP).
+// (up to 32; GPT-OSS retains eight-pair scheduling on CUDA by default).
 struct ExpertBias {
     const float* g[32];
     const float* u[32];
