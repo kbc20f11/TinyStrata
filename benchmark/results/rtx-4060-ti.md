@@ -1,15 +1,15 @@
 # Measured speed — NVIDIA GeForce RTX 4060 Ti 16 GB (CUDA)
 
-Measured on **2026-11-09** under Windows 11 Enterprise (build 26200), using a **GeForce RTX 4060 Ti (16 GB; 16,380 MiB; compute capability 8.9; 165 W power limit; PCIe 4.0 x8)**, NVIDIA driver **621.14**, an **Intel Core Ultra 7 265K (20 cores / 20 threads)** and **64 GiB of system RAM** (four DDR5-4800 modules; 63.4 GiB visible to Windows), with the same model files as in the main [README](../../README.md). INT8 KV and KV growth were enabled. Context capacity, input chunks and Expert placement were automatic. Qwen and Gemma used MTP 3 and a GPU-resident image encoder; LFM and the standard Clover row use neither.
+Measured on **2026-11-12** under Windows 11 Enterprise (build 26200), using a **GeForce RTX 4060 Ti (16 GB; 16,380 MiB; compute capability 8.9; 165 W power limit; PCIe 4.0 x8)**, NVIDIA driver **621.14**, an **Intel Core Ultra 7 265K (20 cores / 20 threads)** and **64 GiB of system RAM** (four DDR5-4800 modules; 63.4 GiB visible to Windows), with the same model files as in the main [README](../../README.md). INT8 KV and KV growth were enabled. Context capacity, input chunks and Expert placement were automatic. Qwen and Gemma used MTP 3 and a GPU-resident image encoder; LFM and the standard Clover row use neither.
 
-Protocol: [tinystrata-bench-v1](../README.md#english), engine code [1ea7380](https://github.com/kbc20f11/TinyStrata/commit/1ea7380827797477f85ce873f4f8faf5f6e7d422) (clean `origin/main`), seed 1234, four independent API starts per model. The engine was built with `install-ui.ps1 -Rebuild` using the Microsoft C++ Build Tools and the installer's private **CUDA 13.2.2** compiler (nvcc **13.2.86**).
+Protocol: [tinystrata-bench-v1](../README.md#english), engine code [73167a6](https://github.com/kbc20f11/TinyStrata/commit/73167a6f549aac65995afbddb353a446cfa00e30) (clean `origin/main`), seed 1234, four independent API starts per model. The engine was built with `install-ui.ps1 -Rebuild` using the Microsoft C++ Build Tools and the installer's private **CUDA 13.2.2** compiler (nvcc **13.2.86**). The previous run on this page, from 2026-11-09, used engine code [1ea7380](https://github.com/kbc20f11/TinyStrata/commit/1ea7380827797477f85ce873f4f8faf5f6e7d422); it is kept [below](#earlier-run-2026-11-09-1ea7380).
 
 | Model | Context capacity | Generation (tok/s) | 4K input (tok/s) | 16K input (tok/s) | Image first / end (s) | Notes |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| Qwen3.6 UD-IQ3_XXS | 256K | 111.26 | 802.28 | 759.28 | 1.97 / 3.23 | Expert cache 7.58–7.66 → 7.58–7.66 GiB |
-| Gemma 4 QAT Q4_0 | 256K | 87.70 | 2566.66 | 2424.65 | 0.94 / 1.72 | Expert cache 9.16 → 9.00 GiB |
-| LFM2.5 Q4_K_M | 128K | 130.78 | 2784.59 | 2181.39 | — | Expert cache 12.90 → 12.81 GiB |
-| Clover Preview IQ3_XXS (causal, standard v1) | 256K | 64.84 | 1858.90 | 1568.01 | — | Expert cache 8.87 → 8.48–8.50 GiB |
+| Qwen3.6 UD-IQ3_XXS | 256K | 111.02 | 790.95 | 753.34 | 2.08 / 3.38 | Expert cache 8.33 → 7.61–8.28 GiB |
+| Gemma 4 QAT Q4_0 | 256K | 94.63 | 2488.76 | 2431.08 | 0.97 / 1.69 | Expert cache 9.05 → 8.87 GiB |
+| LFM2.5 Q4_K_M | 128K | 118.96 | 2787.48 | 2093.67 | — | Expert cache 12.88 → 12.69 GiB |
+| Clover Preview IQ3_XXS (causal, standard v1) | 256K | 63.38 | 1812.01 | 1580.26 | — | Expert cache 8.72 → 8.50–8.52 GiB |
 
 Image times show first output / response end, including image encoding; lower is faster. Expert cache values show the actual allocation at startup → immediately after the 16K input, in GiB. The automatic input chunks selected for these runs were 2,048 (Qwen, Clover), 1,120 (Gemma) and 256 (LFM) tokens.
 
@@ -19,13 +19,55 @@ All four rows are complete standard v1 results (four of four starts, 24 generati
 
 | Model | Context capacity | Generation (tok/s) | 4K input (tok/s) | 16K input (tok/s) | Image first / end (s) | Notes |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| Tiel Coder 35B-A3B UD-IQ3_XXS (MTP 3) | 256K | 94.00 | 874.29 | 838.85 | 1.78 / 3.07 | Expert cache 7.73 → 7.73 GiB; FP8 KV |
+| Tiel Coder 35B-A3B UD-IQ3_XXS (MTP 3) | 256K | 87.40 | 813.13 | 804.15 | 2.09 / 3.37 | Expert cache 8.35 → 7.71–8.29 GiB; FP8 KV |
 
-This row is **`tinystrata-bench-v1-saved-profile`** (`standard: false`), measured with `benchmark/run.py --model tiel --saved-profile`. It keeps the model's saved native settings and sampler (temperature 1.0, top-p 0.95, top-k 20, automatic KV, which selected native FP8 on this GPU) and runs each canonical generation text once per start instead of twice, so it is not directly comparable with the four standard rows above. The saved profile was created by switching to Tiel Coder once through the API after the download, because a profile that has never been loaded still carries `model_bootstrap` and the runner then waits for an engine that is never started.
+This row is **`tinystrata-bench-v1-saved-profile`** (`standard: false`), measured with `benchmark/run.py --model tiel --saved-profile`. It keeps the model's saved native settings and sampler (temperature 1.0, top-p 0.95, top-k 20, automatic KV, which selected native FP8 on this GPU) and runs each canonical generation text once per start instead of twice, so it is not directly comparable with the four standard rows above. The saved profile had already been loaded once through the API, so it no longer carried `model_bootstrap`.
 
 ## Run-to-run spread
 
 Per-start values (each start pools its own tokens and milliseconds), minimum–maximum over the four starts:
+
+| Model | Generation (tok/s) | 4K input (tok/s) | 16K input (tok/s) |
+| --- | ---: | ---: | ---: |
+| Qwen3.6 | 109.46–113.84 | 780.2–816.0 | 742.1–768.9 |
+| Gemma 4 | 91.26–99.56 | 2394.2–2590.9 | 2375.3–2531.1 |
+| LFM2.5 | 111.93–121.90 | 2619.9–2870.4 | 2016.7–2188.9 |
+| Clover (standard v1) | 59.74–67.11 | 1720.1–1919.1 | 1495.9–1671.4 |
+| Tiel Coder (variant) | 84.80–92.49 | 764.2–852.5 | 764.5–839.2 |
+
+## Same-session comparison with the 2026-11-09 executables
+
+Diagnostic runs made on 2026-11-12 one after the other, with the executables of the 2026-11-09 build (1ea7380) and of the current build (73167a6), on the same models and settings. The configuration files pointed at the executables being tested. Four independent starts each; generation shows the pooled rate and, in brackets, the minimum–maximum over the starts.
+
+| Model (protocol) | Build | Generation (tok/s) | 4K input (tok/s) | 16K input (tok/s) |
+| --- | --- | ---: | ---: | ---: |
+| LFM2.5 (standard v1) | 1ea7380 | 121.92 (118.42–124.90) | 2776.90 | 2138.62 |
+| LFM2.5 (standard v1) | 73167a6 | 118.71 (112.11–123.26) | 2777.70 | 2134.73 |
+| Tiel Coder (saved-profile variant) | 1ea7380 | 90.86 (84.85–94.20) | 833.81 | 842.45 |
+| Tiel Coder (saved-profile variant) | 73167a6 | 89.29 (84.51–93.72) | 832.66 | 810.01 |
+| Gemma 4 (standard v1), first run | 1ea7380 | 84.20 (80.20–89.86) | 2423.96 | 2354.78 |
+| Gemma 4 (standard v1) | 73167a6 | 92.10 (89.87–95.81) | 2557.56 | 2528.76 |
+| Gemma 4 (standard v1), second run | 1ea7380 | 89.62 (86.62–91.25) | 2532.30 | 2532.87 |
+
+How to read it:
+
+- **LFM2.5 and Tiel Coder:** the two builds do not differ by more than the spread. The 2026-11-09 values of these models (LFM2.5 130.78, Tiel Coder 94.00) were not reached by the 2026-11-09 executables today (121.92 and 90.86), so this PC differed from one day to the next by up to about 7%. A difference of that size between runs on different days is not evidence about the engine.
+- **Gemma 4:** the current build was faster in generation than both runs of the older one, by 2.8% (against the second run) to 9.4% (against the first). The two older runs differ from each other by 6.4%, so the size of the gain is not established. Input rates equal those of the second older run.
+- **Tiel Coder, accepted MTP drafts:** in the four starts of the current build's first run and the four of its same-session comparison, the number of accepted drafts differed between starts in 4 of the 8 (for example 216–225 accepted of 434–454 offered; 225 of 434 in the others). With the 2026-11-09 executables it was identical in all four starts of today's run. Those executables also drafted differently today than on 2026-11-09 (225 of 434 accepted versus 228 of 420), and their Expert cache was larger (8,548 MiB versus 7,920 MiB). None of this was investigated.
+
+## Earlier run: 2026-11-09 (1ea7380)
+
+The same protocol, on the same PC, with engine code [1ea7380](https://github.com/kbc20f11/TinyStrata/commit/1ea7380827797477f85ce873f4f8faf5f6e7d422) (clean `origin/main`), driver 621.14, INT8 KV and KV growth, automatic context, input chunks and Expert placement.
+
+| Model | Context capacity | Generation (tok/s) | 4K input (tok/s) | 16K input (tok/s) | Image first / end (s) | Notes |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Qwen3.6 UD-IQ3_XXS | 256K | 111.26 | 802.28 | 759.28 | 1.97 / 3.23 | Expert cache 7.58–7.66 → 7.58–7.66 GiB |
+| Gemma 4 QAT Q4_0 | 256K | 87.70 | 2566.66 | 2424.65 | 0.94 / 1.72 | Expert cache 9.16 → 9.00 GiB |
+| LFM2.5 Q4_K_M | 128K | 130.78 | 2784.59 | 2181.39 | — | Expert cache 12.90 → 12.81 GiB |
+| Clover Preview IQ3_XXS (causal, standard v1) | 256K | 64.84 | 1858.90 | 1568.01 | — | Expert cache 8.87 → 8.48–8.50 GiB |
+| Tiel Coder 35B-A3B UD-IQ3_XXS (MTP 3, saved-profile variant) | 256K | 94.00 | 874.29 | 838.85 | 1.78 / 3.07 | Expert cache 7.73 → 7.73 GiB; FP8 KV |
+
+The four standard rows are complete standard v1 results; the Tiel Coder row is the saved-profile variant described above. Per-start minimum–maximum of that run:
 
 | Model | Generation (tok/s) | 4K input (tok/s) | 16K input (tok/s) |
 | --- | ---: | ---: | ---: |
@@ -35,9 +77,9 @@ Per-start values (each start pools its own tokens and milliseconds), minimum–m
 | Clover (standard v1) | 64.25–65.92 | 1810.7–1920.2 | 1537.9–1579.2 |
 | Tiel Coder (variant) | 91.99–95.10 | 862.7–880.7 | 833.8–846.0 |
 
-## Earlier run on the same PC
+## Earlier run: 2026-11-05 (2e51521)
 
-The same protocol was run on **2026-11-05** with engine code [2e51521](https://github.com/kbc20f11/TinyStrata/commit/2e51521df4df3548ccefc989b90ee2ea9df07247). Both the engine code and the state of the PC differ from the run above, so the difference is not attributed to a single cause.
+The same protocol was run on **2026-11-05** with engine code [2e51521](https://github.com/kbc20f11/TinyStrata/commit/2e51521df4df3548ccefc989b90ee2ea9df07247). Both the engine code and the state of the PC differ from the later runs, so the differences are not attributed to a single cause.
 
 | Model | Generation (tok/s) | 4K input (tok/s) | 16K input (tok/s) | Image first / end (s) | Expert cache, startup → after 16K (GiB) |
 | --- | ---: | ---: | ---: | ---: | --- |
@@ -48,18 +90,35 @@ The same protocol was run on **2026-11-05** with engine code [2e51521](https://g
 
 ## Measurement conditions
 
-- Before the runs about 0.7 GiB of the 16 GiB of VRAM was in use, almost all of it by the desktop compositor. Other-application usage is not collected by the protocol.
+- Before the 2026-11-12 runs about 0.9 GiB of the 16 GiB of VRAM was in use (`nvidia-smi`: 861–889 MiB). On 2026-11-09 about 0.7 GiB was in use, almost all of it by the desktop compositor; today's split was not measured. Other-application usage is not collected by the protocol.
 - The Windows power plan was Balanced, and the system memory ran at DDR5-4800 (configured clock speed 4800 MT/s).
-- These numbers come from one PC, one run set per row; use them as a reference for what a GeForce RTX 4060 Ti 16 GB can reach, not as a guarantee. Differences of a few percent between single runs are within the spread above.
+- These numbers come from one PC. Use them as a reference for what a GeForce RTX 4060 Ti 16 GB can reach, not as a guarantee. As the same-session comparison above shows, runs on different days differed by up to about 7% with the same executables.
 
 ## Artifacts
 
+The 2026-11-12 runs, engine code 73167a6:
+
 | Artifact | SHA-256 |
 | --- | --- |
-| Native engine (`tinystrata.exe`, Qwen, Clover, Tiel) | `37d9c0b6c9677d8f85eb3ebf4cb5257b68366f37c44f25bf15021a4306ed20e6` |
+| Native engine (`tinystrata.exe`, Qwen, Clover, Tiel) | `85e0975b90aa88ffdc4341181c6a358fa1419d29f4395c297d31c6ea14a2b7f9` |
+| Native engine (`tinystrata-gemma4.exe`) | `d70a0252980881fae2f4c586c2395a7cc49453bf23d72f624e2de455b5c7211a` |
+| Native engine (`tinystrata-lfm2.exe`) | `83097e057681f7a5853f0b03ffde4631ee517250b8a2abe5702823a14f4ce562` |
+| Vision encoder (`tinystrata-vision.exe`) | `a3c179ee7fc29894ec35a10b3b892e293667944d03028d8ad14e8f7fd3c729f4` |
+| Benchmark runner (`benchmark/run.py`) | `1965e021d8f0bef6696cd3145e6349968a159a7c607be09638561dc3288d81b2` |
+
+The 2026-11-09 build (1ea7380; its runner was `fced0e499d8b822781846880893b26550dc3ab4ed310b4bdb8de4aacdad13905`):
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Native engine (`tinystrata.exe`) | `37d9c0b6c9677d8f85eb3ebf4cb5257b68366f37c44f25bf15021a4306ed20e6` |
 | Native engine (`tinystrata-gemma4.exe`) | `c742cc7a7b7c7d203469662acb756f3d0e25b50420dc3db626325ac2f8d363b3` |
 | Native engine (`tinystrata-lfm2.exe`) | `96cb8ac0ae687ccc4af00ee4a3394c499325a6512e5ae675d989a2afc59a582b` |
 | Vision encoder (`tinystrata-vision.exe`) | `4f9a117b908ae40a168c65768fff800681cc8be3f7f7ad43868f1ea4b57ba9e9` |
+
+The models, projectors and inputs were the same in every run:
+
+| Artifact | SHA-256 |
+| --- | --- |
 | Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf | `36f9ec0e4c775f6efd3a61c1ea76f0875128469c3d012e3d9e2495a90e7a7150` |
 | Qwen projector `mmproj-F16.gguf` | `71f3cbc1f7cc0f30d09d41cfa924c0060827ebc33bf15ace7e86661e856f0160` |
 | gemma-4-26B_q4_0-it.gguf | `3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d` |
@@ -69,5 +128,4 @@ The same protocol was run on **2026-11-05** with engine code [2e51521](https://g
 | Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf | `03816cdc365892dfb628d49e0cae2c80003de903966b9d30db2ece231699c2d3` |
 | Tiel-Coder-35B-A3B-MTP-UD-IQ3_XXS.gguf | `a4d8ffc7f030466c67db289543871a8f9e6d5340241b300c09fbaf16642273ca` |
 | Tiel projector `mmproj-BF16.gguf` | `d9ce31026d1cb1f3f8d5152e2e2a014d9d2b302b6c93a7dc07bb0a0487f52837` |
-| Benchmark runner (`benchmark/run.py`) | `fced0e499d8b822781846880893b26550dc3ab4ed310b4bdb8de4aacdad13905` |
 | Canonical cases / image | `aa49a07349a72542a089222c755d4aa8203ab44b35e22fb3166838ef086eabde` / `b6983fe5adacff8a4fc2f8b7b0cd3b235d8961550e9f9bca7a669396b3d33138` |
