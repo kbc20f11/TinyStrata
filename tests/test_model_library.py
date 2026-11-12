@@ -72,6 +72,10 @@ def install_fixture_download(fixture, model, url, content):
 
 class LibraryTests(unittest.TestCase):
     def setUp(self):
+        # Catalog requests can lazily resolve profiles after fixture creation.
+        # Keep those metadata-only tests isolated from installed native builds.
+        self.enterContext(patch.object(model_setup, 'resolve_executable', return_value=None))
+        self.enterContext(patch.object(model_setup, 'shared_library_dirs', side_effect=lambda value: value))
         self.temp = tempfile.TemporaryDirectory(prefix='tinystrata-library-')
         self.addCleanup(self.temp.cleanup)
         self.f = create_fixture(self.temp.name)

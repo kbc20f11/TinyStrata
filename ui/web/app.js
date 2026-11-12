@@ -1229,7 +1229,9 @@ function renderModelLibrary() {
     row.cancel.hidden = !transferring || flow.job?.can_cancel !== true;
     row.cancel.disabled = !!flow?.requestBusy || !!flow?.cancelRequested;
     modelLibraryText(row.cancel, tr("cancel", "Cancel"));
-    row.remove.hidden = !item?.installed && !(management?.disk_bytes > 0);
+    // Shared assets can exist before this model is downloaded. Only offer
+    // deletion for an installed model or its own removable files/partial.
+    row.remove.hidden = !item?.installed && !(management?.deletable_bytes > 0) && management?.can_delete !== true;
     row.remove.disabled = !management?.can_delete || active || item?.active === true || !!modelDeleting || !!transferring || modelOperationBusy();
     const deleteLabel = tr("models.delete", "Delete");
     const deleteReason = modelDeleteReason(item, active, transferring);

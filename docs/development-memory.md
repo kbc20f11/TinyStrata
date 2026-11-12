@@ -2,6 +2,14 @@
 
 更新日: 2026-11-12
 
+## モデル管理：未取得Cloverと共有画像ファイル
+
+- CloverとQwenは画像用の `mmproj-F16.gguf` を共有する。Clover本体が未取得でも `disk_bytes` に共有分が含まれるため、これだけで削除ボタンを表示しない
+- 未導入モデルの削除表示は `deletable_bytes > 0` または `can_delete=true`（0バイトの所有 `.part` も含む）で判定する。導入済みモデルのactive/busy等の削除ロックは維持する。hardlinkは解放量0でも所有名を削除できるので `reclaimable_bytes` を表示判定に使わない
+- 共有ファイルだけならダウンロードのみ、所有する中断ファイルがあれば削除可能。私有の実ModelSwitcher/API/UIをPlaywrightで操作し、共有のみ→ローカルHTTP転送→中断→所有 `.part` の削除→共有のみ、Qwen本体と共有ファイルの保持を確認した。ライト・ダーク・狭い画面のスクリーンショットも目視確認済み。GPU推論や実GGUFの再取得は行っていない
+- Nodeのモデル管理回帰139チェックとPythonのモデル管理22テスト（1件環境依存skip）が通過。Python fixtureは生成後のcatalogでも実native探索を隔離する。初回は既存CUDAバイナリのcapability probeでタイムアウトしたため、テスト全期間にパッチを保持して再確認した。製品のbackend処理は変更していない
+- 私有のUI試験・画像・ライフサイクル記録は `TinyStrata-work/ui-clover-shared-20261112` に保管する
+
 ## UIインストーラーの入口とモデル取得
 
 - 新規導入・通常更新は同じ `powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install-ui.ps1' | iex"` を使う。`-Update` は通常不要で互換用に残す。`irm URL` だけでは取得した文字列を実行しないため `| iex` は必要

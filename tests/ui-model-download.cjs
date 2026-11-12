@@ -66,7 +66,7 @@ function fixture(saved=[]){
   setBusy:()=>{},backend,calls,storage};
  vm.createContext(ctx);vm.runInContext(fs.readFileSync(path.join(webDirectory,'model-library.js'),'utf8'),ctx);
  vm.runInContext(fs.readFileSync(path.join(webDirectory,'thinking-controls.js'),'utf8'),ctx);vm.runInContext(snippet,ctx);
- vm.runInContext(`modelCatalog=${JSON.stringify(IDS.map((id,i)=>({id,installed:i===0,active:i===0,management:{source:'managed',can_delete:i!==0,can_download:i!==0,complete:i===0,disk_bytes:i===0?1000000000:0,reclaimable_bytes:1000000000,download_bytes:2000000000}})))};
+ vm.runInContext(`modelCatalog=${JSON.stringify(IDS.map((id,i)=>({id,installed:i===0,active:i===0,management:{source:'managed',can_delete:false,can_download:i!==0,complete:i===0,disk_bytes:i===0?1000000000:0,deletable_bytes:i===0?1000000000:0,reclaimable_bytes:i===0?1000000000:0,download_bytes:2000000000}})))};
  modelSwitchAvailable=true;
  const productionRefresh=refreshModelCatalog;
  refreshModelCatalog=async()=>{syncComposerControls();renderModelLibrary();};
@@ -83,7 +83,7 @@ function fixture(saved=[]){
      }
      return {state:backend.rollback?'error':'ready',switching:false,model:backend.model,target:backend.target,error:backend.rollback?(backend.switchError||'activation failed'):null,rolled_back:backend.rollback};
    }
-   if(path==='v1/model/delete'){const row=modelCatalog.find(row=>row.id===body.model);row.installed=false;row.management.complete=false;row.management.disk_bytes=0;row.management.can_delete=false;row.management.can_download=true;return {model_id:body.model,deleted_bytes:1000000000,retained_shared_bytes:0,catalog:JSON.parse(JSON.stringify(modelCatalog))};}
+   if(path==='v1/model/delete'){const row=modelCatalog.find(row=>row.id===body.model);row.installed=false;row.management.complete=false;row.management.disk_bytes=0;row.management.deletable_bytes=0;row.management.reclaimable_bytes=0;row.management.can_delete=false;row.management.can_download=true;return {model_id:body.model,deleted_bytes:1000000000,retained_shared_bytes:0,catalog:JSON.parse(JSON.stringify(modelCatalog))};}
    const target=body?body.model:decodeURIComponent(path.split('?model=')[1]);
    const job=backend.jobs[target];
    if(!job)throw new Error('Unexpected target');
@@ -96,7 +96,7 @@ function fixture(saved=[]){
   state:()=>({switching:modelSwitching,dialogTarget:modelDownloadDialogTarget,target:modelSwitchTarget}),
   library:renderModelLibrary,openDelete:openModelDelete,delete:deleteModel,dismissDelete:dismissModelDelete,catalog:()=>modelCatalog,refresh:productionRefresh,useProductionRefresh:()=>{refreshModelCatalog=productionRefresh;},
   ready:activeModelNeedsDownload,setCatalog:(rows,available=true)=>{modelCatalog=rows;modelSwitchAvailable=available;},
-  install:(id,complete=true)=>{const row=modelCatalog.find(row=>row.id===id);row.installed=true;row.management.complete=complete;row.management.can_download=!complete;row.management.disk_bytes=1000000000;}};`,ctx);
+  install:(id,complete=true)=>{const row=modelCatalog.find(row=>row.id===id);row.installed=true;row.management.complete=complete;row.management.can_download=!complete;row.management.can_delete=true;row.management.disk_bytes=row.management.deletable_bytes=row.management.reclaimable_bytes=1000000000;}};`,ctx);
  return {ctx,element,backend,calls,toasts,timers,storage,t:ctx.test,
   useProductionHealth:()=>vm.runInContext(healthFunction,ctx)};
 }
@@ -225,6 +225,18 @@ async function workerRegressions(){
  for(const id of IDS){const modelImage=list._modelRows.get(id).image;ok(modelImage.getAttribute('src')===f.ctx.StrataModelLibrary.get(id).iconSrc&&!modelImage.getAttribute('src').includes('#'),'each model renders its local standalone official or generic asset');}
  ok(list._modelRows.get(IDS[0]).remove.disabled&&list._modelRows.get(IDS[0]).status.textContent==='In use','active model clearly disables delete');
  ok(list._modelRows.get(IDS[0]).remove.title==='Switch to another model to delete.'&&list._modelRows.get(IDS[0]).remove.getAttribute('aria-label')==='Delete: Switch to another model to delete.','active delete lock has a concise tooltip and accessible reason');
+ const sharedOnly=fixture(),clover=sharedOnly.t.catalog()[3];
+ Object.assign(clover.management,{disk_bytes:899283584,shared_bytes:899283584,deletable_bytes:0,reclaimable_bytes:0,can_delete:false,delete_reason:'not_downloaded'});
+ sharedOnly.t.library();const cloverRow=sharedOnly.element('model-library-list')._modelRows.get(IDS[3]);
+ ok(cloverRow.remove.hidden&&!cloverRow.download.hidden&&!cloverRow.download.disabled,'shared Qwen projector alone leaves missing Clover with Download only');
+ Object.assign(clover.management,{disk_bytes:899283592,deletable_bytes:8,can_delete:true,delete_reason:null});sharedOnly.t.library();
+ ok(!cloverRow.remove.hidden&&!cloverRow.remove.disabled,'owned partial remains removable even when its bytes cannot be reclaimed through a hardlink');
+ Object.assign(clover.management,{can_delete:false,delete_reason:'busy'});sharedOnly.t.library();
+ ok(!cloverRow.remove.hidden&&cloverRow.remove.disabled,'owned partial deletion stays visible but locked during an operation');
+ Object.assign(clover.management,{disk_bytes:899283584,deletable_bytes:0,can_delete:true,delete_reason:null});sharedOnly.t.library();
+ ok(!cloverRow.remove.hidden&&!cloverRow.remove.disabled,'an owned zero-byte partial can still be removed');
+ Object.assign(clover.management,{can_delete:false,delete_reason:'not_downloaded'});sharedOnly.t.library();
+ ok(cloverRow.remove.hidden&&sharedOnly.element('model-library-list')._modelRows.get(IDS[3])===cloverRow,'removing owned leftovers hides Delete while retaining the shared projector and row');
  const reasons={custom:'Local files are managed outside TinyStrata.',local:'Local files are managed outside TinyStrata.',
   shared:'Required by another model.',unsafe_path:'The file path could not be verified.',busy:'Wait for the current operation to finish.',
   downloading:'Wait for the download to finish.',not_downloaded:'No downloaded files to delete.',active:'Updating model status…',other:'Deletion is unavailable.'};
