@@ -152,6 +152,8 @@ Consulte `GET /v1/model/switch` até `state` ser `ready`. Para voltar ao Qwen, e
 
 ## Velocidade medida — Qwen3.6
 
+**Medição mais recente por capacidade (2026-11-12):** [Os cinco modelos com 24/16/12/8 GB](benchmark/results/rtx-pro-4000-blackwell-sff-20261112.md), usando as rotas KV padrão atuais, reserva real de VRAM e uma inicialização por condição. Inclui geração, entradas de 4K/16K e imagens. Esta medição única permanece separada das comparações históricas de KV com várias repetições abaixo.
+
 Medido em **2026-11-03** no Windows com uma RTX PRO 4000 Blackwell SFF Edition (24 GB), um Ryzen 9 7945HX3D, 64 GB de RAM e o modelo fixo Unsloth MTP UD-IQ3_XXS. O codificador de imagens permaneceu na GPU durante as solicitações pela API. Foram ativados o raciocínio, os padrões de amostragem do modelo (temperatura 0.7) e MTP 3. Os blocos de entrada e a distribuição de especialistas foram automáticos; o contexto foi fixado conforme a classe de VRAM. O caminho híbrido de CUDA Graph permaneceu desativado por padrão e os grafos habituais de execução inteiramente na GPU continuaram ativos.
 
 | Condição de memória disponível | Capacidade de contexto | Geração com INT8 | Geração com FP8 nativo | Notas |

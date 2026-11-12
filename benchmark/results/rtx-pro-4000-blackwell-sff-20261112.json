@@ -1,0 +1,2148 @@
+{
+  "protocol": "tinystrata-bench-v1-managed-defaults-capacity-onepass",
+  "runner_protocol": "tinystrata-bench-v1-saved-profile",
+  "standard": false,
+  "complete": true,
+  "source_commit": "811bd9de7fa6c67bd61303e1fece72cbb12705df",
+  "started_utc": "2026-11-12T12:37:12.312927+00:00",
+  "finished_utc": "2026-11-12T12:54:58.076113+00:00",
+  "hardware": {
+    "gpu": "RTX PRO 4000 Blackwell SFF Edition",
+    "nominal_vram_gb": 24,
+    "observed_nvml_total_bytes": 25655508992,
+    "driver": "597.30",
+    "cpu": "AMD Ryzen 9 7945HX3D",
+    "installed_ram_gb": 64,
+    "os": "Windows-11-10.0.26300-SP0",
+    "reported_ram_bytes": 66270621696
+  },
+  "starts_per_model_capacity": 1,
+  "completed_starts": 20,
+  "seed": 1234,
+  "generation_formula": "sum(native.engine_generated)*1000/sum(native.decode_ms)",
+  "prefill_formula": "sum(native.prompt_read)*1000/sum(native.prompt_ms)",
+  "scope": "Five-model capacity one-pass variant: explicit policy KV/context/automatic chunk; not four-start standard v1 or unmodified saved profiles.",
+  "saved_profiles_unchanged": true,
+  "reservation_policy": "max(0, observed NVML total bytes - target capacity GiB); held and retouched around every request, then released. Same physical card; bandwidth/compute of smaller GPUs are not emulated.",
+  "reservations": [
+    {
+      "capacity_gib": 24,
+      "complete": true,
+      "reservation_bytes": 0,
+      "released": true,
+      "actual_nvml_total_bytes": 25655508992,
+      "error": null
+    },
+    {
+      "capacity_gib": 16,
+      "complete": true,
+      "reservation_bytes": 8475639808,
+      "released": true,
+      "actual_nvml_total_bytes": 25655508992,
+      "error": null
+    },
+    {
+      "capacity_gib": 12,
+      "complete": true,
+      "reservation_bytes": 12770607104,
+      "released": true,
+      "actual_nvml_total_bytes": 25655508992,
+      "error": null
+    },
+    {
+      "capacity_gib": 8,
+      "complete": true,
+      "reservation_bytes": 17065574400,
+      "released": true,
+      "actual_nvml_total_bytes": 25655508992,
+      "error": null
+    }
+  ],
+  "source_results": [
+    {
+      "capacity_gib": 24,
+      "file": "run-24gb/result.json",
+      "sha256": "732207151b87f90f042d3e9a117bdc2e6be4082832c71a304382b84d4a2dfc24",
+      "protocol": "tinystrata-bench-v1-saved-profile",
+      "standard": false,
+      "seed": 1234,
+      "runs": 1,
+      "generation_passes": 1,
+      "benchmark_sha256": "1965e021d8f0bef6696cd3145e6349968a159a7c607be09638561dc3288d81b2",
+      "cases_sha256": "aa49a07349a72542a089222c755d4aa8203ab44b35e22fb3166838ef086eabde",
+      "image_sha256": "b6983fe5adacff8a4fc2f8b7b0cd3b235d8961550e9f9bca7a669396b3d33138"
+    },
+    {
+      "capacity_gib": 16,
+      "file": "run-16gb/result.json",
+      "sha256": "630d7072b80cd68adb1f5b3f2b1153376d27000acd1051fb107bef5576463de6",
+      "protocol": "tinystrata-bench-v1-saved-profile",
+      "standard": false,
+      "seed": 1234,
+      "runs": 1,
+      "generation_passes": 1,
+      "benchmark_sha256": "1965e021d8f0bef6696cd3145e6349968a159a7c607be09638561dc3288d81b2",
+      "cases_sha256": "aa49a07349a72542a089222c755d4aa8203ab44b35e22fb3166838ef086eabde",
+      "image_sha256": "b6983fe5adacff8a4fc2f8b7b0cd3b235d8961550e9f9bca7a669396b3d33138"
+    },
+    {
+      "capacity_gib": 12,
+      "file": "run-12gb/result.json",
+      "sha256": "f53b6a1a46cc5e625cf7e360b070622d970d77e91223fa8316a72a2ff8512f65",
+      "protocol": "tinystrata-bench-v1-saved-profile",
+      "standard": false,
+      "seed": 1234,
+      "runs": 1,
+      "generation_passes": 1,
+      "benchmark_sha256": "1965e021d8f0bef6696cd3145e6349968a159a7c607be09638561dc3288d81b2",
+      "cases_sha256": "aa49a07349a72542a089222c755d4aa8203ab44b35e22fb3166838ef086eabde",
+      "image_sha256": "b6983fe5adacff8a4fc2f8b7b0cd3b235d8961550e9f9bca7a669396b3d33138"
+    },
+    {
+      "capacity_gib": 8,
+      "file": "run-08gb/result.json",
+      "sha256": "2811fff9477f4860766184b239c4dfb747e15689076d4481088ff31d9620316c",
+      "protocol": "tinystrata-bench-v1-saved-profile",
+      "standard": false,
+      "seed": 1234,
+      "runs": 1,
+      "generation_passes": 1,
+      "benchmark_sha256": "1965e021d8f0bef6696cd3145e6349968a159a7c607be09638561dc3288d81b2",
+      "cases_sha256": "aa49a07349a72542a089222c755d4aa8203ab44b35e22fb3166838ef086eabde",
+      "image_sha256": "b6983fe5adacff8a4fc2f8b7b0cd3b235d8961550e9f9bca7a669396b3d33138"
+    }
+  ],
+  "rows": [
+    {
+      "capacity_gib": 24,
+      "model": "qwen",
+      "name": "Qwen3.6",
+      "complete_runs": 1,
+      "status": "complete",
+      "error": null,
+      "metrics": {
+        "generation": {
+          "tokens": 384,
+          "milliseconds": 2639.5,
+          "tok_s": 145.48209888236408,
+          "requests": 3,
+          "reused_tokens": 0
+        },
+        "input_4k": {
+          "tokens": 4096,
+          "milliseconds": 1262.7,
+          "tok_s": 3243.8425595945196,
+          "requests": 1,
+          "reused_tokens": 0
+        },
+        "input_16k": {
+          "tokens": 16384,
+          "milliseconds": 5886.6,
+          "tok_s": 2783.270478714368,
+          "requests": 1,
+          "reused_tokens": 0
+        }
+      },
+      "actual_kv": "fp8-mma",
+      "expected_kv": "fp8-mma",
+      "context_tokens": 262144,
+      "chunk": 2048,
+      "mtp": 3,
+      "expert_slots_startup": 10496,
+      "expert_slots_after_16k": 10496,
+      "expert_cache_gib_startup": 11.397911071777344,
+      "expert_cache_gib_after_16k": 11.397911071777344,
+      "sampling": {
+        "temperature": 0.7,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 1.5,
+        "repetition_penalty": 1.0
+      },
+      "saved_enable_thinking": true,
+      "artifacts": [
+        {
+          "file": "tinystrata.exe",
+          "size": 56561664,
+          "sha256": "a8e9e0f38aac33917a078a6981bc21eed3330beb57f4097a48c3a1b0fcc8e81f"
+        },
+        {
+          "file": "Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf",
+          "size": 14069266720,
+          "sha256": "36f9ec0e4c775f6efd3a61c1ea76f0875128469c3d012e3d9e2495a90e7a7150"
+        },
+        {
+          "file": "tinystrata-vision.exe",
+          "size": 59828736,
+          "sha256": "60f68f52feeca1573305a9aa4ffe8be9981c5edb0df44cfe0809c1eb84854d66"
+        },
+        {
+          "file": "mmproj-F16.gguf",
+          "size": 899283584,
+          "sha256": "71f3cbc1f7cc0f30d09d41cfa924c0060827ebc33bf15ace7e86661e856f0160"
+        }
+      ],
+      "image_first_s": 0.6465332000007038,
+      "image_complete_s": 1.5012290999984543,
+      "mtp_counts_generation": {
+        "drafts_accepted": 255,
+        "drafts_offered": 371
+      },
+      "returned_generation_tokens": 384,
+      "kv_memory_bytes": {
+        "startup": {
+          "kv_logical_bytes": 3045064704,
+          "kv_mapped_bytes": 3045064704,
+          "kv_committed_rows": 262144
+        },
+        "after_16k": {
+          "kv_logical_bytes": 3045064704,
+          "kv_mapped_bytes": 3045064704,
+          "kv_committed_rows": 262144
+        }
+      },
+      "startup_policy": {
+        "chunk_auto": true,
+        "mtp_auto": 0,
+        "lookup_draft": 0,
+        "vision": 1,
+        "gpu_cc": 120,
+        "q36_mmvq_il": 1,
+        "q36_main_mmq": 1,
+        "q36_mtp_mmq": 0,
+        "kv_grow": 1
+      }
+    },
+    {
+      "capacity_gib": 24,
+      "model": "gemma",
+      "name": "Gemma 4",
+      "complete_runs": 1,
+      "status": "complete",
+      "error": null,
+      "metrics": {
+        "generation": {
+          "tokens": 384,
+          "milliseconds": 3391.1,
+          "tok_s": 113.23759252160066,
+          "requests": 3,
+          "reused_tokens": 0
+        },
+        "input_4k": {
+          "tokens": 4096,
+          "milliseconds": 1183.4,
+          "tok_s": 3461.2134527632243,
+          "requests": 1,
+          "reused_tokens": 0
+        },
+        "input_16k": {
+          "tokens": 16384,
+          "milliseconds": 5350.3,
+          "tok_s": 3062.258191129469,
+          "requests": 1,
+          "reused_tokens": 0
+        }
+      },
+      "actual_kv": "int8",
+      "expected_kv": "int8",
+      "context_tokens": 262144,
+      "chunk": 1120,
+      "mtp": 3,
+      "expert_slots_startup": 3840,
+      "expert_slots_after_16k": 3840,
+      "expert_cache_gib_startup": 11.96484375,
+      "expert_cache_gib_after_16k": 11.96484375,
+      "sampling": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 64,
+        "min_p": 0.0,
+        "presence_penalty": 0.0,
+        "repetition_penalty": 1.0
+      },
+      "saved_enable_thinking": true,
+      "artifacts": [
+        {
+          "file": "tinystrata-gemma4.exe",
+          "size": 28700160,
+          "sha256": "6adb5c3fe36e4b19f7eace3002d7b369de62e0b3cd9a9a095a6138e4a49858b5"
+        },
+        {
+          "file": "gemma-4-26B_q4_0-it.gguf",
+          "size": 14439363584,
+          "sha256": "3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d"
+        },
+        {
+          "file": "mtp-gemma-4-26B-A4B-it.gguf",
+          "size": 251939328,
+          "sha256": "7272d97595f0d4c74bd7b623492b7dbdaafd8b7c72f329a8270ba4eca68f768a"
+        },
+        {
+          "file": "tinystrata-vision.exe",
+          "size": 59828736,
+          "sha256": "60f68f52feeca1573305a9aa4ffe8be9981c5edb0df44cfe0809c1eb84854d66"
+        },
+        {
+          "file": "gemma-4-26B-it-mmproj.gguf",
+          "size": 1194828160,
+          "sha256": "a359953a076b877db30c31dbbb4c6d93b4a6e017ee5db5784247e4d4c0dd4f3b"
+        }
+      ],
+      "image_first_s": 0.5722772000008263,
+      "image_complete_s": 1.2239306000010401,
+      "mtp_counts_generation": {
+        "drafts_accepted": 256,
+        "drafts_offered": 374
+      },
+      "returned_generation_tokens": 384,
+      "kv_memory_bytes": {
+        "startup": {
+          "kv_logical_bytes": 2852126720,
+          "kv_mapped_bytes": 2852126720,
+          "kv_committed_rows": 262144
+        },
+        "after_16k": {
+          "kv_logical_bytes": 2852126720,
+          "kv_mapped_bytes": 2852126720,
+          "kv_committed_rows": 262144
+        }
+      },
+      "startup_policy": {
+        "chunk_auto": true,
+        "mtp_auto": 0,
+        "lookup_draft": 0,
+        "vision": 1,
+        "kv_grow": 1
+      }
+    },
+    {
+      "capacity_gib": 24,
+      "model": "lfm",
+      "name": "LFM2.5",
+      "complete_runs": 1,
+      "status": "complete",
+      "error": null,
+      "metrics": {
+        "generation": {
+          "tokens": 384,
+          "milliseconds": 2367.3,
+          "tok_s": 162.21011278671904,
+          "requests": 3,
+          "reused_tokens": 0
+        },
+        "input_4k": {
+          "tokens": 4096,
+          "milliseconds": 1369.4,
+          "tok_s": 2991.090988754199,
+          "requests": 1,
+          "reused_tokens": 0
+        },
+        "input_16k": {
+          "tokens": 16384,
+          "milliseconds": 6120.2,
+          "tok_s": 2677.0366981471193,
+          "requests": 1,
+          "reused_tokens": 0
+        }
+      },
+      "actual_kv": "fp8-mma",
+      "expected_kv": "fp8-mma",
+      "context_tokens": 131072,
+      "chunk": 256,
+      "mtp": 0,
+      "expert_slots_startup": 2432,
+      "expert_slots_after_16k": 2432,
+      "expert_cache_gib_startup": 12.8974609375,
+      "expert_cache_gib_after_16k": 12.8974609375,
+      "sampling": {
+        "temperature": 0.1,
+        "top_p": 1.0,
+        "top_k": 50,
+        "min_p": 0.0,
+        "presence_penalty": 0.0,
+        "repetition_penalty": 1.05
+      },
+      "saved_enable_thinking": true,
+      "artifacts": [
+        {
+          "file": "tinystrata-lfm2.exe",
+          "size": 28624384,
+          "sha256": "54b6ab5539c84e18af00d11c269b5b0d032d15dc5adebf6614adfdc96c328768"
+        },
+        {
+          "file": "LFM2.5-24B-A2B-Q4_K_M.gguf",
+          "size": 14526258464,
+          "sha256": "d3334405b96228eb9908cdebb5c6194908f2da64282bda852afc3a3910c64e7d"
+        }
+      ],
+      "image_first_s": null,
+      "image_complete_s": null,
+      "mtp_counts_generation": {
+        "drafts_accepted": 0,
+        "drafts_offered": 0
+      },
+      "returned_generation_tokens": 384,
+      "kv_memory_bytes": {
+        "startup": {
+          "kv_logical_bytes": 1426063360,
+          "kv_mapped_bytes": 1426063360,
+          "kv_committed_rows": 131072
+        },
+        "after_16k": {
+          "kv_logical_bytes": 1426063360,
+          "kv_mapped_bytes": 1426063360,
+          "kv_committed_rows": 131072
+        }
+      },
+      "startup_policy": {
+        "chunk_auto": true,
+        "vision": 0,
+        "kv_grow": 1
+      }
+    },
+    {
+      "capacity_gib": 24,
+      "model": "clover",
+      "name": "Clover",
+      "complete_runs": 1,
+      "status": "complete",
+      "error": null,
+      "metrics": {
+        "generation": {
+          "tokens": 384,
+          "milliseconds": 3967.0,
+          "tok_s": 96.79858835391984,
+          "requests": 3,
+          "reused_tokens": 0
+        },
+        "input_4k": {
+          "tokens": 4096,
+          "milliseconds": 1691.5,
+          "tok_s": 2421.5193615134494,
+          "requests": 1,
+          "reused_tokens": 0
+        },
+        "input_16k": {
+          "tokens": 16384,
+          "milliseconds": 7853.6,
+          "tok_s": 2086.177039828868,
+          "requests": 1,
+          "reused_tokens": 0
+        }
+      },
+      "actual_kv": "int8",
+      "expected_kv": "int8",
+      "context_tokens": 262144,
+      "chunk": 512,
+      "mtp": 0,
+      "expert_slots_startup": 10240,
+      "expert_slots_after_16k": 10240,
+      "expert_cache_gib_startup": 12.33673095703125,
+      "expert_cache_gib_after_16k": 12.33673095703125,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "top_k": 64,
+        "min_p": 0.0,
+        "presence_penalty": 0.9,
+        "frequency_penalty": 0.0,
+        "repetition_penalty": 1.05
+      },
+      "saved_enable_thinking": true,
+      "artifacts": [
+        {
+          "file": "tinystrata.exe",
+          "size": 56561664,
+          "sha256": "a8e9e0f38aac33917a078a6981bc21eed3330beb57f4097a48c3a1b0fcc8e81f"
+        },
+        {
+          "file": "Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf",
+          "size": 15515157952,
+          "sha256": "03816cdc365892dfb628d49e0cae2c80003de903966b9d30db2ece231699c2d3"
+        },
+        {
+          "file": "tinystrata-vision.exe",
+          "size": 59828736,
+          "sha256": "60f68f52feeca1573305a9aa4ffe8be9981c5edb0df44cfe0809c1eb84854d66"
+        },
+        {
+          "file": "mmproj-F16.gguf",
+          "size": 899283584,
+          "sha256": "71f3cbc1f7cc0f30d09d41cfa924c0060827ebc33bf15ace7e86661e856f0160"
+        }
+      ],
+      "image_first_s": 1.0247402999993938,
+      "image_complete_s": 1.8285202999977628,
+      "mtp_counts_generation": {
+        "drafts_accepted": 0,
+        "drafts_offered": 0
+      },
+      "returned_generation_tokens": 384,
+      "kv_memory_bytes": {
+        "startup": {
+          "kv_logical_bytes": 2768240640,
+          "kv_mapped_bytes": 2768240640,
+          "kv_committed_rows": 262144
+        },
+        "after_16k": {
+          "kv_logical_bytes": 2768240640,
+          "kv_mapped_bytes": 2768240640,
+          "kv_committed_rows": 262144
+        }
+      },
+      "startup_policy": {
+        "chunk_auto": true,
+        "vision": 1,
+        "gpu_cc": 120,
+        "q36_mmvq_il": 0,
+        "q36_main_mmq": 1,
+        "q36_mtp_mmq": 0,
+        "kv_grow": 1
+      }
+    },
+    {
+      "capacity_gib": 24,
+      "model": "tiel",
+      "name": "Tiel Coder",
+      "complete_runs": 1,
+      "status": "complete",
+      "error": null,
+      "metrics": {
+        "generation": {
+          "tokens": 384,
+          "milliseconds": 3422.5,
+          "tok_s": 112.19868517165814,
+          "requests": 3,
+          "reused_tokens": 0
+        },
+        "input_4k": {
+          "tokens": 4096,
+          "milliseconds": 4591.3,
+          "tok_s": 892.122056933766,
+          "requests": 1,
+          "reused_tokens": 0
+        },
+        "input_16k": {
+          "tokens": 16384,
+          "milliseconds": 19489.8,
+          "tok_s": 840.644850126733,
+          "requests": 1,
+          "reused_tokens": 0
+        }
+      },
+      "actual_kv": "fp8-mma",
+      "expected_kv": "fp8-mma",
+      "context_tokens": 262144,
+      "chunk": 4096,
+      "mtp": 3,
+      "expert_slots_startup": 10496,
+      "expert_slots_after_16k": 10496,
+      "expert_cache_gib_startup": 10.848628997802734,
+      "expert_cache_gib_after_16k": 10.848628997802734,
+      "sampling": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 0.0,
+        "frequency_penalty": 0.0,
+        "repetition_penalty": 1.0
+      },
+      "saved_enable_thinking": true,
+      "artifacts": [
+        {
+          "file": "tinystrata.exe",
+          "size": 56561664,
+          "sha256": "a8e9e0f38aac33917a078a6981bc21eed3330beb57f4097a48c3a1b0fcc8e81f"
+        },
+        {
+          "file": "Tiel-Coder-35B-A3B-MTP-UD-IQ3_XXS.gguf",
+          "size": 13600579424,
+          "sha256": "a4d8ffc7f030466c67db289543871a8f9e6d5340241b300c09fbaf16642273ca"
+        },
+        {
+          "file": "tinystrata-vision.exe",
+          "size": 59828736,
+          "sha256": "60f68f52feeca1573305a9aa4ffe8be9981c5edb0df44cfe0809c1eb84854d66"
+        },
+        {
+          "file": "mmproj-BF16.gguf",
+          "size": 902822016,
+          "sha256": "d9ce31026d1cb1f3f8d5152e2e2a014d9d2b302b6c93a7dc07bb0a0487f52837"
+        }
+      ],
+      "image_first_s": 1.333188099997642,
+      "image_complete_s": 2.4548477999996976,
+      "mtp_counts_generation": {
+        "drafts_accepted": 225,
+        "drafts_offered": 465
+      },
+      "returned_generation_tokens": 384,
+      "kv_memory_bytes": {
+        "startup": {
+          "kv_logical_bytes": 3045064704,
+          "kv_mapped_bytes": 3045064704,
+          "kv_committed_rows": 262144
+        },
+        "after_16k": {
+          "kv_logical_bytes": 3045064704,
+          "kv_mapped_bytes": 3045064704,
+          "kv_committed_rows": 262144
+        }
+      },
+      "startup_policy": {
+        "chunk_auto": true,
+        "mtp_auto": 0,
+        "lookup_draft": 0,
+        "vision": 1,
+        "gpu_cc": 120,
+        "q36_mmvq_il": 1,
+        "q36_main_mmq": 0,
+        "q36_mtp_mmq": 0,
+        "kv_grow": 1
+      }
+    },
+    {
+      "capacity_gib": 16,
+      "model": "qwen",
+      "name": "Qwen3.6",
+      "complete_runs": 1,
+      "status": "complete",
+      "error": null,
+      "metrics": {
+        "generation": {
+          "tokens": 384,
+          "milliseconds": 3564.8,
+          "tok_s": 107.71992818671454,
+          "requests": 3,
+          "reused_tokens": 0
+        },
+        "input_4k": {
+          "tokens": 4096,
+          "milliseconds": 4593.5,
+          "tok_s": 891.6947861108088,
+          "requests": 1,
+          "reused_tokens": 0
+        },
+        "input_16k": {
+          "tokens": 16384,
+          "milliseconds": 19306.1,
+          "tok_s": 848.6436929260701,
+          "requests": 1,
+          "reused_tokens": 0
+        }
+      },
+      "actual_kv": "fp8-mma",
+      "expected_kv": "fp8-mma",
+      "context_tokens": 262144,
+      "chunk": 2048,
+      "mtp": 3,
+      "expert_slots_startup": 6501,
+      "expert_slots_after_16k": 6501,
+      "expert_cache_gib_startup": 7.059816509485245,
+      "expert_cache_gib_after_16k": 7.059816509485245,
+      "sampling": {
+        "temperature": 0.7,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 1.5,
+        "repetition_penalty": 1.0
+      },
+      "saved_enable_thinking": true,
+      "artifacts": [
+        {
+          "file": "tinystrata.exe",
+          "size": 56561664,
+          "sha256": "a8e9e0f38aac33917a078a6981bc21eed3330beb57f4097a48c3a1b0fcc8e81f"
+        },
+        {
+          "file": "Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf",
+          "size": 14069266720,
+          "sha256": "36f9ec0e4c775f6efd3a61c1ea76f0875128469c3d012e3d9e2495a90e7a7150"
+        },
+        {
+          "file": "tinystrata-vision.exe",
+          "size": 59828736,
+          "sha256": "60f68f52feeca1573305a9aa4ffe8be9981c5edb0df44cfe0809c1eb84854d66"
+        },
+        {
+          "file": "mmproj-F16.gguf",
+          "size": 899283584,
+          "sha256": "71f3cbc1f7cc0f30d09d41cfa924c0060827ebc33bf15ace7e86661e856f0160"
+        }
+      ],
+      "image_first_s": 1.7091727999977593,
+      "image_complete_s": 3.1834863999974914,
+      "mtp_counts_generation": {
+        "drafts_accepted": 255,
+        "drafts_offered": 354
+      },
+      "returned_generation_tokens": 384,
+      "kv_memory_bytes": {
+        "startup": {
+          "kv_logical_bytes": 3045064704,
+          "kv_mapped_bytes": 276824064,
+          "kv_committed_rows": 16384
+        },
+        "after_16k": {
+          "kv_logical_bytes": 3045064704,
+          "kv_mapped_bytes": 369098752,
+          "kv_committed_rows": 24576
+        }
+      },
+      "startup_policy": {
+        "chunk_auto": true,
+        "mtp_auto": 0,
+        "lookup_draft": 0,
+        "vision": 1,
+        "gpu_cc": 120,
+        "cpu_workers": 15,
+        "cpu_threads": 16,
+        "q36_mmvq_il": 0,
+        "q36_main_mmq": 0,
+        "q36_mtp_mmq": 0,
+        "kv_grow": 1
+      }
+    },
+    {
+      "capacity_gib": 16,
+      "model": "gemma",
+      "name": "Gemma 4",
+      "complete_runs": 1,
+      "status": "complete",
+      "error": null,
+      "metrics": {
+        "generation": {
+          "tokens": 384,
+          "milliseconds": 3478.7,
+          "tok_s": 110.38606375945038,
+          "requests": 3,
+          "reused_tokens": 0
+        },
+        "input_4k": {
+          "tokens": 4096,
+          "milliseconds": 1531.0,
+          "tok_s": 2675.3755715218813,
+          "requests": 1,
+          "reused_tokens": 0
+        },
+        "input_16k": {
+          "tokens": 16384,
+          "milliseconds": 6336.3,
+          "tok_s": 2585.7361551694207,
+          "requests": 1,
+          "reused_tokens": 0
+        }
+      },
+      "actual_kv": "int8",
+      "expected_kv": "int8",
+      "context_tokens": 262144,
+      "chunk": 1120,
+      "mtp": 3,
+      "expert_slots_startup": 2764,
+      "expert_slots_after_16k": 2707,
+      "expert_cache_gib_startup": 8.6123046875,
+      "expert_cache_gib_after_16k": 8.4365234375,
+      "sampling": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 64,
+        "min_p": 0.0,
+        "presence_penalty": 0.0,
+        "repetition_penalty": 1.0
+      },
+      "saved_enable_thinking": true,
+      "artifacts": [
+        {
+          "file": "tinystrata-gemma4.exe",
+          "size": 28700160,
+          "sha256": "6adb5c3fe36e4b19f7eace3002d7b369de62e0b3cd9a9a095a6138e4a49858b5"
+        },
+        {
+          "file": "gemma-4-26B_q4_0-it.gguf",
+          "size": 14439363584,
+          "sha256": "3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d"
+        },
+        {
+          "file": "mtp-gemma-4-26B-A4B-it.gguf",
+          "size": 251939328,
+          "sha256": "7272d97595f0d4c74bd7b623492b7dbdaafd8b7c72f329a8270ba4eca68f768a"
+        },
+        {
+          "file": "tinystrata-vision.exe",
+          "size": 59828736,
+          "sha256": "60f68f52feeca1573305a9aa4ffe8be9981c5edb0df44cfe0809c1eb84854d66"
+        },
+        {
+          "file": "gemma-4-26B-it-mmproj.gguf",
+          "size": 1194828160,
+          "sha256": "a359953a076b877db30c31dbbb4c6d93b4a6e017ee5db5784247e4d4c0dd4f3b"
+        }
+      ],
+      "image_first_s": 0.8568173999992723,
+      "image_complete_s": 1.5357779999976628,
+      "mtp_counts_generation": {
+        "drafts_accepted": 265,
+        "drafts_offered": 354
+      },
+      "returned_generation_tokens": 384,
+      "kv_memory_bytes": {
+        "startup": {
+          "kv_logical_bytes": 2852126720,
+          "kv_mapped_bytes": 62914560,
+          "kv_committed_rows": 4096
+        },
+        "after_16k": {
+          "kv_logical_bytes": 2852126720,
+          "kv_mapped_bytes": 230686720,
+          "kv_committed_rows": 20480
+        }
+      },
+      "startup_policy": {
+        "chunk_auto": true,
+        "mtp_auto": 0,
+        "lookup_draft": 0,
+        "vision": 1,
+        "kv_grow": 1
+      }
+    },
+    {
+      "capacity_gib": 16,
+      "model": "lfm",
+      "name": "LFM2.5",
+      "complete_runs": 1,
+      "status": "complete",
+      "error": null,
+      "metrics": {
+        "generation": {
+          "tokens": 384,
+          "milliseconds": 2608.4,
+          "tok_s": 147.2166845575832,
+          "requests": 3,
+          "reused_tokens": 0
+        },
+        "input_4k": {
+          "tokens": 4096,
+          "milliseconds": 1517.9,
+          "tok_s": 2698.464984518084,
+          "requests": 1,
+          "reused_tokens": 0
+        },
+        "input_16k": {
+          "tokens": 16384,
+          "milliseconds": 6829.9,
+          "tok_s": 2398.8638193824218,
+          "requests": 1,
+          "reused_tokens": 0
+        }
+      },
+      "actual_kv": "fp8-mma",
+      "expected_kv": "fp8-mma",
+      "context_tokens": 131072,
+      "chunk": 256,
+      "mtp": 0,
+      "expert_slots_startup": 2393,
+      "expert_slots_after_16k": 2359,
+      "expert_cache_gib_startup": 12.6904296875,
+      "expert_cache_gib_after_16k": 12.4990234375,
+      "sampling": {
+        "temperature": 0.1,
+        "top_p": 1.0,
+        "top_k": 50,
+        "min_p": 0.0,
+        "presence_penalty": 0.0,
+        "repetition_penalty": 1.05
+      },
+      "saved_enable_thinking": true,
+      "artifacts": [
+        {
+          "file": "tinystrata-lfm2.exe",
+          "size": 28624384,
+          "sha256": "54b6ab5539c84e18af00d11c269b5b0d032d15dc5adebf6614adfdc96c328768"
+        },
+        {
+          "file": "LFM2.5-24B-A2B-Q4_K_M.gguf",
+          "size": 14526258464,
+          "sha256": "d3334405b96228eb9908cdebb5c6194908f2da64282bda852afc3a3910c64e7d"
+        }
+      ],
+      "image_first_s": null,
+      "image_complete_s": null,
+      "mtp_counts_generation": {
+        "drafts_accepted": 0,
+        "drafts_offered": 0
+      },
+      "returned_generation_tokens": 384,
+      "kv_memory_bytes": {
+        "startup": {
+          "kv_logical_bytes": 1426063360,
+          "kv_mapped_bytes": 83886080,
+          "kv_committed_rows": 4096
+        },
+        "after_16k": {
+          "kv_logical_bytes": 1426063360,
+          "kv_mapped_bytes": 251658240,
+          "kv_committed_rows": 20480
+        }
+      },
+      "startup_policy": {
+        "chunk_auto": true,
+        "vision": 0,
+        "kv_grow": 1
+      }
+    },
+    {
+      "capacity_gib": 16,
+      "model": "clover",
+      "name": "Clover",
+      "complete_runs": 1,
+      "status": "complete",
+      "error": null,
+      "metrics": {
+        "generation": {
+          "tokens": 384,
+          "milliseconds": 6007.6,
+          "tok_s": 63.91903588787535,
+          "requests": 3,
+          "reused_tokens": 0
+        },
+        "input_4k": {
+          "tokens": 4096,
+          "milliseconds": 1791.1,
+          "tok_s": 2286.8628217296637,
+          "requests": 1,
+          "reused_tokens": 0
+        },
+        "input_16k": {
+          "tokens": 16384,
+          "milliseconds": 7822.3,
+          "tok_s": 2094.5246283062525,
+          "requests": 1,
+          "reused_tokens": 0
+        }
+      },
+      "actual_kv": "int8",
+      "expected_kv": "int8",
+      "context_tokens": 262144,
+      "chunk": 2048,
+      "mtp": 0,
+      "expert_slots_startup": 5480,
+      "expert_slots_after_16k": 5242,
+      "expert_cache_gib_startup": 6.602078676223755,
+      "expert_cache_gib_after_16k": 6.31534606218338,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "top_k": 64,
+        "min_p": 0.0,
+        "presence_penalty": 0.9,
+        "frequency_penalty": 0.0,
+        "repetition_penalty": 1.05
+      },
+      "saved_enable_thinking": true,
+      "artifacts": [
+        {
+          "file": "tinystrata.exe",
+          "size": 56561664,
+          "sha256": "a8e9e0f38aac33917a078a6981bc21eed3330beb57f4097a48c3a1b0fcc8e81f"
+        },
+        {
+          "file": "Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf",
+          "size": 15515157952,
+          "sha256": "03816cdc365892dfb628d49e0cae2c80003de903966b9d30db2ece231699c2d3"
+        },
+        {
+          "file": "tinystrata-vision.exe",
+          "size": 59828736,
+          "sha256": "60f68f52feeca1573305a9aa4ffe8be9981c5edb0df44cfe0809c1eb84854d66"
+        },
+        {
+          "file": "mmproj-F16.gguf",
+          "size": 899283584,
+          "sha256": "71f3cbc1f7cc0f30d09d41cfa924c0060827ebc33bf15ace7e86661e856f0160"
+        }
+      ],
+      "image_first_s": 1.3459082999979728,
+      "image_complete_s": 2.6398638999999093,
+      "mtp_counts_generation": {
+        "drafts_accepted": 0,
+        "drafts_offered": 0
+      },
+      "returned_generation_tokens": 384,
+      "kv_memory_bytes": {
+        "startup": {
+          "kv_logical_bytes": 2768240640,
+          "kv_mapped_bytes": 251658240,
+          "kv_committed_rows": 16384
+        },
+        "after_16k": {
+          "kv_logical_bytes": 2768240640,
+          "kv_mapped_bytes": 335544320,
+          "kv_committed_rows": 24576
+        }
+      },
+      "startup_policy": {
+        "chunk_auto": true,
+        "vision": 1,
+        "gpu_cc": 120,
+        "cpu_workers": 15,
+        "cpu_threads": 16,
+        "q36_mmvq_il": 0,
+        "q36_main_mmq": 1,
+        "q36_mtp_mmq": 0,
+        "kv_grow": 1
+      }
+    },
+    {
+      "capacity_gib": 16,
+      "model": "tiel",
+      "name": "Tiel Coder",
+      "complete_runs": 1,
+      "status": "complete",
+      "error": null,
+      "metrics": {
+        "generation": {
+          "tokens": 384,
+          "milliseconds": 4580.7,
+          "tok_s": 83.8299823171131,
+          "requests": 3,
+          "reused_tokens": 0
+        },
+        "input_4k": {
+          "tokens": 4096,
+          "milliseconds": 4231.8,
+          "tok_s": 967.9096365612742,
+          "requests": 1,
+          "reused_tokens": 0
+        },
+        "input_16k": {
+          "tokens": 16384,
+          "milliseconds": 18269.9,
+          "tok_s": 896.7755707475136,
+          "requests": 1,
+          "reused_tokens": 0
+        }
+      },
+      "actual_kv": "fp8-mma",
+      "expected_kv": "fp8-mma",
+      "context_tokens": 262144,
+      "chunk": 2048,
+      "mtp": 3,
+      "expert_slots_startup": 6836,
+      "expert_slots_after_16k": 6836,
+      "expert_cache_gib_startup": 7.065839096903801,
+      "expert_cache_gib_after_16k": 7.065839096903801,
+      "sampling": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 0.0,
+        "frequency_penalty": 0.0,
+        "repetition_penalty": 1.0
+      },
+      "saved_enable_thinking": true,
+      "artifacts": [
+        {
+          "file": "tinystrata.exe",
+          "size": 56561664,
+          "sha256": "a8e9e0f38aac33917a078a6981bc21eed3330beb57f4097a48c3a1b0fcc8e81f"
+        },
+        {
+          "file": "Tiel-Coder-35B-A3B-MTP-UD-IQ3_XXS.gguf",
+          "size": 13600579424,
+          "sha256": "a4d8ffc7f030466c67db289543871a8f9e6d5340241b300c09fbaf16642273ca"
+        },
+        {
+          "file": "tinystrata-vision.exe",
+          "size": 59828736,
+          "sha256": "60f68f52feeca1573305a9aa4ffe8be9981c5edb0df44cfe0809c1eb84854d66"
+        },
+        {
+          "file": "mmproj-BF16.gguf",
+          "size": 902822016,
+          "sha256": "d9ce31026d1cb1f3f8d5152e2e2a014d9d2b302b6c93a7dc07bb0a0487f52837"
+        }
+      ],
+      "image_first_s": 1.5490936000023794,
+      "image_complete_s": 3.0939392000000225,
+      "mtp_counts_generation": {
+        "drafts_accepted": 218,
+        "drafts_offered": 443
+      },
+      "returned_generation_tokens": 384,
+      "kv_memory_bytes": {
+        "startup": {
+          "kv_logical_bytes": 3045064704,
+          "kv_mapped_bytes": 276824064,
+          "kv_committed_rows": 16384
+        },
+        "after_16k": {
+          "kv_logical_bytes": 3045064704,
+          "kv_mapped_bytes": 369098752,
+          "kv_committed_rows": 24576
+        }
+      },
+      "startup_policy": {
+        "chunk_auto": true,
+        "mtp_auto": 0,
+        "lookup_draft": 0,
+        "vision": 1,
+        "gpu_cc": 120,
+        "cpu_workers": 15,
+        "cpu_threads": 16,
+        "q36_mmvq_il": 0,
+        "q36_main_mmq": 0,
+        "q36_mtp_mmq": 0,
+        "kv_grow": 1
+      }
+    },
+    {
+      "capacity_gib": 12,
+      "model": "qwen",
+      "name": "Qwen3.6",
+      "complete_runs": 1,
+      "status": "complete",
+      "error": null,
+      "metrics": {
+        "generation": {
+          "tokens": 384,
+          "milliseconds": 3562.3,
+          "tok_s": 107.79552536282738,
+          "requests": 3,
+          "reused_tokens": 0
+        },
+        "input_4k": {
+          "tokens": 4096,
+          "milliseconds": 5214.5,
+          "tok_s": 785.5019656726436,
+          "requests": 1,
+          "reused_tokens": 0
+        },
+        "input_16k": {
+          "tokens": 16384,
+          "milliseconds": 20555.0,
+          "tok_s": 797.0810021892484,
+          "requests": 1,
+          "reused_tokens": 0
+        }
+      },
+      "actual_kv": "fp8-mma",
+      "expected_kv": "fp8-mma",
+      "context_tokens": 131072,
+      "chunk": 1024,
+      "mtp": 3,
+      "expert_slots_startup": 4018,
+      "expert_slots_after_16k": 3973,
+      "expert_cache_gib_startup": 4.363262832164764,
+      "expert_cache_gib_after_16k": 4.314438670873642,
+      "sampling": {
+        "temperature": 0.7,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 1.5,
+        "repetition_penalty": 1.0
+      },
+      "saved_enable_thinking": true,
+      "artifacts": [
+        {
+          "file": "tinystrata.exe",
+          "size": 56561664,
+          "sha256": "a8e9e0f38aac33917a078a6981bc21eed3330beb57f4097a48c3a1b0fcc8e81f"
+        },
+        {
+          "file": "Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf",
+          "size": 14069266720,
+          "sha256": "36f9ec0e4c775f6efd3a61c1ea76f0875128469c3d012e3d9e2495a90e7a7150"
+        },
+        {
+          "file": "tinystrata-vision.exe",
+          "size": 59828736,
+          "sha256": "60f68f52feeca1573305a9aa4ffe8be9981c5edb0df44cfe0809c1eb84854d66"
+        },
+        {
+          "file": "mmproj-F16.gguf",
+          "size": 899283584,
+          "sha256": "71f3cbc1f7cc0f30d09d41cfa924c0060827ebc33bf15ace7e86661e856f0160"
+        }
+      ],
+      "image_first_s": 1.7164439000007405,
+      "image_complete_s": 3.2898084000007657,
+      "mtp_counts_generation": {
+        "drafts_accepted": 261,
+        "drafts_offered": 335
+      },
+      "returned_generation_tokens": 384,
+      "kv_memory_bytes": {
+        "startup": {
+          "kv_logical_bytes": 1522532352,
+          "kv_mapped_bytes": 230686720,
+          "kv_committed_rows": 16384
+        },
+        "after_16k": {
+          "kv_logical_bytes": 1522532352,
+          "kv_mapped_bytes": 322961408,
+          "kv_committed_rows": 24576
+        }
+      },
+      "startup_policy": {
+        "chunk_auto": true,
+        "mtp_auto": 0,
+        "lookup_draft": 0,
+        "vision": 1,
+        "gpu_cc": 120,
+        "cpu_workers": 15,
+        "cpu_threads": 16,
+        "q36_mmvq_il": 0,
+        "q36_main_mmq": 0,
+        "q36_mtp_mmq": 0,
+        "kv_grow": 1
+      }
+    },
+    {
+      "capacity_gib": 12,
+      "model": "gemma",
+      "name": "Gemma 4",
+      "complete_runs": 1,
+      "status": "complete",
+      "error": null,
+      "metrics": {
+        "generation": {
+          "tokens": 384,
+          "milliseconds": 4677.2,
+          "tok_s": 82.10040194988456,
+          "requests": 3,
+          "reused_tokens": 0
+        },
+        "input_4k": {
+          "tokens": 4096,
+          "milliseconds": 1789.1,
+          "tok_s": 2289.4192610809905,
+          "requests": 1,
+          "reused_tokens": 0
+        },
+        "input_16k": {
+          "tokens": 16384,
+          "milliseconds": 6479.3,
+          "tok_s": 2528.668220332443,
+          "requests": 1,
+          "reused_tokens": 0
+        }
+      },
+      "actual_kv": "int8",
+      "expected_kv": "int8",
+      "context_tokens": 131072,
+      "chunk": 1120,
+      "mtp": 3,
+      "expert_slots_startup": 1485,
+      "expert_slots_after_16k": 1424,
+      "expert_cache_gib_startup": 4.626953125,
+      "expert_cache_gib_after_16k": 4.4365234375,
+      "sampling": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 64,
+        "min_p": 0.0,
+        "presence_penalty": 0.0,
+        "repetition_penalty": 1.0
+      },
+      "saved_enable_thinking": true,
+      "artifacts": [
+        {
+          "file": "tinystrata-gemma4.exe",
+          "size": 28700160,
+          "sha256": "6adb5c3fe36e4b19f7eace3002d7b369de62e0b3cd9a9a095a6138e4a49858b5"
+        },
+        {
+          "file": "gemma-4-26B_q4_0-it.gguf",
+          "size": 14439363584,
+          "sha256": "3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d"
+        },
+        {
+          "file": "mtp-gemma-4-26B-A4B-it.gguf",
+          "size": 251939328,
+          "sha256": "7272d97595f0d4c74bd7b623492b7dbdaafd8b7c72f329a8270ba4eca68f768a"
+        },
+        {
+          "file": "tinystrata-vision.exe",
+          "size": 59828736,
+          "sha256": "60f68f52feeca1573305a9aa4ffe8be9981c5edb0df44cfe0809c1eb84854d66"
+        },
+        {
+          "file": "gemma-4-26B-it-mmproj.gguf",
+          "size": 1194828160,
+          "sha256": "a359953a076b877db30c31dbbb4c6d93b4a6e017ee5db5784247e4d4c0dd4f3b"
+        }
+      ],
+      "image_first_s": 1.028684599998087,
+      "image_complete_s": 1.7702337999980955,
+      "mtp_counts_generation": {
+        "drafts_accepted": 254,
+        "drafts_offered": 383
+      },
+      "returned_generation_tokens": 384,
+      "kv_memory_bytes": {
+        "startup": {
+          "kv_logical_bytes": 1426063360,
+          "kv_mapped_bytes": 62914560,
+          "kv_committed_rows": 4096
+        },
+        "after_16k": {
+          "kv_logical_bytes": 1426063360,
+          "kv_mapped_bytes": 230686720,
+          "kv_committed_rows": 20480
+        }
+      },
+      "startup_policy": {
+        "chunk_auto": true,
+        "mtp_auto": 0,
+        "lookup_draft": 0,
+        "vision": 1,
+        "kv_grow": 1
+      }
+    },
+    {
+      "capacity_gib": 12,
+      "model": "lfm",
+      "name": "LFM2.5",
+      "complete_runs": 1,
+      "status": "complete",
+      "error": null,
+      "metrics": {
+        "generation": {
+          "tokens": 384,
+          "milliseconds": 3168.7,
+          "tok_s": 121.18534414744218,
+          "requests": 3,
+          "reused_tokens": 0
+        },
+        "input_4k": {
+          "tokens": 4096,
+          "milliseconds": 2064.5,
+          "tok_s": 1984.0155001210946,
+          "requests": 1,
+          "reused_tokens": 0
+        },
+        "input_16k": {
+          "tokens": 16384,
+          "milliseconds": 8252.9,
+          "tok_s": 1985.2415514546403,
+          "requests": 1,
+          "reused_tokens": 0
+        }
+      },
+      "actual_kv": "fp8-mma",
+      "expected_kv": "fp8-mma",
+      "context_tokens": 131072,
+      "chunk": 256,
+      "mtp": 0,
+      "expert_slots_startup": 1642,
+      "expert_slots_after_16k": 1605,
+      "expert_cache_gib_startup": 8.7080078125,
+      "expert_cache_gib_after_16k": 8.4990234375,
+      "sampling": {
+        "temperature": 0.1,
+        "top_p": 1.0,
+        "top_k": 50,
+        "min_p": 0.0,
+        "presence_penalty": 0.0,
+        "repetition_penalty": 1.05
+      },
+      "saved_enable_thinking": true,
+      "artifacts": [
+        {
+          "file": "tinystrata-lfm2.exe",
+          "size": 28624384,
+          "sha256": "54b6ab5539c84e18af00d11c269b5b0d032d15dc5adebf6614adfdc96c328768"
+        },
+        {
+          "file": "LFM2.5-24B-A2B-Q4_K_M.gguf",
+          "size": 14526258464,
+          "sha256": "d3334405b96228eb9908cdebb5c6194908f2da64282bda852afc3a3910c64e7d"
+        }
+      ],
+      "image_first_s": null,
+      "image_complete_s": null,
+      "mtp_counts_generation": {
+        "drafts_accepted": 0,
+        "drafts_offered": 0
+      },
+      "returned_generation_tokens": 384,
+      "kv_memory_bytes": {
+        "startup": {
+          "kv_logical_bytes": 1426063360,
+          "kv_mapped_bytes": 83886080,
+          "kv_committed_rows": 4096
+        },
+        "after_16k": {
+          "kv_logical_bytes": 1426063360,
+          "kv_mapped_bytes": 251658240,
+          "kv_committed_rows": 20480
+        }
+      },
+      "startup_policy": {
+        "chunk_auto": true,
+        "vision": 0,
+        "kv_grow": 1
+      }
+    },
+    {
+      "capacity_gib": 12,
+      "model": "clover",
+      "name": "Clover",
+      "complete_runs": 1,
+      "status": "complete",
+      "error": null,
+      "metrics": {
+        "generation": {
+          "tokens": 384,
+          "milliseconds": 6779.700000000001,
+          "tok_s": 56.63967432187264,
+          "requests": 3,
+          "reused_tokens": 0
+        },
+        "input_4k": {
+          "tokens": 4096,
+          "milliseconds": 2473.4,
+          "tok_s": 1656.0200533678337,
+          "requests": 1,
+          "reused_tokens": 0
+        },
+        "input_16k": {
+          "tokens": 16384,
+          "milliseconds": 10045.4,
+          "tok_s": 1630.9952814223427,
+          "requests": 1,
+          "reused_tokens": 0
+        }
+      },
+      "actual_kv": "int8",
+      "expected_kv": "int8",
+      "context_tokens": 131072,
+      "chunk": 1024,
+      "mtp": 0,
+      "expert_slots_startup": 2640,
+      "expert_slots_after_16k": 2522,
+      "expert_cache_gib_startup": 3.180563449859619,
+      "expert_cache_gib_after_16k": 3.0384019017219543,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "top_k": 64,
+        "min_p": 0.0,
+        "presence_penalty": 0.9,
+        "frequency_penalty": 0.0,
+        "repetition_penalty": 1.05
+      },
+      "saved_enable_thinking": true,
+      "artifacts": [
+        {
+          "file": "tinystrata.exe",
+          "size": 56561664,
+          "sha256": "a8e9e0f38aac33917a078a6981bc21eed3330beb57f4097a48c3a1b0fcc8e81f"
+        },
+        {
+          "file": "Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf",
+          "size": 15515157952,
+          "sha256": "03816cdc365892dfb628d49e0cae2c80003de903966b9d30db2ece231699c2d3"
+        },
+        {
+          "file": "tinystrata-vision.exe",
+          "size": 59828736,
+          "sha256": "60f68f52feeca1573305a9aa4ffe8be9981c5edb0df44cfe0809c1eb84854d66"
+        },
+        {
+          "file": "mmproj-F16.gguf",
+          "size": 899283584,
+          "sha256": "71f3cbc1f7cc0f30d09d41cfa924c0060827ebc33bf15ace7e86661e856f0160"
+        }
+      ],
+      "image_first_s": 1.4515013999989606,
+      "image_complete_s": 2.876693800000794,
+      "mtp_counts_generation": {
+        "drafts_accepted": 0,
+        "drafts_offered": 0
+      },
+      "returned_generation_tokens": 384,
+      "kv_memory_bytes": {
+        "startup": {
+          "kv_logical_bytes": 1384120320,
+          "kv_mapped_bytes": 209715200,
+          "kv_committed_rows": 16384
+        },
+        "after_16k": {
+          "kv_logical_bytes": 1384120320,
+          "kv_mapped_bytes": 293601280,
+          "kv_committed_rows": 24576
+        }
+      },
+      "startup_policy": {
+        "chunk_auto": true,
+        "vision": 1,
+        "gpu_cc": 120,
+        "cpu_workers": 15,
+        "cpu_threads": 16,
+        "q36_mmvq_il": 0,
+        "q36_main_mmq": 1,
+        "q36_mtp_mmq": 0,
+        "kv_grow": 1
+      }
+    },
+    {
+      "capacity_gib": 12,
+      "model": "tiel",
+      "name": "Tiel Coder",
+      "complete_runs": 1,
+      "status": "complete",
+      "error": null,
+      "metrics": {
+        "generation": {
+          "tokens": 384,
+          "milliseconds": 4544.9,
+          "tok_s": 84.49030781755374,
+          "requests": 3,
+          "reused_tokens": 0
+        },
+        "input_4k": {
+          "tokens": 4096,
+          "milliseconds": 5102.1,
+          "tok_s": 802.8066874424256,
+          "requests": 1,
+          "reused_tokens": 0
+        },
+        "input_16k": {
+          "tokens": 16384,
+          "milliseconds": 20125.6,
+          "tok_s": 814.0875303096554,
+          "requests": 1,
+          "reused_tokens": 0
+        }
+      },
+      "actual_kv": "fp8-mma",
+      "expected_kv": "fp8-mma",
+      "context_tokens": 131072,
+      "chunk": 1024,
+      "mtp": 3,
+      "expert_slots_startup": 4223,
+      "expert_slots_after_16k": 4223,
+      "expert_cache_gib_startup": 4.364878073334694,
+      "expert_cache_gib_after_16k": 4.364878073334694,
+      "sampling": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 0.0,
+        "frequency_penalty": 0.0,
+        "repetition_penalty": 1.0
+      },
+      "saved_enable_thinking": true,
+      "artifacts": [
+        {
+          "file": "tinystrata.exe",
+          "size": 56561664,
+          "sha256": "a8e9e0f38aac33917a078a6981bc21eed3330beb57f4097a48c3a1b0fcc8e81f"
+        },
+        {
+          "file": "Tiel-Coder-35B-A3B-MTP-UD-IQ3_XXS.gguf",
+          "size": 13600579424,
+          "sha256": "a4d8ffc7f030466c67db289543871a8f9e6d5340241b300c09fbaf16642273ca"
+        },
+        {
+          "file": "tinystrata-vision.exe",
+          "size": 59828736,
+          "sha256": "60f68f52feeca1573305a9aa4ffe8be9981c5edb0df44cfe0809c1eb84854d66"
+        },
+        {
+          "file": "mmproj-BF16.gguf",
+          "size": 902822016,
+          "sha256": "d9ce31026d1cb1f3f8d5152e2e2a014d9d2b302b6c93a7dc07bb0a0487f52837"
+        }
+      ],
+      "image_first_s": 1.7959876999993867,
+      "image_complete_s": 3.0181359000016528,
+      "mtp_counts_generation": {
+        "drafts_accepted": 229,
+        "drafts_offered": 416
+      },
+      "returned_generation_tokens": 384,
+      "kv_memory_bytes": {
+        "startup": {
+          "kv_logical_bytes": 1522532352,
+          "kv_mapped_bytes": 230686720,
+          "kv_committed_rows": 16384
+        },
+        "after_16k": {
+          "kv_logical_bytes": 1522532352,
+          "kv_mapped_bytes": 322961408,
+          "kv_committed_rows": 24576
+        }
+      },
+      "startup_policy": {
+        "chunk_auto": true,
+        "mtp_auto": 0,
+        "lookup_draft": 0,
+        "vision": 1,
+        "gpu_cc": 120,
+        "cpu_workers": 15,
+        "cpu_threads": 16,
+        "q36_mmvq_il": 0,
+        "q36_main_mmq": 0,
+        "q36_mtp_mmq": 0,
+        "kv_grow": 1
+      }
+    },
+    {
+      "capacity_gib": 8,
+      "model": "qwen",
+      "name": "Qwen3.6",
+      "complete_runs": 1,
+      "status": "complete",
+      "error": null,
+      "metrics": {
+        "generation": {
+          "tokens": 384,
+          "milliseconds": 5274.2,
+          "tok_s": 72.80725038868454,
+          "requests": 3,
+          "reused_tokens": 0
+        },
+        "input_4k": {
+          "tokens": 4096,
+          "milliseconds": 6681.4,
+          "tok_s": 613.0451701739157,
+          "requests": 1,
+          "reused_tokens": 0
+        },
+        "input_16k": {
+          "tokens": 16384,
+          "milliseconds": 51069.9,
+          "tok_s": 320.8151964268581,
+          "requests": 1,
+          "reused_tokens": 0
+        }
+      },
+      "actual_kv": "fp8-mma",
+      "expected_kv": "fp8-mma",
+      "context_tokens": 65536,
+      "chunk": 512,
+      "mtp": 3,
+      "expert_slots_startup": 574,
+      "expert_slots_after_16k": 574,
+      "expert_cache_gib_startup": 0.6233232617378235,
+      "expert_cache_gib_after_16k": 0.6233232617378235,
+      "sampling": {
+        "temperature": 0.7,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 1.5,
+        "repetition_penalty": 1.0
+      },
+      "saved_enable_thinking": true,
+      "artifacts": [
+        {
+          "file": "tinystrata.exe",
+          "size": 56561664,
+          "sha256": "a8e9e0f38aac33917a078a6981bc21eed3330beb57f4097a48c3a1b0fcc8e81f"
+        },
+        {
+          "file": "Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf",
+          "size": 14069266720,
+          "sha256": "36f9ec0e4c775f6efd3a61c1ea76f0875128469c3d012e3d9e2495a90e7a7150"
+        },
+        {
+          "file": "tinystrata-vision.exe",
+          "size": 59828736,
+          "sha256": "60f68f52feeca1573305a9aa4ffe8be9981c5edb0df44cfe0809c1eb84854d66"
+        },
+        {
+          "file": "mmproj-F16.gguf",
+          "size": 899283584,
+          "sha256": "71f3cbc1f7cc0f30d09d41cfa924c0060827ebc33bf15ace7e86661e856f0160"
+        }
+      ],
+      "image_first_s": 2.548498500000278,
+      "image_complete_s": 4.725510700001905,
+      "mtp_counts_generation": {
+        "drafts_accepted": 252,
+        "drafts_offered": 361
+      },
+      "returned_generation_tokens": 384,
+      "kv_memory_bytes": {
+        "startup": {
+          "kv_logical_bytes": 761266176,
+          "kv_mapped_bytes": 230686720,
+          "kv_committed_rows": 16384
+        },
+        "after_16k": {
+          "kv_logical_bytes": 761266176,
+          "kv_mapped_bytes": 322961408,
+          "kv_committed_rows": 24576
+        }
+      },
+      "startup_policy": {
+        "chunk_auto": true,
+        "mtp_auto": 0,
+        "lookup_draft": 0,
+        "vision": 1,
+        "gpu_cc": 120,
+        "cpu_workers": 15,
+        "cpu_threads": 16,
+        "q36_mmvq_il": 0,
+        "q36_main_mmq": 0,
+        "q36_mtp_mmq": 0,
+        "kv_grow": 1
+      }
+    },
+    {
+      "capacity_gib": 8,
+      "model": "gemma",
+      "name": "Gemma 4",
+      "complete_runs": 1,
+      "status": "complete",
+      "error": null,
+      "metrics": {
+        "generation": {
+          "tokens": 384,
+          "milliseconds": 7107.0,
+          "tok_s": 54.03123680878008,
+          "requests": 3,
+          "reused_tokens": 0
+        },
+        "input_4k": {
+          "tokens": 4096,
+          "milliseconds": 1990.1,
+          "tok_s": 2058.1880307522238,
+          "requests": 1,
+          "reused_tokens": 0
+        },
+        "input_16k": {
+          "tokens": 16384,
+          "milliseconds": 6400.1,
+          "tok_s": 2559.9600006249902,
+          "requests": 1,
+          "reused_tokens": 0
+        }
+      },
+      "actual_kv": "int8",
+      "expected_kv": "int8",
+      "context_tokens": 65536,
+      "chunk": 1120,
+      "mtp": 3,
+      "expert_slots_startup": 211,
+      "expert_slots_after_16k": 160,
+      "expert_cache_gib_startup": 0.6572265625,
+      "expert_cache_gib_after_16k": 0.4990234375,
+      "sampling": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 64,
+        "min_p": 0.0,
+        "presence_penalty": 0.0,
+        "repetition_penalty": 1.0
+      },
+      "saved_enable_thinking": true,
+      "artifacts": [
+        {
+          "file": "tinystrata-gemma4.exe",
+          "size": 28700160,
+          "sha256": "6adb5c3fe36e4b19f7eace3002d7b369de62e0b3cd9a9a095a6138e4a49858b5"
+        },
+        {
+          "file": "gemma-4-26B_q4_0-it.gguf",
+          "size": 14439363584,
+          "sha256": "3eca3b8f6d7baf218a7dd6bba5fb59a56ee25fe2d567b6f5f589b4f697eca51d"
+        },
+        {
+          "file": "mtp-gemma-4-26B-A4B-it.gguf",
+          "size": 251939328,
+          "sha256": "7272d97595f0d4c74bd7b623492b7dbdaafd8b7c72f329a8270ba4eca68f768a"
+        },
+        {
+          "file": "tinystrata-vision.exe",
+          "size": 59828736,
+          "sha256": "60f68f52feeca1573305a9aa4ffe8be9981c5edb0df44cfe0809c1eb84854d66"
+        },
+        {
+          "file": "gemma-4-26B-it-mmproj.gguf",
+          "size": 1194828160,
+          "sha256": "a359953a076b877db30c31dbbb4c6d93b4a6e017ee5db5784247e4d4c0dd4f3b"
+        }
+      ],
+      "image_first_s": 1.2210210999983246,
+      "image_complete_s": 2.230238799998915,
+      "mtp_counts_generation": {
+        "drafts_accepted": 267,
+        "drafts_offered": 341
+      },
+      "returned_generation_tokens": 384,
+      "kv_memory_bytes": {
+        "startup": {
+          "kv_logical_bytes": 713031680,
+          "kv_mapped_bytes": 62914560,
+          "kv_committed_rows": 4096
+        },
+        "after_16k": {
+          "kv_logical_bytes": 713031680,
+          "kv_mapped_bytes": 230686720,
+          "kv_committed_rows": 20480
+        }
+      },
+      "startup_policy": {
+        "chunk_auto": true,
+        "mtp_auto": 0,
+        "lookup_draft": 0,
+        "vision": 1,
+        "kv_grow": 1
+      }
+    },
+    {
+      "capacity_gib": 8,
+      "model": "lfm",
+      "name": "LFM2.5",
+      "complete_runs": 1,
+      "status": "complete",
+      "error": null,
+      "metrics": {
+        "generation": {
+          "tokens": 384,
+          "milliseconds": 4994.2,
+          "tok_s": 76.88919146209604,
+          "requests": 3,
+          "reused_tokens": 0
+        },
+        "input_4k": {
+          "tokens": 4096,
+          "milliseconds": 2349.6,
+          "tok_s": 1743.2754511406197,
+          "requests": 1,
+          "reused_tokens": 0
+        },
+        "input_16k": {
+          "tokens": 16384,
+          "milliseconds": 8628.4,
+          "tok_s": 1898.8456724305781,
+          "requests": 1,
+          "reused_tokens": 0
+        }
+      },
+      "actual_kv": "fp8-mma",
+      "expected_kv": "fp8-mma",
+      "context_tokens": 65536,
+      "chunk": 256,
+      "mtp": 0,
+      "expert_slots_startup": 893,
+      "expert_slots_after_16k": 862,
+      "expert_cache_gib_startup": 4.7353515625,
+      "expert_cache_gib_after_16k": 4.5615234375,
+      "sampling": {
+        "temperature": 0.1,
+        "top_p": 1.0,
+        "top_k": 50,
+        "min_p": 0.0,
+        "presence_penalty": 0.0,
+        "repetition_penalty": 1.05
+      },
+      "saved_enable_thinking": true,
+      "artifacts": [
+        {
+          "file": "tinystrata-lfm2.exe",
+          "size": 28624384,
+          "sha256": "54b6ab5539c84e18af00d11c269b5b0d032d15dc5adebf6614adfdc96c328768"
+        },
+        {
+          "file": "LFM2.5-24B-A2B-Q4_K_M.gguf",
+          "size": 14526258464,
+          "sha256": "d3334405b96228eb9908cdebb5c6194908f2da64282bda852afc3a3910c64e7d"
+        }
+      ],
+      "image_first_s": null,
+      "image_complete_s": null,
+      "mtp_counts_generation": {
+        "drafts_accepted": 0,
+        "drafts_offered": 0
+      },
+      "returned_generation_tokens": 384,
+      "kv_memory_bytes": {
+        "startup": {
+          "kv_logical_bytes": 713031680,
+          "kv_mapped_bytes": 83886080,
+          "kv_committed_rows": 4096
+        },
+        "after_16k": {
+          "kv_logical_bytes": 713031680,
+          "kv_mapped_bytes": 251658240,
+          "kv_committed_rows": 20480
+        }
+      },
+      "startup_policy": {
+        "chunk_auto": true,
+        "vision": 0,
+        "kv_grow": 1
+      }
+    },
+    {
+      "capacity_gib": 8,
+      "model": "clover",
+      "name": "Clover",
+      "complete_runs": 1,
+      "status": "complete",
+      "error": null,
+      "metrics": {
+        "generation": {
+          "tokens": 384,
+          "milliseconds": 9022.0,
+          "tok_s": 42.562624695189534,
+          "requests": 3,
+          "reused_tokens": 0
+        },
+        "input_4k": {
+          "tokens": 4096,
+          "milliseconds": 4540.3,
+          "tok_s": 902.1430301962425,
+          "requests": 1,
+          "reused_tokens": 0
+        },
+        "input_16k": {
+          "tokens": 16384,
+          "milliseconds": 18157.3,
+          "tok_s": 902.3368011763864,
+          "requests": 1,
+          "reused_tokens": 0
+        }
+      },
+      "actual_kv": "int8",
+      "expected_kv": "int8",
+      "context_tokens": 65536,
+      "chunk": 512,
+      "mtp": 0,
+      "expert_slots_startup": 0,
+      "expert_slots_after_16k": 0,
+      "expert_cache_gib_startup": 0.0,
+      "expert_cache_gib_after_16k": 0.0,
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "top_k": 64,
+        "min_p": 0.0,
+        "presence_penalty": 0.9,
+        "frequency_penalty": 0.0,
+        "repetition_penalty": 1.05
+      },
+      "saved_enable_thinking": true,
+      "artifacts": [
+        {
+          "file": "tinystrata.exe",
+          "size": 56561664,
+          "sha256": "a8e9e0f38aac33917a078a6981bc21eed3330beb57f4097a48c3a1b0fcc8e81f"
+        },
+        {
+          "file": "Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf",
+          "size": 15515157952,
+          "sha256": "03816cdc365892dfb628d49e0cae2c80003de903966b9d30db2ece231699c2d3"
+        },
+        {
+          "file": "tinystrata-vision.exe",
+          "size": 59828736,
+          "sha256": "60f68f52feeca1573305a9aa4ffe8be9981c5edb0df44cfe0809c1eb84854d66"
+        },
+        {
+          "file": "mmproj-F16.gguf",
+          "size": 899283584,
+          "sha256": "71f3cbc1f7cc0f30d09d41cfa924c0060827ebc33bf15ace7e86661e856f0160"
+        }
+      ],
+      "image_first_s": 2.0176501000023563,
+      "image_complete_s": 3.8120642000030784,
+      "mtp_counts_generation": {
+        "drafts_accepted": 0,
+        "drafts_offered": 0
+      },
+      "returned_generation_tokens": 384,
+      "kv_memory_bytes": {
+        "startup": {
+          "kv_logical_bytes": 692060160,
+          "kv_mapped_bytes": 209715200,
+          "kv_committed_rows": 16384
+        },
+        "after_16k": {
+          "kv_logical_bytes": 692060160,
+          "kv_mapped_bytes": 293601280,
+          "kv_committed_rows": 24576
+        }
+      },
+      "startup_policy": {
+        "chunk_auto": true,
+        "vision": 1,
+        "gpu_cc": 120,
+        "cpu_workers": 15,
+        "cpu_threads": 16,
+        "q36_mmvq_il": 0,
+        "q36_main_mmq": 1,
+        "q36_mtp_mmq": 0,
+        "kv_grow": 1
+      }
+    },
+    {
+      "capacity_gib": 8,
+      "model": "tiel",
+      "name": "Tiel Coder",
+      "complete_runs": 1,
+      "status": "complete",
+      "error": null,
+      "metrics": {
+        "generation": {
+          "tokens": 384,
+          "milliseconds": 6344.5,
+          "tok_s": 60.524864055481125,
+          "requests": 3,
+          "reused_tokens": 0
+        },
+        "input_4k": {
+          "tokens": 4096,
+          "milliseconds": 6476.0,
+          "tok_s": 632.4891908585547,
+          "requests": 1,
+          "reused_tokens": 0
+        },
+        "input_16k": {
+          "tokens": 16384,
+          "milliseconds": 25273.6,
+          "tok_s": 648.2653836414282,
+          "requests": 1,
+          "reused_tokens": 0
+        }
+      },
+      "actual_kv": "fp8-mma",
+      "expected_kv": "fp8-mma",
+      "context_tokens": 65536,
+      "chunk": 512,
+      "mtp": 3,
+      "expert_slots_startup": 656,
+      "expert_slots_after_16k": 645,
+      "expert_cache_gib_startup": 0.6780393123626709,
+      "expert_cache_gib_after_16k": 0.6668430864810944,
+      "sampling": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 0.0,
+        "frequency_penalty": 0.0,
+        "repetition_penalty": 1.0
+      },
+      "saved_enable_thinking": true,
+      "artifacts": [
+        {
+          "file": "tinystrata.exe",
+          "size": 56561664,
+          "sha256": "a8e9e0f38aac33917a078a6981bc21eed3330beb57f4097a48c3a1b0fcc8e81f"
+        },
+        {
+          "file": "Tiel-Coder-35B-A3B-MTP-UD-IQ3_XXS.gguf",
+          "size": 13600579424,
+          "sha256": "a4d8ffc7f030466c67db289543871a8f9e6d5340241b300c09fbaf16642273ca"
+        },
+        {
+          "file": "tinystrata-vision.exe",
+          "size": 59828736,
+          "sha256": "60f68f52feeca1573305a9aa4ffe8be9981c5edb0df44cfe0809c1eb84854d66"
+        },
+        {
+          "file": "mmproj-BF16.gguf",
+          "size": 902822016,
+          "sha256": "d9ce31026d1cb1f3f8d5152e2e2a014d9d2b302b6c93a7dc07bb0a0487f52837"
+        }
+      ],
+      "image_first_s": 2.852108999999473,
+      "image_complete_s": 5.112976100001106,
+      "mtp_counts_generation": {
+        "drafts_accepted": 228,
+        "drafts_offered": 427
+      },
+      "returned_generation_tokens": 384,
+      "kv_memory_bytes": {
+        "startup": {
+          "kv_logical_bytes": 761266176,
+          "kv_mapped_bytes": 230686720,
+          "kv_committed_rows": 16384
+        },
+        "after_16k": {
+          "kv_logical_bytes": 761266176,
+          "kv_mapped_bytes": 322961408,
+          "kv_committed_rows": 24576
+        }
+      },
+      "startup_policy": {
+        "chunk_auto": true,
+        "mtp_auto": 0,
+        "lookup_draft": 0,
+        "vision": 1,
+        "gpu_cc": 120,
+        "cpu_workers": 15,
+        "cpu_threads": 16,
+        "q36_mmvq_il": 0,
+        "q36_main_mmq": 0,
+        "q36_mtp_mmq": 0,
+        "kv_grow": 1
+      }
+    }
+  ],
+  "native_artifacts": {
+    "tinystrata-gemma4.exe": {
+      "bytes": 28700160,
+      "sha256": "6adb5c3fe36e4b19f7eace3002d7b369de62e0b3cd9a9a095a6138e4a49858b5"
+    },
+    "tinystrata-lfm2.exe": {
+      "bytes": 28624384,
+      "sha256": "54b6ab5539c84e18af00d11c269b5b0d032d15dc5adebf6614adfdc96c328768"
+    },
+    "tinystrata.exe": {
+      "bytes": 56561664,
+      "sha256": "a8e9e0f38aac33917a078a6981bc21eed3330beb57f4097a48c3a1b0fcc8e81f"
+    },
+    "tinystrata-vision.exe": {
+      "bytes": 59828736,
+      "sha256": "60f68f52feeca1573305a9aa4ffe8be9981c5edb0df44cfe0809c1eb84854d66"
+    },
+    "strata_kq.dll": {
+      "bytes": 13072384,
+      "sha256": "a431e69f669b143fa93c0e484c0a5944cb664e80e38f320fc273238cc29c3c1a"
+    }
+  },
+  "runtime_dlls": {
+    "cudart64_13.dll": {
+      "sha256": "7c50bf7f7398b5d1b654af19ff6a679988cf251cab677dbd8abac69fa1cce310",
+      "file_version": "6,14,11,13020",
+      "product_version": "6,14,11,13020"
+    },
+    "cublas64_13.dll": {
+      "sha256": "b181c4ffb454840a49f802169d8826617841875607a2e2ba14ef9650e348c456",
+      "file_version": "6,14,11,1330",
+      "product_version": "6,14,11,1330"
+    },
+    "cublasLt64_13.dll": {
+      "sha256": "182baf9b1846630c2462cccdae744367b8ff4d2965651deb41a2beefb53f1de5",
+      "file_version": "6,14,11,1330",
+      "product_version": "6,14,11,1330"
+    }
+  },
+  "cuda_compiler": "nvcc/NVVM 13.2.86",
+  "compiled_receipts": [
+    {
+      "file": "retired-native-build/result.json",
+      "sha256": "b1c7a119030476f3d5a5368f75eb740868265fc0d901ffc5eaf003c70ba349c2"
+    },
+    {
+      "file": "hybrid-buffers-build-v3/result.json",
+      "sha256": "679d179ee0c95d4286d9fe3d6353c544ac587f0feed6dc824e21b9bc73118de8"
+    }
+  ],
+  "provenance_scope": "Reused verified native artifacts with source guards matching the measured commit; no new full installer/toolkit build is claimed. DLL resource versions and hashes are separate from the compiler version.",
+  "quality_scope": "Speed, memory and lifecycle observation; no new independent delivered-answer quality assessment.",
+  "historical_scope": "Historical repeated/KV-comparison tables are preserved; this one-start variant does not replace their outcomes or establish four-start stability."
+}

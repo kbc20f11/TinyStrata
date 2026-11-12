@@ -2,6 +2,16 @@
 
 更新日: 2026-11-12
 
+## Blackwell 24／16／12／8 GB再測定
+
+- 2026-11-12、RTX PRO 4000 Blackwell SFF 24GB／driver597.30で現行5モデル×4容量の20起動を各1回測定した。実装ソースは `811bd9d`。生成は3課題の実生成384トークン÷総decode時間で計算し、除外warmup・4K／16K入力・対応4モデルの画像も含めて全条件が正常完了・graceful unloadした
+- KVはQwen/Tiel/LFMがFP8、Gemma/CloverがINT8。Cloverは因果D0＋GPU Vision。全モデルのchunkをautoに揃え、保存されていたCloverの固定2048だけ私有設定で上書きした。容量別contextはQwen/Gemma/Clover/Tielが256K／256K／128K／64K、LFMが128K／128K／128K／64K
+- 容量制限は実CUDA割り当て・全域touch・要求前後のNVML確認で行った。今回の予約量は「観測した総VRAM－16／12／8 GiB」であり、過去の固定8／12／16 GiB予約と厳密に同じ量ではない。24GB条件に予約はない。物理的な小容量GPUの帯域・演算器を再現した測定とは扱わない
+- 各条件1回のmanaged-default容量別variantとして[新しい結果](../benchmark/results/rtx-pro-4000-blackwell-sff-20261112.md)とJSONを保存した。過去の4起動・KV直接比較表は測定日と条件を保持し、今回の数値で置き換えない。8GB Clover INT8は今回1/1完走であり、以前の3/4成功を解消した長期安定性の証明とはしない
+- Tielの24GB入力処理がQwenより遅いのは、少なくとも既存のIQ3_XXS down（type18）向けMMQ精度保護によるfallbackを含む。Tielの主層37個はtype18で、反復入力で出力差を検出した既存guardがmain MMQを拒否する。Qwenの同名UD量子化とは各tensorの型が異なる。今回この保護や推論経路は変更していない
+- 全20条件の実生成数・入力4096／16384・終了状態を別スクリプトでも照合し、保存済み全6プロファイルのハッシュ一致と予約の解放を確認した。実測・生ログ・独立照合・native再利用の現行ソース一致記録は `TinyStrata-work/blackwell-remeasure-20261112` に保管する
+- [issue #1への返信](https://github.com/kbc20f11/TinyStrata/issues/1#issuecomment-6824069269)も投稿した。元のRX9070XTで、verified=1／64KiB／runtime=compiled71726391の短い再現試験が成功した報告を確認。8K全量確保済みでKV増減や長期利用を証明していない。issueは開いたままで、#10の映像出力制限と4MiB回復策は維持する
+
 ## モデル管理：未取得Cloverと共有画像ファイル
 
 - CloverとQwenは画像用の `mmproj-F16.gguf` を共有する。Clover本体が未取得でも `disk_bytes` に共有分が含まれるため、これだけで削除ボタンを表示しない

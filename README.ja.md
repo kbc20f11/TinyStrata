@@ -174,6 +174,8 @@ Tiel Coder は、同じリクエストで `tiel-coder-35b-a3b` を指定しま�
 
 ## 実測速度 — Qwen3.6
 
+**最新の容量別測定（2026-11-12）：** [現行5モデルの24／16／12／8 GB条件](benchmark/results/rtx-pro-4000-blackwell-sff-20261112.md)。採用済みの既定KV経路と実VRAM予約を使い、各条件1回、生成・4K／16K入力・画像入力を測定しています。以下の過去のKV比較表とは測定回数・条件を区別します。
+
 **2026-11-03** に Windows、RTX PRO 4000 Blackwell SFF Edition（24 GB）、Ryzen 9 7945HX3D、システム RAM 64 GB、固定の Unsloth MTP UD-IQ3_XXS モデルで計測しました。画像エンコーダを GPU に常駐させた状態で API を使用し、思考・モデル既定のサンプリング（温度 0.7）・MTP 3 を有効にしています。入力チャンクとエキスパート配置は自動選択、コンテキスト容量は各 VRAM クラスに合わせた設定です。ハイブリッド CUDA Graph は既定の無効設定、通常の全 GPU 実行時の CUDA Graph は有効です。
 
 | VRAM 条件 | コンテキスト容量 | INT8 生成 | ネイティブ FP8 生成 | 備考 |

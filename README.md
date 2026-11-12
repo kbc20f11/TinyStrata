@@ -176,6 +176,8 @@ Poll `GET /v1/model/switch` until `state` is `ready`. To return to Qwen, send th
 
 ## Measured speed — Qwen3.6
 
+**Latest capacity measurement (2026-11-12):** [All five models at 24/16/12/8 GB](benchmark/results/rtx-pro-4000-blackwell-sff-20261112.md), using current default KV paths, one start per condition, real VRAM reservations, and generation/4K/16K/image tests. This one-pass result is separate from the historical repeated KV comparisons below.
+
 Measured on **2026-11-03** using Windows, an RTX PRO 4000 Blackwell SFF Edition (24 GB), a Ryzen 9 7945HX3D, 64 GB of system RAM and the fixed Unsloth MTP UD-IQ3_XXS model. The image encoder stayed on the GPU during API requests. Thinking, the model’s sampling defaults (temperature 0.7) and MTP 3 were enabled. Prompt chunks and Expert placement were automatic; context capacity was set for each VRAM class. Hybrid CUDA Graphs stayed at their default off; normal all-GPU CUDA Graphs remained enabled.
 
 | Available VRAM | Context capacity | INT8 generation | Native FP8 generation | Notes |
