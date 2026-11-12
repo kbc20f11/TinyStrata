@@ -241,9 +241,16 @@ async function workerRegressions(){
  const noModels=fixture(),missingRows=JSON.parse(JSON.stringify(noModels.t.catalog()));
  for(const row of missingRows){row.installed=false;row.management.complete=false;row.management.can_download=true;row.management.can_delete=false;row.management.disk_bytes=0;}
  noModels.ctx.health.loaded=false;noModels.t.setCatalog(missingRows);noModels.t.controls();noModels.t.library();
- ok(noModels.element('composer-model').options.length===0&&noModels.element('composer-model').disabled,'zero installed models leaves an empty disabled picker');
+ ok(noModels.element('composer-model').options.length===1&&noModels.element('composer-model').options[0].value===''&&noModels.element('composer-model').disabled,'zero installed models leaves a disabled Select a model placeholder');
  ok(noModels.t.ready()&&noModels.element('input').disabled&&noModels.element('send-btn').disabled&&noModels.element('input').placeholder==='Download a model to chat','known missing active model disables composer with a short placeholder');
  ok(noModels.element('model-library-list')._modelRows.get(IDS[0]).status.textContent==='Not downloaded'&&!noModels.element('model-library-list')._modelRows.get(IDS[0]).download.disabled,'missing active profile is downloadable in Models and is not labelled in use');
+ const firstModel=fixture(),firstRows=JSON.parse(JSON.stringify(missingRows));
+ firstRows[2].installed=true;firstRows[2].management.complete=true;
+ firstModel.t.setCatalog(firstRows);firstModel.t.controls();
+ ok(firstModel.element('composer-model').value===''&&!firstModel.element('composer-model').disabled,'first downloaded non-active model requires an explicit choice instead of a false auto-selection');
+ ok(firstModel.element('composer-model').options.length===2&&firstModel.element('composer-model').options[0].disabled,'single downloaded model remains reachable from a disabled placeholder');
+ firstModel.element('composer-model').value=IDS[2];await firstModel.element('composer-model').onchange();
+ ok(posts(firstModel,'v1/model/switch').length===1&&posts(firstModel,'v1/model/download').length===0,'choosing the first downloaded model switches without downloading');
  const sendStart=source.indexOf('async function send(payload)'),replyStart=source.indexOf('async function generateReply()'),replyEnd=source.indexOf('\n$("composer").onsubmit',replyStart);
  vm.runInContext(source.slice(sendStart,replyStart)+'\n'+source.slice(replyStart,replyEnd),noModels.ctx);
  await noModels.ctx.send({text:'must not request',images:[],files:[]});await noModels.ctx.generateReply();

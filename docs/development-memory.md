@@ -2,6 +2,24 @@
 
 更新日: 2026-11-12
 
+## UIインストーラーの入口とモデル取得
+
+- 新規導入・通常更新は同じ `powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install-ui.ps1' | iex"` を使う。`-Update` は通常不要で互換用に残す。`irm URL` だけでは取得した文字列を実行しないため `| iex` は必要
+- UI版は初回も更新時もモデルを自動取得しない。ユーザーがモデル管理でダウンロードし、ピッカーで選択する。API専用 `install.ps1` の明示的なモデル導入経路は維持する
+- remote/archive入口は最新commitを一度解決し、installer本体とソースを同じrevisionに固定する。archiveはディレクトリごと置換し、同revisionでも内容の欠損・余計な旧ファイルを検出して修復する。Git作業ツリーは自動置換しない
+- source/native指紋のソートは `StringComparer.Ordinal` に固定する。`Sort-Object -CaseSensitive` はWindows PowerShell5.1とpwsh7で順序が異なり、同じ入力でも再ビルドを誘発した
+- native入力・ビルド方針・実行ファイルのハッシュが一致する検証済みgenerationだけ再利用する。旧stampなしバイナリを自動で承認しない。今回の私有E2Eキャッシュは過去の実ビルド・実機検証記録と169 nativeファイルの一致を別途確認したもの
+- 更新はinstallation guardを取ってから所有サービスを確認し、受付済み処理・検索/ツール子プロセス・ダウンロード中は停止しない。新しいAPIは更新中の新規生成/モデル変更を拒否し、statusとunloadだけ継続する。旧APIには新しい受付制御がないため、互換経路は複数回のidle確認とgraceful unloadを使う
+- UI/APIの所有確認はコマンド・作成時刻・source/work・ポート・親子関係を使う。Windows venvでは実際の待受PIDが起動PIDの子になり、argv[0]もbase Pythonへ置き換わる。uv3.12の実環境で旧判定による誤失敗を再現し、検証済みredirector子プロセスを受け入れるよう修正した。失敗した環境からの通常再実行も成功した
+- デスクトップショートカットはUI起動前に作り、`-NoStart`と起動失敗でも残す。実KnownFolder・日本語/OneDriveパス・私有Pythonを使い、モデルを固定しない。起動失敗は具体的理由・今回のstderr/終了コード・ログ先を示す
+- 同一vendorの管理CUDAプロファイルも、現行generationの標準siblingと管理Vision/DLL参照へ揃える。モデル・tokenizer・sampler・KVと明示的なcustom exeは保持し、参照だけでは設定を書き換えない
+- 起動元と現在モデルの認証・接続設定が異なる場合は、認証を変更せず停止前に拒否する。認証情報をsnapshotやエラーへ出さない。準備失敗のrollbackと、publish後の起動失敗を区別する。後者に旧source/venvへの完全な巻き戻しを保証していない
+- 私有の新規環境でモデル0件・Qwen未取得・NoStart/ショートカット作成、通常UI・最初のLFM選択・会話保存・再実行でのSQLite論理内容とモデル選択維持を確認した。モデルは検証済み実GGUFのキャッシュfixtureを使い、巨大ファイルのネットワーク再取得は行っていない
+- モデル0件ではダウンロード案内と選択placeholderを表示する。最初の非Qwenモデルが一つだけある時も、DOMの自動選択を実モデル切替と誤認させない
+- 私有UI試験のLFMは数量×単価の問題で4800円と誤回答した。失敗を保持し、金額14400円を明記した別資料の抽出は正しく返した。これはインストーラーの内容照合成功として混同しない
+- `.lnk` 経由の自動起動はツールの自動承認で拒否された。実リンクの作成・参照先・アイコンと正式ランチャーの直接起動は確認し、クリック起動を確認済みとは扱わない
+- 調査・初期失敗・再試行・CPU検証・実UI記録は `TinyStrata-work/installer-unified-entry-20261112` に保管する
+
 ## KV形式の採用条件
 
 ユーザーはモデル別の比較結果を踏まえて採否を決めている。GemmaのFP8が実験的だからといって、他モデルもINT8へ統一したり、全モデルを対象に方針を再質問したりしない。

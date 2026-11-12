@@ -678,5 +678,7 @@
   "models.downloadRequired": "Baixe um modelo para conversar",
   "thinking.on": "Ativado",
   "thinking.alwaysOn": "Sempre ativado",
-  "thinking.high": "Alto (xhigh)"
+  "thinking.high": "Alto (xhigh)",
+  "models.selectModel": "Selecionar modelo",
+  "models.downloadFirst": "Baixe um modelo em Modelos para começar"
 }

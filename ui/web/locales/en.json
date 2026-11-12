@@ -678,5 +678,7 @@
   "models.downloadRequired": "Download a model to chat",
   "thinking.on": "On",
   "thinking.alwaysOn": "Always on",
-  "thinking.high": "High (xhigh)"
+  "thinking.high": "High (xhigh)",
+  "models.selectModel": "Select a model",
+  "models.downloadFirst": "Download a model from Models to start"
 }

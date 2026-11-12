@@ -89,13 +89,15 @@ Gemma は `run-api.bat --model-family gemma4`（既定ポート 18082）、LFM �
 **UI あり**（[インストーラー](install-ui.ps1)）：チャットは `http://127.0.0.1:3000`、API は `http://127.0.0.1:18080/v1` で利用できます。
 
 ```powershell
-irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install-ui.ps1' | iex
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install-ui.ps1' | iex"
 ```
+
+新規インストールも更新も同じコマンドです。**TinyStrata → モデル**を開いてモデルをダウンロードし、チャットで選択してください。UI のセットアップ中はモデルを自動ダウンロードしません。
 
 **API のみ**（[インストーラー](install.ps1)）：UI を導入せず、同じ API を利用できます。
 
 ```powershell
-irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex"
 ```
 
 **AMD ランタイムの既定:** 自動インストール・更新では、古いグローバルの `HIP_PATH` やシステム SDK よりも、作業フォルダー内の private **ROCm `10.2.0a20260930` SDK（HIP 7.17）**を使います。`-HipDirectory` を明示した場合は、そのカスタム SDK を尊重します。モデルと Vision で HIP・COMGR・Kpack の組み合わせと検証済みの SDK 数学ライブラリの場所を統一し、更新時は別の native 世代を用意してから設定を切り替えます。ドライバー・System32・永続的なシステム PATH は変更しません。
@@ -147,7 +149,7 @@ UI のチャット設定では、**コンテキストを自動圧縮**が既定�
 
 ### 起動したままモデルを切り替える
 
-インストーラーは既定で Qwen を起動します。同じ API サーバーで Gemma を使うには、まずダウンロードを開始し、進捗を確認します。
+API のみのインストーラーは既定で Qwen を起動します。同じ API サーバーで Gemma を使うには、まずダウンロードを開始し、進捗を確認します。
 
 ```powershell
 $api = 'http://127.0.0.1:18080'
@@ -374,7 +376,7 @@ Qwen と Clover では `run-api.bat --vision gpu` で GPU（新規構成の既�
 
 API はモデルファイルをインストールする前でも起動できます。Qwen を選択している場合、`POST /v1/model/download` に空の JSON ボディ（`{}`）を指定すると、固定の [Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS 言語モデル](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf)（MTP の重みを含む 14.1 GB）と、その[ビジョンプロジェクタ](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/mmproj-F16.gguf)（0.9 GB）、合計約 **15.0 GB** をダウンロードします。両方のファイルの SHA-256 チェックサムを検証し、トークナイザーを抽出して読み込みます。`GET /v1/model/download` で進捗を確認でき、中断したダウンロードは再開できます。ダウンロードを繰り返し要求した場合は、実行中のジョブを再利用します。`POST /v1/model/download/cancel` で転送や検証をキャンセルできます。ダウンロード完了は推論の準備完了を意味しません。ダウンロード状態が `ready` になり、`/health` が `loaded: true`（画像が有効なら `images: true` も）を返すまで待ってください。
 
-インストーラーはエンジンの実行ファイルと GPU ランタイムライブラリを準備し、既定で Qwen とそのビジョンプロジェクタをダウンロードします。既存の構成では、明示的に変更するまで、選択済みのローカルモデルを使用し続けます。
+UI のセットアップはエンジンと GPU ランタイムライブラリを準備します。モデルは「モデル」タブからダウンロードしてください。API のみのインストーラーは、従来どおり既定で Qwen とそのビジョンプロジェクタをダウンロードします。既存の構成では、明示的に変更するまで、選択済みのローカルモデルを使用し続けます。
 
 ## 謝辞
 

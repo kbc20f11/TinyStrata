@@ -186,7 +186,12 @@ retireLegacyUiWorker();
 function renderEmptyChat() {
   $("attach-btn").title = health.images ? tr("composer.attachPictures", "Attach a text file or a picture (or drop it here)")
                                         : tr("composer.attach", "Attach a text file (or drop it here)");
-  $("chat-empty-sub").textContent = settings.webSearch
+  const catalog = typeof modelCatalog !== "undefined" ? modelCatalog : [];
+  const missing = catalog.find((row) => row.id === health.model)?.installed === false;
+  $("chat-empty-sub").textContent = missing
+    ? catalog.some(modelIsSelectable) ? tr("models.selectModel", "Select a model")
+      : tr("models.downloadFirst", "Download a model from Models to start")
+    : settings.webSearch
     ? tr("localTools.emptySearch", "{model} runs on this PC. Web search sends queries to your selected provider.", {model: health.model})
     : tr("chat.emptyModel", "{model} runs on this PC. Nothing leaves it.", {model: health.model});
 }
@@ -395,6 +400,8 @@ function modelButton(live) {
   const imageNow = imageLive(live);
   const unload = tr("model.unload", "Unload");
   if (state === "unloaded") {
+    if (typeof modelSwitchAvailable !== "undefined" && activeModelNeedsDownload())
+      return setModelButton(tr("model.load", "Load"), tr("models.downloadFirst", "Download a model from Models to start"), true, "download");
     if (imageNow) return setModelButton(tr("model.loading", "Loading…"), tr("model.imageLoading", "An image is already loading the model"), true, "download");
     if (pageBusy()) return setModelButton(tr("model.loading", "Loading…"), tr("model.replyLoading", "A reply is already loading the model"), true, "download");
     return setModelButton(tr("model.load", "Load"), tr("model.loadTitle", "Load the model now. A message also loads it."), false, "download");
@@ -405,6 +412,7 @@ function modelButton(live) {
   return setModelButton(unload, tr("model.unloadTitle", "Unload the model and free the GPU"), false);
 }
 $("unload-btn").onclick = async () => {
+  if (typeof modelSwitchAvailable !== "undefined" && activeModelNeedsDownload()) return;
   if (modelOp || modelSwitching) return;
   const live = (lastMetrics && lastMetrics.live) || {};
   const loading = live.state === "unloaded";
@@ -1123,8 +1131,17 @@ function syncComposerInput(on = !!busy) {
 }
 function syncModelOptions(select) {
   const rows = modelCatalog.filter(modelIsSelectable);
+  const needsChoice = !rows.some((row) => row.id === health.model);
   const wanted = new Set(rows.map((row) => row.id));
+  if (needsChoice) wanted.add("");
   for (const option of [...select.options]) if (!wanted.has(option.value)) option.remove();
+  if (needsChoice) {
+    let placeholder = [...select.options].find((option) => option.value === "");
+    if (!placeholder) { placeholder = document.createElement("option"); placeholder.value = ""; select.insertBefore(placeholder, select.options[0] || null); }
+    const label = tr("models.selectModel", "Select a model");
+    if (placeholder.textContent !== label) placeholder.textContent = label;
+    placeholder.disabled = true;
+  }
   for (const row of rows) {
     let option = [...select.options].find((item) => item.value === row.id);
     if (!option) { option = document.createElement("option"); option.value = row.id; select.appendChild(option); }
@@ -1132,6 +1149,7 @@ function syncModelOptions(select) {
     if (option.textContent !== label) option.textContent = label;
     option.disabled = false;
   }
+  if (needsChoice && !modelSwitching) select.value = "";
 }
 function modelLibraryText(node, value) { if (node.textContent !== value) node.textContent = value; }
 function modelDeleteReason(item, active, transferring) {
@@ -1363,7 +1381,7 @@ function syncComposerControls() {
   select.title = !modelSwitchAvailable ? tr("model.catalogUnavailable", "Model switching is unavailable.")
     : locked ? tr("model.switchBusy", "Wait for the current reply or operation to finish.") : "";
   syncModelOptions(select);
-  if (!select.options.length) select.disabled = true;
+  if (!modelCatalog.some(modelIsSelectable)) select.disabled = true;
   // Keep the requested selection visible until the server finishes switching.
   if (!modelSwitching && [...select.options].some((option) => option.value === health.model)) select.value = health.model;
   syncThinkingControls();
@@ -1678,6 +1696,7 @@ async function refreshModelCatalog() {
     modelCatalogLoading = false;
     syncComposerControls();
     renderModelLibrary();
+    renderEmptyChat();
     if (modelCatalogReloadRequested) { modelCatalogReloadRequested = false; refreshModelCatalog(); }
   }
   if (modelSwitchAvailable) recoverModelDownloads();

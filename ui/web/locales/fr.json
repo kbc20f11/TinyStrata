@@ -678,5 +678,7 @@
   "models.downloadRequired": "Téléchargez un modèle pour discuter",
   "thinking.on": "Activé",
   "thinking.alwaysOn": "Toujours activé",
-  "thinking.high": "Élevé (xhigh)"
+  "thinking.high": "Élevé (xhigh)",
+  "models.selectModel": "Choisir un modèle",
+  "models.downloadFirst": "Téléchargez un modèle depuis Modèles pour commencer"
 }

@@ -672,5 +672,7 @@
   "models.downloadRequired": "モデルをダウンロードしてください",
   "thinking.on": "オン",
   "thinking.alwaysOn": "常にオン",
-  "thinking.high": "高 (xhigh)"
+  "thinking.high": "高 (xhigh)",
+  "models.selectModel": "モデルを選択",
+  "models.downloadFirst": "モデル管理からモデルをダウンロードしてください"
 }

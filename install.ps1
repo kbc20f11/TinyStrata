@@ -27,7 +27,9 @@ param(
     [switch]$SkipModelDownload,
     [switch]$CheckOnly,
     [switch]$Rebuild,
-    [switch]$Update
+    [switch]$Update,
+    # Passed by the UI bootstrap after it resolves main once.
+    [ValidatePattern('^([a-f0-9]{40})?$')][string]$SourceRevision
 )
 
 function Get-VerifiedDownload {
@@ -85,8 +87,84 @@ function Assert-TinyStrataSourceDestination {
     }
 }
 
+function Get-TinyStrataSourceFingerprint {
+    param([string]$Directory, [switch]$NativeOnly)
+    $root = [IO.Path]::GetFullPath($Directory).TrimEnd('\')
+    $files = New-Object 'System.Collections.Generic.List[string]'
+    $pending = New-Object 'System.Collections.Generic.Stack[string]'
+    if ($NativeOnly) {
+        $files.Add((Join-Path $root 'CMakeLists.txt'))
+        foreach ($name in @('src', 'include', 'cmake', 'third_party')) { $pending.Push((Join-Path $root $name)) }
+    } else { $pending.Push($root) }
+    while ($pending.Count) {
+        $directoryPath = $pending.Pop()
+        $directoryItem = Get-Item -LiteralPath $directoryPath -Force -ErrorAction Stop
+        if ($directoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Cannot fingerprint linked source paths.' }
+        foreach ($item in Get-ChildItem -LiteralPath $directoryPath -Force -ErrorAction Stop) {
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Cannot fingerprint linked source paths.' }
+            if ($item.PSIsContainer) { $pending.Push($item.FullName) }
+            elseif ($item.FullName -ne (Join-Path $root '.tinystrata-source.json')) { $files.Add($item.FullName) }
+        }
+    }
+    $text = New-Object Text.StringBuilder
+    # Culture/host collation differs between Windows PowerShell and pwsh.
+    $files.Sort([StringComparer]::Ordinal)
+    foreach ($path in $files) {
+        $relative = $path.Substring($root.Length + 1).Replace('\', '/')
+        $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+        $null = $text.Append($relative).Append([char]0).Append($hash).Append("`n")
+    }
+    if ($NativeOnly) {
+        # Build flags are native inputs too; ordinary installer/UI edits are not.
+        $tokens = $null; $errors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'install.ps1'), [ref]$tokens, [ref]$errors)
+        if ($errors.Count) { throw 'Cannot fingerprint invalid native build policy.' }
+        foreach ($name in @('Invoke-TinyStrataPortableBuild', 'Get-TinyStrataBuildArchitectures')) {
+            $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
+            if (-not $definition) { throw "Native build policy is missing: $name" }
+            $null = $text.Append($name).Append([char]0).Append($definition.Extent.Text.Replace("`r`n", "`n")).Append("`n")
+        }
+    }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text.ToString())))).Replace('-', '').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+}
+
+function Test-TinyStrataSourceRevision {
+    param([string]$Directory, [string]$Revision)
+    if ($Revision -notmatch '^[a-f0-9]{40}$') { return $false }
+    try {
+        $stamp = Get-Content -LiteralPath (Join-Path $Directory '.tinystrata-source.json') -Raw -ErrorAction Stop | ConvertFrom-Json
+        return ($stamp.schema -eq 1 -and $stamp.revision -eq $Revision -and
+                $stamp.tree_fingerprint -eq (Get-TinyStrataSourceFingerprint -Directory $Directory))
+    } catch { return $false }
+}
+
+function Write-TinyStrataNativeBuildStamp {
+    param([string]$Directory, [string]$SourceRoot, [ValidateSet('cuda', 'hip')][string]$Backend)
+    $files = [ordered]@{}
+    foreach ($name in @('tinystrata.exe', 'tinystrata-lfm2.exe', 'tinystrata-gemma4.exe', 'tinystrata-vision.exe') + $(if ($Backend -eq 'cuda') { @('strata_kq.dll') } else { @() })) {
+        $files[$name] = (Get-FileHash -LiteralPath (Join-Path $Directory $name) -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+    }
+    $stamp = [ordered]@{ schema = 1; backend = $Backend; source_fingerprint = (Get-TinyStrataSourceFingerprint -Directory $SourceRoot -NativeOnly); files = $files }
+    $path = Join-Path $Directory '.tinystrata-native-build.json'
+    [IO.File]::WriteAllText($path, ($stamp | ConvertTo-Json -Depth 4), (New-Object Text.UTF8Encoding($false)))
+}
+
+function Test-TinyStrataNativeBuildStamp {
+    param([string]$Directory, [string]$Fingerprint, [ValidateSet('cuda', 'hip')][string]$Backend)
+    try {
+        $stamp = Get-Content -LiteralPath (Join-Path $Directory '.tinystrata-native-build.json') -Raw -ErrorAction Stop | ConvertFrom-Json
+        if ($stamp.schema -ne 1 -or $stamp.backend -ne $Backend -or $stamp.source_fingerprint -ne $Fingerprint) { return $false }
+        foreach ($name in @('tinystrata.exe', 'tinystrata-lfm2.exe', 'tinystrata-gemma4.exe', 'tinystrata-vision.exe') + $(if ($Backend -eq 'cuda') { @('strata_kq.dll') } else { @() })) {
+            if ($stamp.files.$name -ne (Get-FileHash -LiteralPath (Join-Path $Directory $name) -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()) { return $false }
+        }
+        return $true
+    } catch { return $false }
+}
+
 function Initialize-TinyStrataSource {
-    param([string]$SourceRoot, [string]$CacheRoot, [switch]$Refresh)
+    param([string]$SourceRoot, [string]$CacheRoot, [switch]$Refresh, [string]$Revision)
     $SourceRoot = [IO.Path]::GetFullPath($SourceRoot).TrimEnd('\')
     $existing = Test-TinyStrataSource -Directory $SourceRoot
     $backup = $null
@@ -99,10 +177,15 @@ function Initialize-TinyStrataSource {
         }
     } else { Assert-TinyStrataSourceDestination -Directory $SourceRoot }
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    $commit = Invoke-RestMethod -Uri 'https://api.github.com/repos/kbc20f11/TinyStrata/commits/main' `
-        -Headers @{ 'User-Agent' = 'TinyStrata-Installer'; Accept = 'application/vnd.github+json' } -TimeoutSec 30
-    $revision = [string]$commit.sha
+    if (-not $Revision) {
+        $commit = Invoke-RestMethod -Uri 'https://api.github.com/repos/kbc20f11/TinyStrata/commits/main' `
+            -Headers @{ 'User-Agent' = 'TinyStrata-Installer'; Accept = 'application/vnd.github+json'; 'Cache-Control' = 'no-cache' } -TimeoutSec 30
+        $Revision = [string]$commit.sha
+    }
     if ($revision -notmatch '^[a-f0-9]{40}$') { throw 'GitHub returned an invalid TinyStrata revision.' }
+    if ($existing -and (Test-TinyStrataSourceRevision -Directory $SourceRoot -Revision $Revision)) {
+        return [pscustomobject]@{ SourceRoot = $SourceRoot; Backup = $null; Changed = $false; Revision = $Revision }
+    }
     $archive = Join-Path $CacheRoot ("TinyStrata-$revision.zip")
     Write-Host "Downloading TinyStrata sources ($($revision.Substring(0, 7)))..."
     Get-TinyStrataOfficialFile -Uri ("https://codeload.github.com/kbc20f11/TinyStrata/zip/$revision") -Destination $archive
@@ -115,6 +198,7 @@ function Initialize-TinyStrataSource {
     $zip = [IO.Compression.ZipFile]::OpenRead($archive)
     try {
         foreach ($entry in $zip.Entries) {
+            if ($entry.FullName -match ':') { throw 'GitHub source archive contains an unexpected path.' }
             $target = [IO.Path]::GetFullPath((Join-Path $staging $entry.FullName.Replace('/', '\')))
             if (-not $entry.Name -and $target.TrimEnd('\') -eq $unpacked) { continue }
             if (-not $target.StartsWith($unpacked + '\', [StringComparison]::OrdinalIgnoreCase)) {
@@ -126,6 +210,8 @@ function Initialize-TinyStrataSource {
         }
     } finally { $zip.Dispose() }
     if (-not (Test-TinyStrataSource -Directory $unpacked)) { throw 'Downloaded TinyStrata sources are incomplete.' }
+    $stamp = [ordered]@{ schema = 1; revision = $Revision; tree_fingerprint = (Get-TinyStrataSourceFingerprint -Directory $unpacked) }
+    [IO.File]::WriteAllText((Join-Path $unpacked '.tinystrata-source.json'), ($stamp | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
     if ($existing) {
         # Replace archive sources reversibly; runtime settings and models stay
         # in the separate work directory. Never update a Git checkout in place.
@@ -155,7 +241,7 @@ function Initialize-TinyStrataSource {
     }
     [IO.Directory]::Delete($staging, $false)
     Write-Host "Source: $SourceRoot"
-    return [pscustomobject]@{ SourceRoot = $SourceRoot; Backup = $backup }
+    return [pscustomobject]@{ SourceRoot = $SourceRoot; Backup = $backup; Changed = $true; Revision = $Revision }
 }
 
 function Restore-TinyStrataSource {
@@ -1356,6 +1442,8 @@ for raw in open(sys.argv[1], encoding='utf-8-sig'):
 function Initialize-TinyStrataDesktopShortcut {
     param([string]$SourceRoot, [string]$WorkRoot,
           [string]$DesktopDirectory = [Environment]::GetFolderPath('DesktopDirectory'))
+    # Resolve the user's actual shell Desktop, including OneDrive/redirection;
+    # never assume that it is a directory named Desktop under USERPROFILE.
     if (-not $DesktopDirectory) { throw 'The current user desktop directory could not be found.' }
     $source = [IO.Path]::GetFullPath($SourceRoot).TrimEnd('\')
     $work = [IO.Path]::GetFullPath($WorkRoot).TrimEnd('\')
@@ -1370,8 +1458,8 @@ function Initialize-TinyStrataDesktopShortcut {
             }
         }
     }
-    New-Item -ItemType Directory -Path $stateRoot -Force | Out-Null
-    New-Item -ItemType Directory -Path $DesktopDirectory -Force | Out-Null
+    [IO.Directory]::CreateDirectory($stateRoot) | Out-Null
+    [IO.Directory]::CreateDirectory($DesktopDirectory) | Out-Null
     # Keep this launcher outside the source/update directory. No model or port
     # is pinned here: ui/launch.py reads the saved UI selections on each click.
     $helperText = ('$tinyStrataSource = ''{0}''' -f $source.Replace("'", "''")) + "`r`n" +
@@ -1414,7 +1502,10 @@ exit 0
     [IO.File]::WriteAllText($temporary, $helperText, (New-Object Text.UTF8Encoding($true)))
     Move-Item -LiteralPath $temporary -Destination $helperPath -Force
     $shell = New-Object -ComObject WScript.Shell
-    $shortcut = $shell.CreateShortcut($shortcutPath)
+    # Save a complete link before replacing our named shortcut. An interrupted
+    # COM save must not truncate an existing working link or touch other files.
+    $shortcutTemporary = Join-Path $DesktopDirectory ('.TinyStrata-' + [Guid]::NewGuid().ToString('N') + '.lnk')
+    $shortcut = $shell.CreateShortcut($shortcutTemporary)
     $shortcut.TargetPath = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $shortcut.Arguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $helperPath
     $shortcut.WorkingDirectory = $source
@@ -1423,7 +1514,17 @@ exit 0
     $icon = Join-Path $source 'ui\web\terminal-logo.ico'
     $shortcut.IconLocation = if (Test-Path -LiteralPath $icon -PathType Leaf) { $icon + ',0' }
                              else { (Join-Path $env:WINDIR 'System32\shell32.dll') + ',1' }
-    $shortcut.Save()
+    try {
+        $shortcut.Save()
+        if (-not (Test-Path -LiteralPath $shortcutTemporary -PathType Leaf)) {
+            throw "Windows did not save the desktop shortcut in $DesktopDirectory."
+        }
+        Move-Item -LiteralPath $shortcutTemporary -Destination $shortcutPath -Force -ErrorAction Stop
+    } finally {
+        if (Test-Path -LiteralPath $shortcutTemporary -PathType Leaf) {
+            Remove-Item -LiteralPath $shortcutTemporary -Force -ErrorAction SilentlyContinue
+        }
+    }
     Write-Host "Desktop shortcut: $shortcutPath"
 }
 
@@ -1435,16 +1536,30 @@ function Initialize-TinyStrataOptionalUI {
     Initialize-TinyStrataUiSource -SourceRoot $SourceRoot -WorkRoot $WorkRoot
     if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw "The UI needs the installed Python runtime: $python" }
     Initialize-TinyStrataUiDependencies -SourceRoot $SourceRoot -WorkRoot $WorkRoot -Python $python
+    # The entry point belongs to installation, not to the first successful UI
+    # start. Keep it available for NoStart and for recovery after a start error.
+    try { Initialize-TinyStrataDesktopShortcut -SourceRoot $SourceRoot -WorkRoot $WorkRoot }
+    catch {
+        $shortcutFailure = "The desktop shortcut could not be created: $($_.Exception.Message) Start TinyStrata with $(Join-Path $SourceRoot 'run-ui.bat')."
+        try {
+            $shortcutLog = Join-Path $WorkRoot 'runtime\ui\shortcut-install.log'
+            [IO.Directory]::CreateDirectory((Split-Path -Parent $shortcutLog)) | Out-Null
+            [IO.File]::AppendAllText($shortcutLog, ([DateTime]::UtcNow.ToString('o') + ' ' + $shortcutFailure + [Environment]::NewLine), (New-Object Text.UTF8Encoding($false)))
+            $shortcutFailure += " Details: $shortcutLog"
+        } catch { }
+        Write-Warning $shortcutFailure
+    }
     $arguments = @('-B', $launcher, '--source-dir', $SourceRoot, '--work-dir', $WorkRoot,
                    '--api-port', [string]$ApiPort, '--port', [string]$UiPort, '--model-family', $Family)
     if ($ConfigureOnly) { $arguments += '--configure-only' }
     else { $arguments += '--no-api-start' } # The installer already prepared the API, including intentional unloaded mode.
-    & $python @arguments | ForEach-Object { Write-Host $_ }
-    if ($LASTEXITCODE -ne 0) {
-        throw 'The optional UI could not be prepared or started. The API was not stopped; see the UI logs in the work directory.'
+    try {
+        & $python @arguments | ForEach-Object { Write-Host $_ }
+        if ($LASTEXITCODE -ne 0) { throw "UI launcher exited with code $LASTEXITCODE." }
+    } catch {
+        $logs = Join-Path $WorkRoot 'runtime\ui'
+        throw "The optional UI could not be prepared or started: $($_.Exception.Message) The API was not stopped. See $logs\launch.log and $logs\ui.stderr.log; retry with the TinyStrata desktop shortcut or $(Join-Path $SourceRoot 'run-ui.bat')."
     }
-    try { Initialize-TinyStrataDesktopShortcut -SourceRoot $SourceRoot -WorkRoot $WorkRoot }
-    catch { Write-Warning "The UI is ready, but its desktop shortcut could not be created: $($_.Exception.Message)" }
     if ($ConfigureOnly) { Write-Host "UI prepared. Start it with $(Join-Path $SourceRoot 'run-ui.bat')." }
 }
 
@@ -1492,6 +1607,423 @@ function Exit-TinyStrataInstallationGuard {
             # A concurrent read of the marker can briefly deny deletion on Windows.
             [Threading.Thread]::Sleep(20)
         }
+    }
+}
+
+function ConvertTo-TinyStrataUpdateArgument {
+    param([AllowEmptyString()][string]$Value)
+    return '"' + [regex]::Replace([regex]::Replace($Value, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1') + '"'
+}
+
+function Invoke-TinyStrataUpdateServiceControl {
+    param([ValidateSet('stop', 'restore')][string]$Operation,
+          [string]$SourceRoot, [string]$WorkRoot, $Snapshot)
+    $source = [IO.Path]::GetFullPath($SourceRoot).TrimEnd('\')
+    $work = [IO.Path]::GetFullPath($WorkRoot).TrimEnd('\')
+    $python = Join-Path $work 'runtime\.venv\Scripts\python.exe'
+    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+        $states = @()
+        $runtime = Join-Path $work 'runtime'
+        if (Test-Path -LiteralPath $runtime -PathType Container) {
+            $states += @(Get-ChildItem -LiteralPath $runtime -Filter 'server-state*.json' -File)
+            $uiState = Join-Path $runtime 'ui\ui-process.json'
+            if (Test-Path -LiteralPath $uiState -PathType Leaf) { $states += Get-Item -LiteralPath $uiState }
+        }
+        foreach ($file in $states) {
+            $record = [IO.File]::ReadAllText($file.FullName) | ConvertFrom-Json
+            if ($record.pid -and (Get-Process -Id $record.pid -ErrorAction SilentlyContinue)) {
+                throw 'Cannot safely inspect a running saved service without this installation private Python. No process was stopped.'
+            }
+        }
+        if ($Operation -eq 'restore' -and ($Snapshot.Apis.Count -or $Snapshot.Uis.Count)) {
+            throw 'The installation private Python is missing; previous services could not be restored.'
+        }
+        return [pscustomobject]@{ SourceRoot = $source; WorkRoot = $work; Api = $null; Apis = @(); Ui = $null; Uis = @(); Stopped = $false }
+    }
+    # The inspector is an immutable part of this already loaded installer.
+    # It has no model imports and exchanges JSON through UTF-8 stdin/stdout.
+    # Process handles, creation times, exact argv/cwd, private interpreter and
+    # every listening PID are verified before any service is terminated.
+    $code = @'
+"""Embedded by the installer; no model imports and no process-name-only kills."""
+import ctypes,datetime,hashlib,http.client,json,os,subprocess,sys,time
+from pathlib import Path
+from urllib.parse import quote
+import psutil
+
+class PendingServer(RuntimeError):pass
+
+PROFILES={'qwen3.6-35b-a3b':('qwen36','config.json','server-state.json'),
+ 'gemma-4-26b-a4b-it':('gemma4','config-gemma4.json','server-state-gemma4.json'),
+ 'lfm2.5-24b-a2b':('lfm2','config-lfm2.json','server-state-lfm2.json'),
+ 'clover-35b-a3b-preview':('clover','config-clover.json','server-state-clover.json'),
+ 'tiel-coder-35b-a3b':('tiel','config-tiel-coder.json','server-state-tiel-coder.json')}
+def norm(p):return os.path.normcase(str(Path(p).resolve()))
+def same(a,b):
+    try:return os.path.samefile(a,b)
+    except OSError:return False
+def read(p):return json.loads(Path(p).read_text(encoding='utf-8-sig'))
+def stamp(value):return datetime.datetime.fromisoformat(str(value).replace('Z','+00:00')).timestamp()
+def atomic(p,value):
+    p=Path(p);p.parent.mkdir(parents=True,exist_ok=True)
+    temp=p.with_name(p.name+'.update-'+str(os.getpid())+'.tmp')
+    temp.write_text(json.dumps(value,ensure_ascii=False,indent=2),encoding='utf-8');temp.replace(p)
+def process(pid):
+    try:return psutil.Process(int(pid))
+    except (psutil.NoSuchProcess,ValueError,TypeError):return None
+def listeners(port):
+    return {x.pid for x in psutil.net_connections(kind='tcp') if x.status==psutil.CONN_LISTEN and x.laddr.port==port}
+def request(port,path,config=None,method='GET'):
+    headers={};cfg=read(config) if config else {}
+    key=os.environ.get('STRATA_API_KEY') or cfg.get('api_key')
+    if isinstance(key,list):key=key[0] if key else None
+    if key:headers['Authorization']='Bearer '+key
+    body=b'{}' if method=='POST' else None
+    if body:headers['Content-Type']='application/json'
+    c=http.client.HTTPConnection('127.0.0.1',port,timeout=300 if method=='POST' else 5)
+    try:
+        c.request(method,path,body,headers);r=c.getresponse();data=json.loads(r.read(2**20))
+        if r.status!=200:raise RuntimeError(f'HTTP {r.status} from local port {port} {path}')
+        return data
+    finally:c.close()
+def meta(p):
+    with p.oneshot():return {'pid':p.pid,'parent':p.ppid(),'started':p.create_time(),'command':p.cmdline(),
+                            'cwd':p.cwd(),'executable':p.exe()}
+def options(command,kind,source):
+    if len(command)<3 or command[1]!='-B':raise RuntimeError('The saved interpreter command is not a managed launch')
+    if kind=='api':
+        if command[2:4]!=['-m','serve.server']:raise RuntimeError('The API command is not the managed server')
+        rest=command[4:];allowed={'--engine','--config','--port','--host'}
+    else:
+        if norm(command[2])!=norm(source/'ui/server.py'):raise RuntimeError('The UI command belongs to another source directory')
+        rest=command[3:];allowed={'--port','--api-port','--data-dir'}
+    if len(rest)%2:raise RuntimeError('The saved server command has unexpected arguments')
+    result={}
+    for i in range(0,len(rest),2):
+        if rest[i] not in allowed or rest[i] in result:raise RuntimeError('The saved server command has unexpected options')
+        result[rest[i]]=rest[i+1]
+    return result
+def verify_process(m,command,source,python):
+    if not same_invocation(m['command'],command,python) or norm(m['cwd'])!=norm(source):raise RuntimeError('Server command or working directory changed; no process was stopped')
+    if not any(same(m['executable'],p) for p in (python,getattr(sys,'_base_executable',sys.executable))):
+        raise RuntimeError('The server interpreter image belongs to another installation')
+def same_invocation(actual,expected,python):
+    images=(python,getattr(sys,'_base_executable',sys.executable))
+    return (isinstance(actual,list) and isinstance(expected,list) and len(actual)==len(expected) and
+            len(actual)>1 and actual[1:]==expected[1:] and
+            any(same(actual[0],p) for p in images) and any(same(expected[0],p) for p in images))
+def connection_value(value,*,key=False):
+    if value is None or value=='' or value==[]:return ()
+    if key:
+        values=value if isinstance(value,list) else str(value).split(',')
+        return tuple(sorted(set(str(v).strip() for v in values)))
+    return tuple(value) if isinstance(value,list) else (value,)
+def host_environment(value):
+    return {v.strip().lower().rstrip('.') for v in value.split(',') if v.strip()}
+def verify_connection_settings(original,active,owner):
+    # Compare privately before any unload/stop. Never put connection values,
+    # process environment contents or secret fingerprints into the snapshot.
+    before,after=read(original),read(active)
+    for field in ('api_key','allowed_hosts','cors_origins','trusted_origins'):
+        if connection_value(before.get(field),key=field=='api_key')!=connection_value(after.get(field),key=field=='api_key'):
+            raise RuntimeError('The running API uses different per-profile connection settings; services were left unchanged. Align those settings explicitly before updating.')
+    try:
+        environment=owner.environ()
+        inherited={name:environment.get(name,'') for name in ('STRATA_API_KEY','STRATA_ALLOWED_HOSTS')}
+        del environment
+    except (psutil.Error,OSError):
+        raise RuntimeError('The running API connection environment could not be verified; services were left unchanged') from None
+    old_key=connection_value(inherited['STRATA_API_KEY'],key=True)
+    new_key=connection_value(os.environ.get('STRATA_API_KEY',''),key=True)
+    configured_key=connection_value(before.get('api_key'),key=True)
+    if (old_key or configured_key)!=(new_key or configured_key):
+        raise RuntimeError('The running API uses different inherited connection settings; services were left unchanged. Use the same connection environment before updating.')
+    configured_hosts={str(v).strip().lower().rstrip('.') for v in connection_value(before.get('allowed_hosts'))}
+    if (configured_hosts|host_environment(inherited['STRATA_ALLOWED_HOSTS']))!=(configured_hosts|host_environment(os.environ.get('STRATA_ALLOWED_HOSTS',''))):
+        raise RuntimeError('The running API uses different inherited connection settings; services were left unchanged. Use the same connection environment before updating.')
+def collect(source,work):
+    runtime=work/'runtime';python=runtime/'.venv/Scripts/python.exe';records=[]
+    paths=[*runtime.glob('server-state*.json')]
+    uistate=runtime/'ui/ui-process.json'
+    if uistate.exists():paths.append(uistate)
+    for path in paths:
+        state=read(path)
+        if not isinstance(state,dict) or type(state.get('pid')) is not int:continue
+        root=process(state['pid'])
+        if root is None:continue
+        m=meta(root)
+        if 'started' not in state or abs(m['started']-stamp(state['started']))>.00001:
+            raise RuntimeError(f'Saved process identity changed for {path.name}; it was left unchanged')
+        kind='ui' if path==uistate else 'api';command=m['command'];args=options(command,kind,source)
+        verify_process(m,command,source,python)
+        port=int(args.get('--port',0))
+        if not 0<port<65536:raise RuntimeError('Invalid saved server port')
+        if kind=='api':
+            config=Path(state.get('config',''))
+            if norm(state.get('source',''))!=norm(source) or int(state.get('port',0))!=port:
+                raise RuntimeError('Saved API source or port does not match its running command')
+            if norm(args.get('--config',''))!=norm(config) or norm(config.parent)!=norm(runtime/'.tinystrata') or not config.is_file():
+                raise RuntimeError('The API configuration is outside this installation')
+            if args.get('--engine')!='tinystrata':raise RuntimeError('The API uses a different engine')
+        else:
+            if not same_invocation(state.get('command'),command,python):raise RuntimeError('Saved UI command does not match its running process')
+            config=None
+            if '--data-dir' in args and norm(args['--data-dir'])!=norm(runtime/'ui'):
+                raise RuntimeError('The UI history directory belongs to another installation')
+        owners=listeners(port)
+        if not owners:raise PendingServer(f'The recorded {kind} is still starting on port {port}; retry after it is ready')
+        verified=[m]
+        if kind=='ui' and state.get('launcher_pid')==m['parent']:
+            wrapper=process(m['parent'])
+            if wrapper is not None:
+                wm=meta(wrapper)
+                if wm['started']>m['started']:raise RuntimeError('The saved UI wrapper PID has been reused')
+                verify_process(wm,command,source,python)
+                verified.append(wm)
+        for owner in owners:
+            if owner==m['pid']:continue
+            child=process(owner)
+            if child is None:raise RuntimeError('The listener changed during inspection')
+            cm=meta(child)
+            if cm['parent']!=m['pid'] or cm['started']<m['started']:raise RuntimeError('A server port belongs to another process')
+            verify_process(cm,command,source,python);verified.append(cm)
+        health=request(port,'/local-ui-health' if kind=='ui' else '/health')
+        if kind=='ui':
+            if health.get('app')!='tinystrata-ui' or health.get('pid') not in owners or int(health.get('api_port',0))!=int(args.get('--api-port',0)):
+                raise RuntimeError('The UI listener identity does not match this installation')
+            for key,expected in (('source_dir',source),('data_dir',runtime/'ui')):
+                if key in health and norm(health[key])!=norm(expected):raise RuntimeError('The UI serves another installation')
+            item={'Kind':'ui','Port':port,'ApiPort':int(args['--api-port']),'StatePath':str(path),'Processes':verified,'Command':command}
+        else:
+            if health.get('service') not in ('strata','tinystrata') or health.get('status')!='ok' or health.get('model') not in PROFILES:
+                raise RuntimeError('The API is switching or does not identify a supported active model')
+            model=health['model'];family,filename,statename=PROFILES[model]
+            active=runtime/'.tinystrata'/filename
+            if family=='qwen36' and active.exists() and read(active).get('arch')=='gpt-oss':active=active.with_name('config-qwen36.json')
+            if not active.is_file():raise RuntimeError('The active model profile is missing; the API was left running')
+            owner=process(next(iter(owners)))
+            if owner is None:raise RuntimeError('The API listener changed during connection-setting inspection')
+            verify_connection_settings(config,active,owner)
+            item={'Kind':'api','Family':family,'Port':port,'Host':args.get('--host') or read(config).get('host') or '127.0.0.1','Config':str(active),'Model':model,'Loaded':bool(health.get('loaded')),
+                  'OriginalConfig':str(config),'StatePath':str(runtime/statename),'Processes':verified,'Command':command}
+        if any(x['Kind']==kind and x['Port']==port for x in records):continue
+        records.append(item)
+    return records
+def idle(item):
+    if item['Kind']!='api':return
+    status=request(item['Port'],'/status',item['OriginalConfig'])
+    control=request(item['Port'],'/v1/model/switch',item['OriginalConfig'])
+    library=request(item['Port'],'/v1/models',item['OriginalConfig'])
+    if status.get('busy') or status.get('queued') or control.get('switching') or control.get('in_flight'):
+        raise RuntimeError(f"TinyStrata on port {item['Port']} is busy; no service was stopped")
+    if control.get('downloading') or any(x.get('management',{}).get('delete_reason')=='downloading' for x in library.get('data',[])):
+        raise RuntimeError('A model download is running; no service was stopped')
+    if 'downloading' not in control:
+        # First upgrade: the already loaded legacy API has no installer gate
+        # or aggregate download flag. Query every supported model's job, rather
+        # than relying on the active model's "active" delete-lock reason.
+        for row in library.get('data',[]):
+            if row.get('id') in PROFILES:
+                job=request(item['Port'],'/v1/model/download?model='+quote(row['id'],safe=''),item['OriginalConfig'])
+                if job.get('state') in ('downloading','verifying','loading') or job.get('running'):
+                    raise RuntimeError('A model download is running; no service was stopped')
+def hold(m):
+    kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+    kernel.OpenProcess.argtypes=[ctypes.c_uint32,ctypes.c_int,ctypes.c_uint32];kernel.OpenProcess.restype=ctypes.c_void_p
+    kernel.CloseHandle.argtypes=[ctypes.c_void_p];kernel.TerminateProcess.argtypes=[ctypes.c_void_p,ctypes.c_uint];kernel.WaitForSingleObject.argtypes=[ctypes.c_void_p,ctypes.c_uint]
+    handle=kernel.OpenProcess(0x1000|0x0001|0x100000,False,m['pid'])
+    if not handle:raise RuntimeError('Cannot acquire a verified process handle; services were left unchanged')
+    p=process(m['pid'])
+    if p is None or meta(p)!=m:
+        kernel.CloseHandle(handle);raise RuntimeError('Process identity changed during inspection')
+    return kernel,handle
+def active_children(p,known):
+    console=Path(os.environ.get('SystemRoot','C:/Windows'))/'System32/conhost.exe'
+    result=[]
+    for child in p.children(recursive=True):
+        if child.pid in known:continue
+        # CREATE_NEW_PROCESS_GROUP may add Windows' own console host. It exits
+        # with its verified parent; it is never a process-name kill target.
+        if child.ppid() in known and same(child.exe(),console):continue
+        result.append(child)
+    return result
+def stop(source,work):
+    items=collect(source,work);apis=[x for x in items if x['Kind']=='api'];uis=[x for x in items if x['Kind']=='ui']
+    selected=next((a for u in uis for a in apis if a['Port']==u['ApiPort']),apis[0] if apis else None)
+    snapshot={'SourceRoot':str(source),'WorkRoot':str(work),'Api':selected,'Apis':apis,'Ui':uis[0] if uis else None,'Uis':uis,'Stopped':False}
+    handles=[];stopping=False
+    try:
+        for item in items:
+            idle(item)
+            for m in item['Processes']:handles.append((item,m,*hold(m)))
+        known={m['pid'] for item in items for m in item['Processes']}
+        for item in uis:
+            for m in item['Processes']:
+                p=process(m['pid'])
+                if p is not None and active_children(p,known):
+                    raise RuntimeError('The UI has active tool/search child processes; no service was stopped')
+        for item in apis:
+            idle(item)
+            result=request(item['Port'],'/unload',item['OriginalConfig'],'POST')
+            if result.get('status') not in ('unloaded','not loaded'):raise RuntimeError('The model did not unload safely; services were left running')
+        # Unload has joined native workers. Never kill an unverified model or
+        # arbitrary descendant merely because it shares a process name.
+        for item in apis:
+            idle(item)
+            for m in item['Processes']:
+                p=process(m['pid'])
+                extra=[(c.pid,c.name()) for c in active_children(p,known)] if p is not None else []
+                if extra:
+                    raise RuntimeError(f'The API still has active child processes {extra}; no API was terminated')
+        stopping=True
+        for item,m,kernel,handle in reversed(handles):
+            if kernel.WaitForSingleObject(handle,0)==0:continue
+            p=process(m['pid'])
+            try:observed=meta(p) if p is not None else None
+            except psutil.NoSuchProcess:
+                # A venv redirector exits naturally as soon as its verified
+                # listening child has ended. Its held original handle proves
+                # this is completion, rather than a reused PID.
+                if kernel.WaitForSingleObject(handle,100)==0:continue
+                raise
+            if observed!=m:
+                if kernel.WaitForSingleObject(handle,0)==0:continue
+                raise RuntimeError('Server identity changed before stopping')
+            if not kernel.TerminateProcess(handle,0) or kernel.WaitForSingleObject(handle,5000)!=0:
+                raise RuntimeError('A verified server did not stop')
+        snapshot['Stopped']=True
+        return snapshot
+    except BaseException as error:
+        error.snapshot=snapshot
+        raise
+    finally:
+        for _,_,kernel,handle in handles:kernel.CloseHandle(handle)
+def revision(source):
+    digest=hashlib.sha256()
+    for name in ('server.py','launch.py','stdio.py','chat_history.py','web_search.py','tool_settings.py','sandbox_runtime.py'):
+        digest.update(name.encode()+b'\0');digest.update((source/'ui'/name).read_bytes())
+    return digest.hexdigest()
+def resume(source,work,snapshot):
+    if norm(snapshot.get('SourceRoot',''))!=norm(source) or norm(snapshot.get('WorkRoot',''))!=norm(work):
+        raise RuntimeError('The saved service snapshot belongs to a different installation')
+    python=work/'runtime/.venv/Scripts/python.exe';results=[]
+    for item in [*snapshot.get('Apis',[]),*snapshot.get('Uis',[])]:
+        kind=item['Kind'];port=item['Port'];owners=listeners(port)
+        if owners:
+            # A normal successful installer may already have restarted it. A
+            # changed/foreign current listener is never killed or overwritten.
+            current=next((x for x in collect(source,work) if x['Kind']==kind and x['Port']==port),None)
+            if current is None:raise RuntimeError(f'Port {port} is now owned by another service; it was left unchanged')
+            if kind=='api' and current['Model']==item['Model'] and item['Loaded'] and not current['Loaded']:
+                idle(current)
+                result=request(port,'/load',current['OriginalConfig'],'POST')
+                if result.get('status') not in ('loaded','already loaded'):raise RuntimeError('The previously loaded model could not be restored')
+            results.append({'kind':kind,'port':port,'reused':True,'model':current.get('Model')});continue
+        if kind=='api':
+            config=Path(item['Config'])
+            if not config.is_file():raise RuntimeError('The saved active API profile is missing; no replacement model was selected')
+            command=[str(python),'-B','-m','serve.server','--engine','tinystrata','--config',str(config),'--port',str(port),'--host',item.get('Host','127.0.0.1')]
+        else:command=[str(python),'-B',str(source/'ui/server.py'),'--port',str(port),'--api-port',str(item['ApiPort']),'--data-dir',str(work/'runtime/ui')]
+        logs=work/'runtime/ui' if kind=='ui' else work/'runtime';logs.mkdir(parents=True,exist_ok=True)
+        with (logs/(kind+'.stdout.log')).open('ab') as out,(logs/(kind+'.stderr.log')).open('ab') as err:
+            p=subprocess.Popen(command,cwd=source,stdin=subprocess.DEVNULL,stdout=out,stderr=err,
+                env={**os.environ,'PYTHONUTF8':'1','PYTHONIOENCODING':'utf-8'},creationflags=subprocess.CREATE_NO_WINDOW|subprocess.CREATE_NEW_PROCESS_GROUP)
+        created=psutil.Process(p.pid).create_time()
+        state={'pid':p.pid,'started':datetime.datetime.fromtimestamp(created,datetime.timezone.utc).isoformat().replace('+00:00','Z')}
+        state.update({'config':item['Config'],'source':str(source),'port':port} if kind=='api' else {'command':command})
+        atomic(item['StatePath'],state)
+        deadline=time.monotonic()+(180 if kind=='api' else 20)
+        while time.monotonic()<deadline:
+            if p.poll() is not None:raise RuntimeError(f'The restored {kind} exited with code {p.returncode}; inspect {logs}')
+            try:
+                current=next((x for x in collect(source,work) if x['Kind']==kind and x['Port']==port),None)
+                if current:
+                    if kind=='api' and current['Model']!=item['Model']:raise RuntimeError('The restored API selected a different model')
+                    if kind=='ui' and request(port,'/local-ui-health').get('backend_revision')!=revision(source):raise RuntimeError('The restored UI loaded a stale backend')
+                    break
+            except (ConnectionError,OSError,http.client.HTTPException,PendingServer):pass
+            time.sleep(.2)
+        else:raise RuntimeError(f'The restored {kind} did not become ready; inspect {logs}')
+        # Restore a previously loaded model only; never initiate a download.
+        if kind=='api' and item['Loaded'] and not current.get('Loaded'):
+            result=request(port,'/load',item['Config'],'POST')
+            if result.get('status') not in ('loaded','already loaded'):raise RuntimeError('The previously loaded model could not be restored')
+        results.append({'kind':kind,'port':port,'reused':False,'model':item.get('Model')})
+    return results
+def main():
+    req=json.load(sys.stdin);source=Path(req['SourceRoot']).resolve();work=Path(req['WorkRoot']).resolve()
+    if source==work or source in work.parents:raise RuntimeError('The work directory must remain outside the source')
+    if norm(sys.prefix)!=norm(work/'runtime/.venv'):raise RuntimeError('Service inspection requires this installation private Python')
+    marker=work/'.tinystrata-installing.json'
+    if req['Operation']=='stop':
+        guard=read(marker);owner=process(guard.get('pid'));ancestors={p.pid for p in psutil.Process().parents()}
+        if (guard.get('schema')!=1 or owner is None or owner.pid not in ancestors or
+            abs(owner.create_time()-float(guard.get('started_unix',0)))>.01):
+            raise RuntimeError('Acquire this installer installation guard before stopping services')
+    elif marker.exists():raise RuntimeError('Release the installation guard before restoring services')
+    try:
+        result=stop(source,work) if req['Operation']=='stop' else resume(source,work,req['Snapshot'])
+        print(json.dumps({'ok':True,'result':result},ensure_ascii=True))
+    except Exception as error:
+        print(json.dumps({'ok':False,'error':str(error),'snapshot':getattr(error,'snapshot',None)},ensure_ascii=True))
+        return 1
+    return 0
+if __name__=='__main__':raise SystemExit(main())
+'@
+    $request = @{ Operation = $Operation; SourceRoot = $source; WorkRoot = $work; Snapshot = $Snapshot } | ConvertTo-Json -Depth 30 -Compress
+    $start = New-Object Diagnostics.ProcessStartInfo
+    $start.FileName = $python
+    $start.Arguments = (@('-I', '-X', 'utf8', '-B', '-c', $code) | ForEach-Object { ConvertTo-TinyStrataUpdateArgument ([string]$_) }) -join ' '
+    $start.WorkingDirectory = $source
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardInput = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $start.StandardOutputEncoding = New-Object Text.UTF8Encoding($false)
+    $start.StandardErrorEncoding = New-Object Text.UTF8Encoding($false)
+    $start.EnvironmentVariables['PYTHONUTF8'] = '1'
+    $start.EnvironmentVariables['PYTHONIOENCODING'] = 'utf-8'
+    $child = New-Object Diagnostics.Process
+    $child.StartInfo = $start
+    try {
+        if (-not $child.Start()) { throw 'The service inspector did not start.' }
+        $stdout = $child.StandardOutput.ReadToEndAsync()
+        $stderr = $child.StandardError.ReadToEndAsync()
+        $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes($request)
+        $child.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
+        $child.StandardInput.Close()
+        $child.WaitForExit()
+        $text = $stdout.GetAwaiter().GetResult()
+        $errorText = $stderr.GetAwaiter().GetResult()
+        if (-not $text.Trim()) { throw "The service inspector exited with code $($child.ExitCode) before returning JSON. $errorText" }
+        try { $result = ConvertFrom-Json -InputObject $text }
+        catch { throw "The service inspector could not return its result. $errorText" }
+        if ($child.ExitCode -ne 0 -or -not $result.ok) {
+            $failure = New-Object InvalidOperationException ([string]$result.error)
+            if ($result.snapshot) { $failure.Data['TinyStrataServices'] = $result.snapshot }
+            throw $failure
+        }
+        return $result.result
+    } finally { $child.Dispose() }
+}
+
+function Stop-TinyStrataOwnedServicesForUpdate {
+    param([string]$SourceRoot, [string]$WorkRoot)
+    # Caller acquires the installation guard before this call. New APIs reject
+    # new work under that guard; legacy APIs receive two idle checks + unload.
+    return Invoke-TinyStrataUpdateServiceControl -Operation stop -SourceRoot $SourceRoot -WorkRoot $WorkRoot
+}
+
+function Restore-TinyStrataOwnedServicesAfterUpdate {
+    param($Snapshot, [string]$SourceRoot, [string]$WorkRoot, [switch]$NoBrowser)
+    if (-not $Snapshot) { return }
+    # Call only after restoring/committing sources and releasing the guard.
+    # Existing newly started owned listeners are reused. Settings, histories,
+    # model files and API keys are never copied back from an old snapshot.
+    $restored = @(Invoke-TinyStrataUpdateServiceControl -Operation restore -SourceRoot $SourceRoot -WorkRoot $WorkRoot -Snapshot $Snapshot)
+    foreach ($service in $restored) {
+        if ($service.kind) { Write-Host ("Restored {0} on port {1}." -f $service.kind, $service.port) }
     }
 }
 
@@ -1544,15 +2076,22 @@ function Invoke-TinyStrataInstaller {
     param([string]$SourceDirectory, [string]$WorkingDirectory, [int]$ApiPort,
           [bool]$DoNotStart, [bool]$DoNotDownload, [bool]$InspectOnly, [bool]$BuildAgain, [bool]$RefreshSource,
           [string]$Family = 'qwen36', [string]$Backend = 'auto', [string]$HipDirectory, [string]$HipArchitectures,
-          [bool]$IncludeUI = $false, [int]$UiPort = 3000)
+          [bool]$IncludeUI = $false, [int]$UiPort = 3000, [string]$Revision, [bool]$FamilyExplicit = $false,
+          [bool]$UiPortExplicit = $false)
     if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitProcess) { throw 'Run this installer in 64-bit Windows PowerShell or PowerShell.' }
     $sourceRoot = [IO.Path]::GetFullPath($SourceDirectory).TrimEnd('\')
     $sourceReady = Test-TinyStrataSource -Directory $sourceRoot
+    $archiveInstall = $sourceReady -and -not (Test-Path -LiteralPath (Join-Path $sourceRoot '.git')) -and
+                      -not ((Get-Item -LiteralPath $sourceRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)
+    if ($Revision -and $archiveInstall) { $RefreshSource = $true }
+    if ($RefreshSource -and $Revision -and (Test-TinyStrataSourceRevision -Directory $sourceRoot -Revision $Revision)) { $RefreshSource = $false }
+    if ($IncludeUI) { $DoNotDownload = $true }
     if (-not $sourceReady) { Assert-TinyStrataSourceDestination -Directory $sourceRoot }
     if (-not $WorkingDirectory) { $WorkingDirectory = $sourceRoot + '-work' }
     $workRoot = [IO.Path]::GetFullPath($WorkingDirectory).TrimEnd('\')
     if ($workRoot -eq $sourceRoot -or $workRoot.StartsWith($sourceRoot + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'WorkDir must be outside the source directory.' }
     $runtimeRoot = Join-Path $workRoot 'runtime'
+    $portAutomatic = $ApiPort -eq 0
     $selectedFamily = Get-TinyStrataModelFamily -Name $Family
     $configPath = Join-Path (Join-Path $runtimeRoot '.tinystrata') $selectedFamily.ConfigFile
     $statePath = Join-Path $runtimeRoot $selectedFamily.StateFile
@@ -1579,9 +2118,30 @@ function Invoke-TinyStrataInstaller {
         Write-Host "Backend: $selectedBackend"
         Write-Host 'Plan: reuse installed components; prepare Python/dependencies; reuse or build the selected GPU engine; prepare its runtime; save configuration.'
         if ($selectedBackend -eq 'hip') { Write-Host 'AMD: use the private pinned ROCm 10.2.0a20260930 SDK (HIP 7.17) by default; -HipDirectory selects a custom SDK; Qwen/LFM select native FP8 when available, otherwise INT8; Gemma uses INT8.' }
-        if (-not $DoNotStart) { Write-Host 'Then start the API and install the fixed model through its API if needed.' }
+        if (-not $DoNotStart) { Write-Host $(if ($DoNotDownload) { 'Then start the API; download a model later from Models.' } else { 'Then start the API and install the fixed model through its API if needed.' }) }
         if ($IncludeUI) { Write-Host $(if ($DoNotStart) { 'Prepare the optional UI launcher without starting services.' } else { 'Then start the optional UI and open it in the browser.' }) }
         return
+    }
+    $updateGuard = $null
+    $ownedServices = $null
+    $updateFailure = $null
+    try {
+    if ($RefreshSource -or $BuildAgain -or $HipDirectory -or ($Revision -and $IncludeUI -and $archiveInstall)) {
+        $updateGuard = Enter-TinyStrataInstallationGuard -WorkRoot $workRoot
+        $ownedServices = Stop-TinyStrataOwnedServicesForUpdate -SourceRoot $sourceRoot -WorkRoot $workRoot
+        if ($ownedServices.Api) {
+            if (-not $FamilyExplicit) {
+                $selectedFamily = Get-TinyStrataModelFamily -Name $ownedServices.Api.Family
+                $configPath = [string]$ownedServices.Api.Config
+                $statePath = Join-Path $runtimeRoot $selectedFamily.StateFile
+                $cfg = Get-TinyStrataConfig -Path $configPath
+                $selectedBackend = Get-TinyStrataBackend -Requested $Backend -Configuration $cfg
+            }
+            if ($portAutomatic) { $ApiPort = [int]$ownedServices.Api.Port }
+        }
+        if ($ownedServices.Ui -and -not $UiPortExplicit) { $UiPort = [int]$ownedServices.Ui.Port }
+        if ($IncludeUI -and $ApiPort -eq $UiPort) { throw 'The UI and API must use different ports.' }
+        $baseUrl = "http://127.0.0.1:$ApiPort"
     }
     # Inspect occupied ports before changing configuration or installing anything.
     if (Test-Path -LiteralPath $statePath -PathType Leaf) {
@@ -1592,8 +2152,6 @@ function Invoke-TinyStrataInstaller {
         if ($previousServer -and $savedState.port -ne $ApiPort) { throw "This installation already runs on port $($savedState.port). Stop that instance before changing its port." }
     }
     $server = Get-TinyStrataSavedProcess -StatePath $statePath -ConfigPath $configPath -SourcePath $sourceRoot -ApiPort $ApiPort
-    if ($server -and ($BuildAgain -or $RefreshSource)) { throw 'Stop the API for this installation before requesting an update or rebuild.' }
-    if ($server -and $HipDirectory) { throw 'Stop the API before selecting a HIP SDK. The requested SDK was not applied to the running installation.' }
     if ($server -and $DoNotStart) {
         if ($IncludeUI) { Initialize-TinyStrataOptionalUI -SourceRoot $sourceRoot -WorkRoot $workRoot -ApiPort $ApiPort -UiPort $UiPort -Family $selectedFamily.Name -ConfigureOnly }
         Write-Host "Installation already prepared; existing API left unchanged (PID $($server.Id))."
@@ -1609,11 +2167,11 @@ function Invoke-TinyStrataInstaller {
         $sourceChange = $null
         $generation = $null
         $candidateConfig = $null
-        $installationGuard = $null
+        $installationGuard = $updateGuard
         $pythonTransaction = @{}
         $preparationCommitted = $false
         try {
-        $installationGuard = Enter-TinyStrataInstallationGuard -WorkRoot $workRoot
+        if (-not $installationGuard) { $installationGuard = Enter-TinyStrataInstallationGuard -WorkRoot $workRoot }
         Assert-TinyStrataInstallationIdle -SourceRoot $sourceRoot -WorkRoot $workRoot
         if ($selectedBackend -eq 'cuda') {
             $smi = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
@@ -1622,7 +2180,8 @@ function Invoke-TinyStrataInstaller {
             if ($LASTEXITCODE -ne 0) { throw 'The NVIDIA driver is not working. GPU drivers are not replaced by this installer.' }
         }
         $cacheRoot = Join-Path $workRoot 'downloads'
-        if (-not $sourceReady -or $RefreshSource) { $sourceChange = Initialize-TinyStrataSource -SourceRoot $sourceRoot -CacheRoot $cacheRoot -Refresh:$RefreshSource }
+        if (-not $sourceReady -or $RefreshSource) { $sourceChange = Initialize-TinyStrataSource -SourceRoot $sourceRoot -CacheRoot $cacheRoot -Refresh:$RefreshSource -Revision $Revision }
+        $nativeFingerprint = Get-TinyStrataSourceFingerprint -Directory $sourceRoot -NativeOnly
         $python = Initialize-TinyStrataPython -WorkRoot $workRoot -SourceRoot $sourceRoot -CacheRoot $cacheRoot -Transaction $pythonTransaction
         if ($selectedBackend -eq 'hip') {
             $hipRoot = Ensure-TinyStrataHipToolkit -DestinationDirectory (Join-Path $workRoot 'rocm-venv') -Python $python -Directory $HipDirectory -Architectures $HipArchitectures
@@ -1644,7 +2203,7 @@ function Invoke-TinyStrataInstaller {
         }
         $search += $runtimeRoot
         $exe = $null
-        if (-not $BuildAgain -and -not $RefreshSource) {
+        if (-not $BuildAgain) {
             $candidates = @()
             if ($cfg -and $cfg.exe) {
                 $savedExe = [string]$cfg.exe
@@ -1655,6 +2214,7 @@ function Invoke-TinyStrataInstaller {
             foreach ($folder in @('bin', 'build', 'build\Release')) { $candidates += Join-Path $sourceRoot ($folder + '\tinystrata.exe') }
             foreach ($candidate in $candidates) {
                 if ((Test-Path -LiteralPath $candidate -PathType Leaf) -and
+                    (Test-TinyStrataNativeBuildStamp -Directory (Split-Path -Parent $candidate) -Fingerprint $nativeFingerprint -Backend $selectedBackend) -and
                     ($selectedBackend -eq 'hip' -or (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $candidate) 'strata_kq.dll') -PathType Leaf)) -and
                     (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $candidate) 'tinystrata-lfm2.exe') -PathType Leaf) -and
                     (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $candidate) 'tinystrata-gemma4.exe') -PathType Leaf) -and
@@ -1683,6 +2243,7 @@ function Invoke-TinyStrataInstaller {
         $search += Split-Path -Parent $exe
         $search += $runtimeRoot
         $dllDirs = @(Initialize-TinyStrataRuntime -RuntimeRoot $runtimeRoot -CacheRoot $cacheRoot -SearchDirectories $search -HipRuntimeDirectories $hipRuntimeDirs -HipSdkRoot $hipRoot -EngineDirectory (Split-Path -Parent $exe) -Backend $selectedBackend)
+        if ($generation) { Write-TinyStrataNativeBuildStamp -Directory $generation -SourceRoot $sourceRoot -Backend $selectedBackend }
         if ($cfg -and $cfg.lib_dirs -and $cfg.backend -eq $selectedBackend) {
             # Keep HIP math libraries from the selected SDK ahead of a saved
             # SDK's directories; its matching core runtime is now app-local.
@@ -1725,7 +2286,10 @@ function Invoke-TinyStrataInstaller {
             if ($candidateConfig) {
                 foreach ($temporary in @($candidateConfig, ($candidateConfig + '.bak'), ($candidateConfig + '.tmp'))) { if (Test-Path -LiteralPath $temporary -PathType Leaf) { [IO.File]::Delete($temporary) } }
             }
-            } finally { Exit-TinyStrataInstallationGuard -Guard $installationGuard }
+            } finally {
+                Exit-TinyStrataInstallationGuard -Guard $installationGuard
+                $updateGuard = $null
+            }
         }
         if ($DoNotStart) {
             if ($IncludeUI) { Initialize-TinyStrataOptionalUI -SourceRoot $sourceRoot -WorkRoot $workRoot -ApiPort $ApiPort -UiPort $UiPort -Family $selectedFamily.Name -ConfigureOnly }
@@ -1787,6 +2351,20 @@ function Invoke-TinyStrataInstaller {
     Write-Host "Logs:   $runtimeRoot"
     if ($health.loaded) { Write-Host 'TinyStrata is ready for inference.' } else { Write-Host 'API ready; model installation was skipped.' }
     if ($IncludeUI) { Initialize-TinyStrataOptionalUI -SourceRoot $sourceRoot -WorkRoot $workRoot -ApiPort $ApiPort -UiPort $UiPort -Family $selectedFamily.Name }
+    } catch {
+        $updateFailure = $_
+        if (-not $ownedServices -and $_.Exception.Data.Contains('TinyStrataServices')) { $ownedServices = $_.Exception.Data['TinyStrataServices'] }
+        throw
+    } finally {
+        if ($updateGuard) { Exit-TinyStrataInstallationGuard -Guard $updateGuard }
+        if ($ownedServices) {
+            try { Restore-TinyStrataOwnedServicesAfterUpdate -Snapshot $ownedServices -SourceRoot $sourceRoot -WorkRoot $workRoot -NoBrowser }
+            catch {
+                if ($updateFailure) { Write-Warning ("The update failed and its previous services could not be restored: " + $_.Exception.Message) }
+                else { throw }
+            }
+        }
+    }
 }
 
 $tinyStrataOldErrorAction = $ErrorActionPreference
@@ -1798,7 +2376,23 @@ try {
         elseif (Test-TinyStrataSource -Directory (Get-Location).Path) { $SourceDir = (Get-Location).Path }
         else { $SourceDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'TinyStrata' }
     }
-    Invoke-TinyStrataInstaller -SourceDirectory $SourceDir -WorkingDirectory $WorkDir -ApiPort $Port -DoNotStart $NoStart.IsPresent -DoNotDownload $SkipModelDownload.IsPresent -InspectOnly $CheckOnly.IsPresent -BuildAgain $Rebuild.IsPresent -RefreshSource $Update.IsPresent -Family $ModelFamily -Backend $Backend -HipDirectory $HipDirectory -HipArchitectures $HipArchitectures -IncludeUI $WithUI.IsPresent -UiPort $UiPort
+    if ($WithUI) {
+        $tinyStrataSettingsWork = if ($WorkDir) { $WorkDir } else { $SourceDir + '-work' }
+        $tinyStrataSettingsPath = Join-Path $tinyStrataSettingsWork 'runtime\ui\settings.json'
+        if (Test-Path -LiteralPath $tinyStrataSettingsPath -PathType Leaf) {
+            try {
+                $tinyStrataSavedSettings = Get-Content -LiteralPath $tinyStrataSettingsPath -Raw | ConvertFrom-Json
+                if (-not $PSBoundParameters.ContainsKey('ModelFamily')) {
+                    $tinyStrataSavedFamily = [string]$tinyStrataSavedSettings.model_family
+                    $ModelFamily = (Get-TinyStrataModelFamily -Name $tinyStrataSavedFamily).Name
+                }
+                if (-not $PSBoundParameters.ContainsKey('UiPort') -and $tinyStrataSavedSettings.port -ge 1 -and $tinyStrataSavedSettings.port -le 65535) {
+                    $UiPort = [int]$tinyStrataSavedSettings.port
+                }
+            } catch { } # Invalid/retired selections use the normal supported default.
+        }
+    }
+    Invoke-TinyStrataInstaller -SourceDirectory $SourceDir -WorkingDirectory $WorkDir -ApiPort $Port -DoNotStart $NoStart.IsPresent -DoNotDownload ($WithUI.IsPresent -or $SkipModelDownload.IsPresent) -InspectOnly $CheckOnly.IsPresent -BuildAgain $Rebuild.IsPresent -RefreshSource $Update.IsPresent -Family $ModelFamily -Backend $Backend -HipDirectory $HipDirectory -HipArchitectures $HipArchitectures -IncludeUI $WithUI.IsPresent -UiPort $UiPort -Revision $SourceRevision -FamilyExplicit $PSBoundParameters.ContainsKey('ModelFamily') -UiPortExplicit $PSBoundParameters.ContainsKey('UiPort')
 } finally {
     $ErrorActionPreference = $tinyStrataOldErrorAction
     [Net.ServicePointManager]::SecurityProtocol = $tinyStrataOldSecurityProtocol

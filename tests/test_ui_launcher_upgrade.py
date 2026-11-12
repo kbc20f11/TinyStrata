@@ -218,6 +218,94 @@ class LauncherUpgradeTests(unittest.TestCase):
                              ("parent", 99), ("owners", [99]), ("owners", [42, 99])):
             self.assertFalse(launch.matching_ui_process({**metadata, field: value}, 42, command, 44))
 
+    @unittest.skipUnless(os.name == "nt", "Windows venv command-line integration")
+    def test_venv_redirector_may_rewrite_only_the_verified_interpreter_argument(self):
+        command = [sys.executable, "-B", str(self.source / "日本語 UI" / "server.py"),
+                   "--port", "19191", "--api-port", "19192", "--data-dir", str(self.work)]
+        base = sys._base_executable
+        rewritten = '"' + base + '" ' + subprocess.list2cmdline(command[1:])
+        metadata = {"executable": base, "command": rewritten, "parent": 44, "owners": [42]}
+        self.assertTrue(launch.matching_ui_process(metadata, 42, command, 44))
+        self.assertFalse(launch.matching_ui_process({**metadata, "parent": 99}, 42, command, 44))
+        self.assertFalse(launch.matching_ui_process({**metadata, "command": rewritten.replace("19192", "19193")},
+                                                  42, command, 44))
+        self.assertFalse(launch.matching_ui_process({**metadata, "command": rewritten.replace("server.py", "other.py")},
+                                                  42, command, 44))
+
+    def test_ready_ui_ownership_failure_is_not_replaced_by_a_timeout(self):
+        child = mock.Mock(pid=42)
+        child.poll.return_value = None
+        with mock.patch.object(self.launcher, "existing_ui", side_effect=[None, {"pid": 43}]), \
+             mock.patch.object(self.launcher, "spawn", return_value=child), \
+             mock.patch.object(self.launcher, "current_ui", return_value=True), \
+             mock.patch.object(launch, "windows_ui_metadata", return_value={}), \
+             mock.patch.object(launch, "matching_ui_process", return_value=False), \
+             mock.patch.object(launch.time, "sleep") as sleep, \
+             self.assertRaisesRegex(RuntimeError, "listener did not match"):
+            self.launcher.ensure_ui()
+        sleep.assert_not_called()
+
+    def test_ready_ui_record_error_is_not_replaced_by_a_timeout(self):
+        child = mock.Mock(pid=42)
+        child.poll.return_value = None
+        with mock.patch.object(self.launcher, "existing_ui", side_effect=[None, {"pid": 42}]), \
+             mock.patch.object(self.launcher, "spawn", return_value=child), \
+             mock.patch.object(self.launcher, "current_ui", return_value=True), \
+             mock.patch.object(launch, "windows_ui_metadata", return_value={}), \
+             mock.patch.object(launch, "matching_ui_process", return_value=True), \
+             mock.patch.object(launch, "process_started", return_value="created"), \
+             mock.patch.object(self.launcher, "write_state", side_effect=PermissionError("state.json denied")), \
+             self.assertRaisesRegex(RuntimeError, "ready, but its process record could not be saved.*state.json denied"):
+            self.launcher.ensure_ui()
+
+    def test_started_wrong_backend_reports_the_mismatched_identity(self):
+        child = mock.Mock(pid=42)
+        child.poll.return_value = None
+        health = {"pid": 42, "backend_revision": "old", "source_dir": str(self.source),
+                  "data_dir": str(self.launcher.state_dir), "python_executable": str(self.launcher.python)}
+        with mock.patch.object(self.launcher, "existing_ui", side_effect=[None, health]), \
+             mock.patch.object(self.launcher, "spawn", return_value=child), \
+             mock.patch.object(launch, "backend_revision", return_value="new"), \
+             mock.patch.object(self.launcher, "write_state") as publish, \
+             self.assertRaisesRegex(RuntimeError, "different installation or backend.*backend revision"):
+            self.launcher.ensure_ui()
+        publish.assert_not_called()
+
+    def test_live_startup_failure_preserves_attempt_traceback_and_exit_code(self):
+        ui = self.source / "ui"
+        ui.mkdir()
+        (ui / "server.py").write_text("raise RuntimeError('今回の起動に失敗しました')\n", encoding="utf-8")
+        self.launcher.python = Path(sys.executable).resolve()
+        error_log = self.launcher.state_dir / "ui.stderr.log"
+        error_log.write_text("PREVIOUS ATTEMPT: unrelated old error\n", encoding="utf-8")
+        with mock.patch.object(self.launcher, "existing_ui", return_value=None), \
+             self.assertRaisesRegex(RuntimeError, "exit code 1") as raised:
+            self.launcher.ensure_ui()
+        self.assertIn("今回の起動に失敗しました", str(raised.exception))
+        self.assertNotIn("unrelated old error", str(raised.exception))
+        self.assertIn("unrelated old error", error_log.read_text(encoding="utf-8"))
+        self.assertEqual(self.launcher.ui_process.wait(timeout=3), 1)
+
+    def test_ui_failure_keeps_verified_api_selection_for_desktop_retry(self):
+        (self.source / "ui/web").mkdir(parents=True)
+        (self.source / "ui/server.py").write_text("# fixture\n", encoding="utf-8")
+        (self.source / "ui/web/index.html").write_text("fixture", encoding="utf-8")
+        args = ["launch.py", "--source-dir", str(self.source), "--work-dir", str(self.work),
+                "--api-port", "19192", "--port", "19193", "--no-browser"]
+        def follow_api(instance, no_start):
+            instance.family = "gemma4"
+        with mock.patch.object(sys, "argv", args), \
+             mock.patch.object(launch.Launcher, "existing_ui", return_value=None), \
+             mock.patch.object(launch.Launcher, "ensure_api", autospec=True, side_effect=follow_api), \
+             mock.patch.object(launch.Launcher, "ensure_ui", side_effect=RuntimeError("UI import failed")), \
+             mock.patch.object(launch.webbrowser, "open") as browser, \
+             mock.patch("builtins.print"):
+            self.assertEqual(launch.main(), 1)
+        settings = launch.read_json(self.launcher.state_dir / "settings.json")
+        self.assertEqual((settings["model_family"], settings["api_port"], settings["port"]),
+                         ("gemma4", 19192, 19193))
+        browser.assert_not_called()
+
     def test_health_reports_frozen_startup_revision(self):
         from ui import server
         with mock.patch.object(server, "backend_revision", return_value="startup-revision"):

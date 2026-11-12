@@ -251,5 +251,153 @@ class SameArchitectureProfiles(unittest.TestCase):
         self.assertEqual(tiel_path.read_bytes(), before)
 
 
+class ManagedNativeGenerations(unittest.TestCase):
+    """Real saved profiles and generation folders; native programs never run."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="tinystrata-native-profiles-")
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.work = self.root / "work"
+        self.settings = self.work / "runtime/.tinystrata"
+        self.settings.mkdir(parents=True)
+        self.old = self.work / "native/cuda-old"
+        self.new = self.work / "native/cuda-current"
+        self.engines(self.old)
+        self.engines(self.new)
+        self.model = self.root / "selected-model.gguf"
+        self.model.write_bytes(b"model-path-only fixture")
+        self.current = {"arch": "qwen35moe", "model_name": QWEN, "backend": "cuda", "gpu": 0,
+                        "exe": str(self.new / "tinystrata.exe"), "cwd": str(self.root),
+                        "lib_dirs": [str(self.new), "current-sdk"],
+                        "args": ["--max-context", "auto", "--kv-type", "auto", "--mtp", "3"]}
+        self.saved = {"arch": "gemma4", "model_name": "gemma-4-26b-a4b-it", "backend": "cuda", "gpu": 2,
+                      "exe": str(self.old / "tinystrata-gemma4.exe"), "cwd": str(self.root),
+                      "lib_dirs": [str(self.old), "old-sdk"], "tokenizer": str(self.root / "chosen-tokenizer"),
+                      "args": ["--model", str(self.model), "--max-context", "65536", "--kv-type", "fp16",
+                               "--chunk", "768", "--mtp", "1", "--expert-slots", "42"],
+                      "memory_policy_version": tinyconfig.MEMORY_POLICY_VERSION,
+                      "chunk_policy_version": tinyconfig.CHUNK_POLICY_VERSION,
+                      "sampling": {**tinyconfig.GEMMA4_SAMPLING, "temperature": .63, "top_k": 41, "seed": 777},
+                      "enable_thinking": False, "max_tokens": 1234, "private_setting": "preserve",
+                      "vision_exe": str(self.old / "tinystrata-vision.exe"),
+                      "vision": {"exe": str(self.old / "tinystrata-vision.exe"), "model": str(self.model),
+                                 "mmproj": str(self.root / "chosen-projector.gguf"), "gpu": True, "max_tokens": 768}}
+        self.path = self.settings / "config.json"
+        self.gemma = self.settings / "config-gemma4.json"
+
+    @staticmethod
+    def engines(directory):
+        directory.mkdir(parents=True, exist_ok=True)
+        for name in ("tinystrata.exe", "tinystrata-gemma4.exe", "tinystrata-lfm2.exe", "tinystrata-vision.exe"):
+            (directory / name).write_bytes(b"CPU-only executable path fixture")
+
+    def profiles(self, path=None):
+        path = path or self.path
+        path.write_text(json.dumps(self.current), encoding="utf-8")
+        selected = path.parent / "config-gemma4.json"
+        selected.write_text(json.dumps(self.saved, indent=2), encoding="utf-8")
+        before = {file: file.read_bytes() for file in path.parent.iterdir() if file.is_file()}
+        with patch.object(model_setup, "resolve_executable", return_value=Path(self.current["exe"])), \
+             patch.object(model_setup, "shared_library_dirs", side_effect=lambda value: value), \
+             patch("subprocess.Popen", side_effect=AssertionError("Profile reads must not start a native process")):
+            profiles = ModelProfiles(path, self.current)
+        self.assertEqual({file: file.read_bytes() for file in before}, before, "Catalog reads must not rewrite profiles")
+        self.assertEqual({file for file in path.parent.iterdir() if file.is_file()}, set(before))
+        return profiles
+
+    def test_inactive_cuda_uses_updated_generation_without_changing_model_preferences(self):
+        profiles = self.profiles()
+        value = profiles.get("gemma4").config
+        self.assertEqual(value["exe"], str(self.new / "tinystrata-gemma4.exe"))
+        self.assertEqual(value["vision_exe"], str(self.new / "tinystrata-vision.exe"))
+        self.assertEqual(value["vision"], {**self.saved["vision"], "exe": str(self.new / "tinystrata-vision.exe")})
+        self.assertEqual(value["lib_dirs"], self.current["lib_dirs"])
+        self.assertEqual(value["gpu"], self.current["gpu"])
+        for field in ("args", "tokenizer", "sampling", "enable_thinking", "max_tokens", "private_setting"):
+            self.assertEqual(value[field], self.saved[field], field)
+        before = self.path.read_bytes()
+        profiles.update("gemma4", value, save=True)
+        self.assertEqual(config.load(self.gemma)["exe"], str(self.new / "tinystrata-gemma4.exe"))
+        self.assertEqual(self.path.read_bytes(), before, "Saving the selected inactive profile must not rewrite the active one")
+
+    def test_managed_hip_keeps_shared_generation_and_runtime_alignment(self):
+        self.current.update(backend="hip", hip_ordinal=1)
+        self.saved.update(backend="hip", hip_ordinal=0)
+        self.saved["args"][self.saved["args"].index("--kv-type") + 1] = "int8"
+        value = self.profiles().get("gemma4").config
+        self.assertEqual(value["exe"], str(self.new / "tinystrata-gemma4.exe"))
+        self.assertEqual(value["lib_dirs"], self.current["lib_dirs"])
+        self.assertEqual(value["hip_ordinal"], 1)
+        self.assertEqual(config.value_of(value, "kv_type"), "int8")
+
+    def test_existing_backend_change_migration_still_selects_the_current_sibling(self):
+        self.current.update(backend="hip", hip_ordinal=1)
+        value = self.profiles().get("gemma4").config
+        self.assertEqual(value["backend"], "hip")
+        self.assertEqual(value["exe"], str(self.new / "tinystrata-gemma4.exe"))
+        self.assertEqual(config.value_of(value, "kv_type"), "auto")
+        self.assertEqual(value["sampling"], self.saved["sampling"])
+
+    def test_custom_or_renamed_executables_are_not_replaced_on_the_same_backend(self):
+        for executable in (self.root / "custom/tinystrata-gemma4.exe", self.old / "my-gemma.exe",
+                           self.work / "custom/tinystrata-gemma4.exe",
+                           self.root / "work-other/native/old/tinystrata-gemma4.exe",
+                           self.work / "build/custom/tinystrata-gemma4.exe"):
+            with self.subTest(executable=executable):
+                executable.parent.mkdir(parents=True, exist_ok=True)
+                executable.write_bytes(b"custom")
+                self.saved["exe"] = str(executable)
+                value = self.profiles().get("gemma4").config
+                self.assertEqual(value["exe"], str(executable))
+                self.assertEqual(value["lib_dirs"], self.saved["lib_dirs"])
+                self.assertEqual(value["vision_exe"], self.saved["vision_exe"])
+
+    def test_custom_vision_is_preserved_when_managed_language_engine_updates(self):
+        custom = self.root / "custom/encoder.exe"
+        for nested in (False, True):
+            with self.subTest(nested=nested):
+                self.saved["vision"]["exe"] = str(custom)
+                if nested:
+                    self.saved.pop("vision_exe", None)
+                else:
+                    self.saved["vision_exe"] = str(custom)
+                value = self.profiles().get("gemma4").config
+                self.assertEqual(value["exe"], str(self.new / "tinystrata-gemma4.exe"))
+                self.assertEqual(value.get("vision_exe"), self.saved.get("vision_exe"))
+                self.assertEqual(value["vision"]["exe"], str(custom))
+
+    def test_custom_active_engine_cannot_retarget_inactive_managed_profiles(self):
+        custom = self.root / "custom"
+        self.engines(custom)
+        self.current["exe"] = str(custom / "tinystrata.exe")
+        value = self.profiles().get("gemma4").config
+        self.assertEqual(value["exe"], self.saved["exe"])
+        self.assertEqual(value["lib_dirs"], self.saved["lib_dirs"])
+
+    def test_recognized_legacy_builds_and_missing_old_generations_can_update(self):
+        for directory in (self.work / "build/Release", self.work / "build-cuda-132"):
+            with self.subTest(directory=directory):
+                self.saved["exe"] = str(directory / "tinystrata-gemma4.exe")
+                value = self.profiles().get("gemma4").config
+                self.assertEqual(value["exe"], str(self.new / "tinystrata-gemma4.exe"))
+        legacy = self.work / "build-cuda/Release"
+        self.engines(legacy)
+        self.current["exe"] = str(legacy / "tinystrata.exe")
+        self.saved["exe"] = str(self.old / "tinystrata-gemma4.exe")
+        self.assertEqual(self.profiles().get("gemma4").config["exe"], str(legacy / "tinystrata-gemma4.exe"))
+
+    def test_missing_sibling_or_nonmanaged_config_does_not_partially_retarget(self):
+        (self.new / "tinystrata-gemma4.exe").unlink()
+        value = self.profiles().get("gemma4").config
+        self.assertEqual(value["exe"], self.saved["exe"])
+        self.assertEqual(value["lib_dirs"], self.saved["lib_dirs"])
+        self.engines(self.new)
+        outside = self.root / "custom-config"
+        outside.mkdir()
+        value = self.profiles(outside / "config.json").get("gemma4").config
+        self.assertEqual(value["exe"], self.saved["exe"])
+
+
 if __name__ == "__main__":
     unittest.main()

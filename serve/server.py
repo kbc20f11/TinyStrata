@@ -5975,7 +5975,9 @@ def make_handler(svc: Service):
                 path = self.path.split("?")[0].rstrip("/")
                 control = path in ("/v1/model/switch", "/v1/model/expert-placement", "/v1/model/download", "/v1/models", "/models",
                                    "/health", "/api/health")
-                with svc.models.admit() if svc.models is not None and not control else contextlib.nullcontext():
+                lease = (svc.models.admit(allow_update=True) if path in ("/metrics", "/v1/status", "/status")
+                         else svc.models.admit()) if svc.models is not None and not control else contextlib.nullcontext()
+                with lease:
                     self._get()
             except (ModelControlError, ValueError) as e:
                 self._json(getattr(e, "status", 400), {"error": {"type": "invalid_request_error", "message": str(e)}})
@@ -6132,7 +6134,9 @@ def make_handler(svc: Service):
             try:
                 path = self.path.split("?")[0].rstrip("/")
                 control = path in ("/v1/model/switch", "/v1/model/expert-placement", "/v1/model/download", "/v1/model/download/cancel", "/v1/model/delete")
-                with svc.models.admit() if svc.models is not None and not control else contextlib.nullcontext():
+                lease = (svc.models.admit(allow_update=True) if path in ("/unload", "/v1/unload")
+                         else svc.models.admit()) if svc.models is not None and not control else contextlib.nullcontext()
+                with lease:
                     self._post()
             except ModelControlError as e:
                 self._json(e.status, {"error": {"type": "server_error" if e.status == 503 else "invalid_request_error",

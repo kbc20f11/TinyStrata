@@ -69,6 +69,7 @@ MODEL_FIELDS = (
 class ModelSwitcher:
     def __init__(self, svc, cfg: dict, config_path, api):
         self.svc, self.api = svc, api
+        self._config_path = config_path
         self.profiles = ModelProfiles(config_path, cfg)
         self.active_id = self.profiles.current_id
         self._lock = threading.RLock()
@@ -94,21 +95,32 @@ class ModelSwitcher:
                     'context': self.context_info(),
                     'rolled_back': self._rollback, 'started_at': self._started,
                     'finished_at': self._finished, 'in_flight': self._requests,
-                    'switching': self._busy}
+                    'switching': self._busy,
+                    'downloading': any(getattr(manager, 'running', lambda: False)() or manager.status().get('state') in
+                                       ('downloading', 'verifying', 'loading')
+                                       for manager in self._downloads.values())}
 
-    def _open(self):
+    def _open(self, *, allow_update=False):
         if self._closed or self.svc.stopping.is_set():
             raise ModelControlError(503, 'the API is stopping')
+        if not allow_update:
+            from serve.install_guard import assert_installation_ready, UpdateInProgressError
+            try:
+                assert_installation_ready(config_path=getattr(self, '_config_path', None))
+            except UpdateInProgressError as error:
+                raise ModelControlError(503, str(error)) from None
 
     @contextmanager
-    def admit(self):
+    def admit(self, *, allow_update=False):
         """Lease the model from request parsing through the last SSE event.
 
         The generation FIFO alone is too late: tokenization and parser creation
         happen before taking it. A switch starts only with no such leases.
         """
         with self._lock:
-            self._open()
+            # Read-only status and graceful unload remain available to the
+            # installer. New work must not race its idle check and shutdown.
+            self._open(allow_update=allow_update)
             if self._busy:
                 raise ModelControlError(503, 'a model switch is in progress; poll GET /v1/model/switch')
             self._requests += 1

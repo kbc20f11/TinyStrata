@@ -175,7 +175,30 @@ $owners = @(Get-NetTCPConnection -State Listen -LocalPort ([int]$request.port) -
     return json.loads(result.stdout) if result.returncode == 0 else {}
 
 
+def windows_command_arguments(command):
+    """Parse the actual Win32 command line, including redirector re-quoting."""
+    import ctypes
+    from ctypes import wintypes
+
+    shell = ctypes.WinDLL("shell32", use_last_error=True)
+    shell.CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+    shell.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel.LocalFree.restype = ctypes.c_void_p
+    count = ctypes.c_int()
+    values = shell.CommandLineToArgvW(command, ctypes.byref(count))
+    if not values:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return [values[index] for index in range(count.value)]
+    finally:
+        kernel.LocalFree(values)
+
+
 def matching_ui_process(metadata, pid, command, launcher_pid=None):
+    if not isinstance(metadata, dict) or not isinstance(metadata.get("command"), str) or not command:
+        return False
     try:
         # Windows' venv python.exe can be a redirector: the actual listener is
         # its direct child running the base interpreter with the same command.
@@ -195,7 +218,17 @@ def matching_ui_process(metadata, pid, command, launcher_pid=None):
                 executables.append(buffer.value)
         executable_matches = any(Path(candidate).is_file() and os.path.samefile(executable, candidate)
                                  for candidate in executables)
-        return (executable_matches and metadata.get("command") == subprocess.list2cmdline(command) and
+        if os.name == "nt":
+            actual = windows_command_arguments(metadata.get("command", ""))
+            # Standard CPython venvs can replace argv[0] with the base Python
+            # image and add quotes. All script/port/data arguments must still
+            # match exactly; only the independently verified interpreter varies.
+            command_matches = (len(actual) == len(command) and actual[1:] == command[1:] and
+                               any(Path(candidate).is_file() and os.path.samefile(actual[0], candidate)
+                                   for candidate in executables))
+        else:
+            command_matches = metadata.get("command") == subprocess.list2cmdline(command)
+        return (executable_matches and command_matches and
                 metadata.get("owners") == [pid] and
                 (launcher_pid is None or pid == launcher_pid or metadata.get("parent") == launcher_pid))
     except (OSError, TypeError, ValueError):
@@ -274,6 +307,7 @@ class Launcher:
             raise ValueError("The UI and API must use different ports")
         self.python = self.runtime / ".venv" / "Scripts" / "python.exe"
         self.url = f"http://127.0.0.1:{self.port}"
+        self._spawn_log_offsets = {}
 
     def log(self, message):
         with (self.state_dir / "launch.log").open("a", encoding="utf-8") as output:
@@ -309,8 +343,13 @@ class Launcher:
         command = [str(self.python), "-B", *([str(script)] if script is not None else []), *arguments]
         with (self.state_dir / f"{label}.stdout.log").open("ab") as output, \
              (self.state_dir / f"{label}.stderr.log").open("ab") as errors:
+            self._spawn_log_offsets[label] = errors.tell()
+            errors.write((f"\n[{datetime.now(timezone.utc).isoformat()}] Starting {label}; "
+                          f"source={self.source}\n").encode("utf-8"))
+            errors.flush()
             process = subprocess.Popen(command, cwd=self.source, stdin=subprocess.DEVNULL,
-                                       stdout=output, stderr=errors, creationflags=flags)
+                                       stdout=output, stderr=errors, creationflags=flags,
+                                       env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
         try:
             self.log(f"Started {label}: PID {process.pid}")
             state = {"pid": process.pid, "command": command}
@@ -442,42 +481,86 @@ class Launcher:
                              "--api-port", str(self.api_port), "--data-dir", str(self.state_dir)], "ui")
         self.ui_process = process
         deadline = time.monotonic() + 15
+        last_error = None
         while time.monotonic() < deadline:
             try:
                 health = self.existing_ui()
-                if health is not None and self.current_ui(health):
-                    pid = health.get("pid")
-                    command = [str(self.python), "-B", str(self.source / "ui" / "server.py"),
-                               "--port", str(self.port), "--api-port", str(self.api_port),
-                               "--data-dir", str(self.state_dir)]
-                    if type(pid) is not int or pid <= 0:
-                        raise RuntimeError("The started UI returned an invalid process identity")
-                    state = {"pid": pid, "launcher_pid": process.pid, "command": command}
-                    if os.name == "nt":
-                        if not matching_ui_process(windows_ui_metadata(pid, self.port), pid, command, process.pid):
-                            raise RuntimeError("The UI listener did not match the started process; it was left unchanged")
-                        state["started"] = process_started(pid)
-                    elif pid != process.pid:
+            except (OSError, ValueError, http.client.HTTPException, RuntimeError) as error:
+                # A listener may bind before its first HTTP response. Only this
+                # network-readiness probe is retryable; ownership and state
+                # publication errors below must retain their actual cause.
+                last_error = error
+                health = None
+            if health is not None:
+                if not self.current_ui(health):
+                    mismatches = ", ".join(self.ui_mismatches(health))
+                    raise RuntimeError(f"The started UI serves a different installation or backend ({mismatches}); "
+                                       f"see {self.state_dir / 'ui.stderr.log'}")
+                pid = health.get("pid")
+                command = [str(self.python), "-B", str(self.source / "ui" / "server.py"),
+                           "--port", str(self.port), "--api-port", str(self.api_port),
+                           "--data-dir", str(self.state_dir)]
+                if type(pid) is not int or pid <= 0:
+                    raise RuntimeError("The started UI returned an invalid process identity")
+                state = {"pid": pid, "launcher_pid": process.pid, "command": command}
+                if os.name == "nt":
+                    if not matching_ui_process(windows_ui_metadata(pid, self.port), pid, command, process.pid):
                         raise RuntimeError("The UI listener did not match the started process; it was left unchanged")
+                    state["started"] = process_started(pid)
+                elif pid != process.pid:
+                    raise RuntimeError("The UI listener did not match the started process; it was left unchanged")
+                try:
                     self.write_state("ui-process.json", state)
-                    return
-            except (OSError, ValueError, http.client.HTTPException, RuntimeError):
-                # A newly spawned listener may have bound before serving HTTP.
-                if process.poll() is not None:
-                    break
+                except OSError as error:
+                    raise RuntimeError(f"The UI server is ready, but its process record could not be saved: {error}") from error
+                return
             if process.poll() is not None:
                 break
             time.sleep(.2)
-        raise RuntimeError(f"The UI server did not become ready; see {self.state_dir / 'ui.stderr.log'}")
+        detail = self.startup_failure_detail(process, "ui", last_error)
+        raise RuntimeError(f"The UI server did not become ready{detail}; see {self.state_dir / 'ui.stderr.log'}")
+
+    def startup_failure_detail(self, process, label, last_error=None):
+        parts = []
+        code = process.poll()
+        if code is not None:
+            parts.append(f"exit code {code}")
+        if last_error is not None:
+            parts.append(str(last_error))
+        offset = self._spawn_log_offsets.get(label)
+        if offset is not None:
+            try:
+                with (self.state_dir / f"{label}.stderr.log").open("rb") as errors:
+                    errors.seek(offset)
+                    # Keep old attempts separate and bound diagnostics even if
+                    # a broken child writes continuously before exiting.
+                    tail = errors.read(65536).decode("utf-8", errors="replace")[-2400:].strip()
+                if tail:
+                    parts.append(tail)
+            except OSError:
+                pass  # The original startup failure remains authoritative.
+        return ": " + " | ".join(parts) if parts else ""
+
+    def ui_mismatches(self, health):
+        if not isinstance(health, dict):
+            return ["invalid health response"]
+        problems = []
+        try:
+            if health.get("backend_revision") != backend_revision(self.source):
+                problems.append("backend revision")
+        except OSError:
+            problems.append("backend source files unavailable")
+        for key, expected in (("source_dir", self.source), ("data_dir", self.state_dir),
+                              ("python_executable", self.python)):
+            try:
+                if Path(health[key]).resolve() != expected.resolve():
+                    problems.append(key)
+            except (OSError, KeyError, TypeError, ValueError):
+                problems.append(key)
+        return problems
 
     def current_ui(self, health):
-        try:
-            return (health.get("backend_revision") == backend_revision(self.source) and
-                    Path(health["source_dir"]).resolve() == self.source.resolve() and
-                    Path(health["data_dir"]).resolve() == self.state_dir.resolve() and
-                    Path(health["python_executable"]).resolve() == self.python.resolve())
-        except (OSError, KeyError, TypeError, ValueError):
-            return False
+        return not self.ui_mismatches(health)
 
     def restart_previous_ui(self, health):
         try:
@@ -549,8 +632,10 @@ def main():
             return 0
         launcher.existing_ui()  # Refuse a foreign UI port before starting a model.
         launcher.ensure_api(args.no_api_start)
-        launcher.ensure_ui()
+        # Preserve the verified API's current family and ports for a desktop
+        # retry even when only the UI helper fails to start.
         launcher.save_settings()
+        launcher.ensure_ui()
         message = f"TinyStrata ready: {launcher.url} (API http://127.0.0.1:{launcher.api_port}/v1)"
         launcher.log(message)
         print(message, flush=True)

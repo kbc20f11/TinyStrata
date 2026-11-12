@@ -285,3 +285,8 @@ CMakeFiles/
 !/benchmark/results/cuda-revalidation-20261112.json
 !/benchmark/results/gemma-prefill-diagnosis-20261112.json
 !/tests/test_retired_model.py
+!/tests/test_installer_request_admission.py
+!/tests/installer-desktop-shortcut.ps1
+!/tests/installer-source-refresh.ps1
+!/tests/installer-ui-flow.ps1
+!/tests/installer-service-update.ps1

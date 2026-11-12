@@ -45,6 +45,8 @@ $entrypointCapture = @'
     WithUI = [bool](Get-Variable -Name WithUI -ValueOnly -ErrorAction SilentlyContinue)
     Update = [bool]$Update
     NoStart = [bool]$NoStart
+    SkipModelDownload = [bool]$SkipModelDownload
+    SourceRevision = $SourceRevision
     Origin = $probeOrigin
     SourceDir = $SourceDir
 }
@@ -114,9 +116,10 @@ foreach ($header in @($entrypointCoreHeader, $entrypointUiHeader)) {
 
 function Invoke-MockedUiBootstrap {
     param([string]$UiText, [string]$CoreHeader, [hashtable]$Arguments = @{}, [switch]$Iex,
-          [switch]$LocalInstaller, [switch]$DownloadFails, [string]$Revision = ('1' * 40), [switch]$IncompleteLocalSource)
+          [switch]$LocalInstaller, [switch]$DownloadFails, [string]$Revision = ('1' * 40), [switch]$IncompleteLocalSource,
+          [switch]$GitCheckout)
     & {
-        param($probeUi, $probeCore, $probeArguments, $probeIex, $probeCapture, $probeLocal, $probeDownloadFails, $probeRevision, $probeIncomplete)
+        param($probeUi, $probeCore, $probeArguments, $probeIex, $probeCapture, $probeLocal, $probeDownloadFails, $probeRevision, $probeIncomplete, $probeGit)
         $probeRequests = New-Object 'System.Collections.Generic.List[string]'
         $probeCoreStub = $probeCore + "`n`$probeOrigin = 'pinned'`n" + $probeCapture
         $probeLocalStub = $probeCore + "`n`$probeOrigin = 'local'`n" + $probeCapture
@@ -126,6 +129,7 @@ function Invoke-MockedUiBootstrap {
         $probeUi = $probeUi.Replace('$PSScriptRoot', "'C:\mock-ui-bootstrap'")
         function Test-Path {
             param($LiteralPath, $Path, $PathType)
+            if ($LiteralPath -like '*\.git') { return $probeGit }
             if ($probeIncomplete -and $LiteralPath -like '*CMakeLists.txt') { return $false }
             return $probeLocal
         }
@@ -144,12 +148,13 @@ function Invoke-MockedUiBootstrap {
         $forwarded = if ($probeIex) { Invoke-Expression $probeUi }
                      else { & ([scriptblock]::Create($probeUi)) @probeArguments }
         return [pscustomobject]@{ Forwarded = $forwarded; Requests = $probeRequests.ToArray() }
-    } $UiText $CoreHeader $Arguments ([bool]$Iex) $entrypointCapture ([bool]$LocalInstaller) ([bool]$DownloadFails) $Revision ([bool]$IncompleteLocalSource)
+    } $UiText $CoreHeader $Arguments ([bool]$Iex) $entrypointCapture ([bool]$LocalInstaller) ([bool]$DownloadFails) $Revision ([bool]$IncompleteLocalSource) ([bool]$GitCheckout)
 }
 
 $entrypointUiText = [IO.File]::ReadAllText($entrypointUiPath)
 $result = Invoke-MockedUiBootstrap -UiText $entrypointUiText -CoreHeader $entrypointCoreHeader -Iex
 Assert-Entrypoint ($result.Forwarded.Reached -and $result.Forwarded.WithUI -and $result.Forwarded.Backend -eq 'auto') 'full UI IEX defaults forward WithUI'
+Assert-Entrypoint ($result.Forwarded.SkipModelDownload -and $result.Forwarded.SourceRevision -eq ('1' * 40)) 'UI skips model transfer and pins source to its installer revision'
 Assert-Entrypoint ($result.Requests.Count -eq 2 -and $result.Requests[1] -like ('*/' + ('1' * 40) + '/install.ps1')) 'UI bootstrap uses the resolved commit'
 $result = Invoke-MockedUiBootstrap -UiText $entrypointUiText -CoreHeader $entrypointCoreHeader -Arguments @{
     CheckOnly = $true; Backend = 'hip'; HipArchitectures = 'gfx1200;gfx1201'; ModelFamily = 'gemma4'; Port = 8080; UiPort = 3001
@@ -158,7 +163,9 @@ Assert-Entrypoint ($result.Forwarded.WithUI -and $result.Forwarded.CheckOnly -an
 Assert-Entrypoint ($result.Forwarded.Backend -eq 'hip' -and $result.Forwarded.ModelFamily -eq 'gemma4' -and $result.Forwarded.HipArchitectures -eq 'gfx1200;gfx1201') 'UI forwards backend family and multiple architectures'
 
 $result = Invoke-MockedUiBootstrap -UiText $entrypointUiText -CoreHeader $entrypointCoreHeader -LocalInstaller
-Assert-Entrypoint ($result.Forwarded.Origin -eq 'local' -and $result.Requests.Count -eq 0) 'ordinary local bootstrap remains offline and uses adjacent installer'
+Assert-Entrypoint ($result.Forwarded.Origin -eq 'pinned' -and $result.Requests.Count -eq 2 -and $result.Forwarded.SkipModelDownload) 'ordinary archive bootstrap updates with the same command and does not download a model'
+$result = Invoke-MockedUiBootstrap -UiText $entrypointUiText -CoreHeader $entrypointCoreHeader -LocalInstaller -GitCheckout
+Assert-Entrypoint ($result.Forwarded.Origin -eq 'local' -and $result.Requests.Count -eq 0) 'ordinary Git checkout stays offline and does not overwrite user edits'
 $result = Invoke-MockedUiBootstrap -UiText $entrypointUiText -CoreHeader $entrypointCoreHeader -LocalInstaller -Arguments @{ Update = $true; NoStart = $true }
 Assert-Entrypoint ($result.Forwarded.Origin -eq 'pinned' -and $result.Forwarded.Update -and $result.Forwarded.NoStart) 'Update runs the newly fetched installer and forwards update/no-start'
 Assert-Entrypoint ($result.Requests.Count -eq 2 -and $result.Requests[1] -like ('*/' + ('1' * 40) + '/install.ps1')) 'local Update pins the installer script to one resolved revision'
@@ -306,7 +313,7 @@ foreach ($configureOnly in @($false, $true)) {
         Initialize-TinyStrataOptionalUI -SourceRoot 'C:\UI source' -WorkRoot 'C:\UI work' -ApiPort 8080 -ConfigureOnly:$probeConfigure
         return [pscustomobject]@{ Steps = $probeSteps.ToArray(); Arguments = $probeCapture.Arguments }
     } $optionalProbeText $configureOnly
-    Assert-Entrypoint (($result.Steps -join ',') -eq 'source,dependencies,launch,shortcut') 'UI dependencies precede launch and both start modes create a shortcut after success'
+    Assert-Entrypoint (($result.Steps -join ',') -eq 'source,dependencies,shortcut,launch') 'UI dependencies precede the shortcut and both start modes create it before launch'
     Assert-Entrypoint (($configureOnly -and $result.Arguments -contains '--configure-only') -or (-not $configureOnly -and $result.Arguments -contains '--no-api-start')) 'UI start and configure-only keep their original launch contracts'
 }
 $result = & {
@@ -323,7 +330,7 @@ $result = & {
     catch { $caught = $_.Exception.Message -like '*could not be prepared or started*' }
     return [pscustomobject]@{ Caught = $caught; Shortcut = $probeCapture.Shortcut }
 } $optionalProbeText
-Assert-Entrypoint ($result.Caught -and -not $result.Shortcut) 'failed UI preparation does not create a misleading success shortcut'
+Assert-Entrypoint ($result.Caught -and $result.Shortcut) 'a launch failure retains the shortcut for a retry'
 
 # Exercise actual Shell Link serialization, but only in a private temporary
 # desktop. No launcher, interpreter, application or production desktop is used.

@@ -66,6 +66,9 @@ class ModelProfiles:
         if current_arch not in _MODELS.values():
             raise ValueError(f"Unsupported model profile architecture: {current_arch}")
         self.current_id = self._configured_model(cfg)
+        parent = current_path.parent
+        self._managed_work = (parent.parent.parent if parent.name.lower() == ".tinystrata"
+                              and parent.parent.name.lower() == "runtime" else None)
         self._hardware = {key: deepcopy(cfg[key]) for key in ("gpu", "hip_ordinal", "backend", "lib_dirs") if key in cfg}
         self._engine = model_setup.resolve_executable(cfg)
         self._profiles = {self.current_id: ModelProfile(self.current_id, current_arch, current_path, deepcopy(cfg))}
@@ -172,6 +175,25 @@ class ModelProfiles:
                 result["exe"] = str(sibling)
         return result
 
+    def _managed_executable(self, value, cfg: dict, filenames: tuple[str, ...]) -> bool:
+        """Recognize installer-owned paths, without adopting custom binaries."""
+        if self._managed_work is None or not isinstance(value, (str, Path)) or not value:
+            return False
+        path = Path(value).expanduser()
+        if path.name.lower() not in filenames:
+            return False
+        if not path.is_absolute():
+            path = Path(cfg.get("cwd") or model_setup.ROOT) / path
+        try:
+            relative = path.resolve().relative_to(self._managed_work)
+        except (OSError, ValueError):
+            return False
+        parts = tuple(part.lower() for part in relative.parts)
+        if len(parts) >= 2 and parts[0] == "native":
+            return True
+        return (parts[0] in ("build", "build-hip", "build-cuda", "build-cuda-132") and
+                (len(parts) == 2 or len(parts) == 3 and parts[1] == "release"))
+
     def _settings(self, cfg: dict, profile: ModelProfile) -> dict:
         from serve.backend import configure_backend
         self._check_arch(profile.path, cfg, profile.arch, profile.id)
@@ -180,11 +202,17 @@ class ModelProfiles:
         # CUDA profile must not switch an AMD installation back to CUDA.
         backend_changed = (self._hardware.get("backend") is not None and
                            source.get("backend", "cuda") != self._hardware["backend"])
+        filename = {"lfm2moe": "tinystrata-lfm2", "gemma4": "tinystrata-gemma4"}.get(profile.arch, "tinystrata")
+        sibling = self._engine.with_name(filename + self._engine.suffix) if self._engine is not None else None
+        standard = ("tinystrata.exe", "tinystrata-lfm2.exe", "tinystrata-gemma4.exe")
+        managed_alignment = (sibling is not None and sibling.is_file() and
+                             self._managed_executable(self._engine, cfg, standard) and
+                             (not source.get("exe") or self._managed_executable(source["exe"], source, standard)))
         # Normalize KV while the profile still names its original backend.
         # Overwriting it first would mistake a CUDA FP8 setting for a deliberate
         # HIP choice and bypass the migration's engine auto policy.
         source = configure_backend(source, self._hardware.get("backend"))
-        if self._hardware.get("backend") == "hip" or backend_changed:
+        if self._hardware.get("backend") == "hip" or backend_changed or managed_alignment:
             for key in ("gpu", "hip_ordinal", "backend", "lib_dirs"):
                 source.pop(key, None)
             source.update(deepcopy(self._hardware))
@@ -192,12 +220,20 @@ class ModelProfiles:
             source.pop("exe", None)
             source.pop("vision_exe", None)
             source.pop("vision", None)
-        if self._engine is not None and (self._hardware.get("backend") == "hip" or backend_changed):
-            filename = {"lfm2moe": "tinystrata-lfm2", "gemma4": "tinystrata-gemma4"}.get(profile.arch, "tinystrata")
-            sibling = self._engine.with_name(filename + self._engine.suffix)
-            if sibling.is_file():
-                source["exe"] = str(sibling)
-                source["vision_exe"] = str(sibling.with_name("tinystrata-vision" + sibling.suffix))
+        if sibling is not None and sibling.is_file() and (backend_changed or managed_alignment):
+            # A successful update's current generation supplies every managed
+            # family, including inactive CUDA profiles. Reading the catalog
+            # changes no saved files; explicit custom executables stay pinned.
+            source["exe"] = str(sibling)
+            vision = sibling.with_name("tinystrata-vision" + sibling.suffix)
+            previous = source.get("vision") or {}
+            configured_vision = source.get("vision_exe") or previous.get("exe")
+            if vision.is_file() and (not configured_vision or self._managed_executable(
+                    configured_vision, source, ("tinystrata-vision.exe",))):
+                source["vision_exe"] = str(vision)
+                if previous and (not previous.get("exe") or self._managed_executable(
+                        previous["exe"], source, ("tinystrata-vision.exe",))):
+                    source["vision"] = {**previous, "exe": str(vision)}
         source.setdefault("arch", profile.arch)
         source.setdefault("model_name", profile.id)
         # Normalize supported aliases while retaining historical custom API names.

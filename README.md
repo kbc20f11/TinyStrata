@@ -91,13 +91,15 @@ Run either installer in 64-bit PowerShell:
 **With UI** ([installer](install-ui.ps1)): chat at `http://127.0.0.1:3000`, with the API at `http://127.0.0.1:18080/v1`.
 
 ```powershell
-irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install-ui.ps1' | iex
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install-ui.ps1' | iex"
 ```
+
+Use the same command for installation and updates. Open **TinyStrata → Models**, download a model, then select it in chat; UI setup itself does not download a model.
 
 **API only** ([installer](install.ps1)): the same API without the UI.
 
 ```powershell
-irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex"
 ```
 
 **AMD runtime default:** automatic installs and updates use the private **ROCm `10.2.0a20260930` SDK (HIP 7.17)** in the work directory, rather than an older global `HIP_PATH` or system SDK. An explicit `-HipDirectory` still selects a custom SDK. Matching HIP/COMGR/Kpack libraries and verified SDK math paths are shared by the model engines and Vision; updates prepare a separate native generation before publishing settings. Drivers, System32 and the persistent system PATH are not changed.
@@ -149,7 +151,7 @@ The design follows [Open WebUI’s rolling context compaction](https://docs.open
 
 ### Switch models without restarting
 
-The installer starts with Qwen by default. To prepare Gemma on the same running API server, download it and check its progress:
+The API-only installer starts with Qwen by default. To prepare Gemma on the same running API server, download it and check its progress:
 
 ```powershell
 $api = 'http://127.0.0.1:18080'
@@ -376,7 +378,7 @@ For Qwen and Clover, `run-api.bat --vision gpu` uses GPU image processing (the d
 
 The API can start before the model files are installed. With Qwen selected, `POST /v1/model/download` with an empty JSON body (`{}`) downloads the fixed [Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS language model](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf) (14.1 GB, including MTP weights) and its [vision projector](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/mmproj-F16.gguf) (0.9 GB), about **15.0 GB in total**. It verifies both files' SHA-256 checksums, extracts the tokenizer and loads them. `GET /v1/model/download` reports progress; interrupted downloads can resume. A repeated download request reuses the active job, and `POST /v1/model/download/cancel` can cancel transfer or verification. Download completion is not inference readiness: wait for the download state to become `ready` and `/health` to report `loaded: true`, plus `images: true` when images are enabled.
 
-The installer prepares the engine binaries and GPU runtime libraries, and downloads Qwen and its vision projector by default. Existing configurations keep their selected local model until you explicitly change it.
+UI setup prepares the engines and GPU runtime libraries; download models from the Models tab. The API-only installer still downloads Qwen and its vision projector by default. Existing configurations keep their selected local model until you explicitly change it.
 
 ## Acknowledgments
 

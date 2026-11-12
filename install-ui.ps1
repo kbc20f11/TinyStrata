@@ -27,12 +27,13 @@ param(
 $tinyStrataUiForward = @{}
 foreach ($parameterName in $PSBoundParameters.Keys) { $tinyStrataUiForward[$parameterName] = $PSBoundParameters[$parameterName] }
 $tinyStrataUiForward.WithUI = $true
+$tinyStrataUiForward.SkipModelDownload = $true
 $tinyStrataUiOldErrorAction = $ErrorActionPreference
 $tinyStrataUiOldSecurityProtocol = [Net.ServicePointManager]::SecurityProtocol
 try {
     $ErrorActionPreference = 'Stop'
     $tinyStrataUiInstaller = $null
-    if ($Update -and -not $CheckOnly -and -not $SourceDir -and $PSScriptRoot) {
+    if (-not $SourceDir -and $PSScriptRoot) {
         # A downloaded ScriptBlock has no installation directory of its own.
         # Retain the caller's local installation, without treating a folder
         # containing only downloaded bootstrap scripts as a source tree.
@@ -42,10 +43,10 @@ try {
         }
         if ($tinyStrataUiLocalSource) { $tinyStrataUiForward.SourceDir = $PSScriptRoot }
     }
-    # Updating must run the new installer itself, not the old adjacent copy
-    # whose function definitions would remain loaded after a source refresh.
-    # A local CheckOnly remains an offline inspection, even with -Update.
-    if ((-not $Update -or $CheckOnly) -and $PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'install.ps1') -PathType Leaf)) {
+    # Archive installs and remote IEX always run the pinned latest installer.
+    # A local checkout stays local; CheckOnly stays offline even with -Update.
+    $tinyStrataUiGitCheckout = $PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot '.git'))
+    if (($CheckOnly -or ($tinyStrataUiGitCheckout -and -not $Update)) -and $PSScriptRoot -and (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'install.ps1') -PathType Leaf)) {
         $tinyStrataUiCandidate = Join-Path $PSScriptRoot 'install.ps1'
         if ((Get-Command -Name $tinyStrataUiCandidate).Parameters.ContainsKey('WithUI')) { $tinyStrataUiInstaller = $tinyStrataUiCandidate }
     }
@@ -55,9 +56,10 @@ try {
         # Resolve main once so this bootstrap does not execute a changing raw URL.
         [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
         $tinyStrataUiCommit = Invoke-RestMethod -Uri 'https://api.github.com/repos/kbc20f11/TinyStrata/commits/main' `
-            -Headers @{ 'User-Agent' = 'TinyStrata-UI-Installer'; Accept = 'application/vnd.github+json' } -TimeoutSec 30
+            -Headers @{ 'User-Agent' = 'TinyStrata-UI-Installer'; Accept = 'application/vnd.github+json'; 'Cache-Control' = 'no-cache' } -TimeoutSec 30
         $tinyStrataUiRevision = [string]$tinyStrataUiCommit.sha
         if ($tinyStrataUiRevision -notmatch '^[a-f0-9]{40}$') { throw 'GitHub returned an invalid TinyStrata revision.' }
+        $tinyStrataUiForward.SourceRevision = $tinyStrataUiRevision
         $tinyStrataUiResponse = Invoke-WebRequest -Uri ("https://raw.githubusercontent.com/kbc20f11/TinyStrata/$tinyStrataUiRevision/install.ps1") -UseBasicParsing -TimeoutSec 60
         & ([ScriptBlock]::Create([string]$tinyStrataUiResponse.Content)) @tinyStrataUiForward
     }

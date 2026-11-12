@@ -11,18 +11,28 @@ $transactionRoot = Join-Path ([IO.Path]::GetTempPath()) ('tinystrata-update-test
 $script:fixtureProcesses = @()
 $script:fixtureFailure = ''
 $script:fixtureEvents = @()
+$script:fixtureNativeChanged = $false
 $originalTransactionToken = [Environment]::GetEnvironmentVariable('TINYSTRATA_INSTALLER_TRANSACTION', 'Process')
 function Test-TinyStrataSource { param($Directory) return (Test-Path -LiteralPath $Directory -PathType Container) }
 function Get-TinyStrataBackend {param($Requested,$Configuration) return 'hip'}
 function Get-TinyStrataSavedProcess {param($StatePath,$ConfigPath,$SourcePath,$ApiPort) return $null}
 function Get-CimInstance {param($ClassName,$ErrorAction) return $script:fixtureProcesses}
 function Initialize-TinyStrataSource {
-    param($SourceRoot,$CacheRoot,[switch]$Refresh)
+    param($SourceRoot,$CacheRoot,[switch]$Refresh,$Revision)
     $backup = $SourceRoot + '.previous'
     [IO.Directory]::Move($SourceRoot, $backup)
     Write-RuntimeFixture $SourceRoot 'revision.txt' 'new-source'
+    $script:fixtureNativeChanged = $true
     return [pscustomobject]@{ SourceRoot=$SourceRoot; Backup=$backup }
 }
+function Get-TinyStrataSourceFingerprint { param($Directory,[switch]$NativeOnly) return 'fixture-native-fingerprint' }
+function Test-TinyStrataNativeBuildStamp {
+    param($Directory,$Fingerprint,$Backend)
+    return -not $script:fixtureNativeChanged
+}
+function Write-TinyStrataNativeBuildStamp { param($Directory,$SourceRoot,$Backend) }
+function Stop-TinyStrataOwnedServicesForUpdate { param($SourceRoot,$WorkRoot) return $null }
+function Restore-TinyStrataOwnedServicesAfterUpdate { param($Snapshot,$SourceRoot,$WorkRoot,[switch]$NoBrowser) }
 function Initialize-TinyStrataPython {
     param($WorkRoot,$SourceRoot,$CacheRoot,$Transaction)
     if ($script:fixtureScenario -like 'venv-*') {
@@ -72,6 +82,7 @@ try {
         $oldSdk = Join-Path $root 'sdk-A'
         $script:fixtureSdk = Join-Path $root 'sdk-B'
         $script:fixtureEvents=@()
+        $script:fixtureNativeChanged=$false
         $script:fixtureFailure = if ($scenario -eq 'updated-configure') { 'configure' } elseif ($scenario -eq 'venv-build') { 'build' } elseif ($scenario -in @('success','publish','venv-success')) { '' } else { $scenario }
         Write-RuntimeFixture $source 'revision.txt' 'old-source'
         New-RuntimeSdk $oldSdk
@@ -139,9 +150,17 @@ try {
     Assert-Runtime ((Get-TinyStrataPrivateHipDirectory $sdkEnvironment) -eq ($sdkEnvironment+'-10.2.0a20260930')) 'a pin change selects a separate versioned SDK directory'
     Assert-Runtime ([IO.File]::ReadAllText((Join-Path $sdkEnvironment 'Scripts\rocm-sdk.exe')) -eq 'old-sdk-tool-never-executed') 'pin selection never mutates the previous SDK'
     function Get-TinyStrataSavedProcess {param($StatePath,$ConfigPath,$SourcePath,$ApiPort) return [pscustomobject]@{Id=51}}
+    function Stop-TinyStrataOwnedServicesForUpdate {
+        param($SourceRoot,$WorkRoot)
+        $failure = New-Object InvalidOperationException 'fixture verified service quiesce requested'
+        $failure.Data['TinyStrataServices'] = [pscustomobject]@{ Stopped = $true }
+        throw $failure
+    }
+    function Restore-TinyStrataOwnedServicesAfterUpdate { param($Snapshot,$SourceRoot,$WorkRoot,[switch]$NoBrowser) throw 'fixture restore also failed' }
     Assert-RuntimeThrows {
         Invoke-TinyStrataInstaller -SourceDirectory $source -WorkingDirectory $work -ApiPort 18080 -DoNotStart $true -DoNotDownload $true -InspectOnly $false -BuildAgain $false -RefreshSource $false -Backend hip -HipDirectory $script:fixtureSdk
-    } 'Stop the API before selecting a HIP SDK'
+    } 'fixture verified service quiesce requested'
+    Assert-Runtime (-not (Test-Path -LiteralPath (Join-Path $work '.tinystrata-installing.json'))) 'a secondary restore failure preserves the original error and releases the guard'
     $guardWork=Join-Path $transactionRoot 'guard-ownership'
     $guard=Enter-TinyStrataInstallationGuard $guardWork
     try {

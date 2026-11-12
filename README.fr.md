@@ -75,13 +75,15 @@ Exécutez l’un des deux programmes d’installation dans PowerShell 64 bits :
 **Avec interface** ([installation](install-ui.ps1)) : chat à `http://127.0.0.1:3000`, API à `http://127.0.0.1:18080/v1`.
 
 ```powershell
-irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install-ui.ps1' | iex
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install-ui.ps1' | iex"
 ```
+
+Utilisez la même commande pour installer et mettre à jour. Ouvrez **TinyStrata → Modèles**, téléchargez un modèle puis sélectionnez-le dans le chat ; l’installation de l’interface ne télécharge aucun modèle automatiquement.
 
 **API seule** ([installation](install.ps1)) : la même API, sans interface.
 
 ```powershell
-irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex"
 ```
 
 **Runtime AMD par défaut :** les installations et mises à jour automatiques utilisent le **SDK ROCm privé `10.2.0a20260930` (HIP 7.17)** du répertoire de travail, plutôt qu’un ancien `HIP_PATH` global ou SDK système. `-HipDirectory` permet toujours de sélectionner explicitement un SDK personnalisé. Les moteurs des modèles et Vision partagent des fichiers HIP/COMGR/Kpack compatibles et les chemins vérifiés des bibliothèques mathématiques du SDK ; la mise à jour prépare une génération native distincte avant de publier les réglages. Les pilotes, System32 et le PATH système permanent restent inchangés.
@@ -127,7 +129,7 @@ Références : [Open WebUI](https://docs.openwebui.com/troubleshooting/context-w
 
 ### Changer de modèle sans redémarrer
 
-Le programme d’installation démarre Qwen par défaut. Pour préparer Gemma sur le même serveur API, lancez son téléchargement et consultez la progression :
+Le programme d’installation API seule démarre Qwen par défaut. Pour préparer Gemma sur le même serveur API, lancez son téléchargement et consultez la progression :
 
 ```powershell
 $api = 'http://127.0.0.1:18080'
@@ -328,7 +330,7 @@ Pour Qwen et Clover, `run-api.bat --vision gpu` traite les images sur GPU (valeu
 
 L’API peut démarrer avant l’installation des fichiers du modèle. Lorsque Qwen est sélectionné, `POST /v1/model/download` avec un corps JSON vide (`{}`) télécharge le [modèle de langage Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf) fixé pour ce projet (14.1 GB, poids MTP compris) et son [projecteur de vision](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/mmproj-F16.gguf) (0.9 GB), soit environ **15.0 GB au total**. Il vérifie les sommes de contrôle SHA-256 des deux fichiers, extrait le tokenizer et les charge. `GET /v1/model/download` indique la progression ; les téléchargements interrompus peuvent reprendre. Une nouvelle requête de téléchargement réutilise la tâche active, et `POST /v1/model/download/cancel` peut annuler le transfert ou la vérification. La fin du téléchargement ne signifie pas que l’inférence est prête : attendez que l’état du téléchargement passe à `ready` et que `/health` indique `loaded: true` et, si les images sont activées, `images: true`.
 
-Le programme d’installation prépare les exécutables des moteurs et les bibliothèques d’exécution GPU, puis télécharge Qwen et son projecteur de vision par défaut. Les configurations existantes conservent le modèle local sélectionné jusqu’à ce que vous le changiez explicitement.
+L’installation de l’interface prépare les moteurs et les bibliothèques GPU ; téléchargez les modèles dans l’onglet Modèles. L’installation API seule télécharge toujours Qwen et son projecteur de vision par défaut. Les configurations existantes conservent le modèle local sélectionné jusqu’à ce que vous le changiez explicitement.
 
 ## Remerciements
 

@@ -678,5 +678,7 @@
   "models.downloadRequired": "Ein Modell zum Chatten herunterladen",
   "thinking.on": "Ein",
   "thinking.alwaysOn": "Immer ein",
-  "thinking.high": "Hoch (xhigh)"
+  "thinking.high": "Hoch (xhigh)",
+  "models.selectModel": "Modell auswählen",
+  "models.downloadFirst": "Zum Start ein Modell unter Modelle herunterladen"
 }
