@@ -1,4 +1,4 @@
-"""gpt-oss's Harmony format: the request's messages, the template's options, and the streamed output."""
+"""Generic Harmony requests, template options and streamed output parsing."""
 import json
 import sys
 import tempfile
@@ -162,7 +162,7 @@ class HarmonyForcedTools(unittest.TestCase):
                              "{% if add_generation_prompt %}{{ '<|start|>assistant' }}{% endif %}"
                              "{# <|channel|> #}", encoding="utf-8")
 
-    def service(self, scripts, model="gpt-oss-20b"):
+    def service(self, scripts, model="custom-harmony"):
         tok = HarmonyTokenizer()
         engine = MockEngine(tok, scripts, max_context=8192)
         engine.prompts = []
@@ -171,15 +171,13 @@ class HarmonyForcedTools(unittest.TestCase):
             engine.prompts.append(tok.decode(ids))
             yield from original(ids, *args, **kwargs)
         engine.generate = generate
-        return Service(engine, tok, ChatTemplate(self.path), model_name=model,
-                       generation_defaults={"arch": "gpt-oss"})
+        return Service(engine, tok, ChatTemplate(self.path), model_name=model)
 
-    def run_forced(self, choice, *, thinking=True, tools=TOOLS, model="gpt-oss-20b"):
+    def run_forced(self, choice, *, thinking=True, tools=TOOLS, model="custom-harmony"):
         force = forced_call(choice, tools, call_format="harmony")
         continuation = ('{"city":"Tokyo"}<|call|>' if "<|message|>" in force else
                         'functions.get_weather<|channel|>commentary json<|message|>{"city":"Tokyo"}<|call|>')
-        # GPT-OSS always reasons: an explicit OFF maps to its lowest effort.
-        effective_thinking = thinking or model == "gpt-oss-20b"
+        effective_thinking = thinking
         scripts = ["Need current weather.<|end|>", continuation] if effective_thinking else continuation
         svc = self.service(scripts, model=model)
         messages = [{"role": "user", "content": "Weather in Tokyo?"}]
@@ -216,9 +214,6 @@ class HarmonyForcedTools(unittest.TestCase):
             with self.subTest(choice=choice):
                 self.run_forced(choice, thinking=False, model="custom-harmony")
 
-    def test_gpt_oss_low_effort_still_opens_analysis_before_the_forced_call(self):
-        self.run_forced("required", thinking=False)
-
     def test_counting_and_preparation_use_the_same_forced_analysis_or_call_prefix(self):
         svc = self.service("unused")
         messages = [{"role": "user", "content": "Weather in Tokyo?"}]
@@ -235,9 +230,9 @@ class HarmonyForcedTools(unittest.TestCase):
         self.assertEqual(forced_call_prefill(None, True, "harmony"), "")
         self.assertEqual(forced_call_prefill(force, True, "function"), "")
 
-    def test_text_only_image_error_does_not_suggest_installing_a_vision_encoder(self):
+    def test_no_vision_service_rejects_images_before_reading_them(self):
         svc = self.service("unused")
-        with self.assertRaisesRegex(ValueError, "gpt-oss-20b is text-only"):
+        with self.assertRaisesRegex(ValueError, "without the vision encoder"):
             svc.chat_token_count({"model": svc.model, "messages": [{"role": "user", "content": [
                 {"type": "image_url", "image_url": {"url": "data:image/png;base64,fixture"}}]}]})
 

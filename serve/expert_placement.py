@@ -17,7 +17,7 @@ from serve.model_setup import model_path
 
 _QWEN_TYPES = {2, 3, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 20, 21, 22, 23, 29, 40, 42}
 _OTHER_TYPES = {2, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 20, 21, 22, 23, 29, 39, 42}
-_FAMILIES = {"qwen35moe", "clover_moe", "gemma4", "lfm2moe", "gpt-oss"}
+_FAMILIES = {"qwen35moe", "clover_moe", "gemma4", "lfm2moe"}
 
 
 def _positive(value, name):

@@ -85,34 +85,11 @@ class LibraryTests(unittest.TestCase):
     def inventory(self, model=GEMMA):
         return L.inventory(self.f.profiles.get(model), tuple(self.f.profiles._profiles.values()))
 
-    def test_gpt_oss_uses_one_download_without_projector_or_assistant(self):
-        profile = self.f.profiles.get(GPT_OSS)
-        self.assertEqual(L.artifacts(profile), (D.FIXED_GPT_OSS_MODEL,))
-        manager = self.f.control._downloader(GPT_OSS)
-        self.assertIsInstance(manager, D.FixedModelDownloader)
-        self.assertEqual(manager.manifest, D.FIXED_GPT_OSS_MODEL)
-        row = next(row for row in self.f.control.catalog() if row['id'] == GPT_OSS)
-        self.assertEqual(row['architecture']['input_modalities'], ['text'])
-        self.assertEqual(row['management']['download_bytes'], D.FIXED_GPT_OSS_MODEL.size)
-
-    def test_gpt_oss_delete_retains_other_family_assets_and_profile_settings(self):
-        model = self.file(D.FIXED_GPT_OSS_MODEL, b'gpt-oss model fixture')
-        projector = self.file(D.FIXED_GEMMA4_MMPROJ, b'keep projector')
-        assistant = self.file(D.FIXED_GEMMA4_ASSISTANT, b'keep assistant')
-        profile = self.f.profiles.get(GPT_OSS)
-        profile.path.write_text(json.dumps(profile.config), encoding='utf-8')
-        before = profile.path.read_bytes()
-        result = self.f.control.delete(GPT_OSS)
-        self.assertFalse(model.exists())
-        self.assertEqual(result['deleted_bytes'], len(b'gpt-oss model fixture'))
-        self.assertEqual(projector.read_bytes(), b'keep projector')
-        self.assertEqual(assistant.read_bytes(), b'keep assistant')
-        self.assertEqual(profile.path.read_bytes(), before)
 
     def test_catalog_metadata_is_cheap_and_missing_models_stay_downloadable(self):
         with patch('hashlib.file_digest', side_effect=AssertionError('No artifact hashing in catalog')):
             rows = {row['id']: row for row in self.f.control.catalog()}
-        self.assertEqual(len(rows), 6)
+        self.assertEqual(len(rows), 5)
         meta = rows[GEMMA]['management']
         self.assertFalse(meta['can_delete']); self.assertTrue(meta['can_download'])
         self.assertEqual(meta['delete_reason'], 'not_downloaded')
@@ -399,7 +376,7 @@ class LibraryHTTPTests(unittest.TestCase):
             self.assertTrue(model.is_file())
         status, data = self.http(body={'model': GEMMA}, headers=auth)
         self.assertEqual(status, 200, data); self.assertEqual(data['model_id'], GEMMA)
-        self.assertFalse(model.exists()); self.assertEqual(len(data['catalog']), 6)
+        self.assertFalse(model.exists()); self.assertEqual(len(data['catalog']), 5)
 
     def test_control_route_does_not_admit_itself_and_busy_rejects_over_http(self):
         model = self.file(); self.start_http()

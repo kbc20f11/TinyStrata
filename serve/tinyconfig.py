@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 from serve import config
-from serve.model_download import is_tiel_model
+from serve.model_download import is_tiel_model, reject_retired_model
 
 MEMORY_POLICY_VERSION = 1
 VISION_POLICY_VERSION = 1
@@ -23,16 +23,12 @@ LFM2_SAMPLING = {"temperature": 0.1, "top_p": 1.0, "top_k": 50, "min_p": 0.0,
                  "presence_penalty": 0.0, "repetition_penalty": 1.05}
 GEMMA4_SAMPLING = {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0,
                    "presence_penalty": 0.0, "repetition_penalty": 1.0}
-# The Gemma-family native sampler accepts top_k=0 for the full vocabulary.
-GPT_OSS_SAMPLING = {"temperature": 1.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0,
-                    "presence_penalty": 0.0, "repetition_penalty": 1.0}
 CLOVER_SAMPLING = {"temperature": 0.0, "top_p": 1.0, "top_k": 64, "min_p": 0.0,
                    "presence_penalty": 0.9, "frequency_penalty": 0.0, "repetition_penalty": 1.05}
 TIEL_SAMPLING = {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0,
                  "presence_penalty": 0.0, "frequency_penalty": 0.0, "repetition_penalty": 1.0}
 MODEL_NAMES = {"qwen35moe": "qwen3.6-35b-a3b", "lfm2moe": "lfm2.5-24b-a2b",
-               "gemma4": "gemma-4-26b-a4b-it", "clover_moe": "clover-35b-a3b-preview",
-               "gpt-oss": "gpt-oss-20b"}
+               "gemma4": "gemma-4-26b-a4b-it", "clover_moe": "clover-35b-a3b-preview"}
 
 
 def clover_decode_defaults(cfg: dict) -> dict:
@@ -146,7 +142,7 @@ def migrate_generation_settings(cfg: dict) -> tuple[dict, bool]:
             cfg.get("generation_policy_version") != GENERATION_POLICY_VERSION and \
             sampling == {"temperature": 0}:
         sampling = {}
-    defaults = dict({"lfm2moe": LFM2_SAMPLING, "gemma4": GEMMA4_SAMPLING, "gpt-oss": GPT_OSS_SAMPLING,
+    defaults = dict({"lfm2moe": LFM2_SAMPLING, "gemma4": GEMMA4_SAMPLING,
                      "clover_moe": CLOVER_SAMPLING}.get(cfg.get("arch"), DEFAULT_SAMPLING))
     if is_tiel_model(cfg.get("model_name")):
         defaults = dict(TIEL_SAMPLING)
@@ -216,7 +212,7 @@ def migrate_chunk_settings(cfg: dict) -> tuple[dict, bool]:
 
 def check_vision_options(cfg: dict) -> str:
     """Validate launcher preferences independently of installed image assets."""
-    text_only = cfg.get("arch") in ("lfm2moe", "gpt-oss")
+    text_only = cfg.get("arch") == "lfm2moe"
     mode = cfg.get("vision_mode", "no" if text_only else "gpu")
     if mode not in ("gpu", "cpu", "no"):
         raise ValueError("vision_mode must be gpu, cpu or no")
@@ -250,6 +246,7 @@ def disable_vision(cfg: dict) -> dict:
 
 def migrate_settings(cfg: dict) -> tuple[dict, bool]:
     """Retain backend preferences while removing settings for the retired web UI."""
+    reject_retired_model(cfg.get("arch"), cfg.get("model_name"))
     # Check the existing memory-policy marker before the memory migration adds it.
     new, changed = migrate_chunk_settings(cfg)
     new, memory_changed = migrate_memory_settings(new)
@@ -278,6 +275,7 @@ def migrate_settings(cfg: dict) -> tuple[dict, bool]:
 
 
 def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
+    reject_retired_model(cfg.get("arch"), cfg.get("model_name"))
     check_vision_options(cfg)
     if cfg.get("backend") not in (None, "cuda", "hip"):
         raise ValueError("backend must be cuda or hip")
@@ -288,7 +286,7 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         raise ValueError("max_tokens must be a positive whole number")
     arch = cfg.get("arch", "qwen35moe")
     if arch not in MODEL_NAMES:
-        raise ValueError("TinyStrata supports qwen35moe, lfm2moe, gemma4, clover_moe and gpt-oss models")
+        raise ValueError("TinyStrata supports qwen35moe, lfm2moe, gemma4 and clover_moe models")
     if arch == "lfm2moe" and cfg.get("enable_thinking", True) is False:
         raise ValueError("LFM2.5-24B-A2B always uses thinking")
     for key in ("images", "replicas", "layer_split", "vram_elastic", "slot_save_path",
@@ -314,10 +312,10 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
     values = {"--model", "--draft-model", "--max-context", "--kv-type", "--chunk", "--mtp", "--expert-vram",
               "--expert-slots", "--cpu-threads", "--hybrid-rows", "--vram-reserve-mib", "--clover-draft",
               "--clover-mode", "--clover-lookup", "--mtp-auto", "--lookup-draft", "--clover-block-size", "--clover-threshold", "--clover-accept",
-              "--clover-accept-ratio", "--clover-accept-delta", "--eagle-model", "--eagle", "--eagle-accept"}
+              "--clover-accept-ratio", "--clover-accept-delta"}
     values.update(config.ENGINE_OPTIONS[key][0] for key in config.CONVERSATION_CACHE_KEYS)
     switches = {"--no-graph", "--no-warmup", "--hybrid-graph", "--no-hybrid-graph", "--vision",
-                "--kv-grow", "--kv-whole", "--no-kv-grow", "--allow-gpt-oss-hip"}
+                "--kv-grow", "--kv-whole", "--no-kv-grow"}
     seen = set()
     option_values = {}
     i = 0
@@ -343,30 +341,6 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         value = config.value_of(cfg, key)
         if value is not None:
             config.check(key, value, cfg)
-    # EAGLE3 is an explicit raw-profile option, not a managed setting or a
-    # per-request control. Preserve its spelling and the native rejection
-    # default instead of adding it to ENGINE_OPTIONS or stock profiles.
-    eagle_options = seen.intersection({"--eagle", "--eagle-model", "--eagle-accept"})
-    if eagle_options:
-        if arch != "gpt-oss":
-            raise ValueError("EAGLE3 engine options require gpt-oss")
-        depth = option_values.get("--eagle", "0")
-        if depth not in ("0", "1", "2"):
-            raise ValueError("--eagle requires a whole number from 0 to 2")
-        if option_values.get("--eagle-accept", "rejection") not in ("target", "rejection"):
-            raise ValueError("--eagle-accept must be target or rejection")
-        if depth == "0":
-            if "--eagle-model" in seen or "--eagle-accept" in seen:
-                raise ValueError("--eagle-model and --eagle-accept require --eagle 1 or 2")
-        else:
-            if not option_values.get("--eagle-model"):
-                raise ValueError("EAGLE3 requires --eagle-model pointing to its matching GGUF")
-            if any(config.value_of(cfg, key) not in (None, 0) for key in ("mtp", "mtp_auto", "lookup_draft")):
-                raise ValueError("EAGLE3 cannot be combined with MTP, mtp_auto or lookup_draft")
-            cards = cfg.get("gpu")
-            cards = cards if isinstance(cards, (list, tuple)) else str(cards).split(",") if cards is not None else []
-            if sum(bool(str(card).strip()) for card in cards) > 1:
-                raise ValueError("EAGLE3 requires one GPU and one resident engine")
     kv = config.value_of(cfg, "kv_type")
     clover_options = seen.intersection({"--clover-draft", "--clover-mode", "--clover-block-size", "--clover-threshold",
                                        "--clover-accept", "--clover-accept-ratio", "--clover-accept-delta"})
@@ -386,20 +360,6 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
             raise ValueError("LFM2.5 supports at most 131072 context tokens")
         if config.value_of(cfg, "mtp") not in (None, 0):
             raise ValueError("LFM2.5 has no published MTP head; --mtp must be 0")
-    elif arch == "gpt-oss":
-        unsupported = seen.intersection({"--hybrid-graph", "--no-hybrid-graph", "--hybrid-rows",
-                                         "--expert-slots", "--no-warmup", "--draft-model"})
-        if unsupported:
-            raise ValueError("Unsupported gpt-oss engine option: " + ", ".join(sorted(unsupported)))
-        if "--vision" in seen:
-            raise ValueError("gpt-oss-20b is text-only; remove --vision")
-        if kv not in (None, "auto", "fp16", "int8"):
-            raise ValueError("gpt-oss supports --kv-type auto, fp16 or int8")
-        context = config.value_of(cfg, "max_context")
-        if context not in (None, "auto") and context > 131072:
-            raise ValueError("gpt-oss supports at most 131072 context tokens")
-        if config.value_of(cfg, "mtp") not in (None, 0):
-            raise ValueError("gpt-oss has no MTP head; --mtp must be 0")
     elif arch == "gemma4":
         unsupported = seen.intersection({"--hybrid-graph", "--no-hybrid-graph", "--hybrid-rows",
                                          "--expert-slots", "--no-warmup"})
@@ -441,12 +401,10 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
             raise ValueError("Clover does not support --kv-type fp16")
     elif kv == "fp16":
         raise ValueError("Qwen3.6 does not support --kv-type fp16")
-    if arch != "gpt-oss" and "--allow-gpt-oss-hip" in seen:
-        raise ValueError("--allow-gpt-oss-hip is only for gpt-oss")
     if arch != "gemma4" and "--draft-model" in seen:
         raise ValueError("--draft-model is only supported by the Gemma 4 engine")
     if config.value_of(cfg, "lookup_draft"):
-        defaults = {"gemma4": GEMMA4_SAMPLING, "gpt-oss": GPT_OSS_SAMPLING}.get(arch, DEFAULT_SAMPLING)
+        defaults = {"gemma4": GEMMA4_SAMPLING}.get(arch, DEFAULT_SAMPLING)
         temperature = (cfg.get("sampling") or {}).get("temperature", defaults["temperature"])
         if temperature is None:
             temperature = defaults["temperature"]
@@ -456,6 +414,7 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
 
 
 def check_files(cfg: dict, *, allow_uninstalled: bool = False) -> None:
+    reject_retired_model(cfg.get("arch"), cfg.get("model_name"))
     base = Path(cfg.get("cwd") or ".")
     for label, name in (("executable", cfg.get("exe")),
                         ("model", cfg["args"][cfg["args"].index("--model") + 1])):
@@ -481,10 +440,3 @@ def check_files(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         if path is None or not path.is_file():
             if not allow_uninstalled:
                 raise ValueError("Gemma 4 QAT assistant is missing; download the model bundle first")
-    args = cfg.get("args", [])
-    if cfg.get("arch") == "gpt-oss" and "--eagle-model" in args[:-1] and not allow_uninstalled:
-        path = Path(args[args.index("--eagle-model") + 1])
-        if not path.is_absolute():
-            path = base / path
-        if not path.is_file():
-            raise ValueError(f"EAGLE3 draft model not found: {path}")

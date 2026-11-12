@@ -74,17 +74,6 @@ FIXED_LFM2_MODEL = _Manifest(
     f"https://huggingface.co/{LFM2_MODEL_REPO}/resolve/{LFM2_MODEL_REVISION}/{LFM2_MODEL_FILENAME}?download=true",
 )
 
-# OpenAI's gpt-oss-20b as ggml-org converted it: MXFP4 experts, Q8_0 attention and embeddings, no projector.
-GPT_OSS_MODEL_REPO = "ggml-org/gpt-oss-20b-GGUF"
-GPT_OSS_MODEL_REVISION = "15dcfc7e7c608c6161507211ed43c5b590801b4b"
-GPT_OSS_MODEL_FILENAME = "gpt-oss-20b-MXFP4.gguf"
-GPT_OSS_MODEL_SIZE = 12_109_566_624
-GPT_OSS_MODEL_SHA256 = "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901"
-FIXED_GPT_OSS_MODEL = _Manifest(
-    GPT_OSS_MODEL_REPO, GPT_OSS_MODEL_REVISION, GPT_OSS_MODEL_FILENAME, GPT_OSS_MODEL_SIZE, GPT_OSS_MODEL_SHA256,
-    f"https://huggingface.co/{GPT_OSS_MODEL_REPO}/resolve/{GPT_OSS_MODEL_REVISION}/{GPT_OSS_MODEL_FILENAME}?download=true",
-)
-
 # Mixed IQ3_XXS Clover quantization, retaining its learned bidirectional GDN
 # tensors and its own vocabulary/merges. Never reuse Qwen's tokenizer cache.
 CLOVER_MODEL_REPO = "AtomicChat/Clover-35B-A3B-Preview-GGUF"
@@ -146,8 +135,16 @@ def is_gpt_oss_model(model_name: str | None) -> bool:
     return isinstance(model_name, str) and model_name.strip().lower() in ("gpt-oss", "gptoss", "gpt-oss-20b")
 
 
+def reject_retired_model(arch: str | None = None, model_name: str | None = None) -> None:
+    """Reject active use without touching previously saved model files or chats."""
+    if is_gpt_oss_model(arch) or is_gpt_oss_model(model_name):
+        raise ValueError("GPT-OSS is no longer supported by TinyStrata. Choose another installed model. "
+                         "Existing model files and chats have been kept.")
+
+
 def manifest_for_arch(arch: str = "qwen35moe", model_name: str | None = None) -> _Manifest:
     """Resolve a supported model family to a fixed, trusted artifact."""
+    reject_retired_model(arch, model_name)
     if is_tiel_model(model_name):
         if arch != "qwen35moe":
             raise ValueError("Tiel Coder requires the qwen35moe architecture")
@@ -156,8 +153,6 @@ def manifest_for_arch(arch: str = "qwen35moe", model_name: str | None = None) ->
         return FIXED_MODEL
     if arch == "lfm2moe":
         return FIXED_LFM2_MODEL
-    if arch == "gpt-oss":
-        return FIXED_GPT_OSS_MODEL
     if arch == "gemma4":
         return FIXED_GEMMA4_MODEL
     if arch == "clover_moe":
@@ -167,6 +162,7 @@ def manifest_for_arch(arch: str = "qwen35moe", model_name: str | None = None) ->
 
 def projector_for_arch(arch: str = "qwen35moe", model_name: str | None = None) -> _Manifest | None:
     """The projector belonging to the selected model, not just its engine."""
+    reject_retired_model(arch, model_name)
     if is_tiel_model(model_name):
         manifest_for_arch(arch, model_name)
         return FIXED_TIEL_MMPROJ
@@ -174,7 +170,7 @@ def projector_for_arch(arch: str = "qwen35moe", model_name: str | None = None) -
         return FIXED_GEMMA4_MMPROJ
     if arch in ("qwen35moe", "clover_moe"):
         return FIXED_MMPROJ
-    if arch in ("lfm2moe", "gpt-oss"):
+    if arch == "lfm2moe":
         return None
     raise ValueError(f"Unsupported TinyStrata model architecture: {arch}")
 

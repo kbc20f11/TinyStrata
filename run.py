@@ -91,13 +91,13 @@ def prepare(a) -> tuple[dict, Path]:
                                  CLOVER_VISION_POLICY_VERSION, migrate_settings, validate)
     from serve.model_setup import (configure_download, configure_vision, model_architecture, model_path, prepare_installed_model,
                                    resolve_executable, save_settings, shared_library_dirs, migrate_managed_clover_model)
-    from serve.model_download import is_tiel_model
+    from serve.model_download import is_tiel_model, reject_retired_model
 
     selected = getattr(a, "model_family", None)
+    reject_retired_model(model_name=selected)
     requested_arch = {"qwen36": "qwen35moe", "qwen3.6": "qwen35moe",
                       "lfm2": "lfm2moe", "lfm2.5": "lfm2moe",
                       "gemma4": "gemma4", "gemma-4": "gemma4", "clover": "clover_moe",
-                      "gpt-oss": "gpt-oss", "gptoss": "gpt-oss",
                       "tiel": "qwen35moe", "tiel-coder": "qwen35moe"}.get(selected)
     tiel = selected in ("tiel", "tiel-coder")
     if a.model:
@@ -110,8 +110,7 @@ def prepare(a) -> tuple[dict, Path]:
         requested_arch = actual_arch
     config_path = getattr(a, "config", None)
     path = (config_path or RUNTIME / ".tinystrata" / ("config-tiel-coder.json" if tiel else
-            {"lfm2moe": "config-lfm2.json", "gemma4": "config-gemma4.json", "clover_moe": "config-clover.json",
-             "gpt-oss": "config-gpt-oss.json"}
+            {"lfm2moe": "config-lfm2.json", "gemma4": "config-gemma4.json", "clover_moe": "config-clover.json"}
             .get(requested_arch, "config.json"))).expanduser().resolve()
     from serve.install_guard import assert_installation_ready
     assert_installation_ready(path, allow_installer=getattr(a, "configure_only", False))
@@ -119,15 +118,15 @@ def prepare(a) -> tuple[dict, Path]:
     fresh = not path.exists()
     cfg = config.load(path) if not fresh else {
         "arch": arch, "model_name": ("tiel-coder-35b-a3b" if tiel else
-                                    {"lfm2moe": "lfm2.5-24b-a2b", "gemma4": "gemma-4-26b-a4b-it", "clover_moe": "clover-35b-a3b-preview",
-                                     "gpt-oss": "gpt-oss-20b"}
+                                    {"lfm2moe": "lfm2.5-24b-a2b", "gemma4": "gemma-4-26b-a4b-it", "clover_moe": "clover-35b-a3b-preview"}
                                     .get(arch, "qwen3.6-35b-a3b")),
         "cwd": str(ROOT),
         "args": ["--max-context", "auto", "--kv-type", "auto", "--chunk", "auto"] +
-                (["--mtp", "0"] if arch == "gpt-oss" else [] if arch in ("clover_moe", "lfm2moe") else ["--mtp", "3"]),
+                ([] if arch in ("clover_moe", "lfm2moe") else ["--mtp", "3"]),
         "memory_policy_version": MEMORY_POLICY_VERSION,
         "host": "127.0.0.1",
     }
+    reject_retired_model(cfg.get("arch"), cfg.get("model_name"))
     if is_tiel_model(cfg.get("model_name")):
         cfg["model_name"] = "tiel-coder-35b-a3b"
     if requested_arch is not None and cfg.get("arch", "qwen35moe") != requested_arch:
@@ -154,7 +153,7 @@ def prepare(a) -> tuple[dict, Path]:
         requested_backend = explicit_backend or hardware_backend()
     cfg = configure_backend(cfg, requested_backend, explicit_kv=a.kv_type)
     cfg.setdefault("port", 18084 if cfg.get("model_name") == "tiel-coder-35b-a3b" else
-                   {"lfm2moe": 18081, "gemma4": 18082, "clover_moe": 18083, "gpt-oss": 18085}.get(cfg.get("arch"), 18080))
+                   {"lfm2moe": 18081, "gemma4": 18082, "clover_moe": 18083}.get(cfg.get("arch"), 18080))
     if a.model:
         set_arg(cfg, "--model", a.model.expanduser().resolve())
         if cfg.get("arch") == "clover_moe":
@@ -235,8 +234,7 @@ def prepare(a) -> tuple[dict, Path]:
     if a.model and not model.is_file():
         raise ValueError(f"TinyStrata model not found: {model}")
     cfg["log"] = str(path.parent / ("engine-tiel-coder.log" if cfg.get("model_name") == "tiel-coder-35b-a3b" else
-                    {"lfm2moe": "engine-lfm2.log", "gemma4": "engine-gemma4.log", "clover_moe": "engine-clover.log",
-                     "gpt-oss": "engine-gpt-oss.log"}
+                    {"lfm2moe": "engine-lfm2.log", "gemma4": "engine-gemma4.log", "clover_moe": "engine-clover.log"}
                     .get(cfg.get("arch"), "engine.log")))
     if model.is_file():
         cfg = prepare_installed_model(cfg, path, model)
@@ -257,9 +255,8 @@ def main() -> int:
 
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", type=Path, help="existing supported GGUF (the local header selects its model family)")
-    ap.add_argument("--model-family", choices=("qwen36", "qwen3.6", "lfm2", "lfm2.5", "gemma4", "gemma-4", "clover", "tiel", "tiel-coder",
-                             "gpt-oss", "gptoss"),
-                    help="Qwen3.6 (default), LFM2.5, Gemma4, Clover, Tiel Coder or gpt-oss; settings are separate per model")
+    ap.add_argument("--model-family", choices=("qwen36", "qwen3.6", "lfm2", "lfm2.5", "gemma4", "gemma-4", "clover", "tiel", "tiel-coder"),
+                    help="Qwen3.6 (default), LFM2.5, Gemma4, Clover or Tiel Coder; settings are separate per model")
     ap.add_argument("--draft-model", type=Path, help="existing Gemma4 QAT assistant GGUF for MTP")
     ap.add_argument("--exe", type=Path, help="built tinystrata executable")
     ap.add_argument("--backend", choices=("auto", "cuda", "hip"), default="auto",
@@ -281,7 +278,7 @@ def main() -> int:
                                help="allocate the whole context's KV at load; saved for later starts")
     ap.add_argument("--mtp", type=int)
     ap.add_argument("--mtp-auto", type=int, choices=(0, 1), help="adapt MTP depth using measured throughput; default off")
-    ap.add_argument("--lookup-draft", type=int, choices=range(8), help="Qwen/Gemma/gpt-oss exact target-sampled suffix proposals, 0-7; default off")
+    ap.add_argument("--lookup-draft", type=int, choices=range(8), help="Qwen/Gemma exact target-sampled suffix proposals, 0-7; default off")
     ap.add_argument("--clover-draft", type=int, metavar="N",
                     help="legacy Clover self-speculative draft tokens, 0-31; 0 selects causal, positive values self-spec")
     ap.add_argument("--clover-lookup", type=int, metavar="N",

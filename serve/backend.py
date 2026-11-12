@@ -107,6 +107,8 @@ def _executable_backend(executable: str, modified_ns: int, size: int,
 
 def configure_backend(cfg: dict, requested: str | None = None, *, explicit_kv: str | None = None) -> dict:
     """Keep automatic KV selection in the engine and preserve saved HIP choices."""
+    from serve.model_download import reject_retired_model
+    reject_retired_model(cfg.get("arch"), cfg.get("model_name"))
     saved = cfg.get("backend")
     if saved not in (None, "cuda", "hip"):
         raise ValueError("backend must be cuda or hip")
@@ -119,10 +121,9 @@ def configure_backend(cfg: dict, requested: str | None = None, *, explicit_kv: s
         result.pop("gpu", None)
         result.pop("hip_ordinal", None)
     if backend == "hip":
-        formats = ("auto", "fp16", "int8") if cfg.get("arch") == "gpt-oss" else ("auto", "int8", "fp8", "fp8-mma")
+        formats = ("auto", "int8", "fp8", "fp8-mma")
         if explicit_kv is not None and explicit_kv not in formats:
-            raise ValueError("The gpt-oss HIP route supports --kv-type auto, fp16 or int8" if cfg.get("arch") == "gpt-oss"
-                             else "The AMD HIP route supports --kv-type auto, int8 or native fp8")
+            raise ValueError("The AMD HIP route supports --kv-type auto, int8 or native fp8")
         # Let the model engine choose FP8 or INT8 from its actual capabilities.
         # Keep deliberate HIP choices, including auto, across later starts.
         # A profile from another backend starts with hardware-aware auto unless

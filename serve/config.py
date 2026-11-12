@@ -51,17 +51,14 @@ def check(key: str, value, cfg: dict):
     """Validate one CLI engine override; None restores its engine default."""
     if key not in ENGINE_OPTIONS:
         raise ValueError(f"Unknown engine setting: {key!r}")
-    if key in CONVERSATION_CACHE_KEYS and cfg.get("arch", "qwen35moe") not in ("gemma4", "lfm2moe", "gpt-oss"):
-        raise ValueError(f"{key}: conversation parking settings are supported only by Gemma 4, LFM2.5 and gpt-oss")
+    if key in CONVERSATION_CACHE_KEYS and cfg.get("arch", "qwen35moe") not in ("gemma4", "lfm2moe"):
+        raise ValueError(f"{key}: conversation parking settings are supported only by Gemma 4 and LFM2.5")
     if value is None:
         return None
     if key in ("mtp_auto", "lookup_draft"):
         arch = cfg.get("arch")
-        if arch == "gpt-oss" and key == "mtp_auto" and value != 0:
-            raise ValueError("mtp_auto: gpt-oss has no MTP head; expected 0")
-        if arch not in (None, "qwen35moe", "gemma4", "gpt-oss"):
-            raise ValueError(f"{key}: this option requires Qwen35MoE or Gemma 4" +
-                             (" or gpt-oss" if key == "lookup_draft" else ""))
+        if arch not in (None, "qwen35moe", "gemma4"):
+            raise ValueError(f"{key}: this option requires Qwen35MoE or Gemma 4")
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValueError(f"{key}: expected a whole number")
     if key == "clover_lookup":
@@ -73,8 +70,7 @@ def check(key: str, value, cfg: dict):
     if isinstance(spec[1], tuple):
         if value not in spec[1]:
             raise ValueError(f"{key}: expected one of {', '.join(spec[1])}, not {value!r}")
-        if key == "kv_type" and cfg.get("backend") == "hip" and value not in ("auto", "int8", "fp8", "fp8-mma") and \
-                not (cfg.get("arch") == "gpt-oss" and value == "fp16"):
+        if key == "kv_type" and cfg.get("backend") == "hip" and value not in ("auto", "int8", "fp8", "fp8-mma"):
             raise ValueError("The AMD HIP route supports auto, int8 or native fp8")
         return value
     if key in ("max_context", "chunk") and value == "auto":

@@ -42,17 +42,6 @@
       "license": "Official DiffuSpace organization avatar; no separate asset license supplied. Do not infer an artwork license from the model-weight license.",
       "sha256": "5e158a23474211644c2759a7958d7ab51447191d35a36598f958d737a2aa3192",
       "modifications": "None; copied original bytes."
-    },
-    {
-      "file": "openai.png",
-      "represents": "OpenAI provider brand for gpt-oss",
-      "source_page": "https://github.com/openai",
-      "source_url": "https://avatars.githubusercontent.com/u/14957082?v=4",
-      "fetched_date": "2026-11-10",
-      "revision": null,
-      "license": "Official OpenAI organization avatar; no separate artwork license supplied. Brand rights remain with its owner.",
-      "sha256": "a4c36896a019505b19414a21f1c2faa1cbfad20af7df81ad09769040d395a9a5",
-      "modifications": "None; copied original bytes."
     }
   ],
   "fallback": {

@@ -8,8 +8,6 @@ _MODELS = {
     "qwen3.6-35b-a3b": "toggle", "clover-35b-a3b-preview": "toggle",
     "gemma-4-26b-a4b-it": "toggle", "lfm2.5-24b-a2b": "always",
     "tiel-coder-35b-a3b": "effort",
-    # gpt-oss reasons at low, medium or high effort and cannot switch it off
-    "gpt-oss-20b": "effort_always",
 }
 _ALIASES = {
     "qwen36": "qwen3.6-35b-a3b", "qwen3.6": "qwen3.6-35b-a3b", "qwen35moe": "qwen3.6-35b-a3b",
@@ -18,12 +16,11 @@ _ALIASES = {
     "gemma4-26b-a4b": "gemma-4-26b-a4b-it", "gemma4-26b-a4b-it": "gemma-4-26b-a4b-it",
     "lfm2": "lfm2.5-24b-a2b", "lfm2.5": "lfm2.5-24b-a2b", "lfm2moe": "lfm2.5-24b-a2b",
     "tiel": "tiel-coder-35b-a3b", "tiel-coder": "tiel-coder-35b-a3b",
-    "gpt-oss": "gpt-oss-20b", "gptoss": "gpt-oss-20b",
 }
 
 
 def _is_effort(mode: str) -> bool:
-    return mode in ("effort", "effort_always")
+    return mode == "effort"
 
 
 def capabilities(model: str, arch: str | None = None) -> dict | None:
@@ -34,7 +31,6 @@ def capabilities(model: str, arch: str | None = None) -> dict | None:
         return None
     return {"mode": mode, "default": "medium" if _is_effort(mode) else "on",
             "options": ["none", "low", "medium", "xhigh"] if mode == "effort" else
-                       ["low", "medium", "high"] if mode == "effort_always" else
                        ["on"] if mode == "always" else ["none", "on"]}
 
 
@@ -43,8 +39,7 @@ def normalize_effort(value, policy: dict) -> str:
     key = "on" if value is True else "none" if value is False else str(value).strip().lower()
     effort = _is_effort(policy["mode"])
     if key in ("none", "off", "disabled", "false") or (key == "minimal" and not effort):
-        # a model that cannot stop reasoning takes the least of it
-        result = "low" if policy["mode"] == "effort_always" else "none"
+        result = "none"
     elif key in ("on", "enabled", "true", "default", "auto"):
         result = "medium" if effort else "high"
     elif key in ("minimal", "low"):
@@ -100,9 +95,6 @@ def inject_default(req: dict, api: str, policy: dict, shared: dict,
     if policy["mode"] == "always":
         # An old saved OFF preference cannot make the mandatory-thinking model unusable.
         enabled, effort = True, None
-    elif policy["mode"] == "effort_always":
-        # reasoning cannot be turned off: an old OFF preference gives the default effort
-        enabled, effort = (None, effort or policy["default"])
     elif policy["mode"] == "effort" and enabled is not False and effort is None:
         enabled, effort = None, policy["default"]
     if effort is not None:
@@ -132,10 +124,8 @@ def template_kwargs(kwargs: dict, policy: dict | None, default_enable: bool) -> 
         enabled = effort != "none" if effort is not None else default_enable
     if policy["mode"] == "always" and not enabled:
         raise ValueError("LFM2.5-24B-A2B always uses thinking; disabling it is not supported")
-    if policy["mode"] == "effort_always":
-        enabled = True
     kwargs["enable_thinking"] = enabled
     kwargs.pop("reasoning_effort", None)
-    if (policy["mode"] == "effort" and enabled) or policy["mode"] == "effort_always":
+    if policy["mode"] == "effort" and enabled:
         kwargs["reasoning_effort"] = effort if effort not in (None, "none") else policy["default"]
     return kwargs

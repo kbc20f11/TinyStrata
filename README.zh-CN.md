@@ -40,25 +40,15 @@ Clover 还提供可选的重复片段 lookup：`--clover-lookup N` 指定最多�
 
 Qwen、Gemma 和 LFM 引擎均支持根据空闲显存自动调整的专家缓存、利用系统 RAM 的 CPU 专家计算、输入阶段权重流式传输及 CUDA Graph。它们使用相同的 API，支持运行中切换模型，并分别保存各模型的设置。不省略模型选中的专家。还支持按实际序列长度自动扩展 KV 物理内存，最大上下文容量保持不变。
 
-**gpt-oss 20B MXFP4** 使用固定的 [ggml-org GGUF](https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/blob/15dcfc7e7c608c6161507211ed43c5b590801b4b/gpt-oss-20b-MXFP4.gguf)（**12.110 GB**）。仅支持文本，上下文上限为 **128K**，默认使用 **INT8 KV**，没有 MTP 头。思考强度为**低／中／高**，默认为**中**。使用 `run-api.bat --model-family gpt-oss` 启动（端口 **18085**，`config-gpt-oss.json`），与 Gemma 共用可执行文件。默认采样参数为温度 **1.0**、top-p **1.0**、top-k **0**（不限制）。
+**GPT-OSS 已停止支持。** 它不再是当前的下载、启动或基准测试目标。[历史测量记录](benchmark/results/gptoss-adoption-20261110.md)予以保留；请参阅[支持状态与重新引入的条件](docs/gpt-oss-reintroduction.md)。
 
-[HIP 本地实测与验证](benchmark/results/gptoss-adoption-20261110.md)：HIP 默认启用 MXFP4 MMQ（`-DSTRATA_HIP_MXFP4_MMQ=OFF` 编译 matvec 回退路径；`TINYSTRATA_GPTOSS_MMQ=0` 可在诊断时禁用 MMQ）。原生 `--serve --lookup-draft 7` 为可选项；采样生成并非总能加速，因此现有 lookup 默认值保持 **0**。
-
-单 GPU 的 GPT-OSS 请求在符合条件时默认使用 GPU 对完整词表采样；贪心采样、过滤器或有效惩罚项仍使用 CPU 路径。诊断时可用 `TINYSTRATA_GPTOSS_GPU_SAMPLE=0` 切回 CPU 采样。[GPU 采样实测与验证](benchmark/results/gptoss-gpu-sampling-20261110.md)。
-
-HIP 默认启用超过 8192 键的受支持完整注意力分块路径，保留 FP32 query、全部 KV 行和学习得到的 sink。CUDA 默认关闭，可用 `TINYSTRATA_GPTOSS_SINK_ATTN=1` 显式启用；诊断时可用 `TINYSTRATA_GPTOSS_SINK_ATTN=0` 切回原有路径。[实测、数值差异与验证范围](benchmark/results/gptoss-sink-attention-20261110.md)。
-
-在单 GPU HIP gfx1200 上，GPU 缓存中的 GPT-OSS MXFP4 Expert down 投影默认复用共享内存中的激活值，保留原有权重和激活编码。诊断时可用 `TINYSTRATA_GPTOSS_MXFP4_DOWN=0` 切回原有内核。[实测、数值差异与验证范围](benchmark/results/gptoss-mxfp4-down-20261110.md)。
-
-在单 GPU HIP gfx1200 上，GPT-OSS 对完整和局部注意力层（含长前缀）使用融合 INT8 输入注意力，并融合 MMQ 激活与量化，保持量化字节一致。沿用现有 FP16/FP32 精度；生成阶段的激活融合仍需显式启用。[实测、数值差异与验证范围](benchmark/results/gptoss-fusions-20261110.md)。
-
-| 功能 | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) | [gpt-oss](https://huggingface.co/openai/gpt-oss-20b) |
-| --- | --- | --- | --- | --- | --- |
-| 最大上下文 | 256K | 256K | 128K | 256K（扩展） | 128K |
-| 图像输入 | 支持；默认编码器常驻 GPU | 支持；默认编码器常驻 GPU | 不支持 | 支持（TinyStrata 扩展，默认常驻 GPU） | 否 |
-| MTP | 3 | 3 | 不支持 | 无（exact 自投机 D3 可选） | 否 |
-| KV 格式 | FP32 / INT8 / 原生 FP8 | FP16 / INT8 / 原生 FP8（实验性） | FP16 / INT8 / 原生 FP8 | FP32 / INT8 / 原生 FP8 | FP16 / INT8 |
-| KV 自动选择（默认） | FP8 → INT8 | INT8 | FP8 → INT8 | INT8 | INT8 |
+| 功能 | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) |
+| --- | --- | --- | --- | --- |
+| 最大上下文 | 256K | 256K | 128K | 256K（扩展） |
+| 图像输入 | 支持；默认编码器常驻 GPU | 支持；默认编码器常驻 GPU | 不支持 | 支持（TinyStrata 扩展，默认常驻 GPU） |
+| MTP | 3 | 3 | 不支持 | 无（exact 自投机 D3 可选） |
+| KV 格式 | FP32 / INT8 / 原生 FP8 | FP16 / INT8 / 原生 FP8（实验性） | FP16 / INT8 / 原生 FP8 | FP32 / INT8 / 原生 FP8 |
+| KV 自动选择（默认） | FP8 → INT8 | INT8 | FP8 → INT8 | INT8 |
 
 Clover 的图像输入是 TinyStrata 扩展，并非官方 Clover 功能。
 
@@ -68,7 +58,7 @@ Gemma 默认使用 INT8。原生 FP8 为实验性功能，可通过 `run-api.bat
 
 **上下文容量自动选择**依据 GPU 总显存，如下表所示；可用显存决定专家缓存的大小。显式指定 `--max-context N` 时，以该值为准。
 
-| GPU 总显存（示例） | Qwen3.6 / Gemma 4 / Clover | LFM2.5 / gpt-oss |
+| GPU 总显存（示例） | Qwen3.6 / Gemma 4 / Clover | LFM2.5 |
 | --- | ---: | ---: |
 | 8 GB | 64K | 64K |
 | 12 GB | 128K | 128K |

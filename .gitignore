@@ -6,6 +6,7 @@
 !/docs/
 /docs/**
 !/docs/development-memory.md
+!/docs/gpt-oss-reintroduction.md
 !/CMakeLists.txt
 !/LICENSE
 !/NOTICE
@@ -50,14 +51,6 @@
 !/tests/clover-self-spec.cpp
 !/tests/clover-self-spec-gpu.cu
 !/tests/gemma-cached-slots.cu
-!/tests/gptoss-fused.cu
-!/tests/gptoss-sink-attention.cu
-!/tests/gptoss-prefill-attention.cu
-!/tests/gptoss-long-prefill-attention.cu
-!/tests/gptoss-activation-quant.cu
-!/tests/gptoss-state.cpp
-!/tests/gptoss-sampling.cu
-!/tests/gptoss-device-sampling.cpp
 !/tests/hybrid-publish-gpu.cu
 !/tests/clover-attention-gpu.cu
 !/tests/clover-decode-settings.py
@@ -269,13 +262,6 @@ CMakeFiles/
 
 !/tests/hip-vmm-policy.cpp
 
-!/tests/gptoss-mxfp4-down.cu
-!/tests/gptoss-grouped-mxfp4.cu
-!/tests/gptoss-speculative-sampling.cu
-!/tests/gptoss-draft-q51.cu
-!/tests/gptoss-eagle3-sampling.cu
-!/tests/gptoss-eagle3-state.cpp
-!/tests/gptoss-grouped-state.cpp
 !/tests/gemma-image-text-prefill.cpp
 !/tests/native-command-inbox.cpp
 !/tests/test_native_command_inbox.py
@@ -291,10 +277,11 @@ CMakeFiles/
 !/tests/native-utf8-args.cpp
 !/tests/test_native_utf8_args.py
 !/tests/test_msvc_utf8_config.py
-!/tests/test_cuda_mxfp4_architectures.py
-!/tests/gptoss-mmq-q8.cu
+!/tests/test_gemma_build_sources.py
 !/benchmark/results/cuda-mxfp4-build-20261111.json
 !/benchmark/results/unicode-paths-20261111.json
 !/tests/q36-hybrid-buffer-policy.cpp
 !/tests/q36-hybrid-buffer-dma.cu
 !/benchmark/results/cuda-revalidation-20261112.json
+!/benchmark/results/gemma-prefill-diagnosis-20261112.json
+!/tests/test_retired_model.py

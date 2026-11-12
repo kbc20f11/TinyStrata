@@ -57,9 +57,6 @@ struct CpuExpert {
     const uint8_t* down;
     float weight;
     int row = 0;
-    const float* b_gate = nullptr;   ///< gpt-oss: this expert's biases (n_ff, n_ff and n_embd values)
-    const float* b_up = nullptr;
-    const float* b_down = nullptr;
 };
 
 /// Checks that ggml-cpu has a dot product for both types.  Call once per layer format at load.
@@ -74,8 +71,6 @@ bool cpu_expert_types_ok(int gu_type, int d_type, int n_embd, int n_ff, std::str
 /// `meanwhile`, when given, is run once by one of the threads, beside the first products.  It must not throw.
 void cpu_experts(Workers& workers, const CpuExpert* experts, int n, int rows, int gu_type, int d_type, int n_embd,
                  int n_ff, const float* x, float limit, bool gelu, float* out,
-                 const std::function<void()>* meanwhile = nullptr, float alpha = 0.f);
-/// With alpha > 0 the unit is gpt-oss's: the experts' biases added to gate x and up x, then
-/// min(g, limit) * sigmoid(alpha * min(g, limit)) * (clamp(u, -limit, limit) + 1), and the down's bias on its output.
+                 const std::function<void()>* meanwhile = nullptr);
 
 }  // namespace strata::gemma4

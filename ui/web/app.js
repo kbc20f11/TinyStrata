@@ -1050,8 +1050,7 @@ function markdown(text) {
 
 // ------------------------------------------------------------------ Chat
 // Untouched controls send no sampling fields: the server uses the model's
-// configured defaults. The legacy tuple remains the browser's default marker;
-// GPT-OSS displays its recommended 1 / 1 / 0 without saving an override.
+// configured defaults. The legacy tuple remains the browser's default marker.
 const DEFAULTS = {thinkingByModel: {}, temperature: 1.0, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true, math: true,
                   chatList: true, whileBusy: "wait", webSearch: true, autoCompact: true};
 const OLD_DEFAULT_TEMPERATURE = 0.6;
@@ -1060,8 +1059,7 @@ function samplingUntouched(s) {
   return (t === DEFAULTS.temperature || t === OLD_DEFAULT_TEMPERATURE) && +s.top_p === DEFAULTS.top_p && +s.top_k === DEFAULTS.top_k;
 }
 function modelSamplingDefaults() {
-  return health.model === "gpt-oss-20b" ? {temperature: 1, top_p: 1, top_k: 0}
-    : {temperature: DEFAULTS.temperature, top_p: DEFAULTS.top_p, top_k: DEFAULTS.top_k};
+  return {temperature: DEFAULTS.temperature, top_p: DEFAULTS.top_p, top_k: DEFAULTS.top_k};
 }
 function displayedSampling(s) {
   return samplingUntouched(s) ? modelSamplingDefaults() : s;
@@ -3199,7 +3197,7 @@ function loadDrawer(s = settings) {
 }
 function syncSamplingInputs(s = settings) {
   const sampling = displayedSampling(s);
-  $("s-topk").min = health.model === "gpt-oss-20b" ? "0" : "1";
+  $("s-topk").min = "1";
   $("s-temp").value = sampling.temperature;
   $("s-topp").value = sampling.top_p;
   $("s-topk").value = sampling.top_k;

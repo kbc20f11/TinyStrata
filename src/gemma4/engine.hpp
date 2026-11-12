@@ -36,7 +36,6 @@ struct MetaValue;
 namespace strata::gemma4 {
 
 class Shards;
-class Eagle3;
 struct Likeliest;
 
 /// Auto selects Q8_0 INT8; native E4M3 FP8 Attention is experimental and opt-in.
@@ -49,7 +48,6 @@ struct Options {
     int vram_reserve_mib = -1;    ///< left free after the expert cache is filled; below 0: by the card's size
     std::string profile;          ///< expert use counts; orders the expert cache, and save_profile() adds to it
     bool gpu_experts = true;
-    bool allow_gpt_oss_hip = false;   ///< legacy --allow-gpt-oss-hip is accepted for existing configurations; no longer required
     double expert_vram_gib = -1; ///< routed Expert cache cap; -1: available VRAM, 0: CPU Experts
     bool dump = false;            ///< print a checksum of every stage, for comparing against llama.cpp
     // A prompt batch.  More tokens a call and a larger staging buffer read a prompt faster, and both take VRAM
@@ -84,8 +82,6 @@ struct Options {
                                   ///< -1: as many as the architecture's vocabulary has in order of use (guess_vocab())
     std::string draft_model;      ///< a file of the same model to take that block from, when the model's has none;
                                   ///< for an architecture that guesses with a model of its own, that model's file
-    std::string eagle_model;      ///< matching single-layer EAGLE-3 GGUF
-    int eagle_tokens = 0;         ///< 0 disables it; 1..2 target-verified autoregressive proposals
     std::string layer_split;      ///< the layers across the CUDA devices this process sees, in their order: "auto"
                                   ///< (by each card's free VRAM) or the first layer of each later card ("20,30");
                                   ///< empty, or one device: the current card alone
@@ -115,13 +111,6 @@ struct Layer {
     Dev attn_norm, ffn_norm;   ///< the norms ahead of the attention and of the FFN
     // MoE
     Dev gate_inp, sh_gate, sh_up, sh_down;
-    const float* b_gate = nullptr;      ///< gpt-oss: each expert's bias on its gate, up and down (n_ff_exp, n_ff_exp, n_embd
-    const float* b_up = nullptr;        ///< values an expert, in VRAM)
-    const float* b_down = nullptr;
-    const float* hb_gate = nullptr;     ///< the same biases in the mapped file, for the experts the CPU computes
-    const float* hb_up = nullptr;
-    const float* hb_down = nullptr;
-    const float* b_router = nullptr;    ///< gpt-oss: the router's bias (n_expert values, in VRAM)
     const uint8_t* exp_gate = nullptr;  ///< n_expert experts back to back, in the mapped file
     const uint8_t* exp_up = nullptr;
     const uint8_t* exp_down = nullptr;
@@ -167,7 +156,6 @@ struct Image {
 };
 
 class Engine {
-    friend class Eagle3;
 public:
     Engine();
     virtual ~Engine();
@@ -181,8 +169,6 @@ public:
     KvFmt kv_format() const { return opt_.kv_format; }
 
     int n_vocab() const { return n_vocab_; }
-    const char* model_family() const { return oai_ ? "gpt-oss" : "gemma4"; }
-    const char* model_name() const { return oai_ ? "gpt-oss-20b" : "gemma-4-26b-a4b-it"; }
     /// The rows of the output a guess is picked from.  A guess that is never right costs a window's place and no
     /// token, so the rare tokens may be left out, where the vocabulary has the common ones first.
     int draft_rows() const {
@@ -211,26 +197,7 @@ public:
     /// Feed n tokens from position pos().  With want_logits, logits() then holds the scores of the token after the
     /// last one.
     void eval(const int32_t* tokens, int n, bool want_logits);
-    const float* logits() const;
-    /// GPT-OSS full-vocabulary device sampling. Row -1 uses eval()'s latest output;
-    /// a nonnegative row uses window()/step()'s output. Unsupported engines return false.
-    /// Invalid arguments, unavailable rows and nonfinite logits throw without selecting a token.
-    bool sample_device(int row, double temperature, double uniform, int32_t* token);
-    bool device_sampling_requested() const { return gpu_sample_requested_; }
-    bool device_sampling_enabled() const { return gpu_sample_enabled_; }
-    const char* device_sampling_reason() const;
-    uint64_t logits_host_rows() const { return next_ ? next_->logits_host_rows() : logits_host_rows_; }
-    bool mxfp4_down_requested() const { return oai_down_requested_; }
-    bool mxfp4_down_enabled() const { return oai_down_enabled_; }
-    // Persistent path evidence, including graph capture; not per-token replay counters.
-    uint32_t mxfp4_down_seen() const { return oai_down_seen_.load(std::memory_order_relaxed); }
-    bool grouped_mxfp4_enabled() const { return oai_grouped_enabled_; }
-    uint32_t grouped_mxfp4_seen() const { return oai_grouped_seen_.load(std::memory_order_relaxed); }
-    uint32_t gptoss_fusion_requested() const { return oai_fusion_requested_; }
-    // 1=SWA prefill, 2=long prefill, 4=plain Q8_1 activation, 8=MMQ activation. Includes capture.
-    uint32_t gptoss_fusion_seen() const { return oai_fusion_seen_.load(std::memory_order_relaxed); }
-    virtual bool prefill_attention_requested() const { return false; }
-    virtual bool prefill_attention_seen() const { return false; }
+    const float* logits() const { return next_ ? next_->logits() : h_logits_; }
     /// Feed n tokens of a prompt, none of them a picture's row, as eval() without logits would in calls of
     /// max_rows(): the same tokens a call.  With experts outside the cache it is faster than those calls, the
     /// more the more of them n is; under stage_ahead tokens it makes those calls.  The result is the calls' own
@@ -273,7 +240,7 @@ public:
     /// What a kept token computed is what eval() would have computed for it.
     int max_window() const { return opt_.window; }
     void window(const int32_t* tokens, int t);
-    const float* logits_of(int i) const;
+    const float* logits_of(int i) const { return next_ ? next_->logits_of(i) : h_wlogits_ + (size_t) i * n_vocab_; }
     void keep(int n);
 
     /// Some files carry a block that guesses ahead: one layer that takes a token and the model's output for the
@@ -284,16 +251,6 @@ public:
     /// context.  logits() is left alone.  An architecture may guess with a small model of its own instead of a
     /// block (draft_step()); the calls are the same.
     bool drafts() const { return next_ ? next_->drafts() : draft_; }
-    /// A separate, target-verified EAGLE-3 drafter. A restored prefix whose
-    /// features have not been rebuilt safely returns no proposals.
-    bool external_draft_enabled() const;
-    int external_draft_propose(int32_t anchor, int depth, int32_t* out);
-    int external_draft_sample_propose(int32_t anchor, int depth, double temperature,
-                                      const double* uniforms, int32_t* out);
-    bool external_draft_verify(int row, int32_t proposed, double temperature, double accept_uniform,
-                                double residual_uniform, bool* accepted, int32_t* out);
-    size_t external_draft_vram_bytes() const;
-    int64_t external_draft_pos() const;
     /// Test only: the calls read()'s layer-major path gave the draft block's rows (draft_rows()) on the card that has
     /// the block, since load.  Two or more in one read are back-to-back refills of its pinned input rows.
     int64_t read_draft_calls_for_test() const { return next_ ? next_->read_draft_calls_for_test() : read_draft_calls_; }
@@ -509,7 +466,6 @@ protected:
     bool pick_way(int t);
     void took_way(int t, double ms);
     void layer(int il, int n);
-    void capture_external(int il, int n);
     void save_last(uint8_t* dst);
     void moe_router(const Layer& L, int n);
     bool moe(Layer& L, int il, int n, const std::function<void()>* first = nullptr);
@@ -584,10 +540,6 @@ protected:
     int end_ = -1;                        ///< what open() asked for hi_; -1: the model's end
     bool split_ = false;                  ///< one of several engines: a call sets its card first
     std::unique_ptr<Engine> next_;
-    std::unique_ptr<Eagle3> eagle_;
-    float* external_features_ = nullptr; ///< this call's row-major selected residuals; no full-context feature store
-    const float* external_residual_base_ = nullptr;
-    bool external_prefix_valid_ = false;
     int64_t read_draft_calls_ = 0;               ///< read_draft_calls_for_test()
     const float* pass_ = nullptr;
     int64_t pass_at_ = 0;
@@ -635,10 +587,6 @@ protected:
     void* ev_in_[2] = {};     ///< marks a call's rows in each half of r_
     void* ev_out_[2] = {};    ///< marks the card done with a call in each half
     float rms_eps_ = 0;
-    bool oai_ = false;        ///< gpt-oss's gated unit with its experts' biases (swiglu_oai_*); clamp_exp_ has the limit
-    int oai_fuse_ = 0;        ///< GPT-OSS sets both: bit 0 output bias/residual, bit 1 down bias/ordered sum
-    bool oai_mmq_ = true;     ///< diagnostic: disable prompt MMQ while keeping decode device routing
-    float oai_alpha_ = 1.702f;
     bool gelu_ = false;       ///< the routed experts' activation: GELU of the gate, else SiLU within the layer's limits
     std::vector<float> clamp_exp_, clamp_shexp_;   ///< a layer's SwiGLU limits: the routed experts', the shared one's
 
@@ -724,26 +672,6 @@ protected:
     int way_backoff_[9] = {};    ///< the way behind waits kWayAgain << this many windows of the size
     bool halves_ = false;        ///< the way of the window under way
     float *wlogits_ = nullptr, *h_wlogits_ = nullptr;   ///< a window's logits, token after token: VRAM and pinned
-    // The load-time flag fixes the tail graph's copy policy across all requests. CPU callers materialize
-    // only the row they use; the device sampler never needs the vocabulary copied to the host.
-    bool gpu_sample_requested_ = false, gpu_sample_enabled_ = false;
-    bool gpu_sample_allocation_failed_ = false;
-    bool oai_down_requested_ = false, oai_down_enabled_ = false;
-    bool oai_grouped_enabled_ = false;
-    void* oai_grouped_workspace_ = nullptr;
-    size_t oai_grouped_workspace_bytes_ = 0;
-    std::atomic<uint32_t> oai_grouped_seen_{0}; // 1=device IDs, 2=mixed-cache slots
-    uint32_t oai_fusion_requested_ = 0;
-    uint32_t oai_fusion_overrides_ = 0;
-    std::atomic<uint32_t> oai_fusion_seen_{0};
-    std::atomic<uint32_t> oai_down_seen_{0};  // 1=direct, 2=host slots, 4=device IDs
-    bool latest_logits_valid_ = false;
-    mutable bool latest_logits_host_ready_ = false;
-    int window_logits_rows_ = 0;
-    mutable std::vector<unsigned char> window_logits_host_ready_;
-    mutable uint64_t logits_host_rows_ = 0;
-    void *sample_workspace_ = nullptr, *sample_result_ = nullptr, *h_sample_result_ = nullptr;
-    size_t sample_workspace_bytes_ = 0;
     int cached_ = 0;
 
     // device scratch: a layer's input streams, one stream, the normed input, the attention's and the FFN's output
@@ -766,8 +694,6 @@ protected:
     int32_t* iota_ = nullptr;                     ///< 0, 1, 2, ...
     int32_t* d_ids_ = nullptr;                    ///< a batch's experts and weights when it routes on the card
     float* d_wts_ = nullptr;
-    // gpt-oss, which has biases an expert: the expert of each sorted row of a batch, and of each place (token, k)
-    int32_t *d_rowexp_ = nullptr, *d_placeexp_ = nullptr, *h_rowexp_ = nullptr, *h_placeexp_ = nullptr;
     int32_t* h_ids_ = nullptr;                    ///< pinned: the experts, back from the card
     void** d_slots_ = nullptr;                    ///< every layer's L.slot on the card, n_expert_ a layer (moe_card())
     std::vector<void*> h_slots_;                  ///< what d_slots_ holds

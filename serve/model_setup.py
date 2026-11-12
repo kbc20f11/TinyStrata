@@ -7,6 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from serve import config
+from serve.model_download import reject_retired_model
 
 ROOT = Path(__file__).resolve().parent.parent
 TOKENIZER_FILES = ("vocab.json", "merges.txt", "token_type.json", "tokenizer.json", "chat_template.jinja")
@@ -17,6 +18,7 @@ def model_architecture(path: str | Path) -> str:
     from serve.gguf_reader import GGUFFile
     from serve.tinyconfig import MODEL_NAMES
     arch = GGUFFile(Path(path)).metadata.get("general.architecture")
+    reject_retired_model(arch)
     if arch not in MODEL_NAMES:
         raise ValueError(f"Unsupported GGUF model architecture: {arch}")
     return arch
@@ -24,6 +26,7 @@ def model_architecture(path: str | Path) -> str:
 
 def shared_library_dirs(cfg: dict) -> dict:
     """Reuse a matching installed GPU runtime for another model config."""
+    reject_retired_model(cfg.get("arch"), cfg.get("model_name"))
     if os.name == "nt" and cfg.get("backend") == "hip" and cfg.get("exe"):
         from serve.hip_runtime import resolve_hip_runtime
         executable = Path(cfg["exe"]).expanduser()
@@ -35,7 +38,7 @@ def shared_library_dirs(cfg: dict) -> dict:
             # An independently launched model can carry older saved lib_dirs.
             return {**cfg, "lib_dirs": list(dict.fromkeys((*runtime.directories,
                                                            *(cfg.get("lib_dirs") or ()))))}
-    if (cfg.get("arch") not in ("lfm2moe", "gemma4", "clover_moe", "gpt-oss") and
+    if (cfg.get("arch") not in ("lfm2moe", "gemma4", "clover_moe") and
             cfg.get("model_name") != "tiel-coder-35b-a3b") or "lib_dirs" in cfg:
         return cfg
     work = ROOT.with_name(ROOT.name + "-work")
@@ -67,6 +70,7 @@ def model_path(cfg: dict) -> Path | None:
 
 def resolve_executable(cfg: dict) -> Path | None:
     """Resolve an existing engine, also finding a build made after API startup."""
+    reject_retired_model(cfg.get("arch"), cfg.get("model_name"))
     from serve.backend import executable_backend
     def usable(path: Path) -> bool:
         if not path.is_file():
@@ -79,8 +83,7 @@ def resolve_executable(cfg: dict) -> Path | None:
         return path.resolve() if usable(path) else None
     suffix = ".exe" if os.name == "nt" else ""
     work = ROOT.with_name(ROOT.name + "-work")
-    name = {"lfm2moe": "tinystrata-lfm2", "gemma4": "tinystrata-gemma4",
-            "gpt-oss": "tinystrata-gemma4"}.get(cfg.get("arch"), "tinystrata")
+    name = {"lfm2moe": "tinystrata-lfm2", "gemma4": "tinystrata-gemma4"}.get(cfg.get("arch"), "tinystrata")
     backend_build = work / ("build-hip" if cfg.get("backend") == "hip" else "build")
     for folder in (backend_build, backend_build / "Release", work / "build-cuda-132" if cfg.get("backend") != "hip" else backend_build,
                    ROOT / "bin", ROOT / "build", ROOT / "build/Release"):
@@ -165,6 +168,7 @@ def migrate_managed_clover_model(cfg: dict, config_path: str | Path) -> dict:
 
 def configure_download(cfg: dict, config_path: str | Path) -> dict:
     """Choose the managed destination locally, never from an HTTP request."""
+    reject_retired_model(cfg.get("arch"), cfg.get("model_name"))
     from serve.model_download import manifest_for_arch
 
     args = cfg.get("args", [])
@@ -189,8 +193,9 @@ def _extract_tokenizer(model: Path, cache: Path) -> None:
     from serve.tokenizer import extract
 
     md = GGUFFile(model).metadata
-    if md.get("general.architecture") not in ("qwen35moe", "lfm2moe", "gemma4", "clover_moe", "gpt-oss"):
-        raise ValueError("This launcher supports qwen35moe, lfm2moe, gemma4, clover_moe and gpt-oss GGUF models")
+    reject_retired_model(md.get("general.architecture"))
+    if md.get("general.architecture") not in ("qwen35moe", "lfm2moe", "gemma4", "clover_moe"):
+        raise ValueError("This launcher supports qwen35moe, lfm2moe, gemma4 and clover_moe GGUF models")
     if not md.get("tokenizer.chat_template"):
         raise ValueError("The GGUF does not contain its chat template")
     print("Extracting the model tokenizer and chat template ...", flush=True)
@@ -324,7 +329,7 @@ def prepare_installed_model(cfg: dict, config_path: str | Path, model_path: str 
     new["tokenizer"] = str(tokenizer)
     log_name = ("engine-tiel-coder.log" if cfg.get("model_name") == "tiel-coder-35b-a3b" else
                 {"lfm2moe": "engine-lfm2.log", "gemma4": "engine-gemma4.log",
-                 "clover_moe": "engine-clover.log", "gpt-oss": "engine-gpt-oss.log"}.get(actual_arch, "engine.log"))
+                 "clover_moe": "engine-clover.log"}.get(actual_arch, "engine.log"))
     new["log"] = str(path.parent / log_name)
     exe = resolve_executable(new)
     if exe is not None:

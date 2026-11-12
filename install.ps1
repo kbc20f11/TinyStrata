@@ -19,7 +19,7 @@ param(
     [string]$HipDirectory,
     # An omitted value is empty under irm | iex and selects GPU auto-detection.
     [ValidatePattern('^(gfx[0-9a-f]+(;gfx[0-9a-f]+)*)?$')][string]$HipArchitectures,
-    [ValidateSet('qwen36', 'qwen3.6', 'lfm2', 'lfm2.5', 'gemma4', 'gemma-4', 'clover', 'tiel', 'tiel-coder', 'gpt-oss', 'gptoss')][string]$ModelFamily = 'qwen36',
+    [ValidateSet('qwen36', 'qwen3.6', 'lfm2', 'lfm2.5', 'gemma4', 'gemma-4', 'clover', 'tiel', 'tiel-coder')][string]$ModelFamily = 'qwen36',
     [ValidateRange(0, 65535)][int]$Port = 0,
     [switch]$WithUI,
     [ValidateRange(1, 65535)][int]$UiPort = 3000,
@@ -585,8 +585,6 @@ function Invoke-TinyStrataPortableBuild {
         $env:VSLANG = '1033'
         $configure = @('-S', $sourceRoot, '-B', $buildRoot, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', "-DTINYSTRATA_BACKEND=$($Backend.ToUpperInvariant())", '-DTINYSTRATA_LFM2=ON', '-DTINYSTRATA_GEMMA4=ON', '-DSTRATA_PORTABLE=ON', "-DCMAKE_MAKE_PROGRAM=$($tools.Ninja)")
         if ($Backend -eq 'hip') {
-            # Override an older build-hip cache that recorded this option OFF.
-            $configure += @('-DSTRATA_HIP_MXFP4_MMQ=ON')
             $env:HIP_PLATFORM = 'amd'
             $env:HIP_PATH = $hipRoot
             $env:ROCM_PATH = $hipRoot
@@ -1207,7 +1205,7 @@ function Invoke-TinyStrataApi {
 
 function Test-TinyStrataInferenceReady {
     param($Health, $Configuration)
-    $requireImages = -not ($Configuration -and ($Configuration.vision_mode -eq 'no' -or $Configuration.arch -in @('lfm2moe', 'gpt-oss')))
+    $requireImages = -not ($Configuration -and ($Configuration.vision_mode -eq 'no' -or $Configuration.arch -eq 'lfm2moe'))
     return [bool]($Health.loaded -and (-not $requireImages -or $Health.images))
 }
 
@@ -1228,9 +1226,6 @@ function Get-TinyStrataModelFamily {
         }
         { $_ -in @('tiel', 'tiel-coder') } {
             return [pscustomobject]@{ Name = 'tiel'; ConfigFile = 'config-tiel-coder.json'; StateFile = 'server-state-tiel-coder.json'; NativeFile = 'tinystrata.exe'; Port = 18084 }
-        }
-        { $_ -in @('gpt-oss', 'gptoss') } {
-            return [pscustomobject]@{ Name = 'gpt-oss'; ConfigFile = 'config-gpt-oss.json'; StateFile = 'server-state-gpt-oss.json'; NativeFile = 'tinystrata-gemma4.exe'; Port = 18085 }
         }
         default { throw "Unsupported TinyStrata model family: $Name" }
     }
@@ -1562,6 +1557,11 @@ function Invoke-TinyStrataInstaller {
     $configPath = Join-Path (Join-Path $runtimeRoot '.tinystrata') $selectedFamily.ConfigFile
     $statePath = Join-Path $runtimeRoot $selectedFamily.StateFile
     $cfg = Get-TinyStrataConfig -Path $configPath
+    # Preserve a retired model in the legacy primary file during an update.
+    if ($selectedFamily.Name -eq 'qwen36' -and $cfg -and $cfg.arch -eq 'gpt-oss') {
+        $configPath = Join-Path (Join-Path $runtimeRoot '.tinystrata') 'config-qwen36.json'
+        $cfg = Get-TinyStrataConfig -Path $configPath
+    }
     $selectedBackend = Get-TinyStrataBackend -Requested $Backend -Configuration $cfg
     if ($ApiPort -eq 0) { $ApiPort = if ($cfg -and $cfg.port) { [int]$cfg.port } else { $selectedFamily.Port } }
     if ($ApiPort -lt 1 -or $ApiPort -gt 65535) { throw 'Port must be between 1 and 65535.' }

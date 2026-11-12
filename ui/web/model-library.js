@@ -13,12 +13,9 @@
       "Balanced conversation and reasoning, slowest to run", "会話能力と知能のバランスがよい、最も低速で動作"],
     ["tiel-coder-35b-a3b", "Tiel Coder 35B-A3B", "peculiar-ragdoll", "tiel",
       "Specialized in programming questions", "プログラミングの質問に特化"],
-    ["gpt-oss-20b", "gpt-oss 20B", "OpenAI", "gptoss",
-      "Older, but relatively fast and stable", "古いが比較的高速で安定して動作する"],
   ];
   const iconSources = {qwen: "web/model-logos/qwen.png", gemma: "web/model-logos/gemma.svg",
-    lfm: "web/model-logos/liquid.png", clover: "web/model-logos/diffuspace.jpg", tiel: "web/model-icons.svg",
-    gptoss: "web/model-logos/openai.png"};
+    lfm: "web/model-logos/liquid.png", clover: "web/model-logos/diffuspace.jpg", tiel: "web/model-icons.svg"};
   const MODELS = Object.freeze(definitions.map(([id, name, provider, mark, en, ja]) => Object.freeze({
     id, name, provider,
     descriptionKey: `models.description.${mark}`,

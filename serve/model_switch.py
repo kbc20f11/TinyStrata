@@ -124,6 +124,11 @@ class ModelSwitcher:
             return
         if not isinstance(name, str):
             raise ValueError('model must be a string')
+        from serve.model_download import reject_retired_model
+        try:
+            reject_retired_model(model_name=name)
+        except ValueError as error:
+            raise ModelControlError(404, str(error)) from None
         with self._lock:
             try:
                 target = self.profiles.resolve(name)
@@ -754,7 +759,7 @@ class ModelSwitcher:
                                                  existing_paths=(existing,) if existing is not None else (),
                                                  projector_paths=(Path(projector),) if projector else (),
                                                  _manifests=(artifact, projector_artifact))
-        elif profile.arch in ('lfm2moe', 'clover_moe', 'gpt-oss'):
+        elif profile.arch in ('lfm2moe', 'clover_moe'):
             manager = FixedModelDownloader(directory, on_ready=prepared,
                                            existing_paths=(existing,) if existing is not None else (),
                                            _manifest=artifact)

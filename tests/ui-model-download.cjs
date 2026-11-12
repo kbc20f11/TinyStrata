@@ -9,7 +9,7 @@ const sectionStart=source.indexOf('let modelCatalog ='),sectionEnd=source.indexO
 assert(sectionStart>=0&&sectionEnd>sectionStart,'Model controls section not found in app.js');
 const snippet=source.slice(sectionStart,sectionEnd);
 const healthFunction=source.slice(source.indexOf('async function loadHealth()'),source.indexOf('// ------------------------------------------------------------------ Monitor'));
-const IDS=['qwen3.6-35b-a3b','gemma-4-26b-a4b-it','lfm2.5-24b-a2b','clover-35b-a3b-preview','tiel-coder-35b-a3b','gpt-oss-20b'];
+const IDS=['qwen3.6-35b-a3b','gemma-4-26b-a4b-it','lfm2.5-24b-a2b','clover-35b-a3b-preview','tiel-coder-35b-a3b'];
 let checks=0;
 function ok(value,label){assert(value,label);checks++;}
 function fixture(saved=[]){
@@ -100,6 +100,7 @@ function fixture(saved=[]){
  return {ctx,element,backend,calls,toasts,timers,storage,t:ctx.test,
   useProductionHealth:()=>vm.runInContext(healthFunction,ctx)};
 }
+{ const retired=fixture();ok(retired.ctx.StrataModelLibrary.get('gpt-oss-20b')===null,'retired GPT-OSS is absent from active model library');ok(source.includes('\"gpt-oss-20b\": \"gpt-oss\"'),'historical GPT-OSS chat label remains readable'); }
 const posts=(f,path)=>f.calls.filter(c=>c.method==='POST'&&c.path===path);
 const drain=()=>new Promise(resolve=>setImmediate(resolve));
 const catalogSnapshot=(f,active)=>JSON.parse(JSON.stringify(f.t.catalog())).map(row=>({...row,active:row.id===active,
@@ -218,7 +219,7 @@ async function workerRegressions(){
  const list=f.element('model-library-list'),row=list._modelRows.get(IDS[1]),image=row.image,button=row.download;
  button.focus();const sourceWrites=image.writes;
  for(let i=0;i<20;i++)f.t.library();
- ok(list.children.length===6&&list._modelRows.get(IDS[1])===row,'all six model rows retain keyed DOM');
+ ok(list.children.length===5&&list._modelRows.get(IDS[1])===row,'all five model rows retain keyed DOM');
  ok(row.image===image&&image.writes===sourceWrites&&row.download===button&&f.ctx.document.activeElement===button,'catalog polls preserve image src, button and focus');
  ok(image.tagName==='IMG'&&image.getAttribute('alt')===''&&image.getAttribute('aria-hidden')==='true','model images are decorative beside their text names');
  for(const id of IDS){const modelImage=list._modelRows.get(id).image;ok(modelImage.getAttribute('src')===f.ctx.StrataModelLibrary.get(id).iconSrc&&!modelImage.getAttribute('src').includes('#'),'each model renders its local standalone official or generic asset');}

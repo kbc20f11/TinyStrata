@@ -19,10 +19,62 @@ PROFILES = {"qwen36": ("qwen3.6-35b-a3b", "config.json"),
             "gemma4": ("gemma-4-26b-a4b-it", "config-gemma4.json"),
             "lfm2": ("lfm2.5-24b-a2b", "config-lfm2.json"),
             "clover": ("clover-35b-a3b-preview", "config-clover.json"),
-            "tiel": ("tiel-coder-35b-a3b", "config-tiel-coder.json"),
-            "gpt-oss": ("gpt-oss-20b", "config-gpt-oss.json")}
+            "tiel": ("tiel-coder-35b-a3b", "config-tiel-coder.json")}
 MODELS = {model: family for family, (model, _) in PROFILES.items()}
-FAMILY_ALIASES = {"tiel-coder": "tiel", "gptoss": "gpt-oss"}
+FAMILY_ALIASES = {"tiel-coder": "tiel"}
+
+
+def retired_model(name):
+    # The optional UI also supports an older installed core. Keep this check
+    # local rather than requiring a newly added serve module at UI startup.
+    return isinstance(name, str) and name.strip().lower() in ("gpt-oss", "gptoss", "gpt-oss-20b")
+
+
+def reject_retired_model(name):
+    if retired_model(name):
+        raise ValueError("GPT-OSS is no longer supported by TinyStrata. Choose another installed model. "
+                         "Existing model files and chats have been kept.")
+
+
+def profile_path(runtime, family):
+    """A retired primary config stays intact; Qwen uses its separate profile."""
+    parent = Path(runtime) / ".tinystrata"
+    path = parent / PROFILES[family][1]
+    if family == "qwen36" and path.is_file():
+        try:
+            cfg = read_json(path)
+        except (OSError, ValueError):
+            cfg = {}
+        if isinstance(cfg, dict) and cfg.get("arch") == "gpt-oss":
+            return parent / "config-qwen36.json"
+    return path
+
+
+def available_default_family(runtime):
+    """Prefer an already downloaded supported model; never download during migration."""
+    arches = {"qwen36": "qwen35moe", "gemma4": "gemma4", "lfm2": "lfm2moe",
+              "clover": "clover_moe", "tiel": "qwen35moe"}
+    for family, (model, _) in PROFILES.items():
+        path = profile_path(runtime, family)
+        try:
+            cfg = read_json(path)
+            if not isinstance(cfg, dict) or cfg.get("arch", "qwen35moe") != arches[family]:
+                continue
+            reject_retired_model(cfg.get("arch"))
+            reject_retired_model(cfg.get("model_name"))
+            if cfg.get("model_name", model) != model:
+                continue
+            args = cfg.get("args", [])
+            if not isinstance(args, list) or "--model" not in args[:-1]:
+                continue
+            selected = Path(args[args.index("--model") + 1]).expanduser()
+            if not selected.is_absolute():
+                selected = Path(cfg.get("cwd") or ".") / selected
+            if selected.is_file():
+                return family
+        except (OSError, ValueError, TypeError):
+            continue
+    return "qwen36"
 
 
 def backend_revision(source):
@@ -211,9 +263,13 @@ class Launcher:
         self.api_port = port_number(args.api_port if args.api_port is not None else settings.get("api_port", 18080))
         self.port = port_number(args.port if args.port is not None else settings.get("port", 3000))
         selected_family = args.model_family or settings.get("model_family", "qwen36")
+        if args.model_family:
+            reject_retired_model(args.model_family)
+        elif retired_model(selected_family):
+            selected_family = available_default_family(self.runtime)
         self.family = FAMILY_ALIASES.get(selected_family, selected_family)
         if self.family not in PROFILES:
-            raise ValueError("Unknown saved model family; specify --model-family qwen36, gemma4, lfm2, clover, tiel or gpt-oss")
+            raise ValueError("Unknown saved model family; specify --model-family qwen36, gemma4, lfm2, clover or tiel")
         if self.api_port == self.port:
             raise ValueError("The UI and API must use different ports")
         self.python = self.runtime / ".venv" / "Scripts" / "python.exe"
@@ -304,7 +360,7 @@ class Launcher:
     def save_api_process(self, process, config):
         name = {"qwen36": "server-state.json", "gemma4": "server-state-gemma4.json",
                 "lfm2": "server-state-lfm2.json", "clover": "server-state-clover.json",
-                "tiel": "server-state-tiel-coder.json", "gpt-oss": "server-state-gpt-oss.json"}[self.family]
+                "tiel": "server-state-tiel-coder.json"}[self.family]
         target = self.runtime / name
         temporary = target.with_name(f"{target.name}.{os.getpid()}.tmp")
         values = {"pid": process.pid, "started": process_started(process.pid),
@@ -315,7 +371,7 @@ class Launcher:
     def ensure_api(self, no_start=False):
         process = None
         deadline = time.monotonic() + 300
-        expected_model, config_name = PROFILES[self.family]
+        expected_model, _ = PROFILES[self.family]
         if port_occupied(self.api_port):
             try:
                 health = request_json(self.api_port, "/health")
@@ -333,7 +389,7 @@ class Launcher:
         else:
             if no_start:
                 raise RuntimeError(f"No TinyStrata API is running on port {self.api_port}; --no-api-start leaves it unchanged")
-            config = self.runtime / ".tinystrata" / config_name
+            config = profile_path(self.runtime, self.family)
             if not config.is_file():
                 raise RuntimeError(f"Installed model configuration was not found: {config}. Run the installer first")
             self.prepare_api(config)

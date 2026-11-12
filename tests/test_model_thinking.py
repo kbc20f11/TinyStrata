@@ -71,29 +71,10 @@ class ThinkingTests(unittest.TestCase):
         self.assertEqual(capabilities("tiel-coder"), capabilities(TIEL))
         self.assertIsNone(capabilities("custom-model", "qwen35moe"))
 
-    def test_gpt_oss_has_effort_without_an_off_switch(self):
-        policy = capabilities("gpt-oss-20b")
-        self.assertEqual(policy, {"mode": "effort_always", "default": "medium", "options": ["low", "medium", "high"]})
-        self.assertEqual(capabilities("gpt-oss"), policy)
-        self.assertEqual(capabilities("gptoss"), policy)
-        # off and minimal ask for the least reasoning it has; high is canonical.
-        self.assertEqual([normalize_effort(v, policy) for v in ("none", False, "minimal", "low", "medium", "high", "xhigh")],
-                         ["low", "low", "low", "low", "medium", "high", "high"])
-        # the switch cannot turn it off: the template always gets an effort
-        self.assertEqual(template_kwargs({"enable_thinking": False}, policy, True),
-                         {"enable_thinking": True, "reasoning_effort": "medium"})
-        self.assertEqual(template_kwargs({"reasoning_effort": "xhigh"}, policy, True),
-                         {"enable_thinking": True, "reasoning_effort": "high"})
-        self.assertEqual(template_kwargs({}, policy, False), {"enable_thinking": True, "reasoning_effort": "medium"})
-        for alias in ("high", "xhigh", "max", "maximum"):
-            self.assertEqual(clean_shared_defaults({"reasoning_effort": alias}, "gpt-oss-20b"),
-                             {"reasoning_effort": "high"})
-            for api in ("openai", "responses", "anthropic"):
-                with self.subTest(alias=alias, api=api):
-                    control = {"reasoning_effort": alias} if api == "openai" else \
-                              {"reasoning" if api == "responses" else "output_config": {"effort": alias}}
-                    self.assertEqual(self.kwargs(self.service("gpt-oss-20b"), api,
-                                                 **control)["reasoning_effort"], "high")
+    def test_retired_models_do_not_have_active_thinking_capabilities(self):
+        for name in ("gpt-oss-20b", "gpt-oss", "gptoss"):
+            with self.subTest(name=name):
+                self.assertIsNone(capabilities(name))
 
     def test_defaults_all_protocols(self):
         for model in MODELS:

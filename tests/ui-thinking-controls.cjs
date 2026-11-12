@@ -106,50 +106,25 @@ async function main(){
   const locale=JSON.parse(fs.readFileSync(path.join(web,'locales',lang+'.json'),'utf8'));
   for(const key of ['thinking.on','thinking.alwaysOn','thinking.high'])ok(typeof locale[key]==='string'&&locale[key].length>0,'localized concise thinking labels');
  }
- const effort=f.ctx.StrataThinkingControls;
- equal(effort.contract('gpt-oss-20b'),{mode:'effort_always',default:'medium',options:['low','medium','high']},'gpt-oss exposes its native low, medium and high levels');
- equal(effort.payload('gpt-oss-20b',{thinkingByModel:{}}),{reasoning_effort:'medium'},'gpt-oss sends its effort, never a thinking switch');
- ok(effort.select({thinkingByModel:{}},'gpt-oss-20b','none').thinkingByModel['gpt-oss-20b']===undefined,'gpt-oss has no off choice');
- const g=fixture();g.model('gpt-oss-20b');g.ctx.loadDrawer();
- equal(g.values(),['low','medium','high'],'gpt-oss composer and saved controls use canonical high');
- equal(g.element('composer-effort').options.at(-1).textContent,'High','gpt-oss composer uses its native High label');
- equal(g.element('s-thinking').children.at(-1).textContent,'High','gpt-oss drawer does not claim an xhigh level');
+ const retired=T.migrate({thinkingByModel:{'gpt-oss-20b':'high',[ids[4]]:'xhigh'},seed:'123'});
+ equal(retired,{thinkingByModel:{[ids[4]]:'xhigh'},seed:'123'},'retired model preference is dropped without changing supported preferences');
+ const g=fixture(),shown=x=>['s-temp','s-topp','s-topk'].map(id=>+x.element(id).value);
+ for(const id of ids){
+  g.model(id);g.ctx.loadDrawer();
+  equal(shown(g),[1,.95,20],'supported models retain the factory sampling display');
+  equal(g.element('s-topk').min,'1','supported models retain their top-k control range');
+  ok(g.ctx.samplingUntouched(g.ctx.settings),'switching models does not create sampling overrides');
+ }
  g.model(ids[4]);
  equal(g.element('composer-effort').options.at(-1).textContent,'High (xhigh)','Tiel retains its existing xhigh label');
- g.model('gpt-oss-20b');g.ctx.loadDrawer();
- const shown=x=>['s-temp','s-topp','s-topk'].map(id=>+x.element(id).value);
- equal(shown(g),[1,1,0],'untouched gpt-oss displays its recommended full-vocabulary defaults');
- equal(g.element('s-topk').min,'0','gpt-oss can select unlimited top-k');
- equal(g.ctx.sharedDefaults(g.ctx.settings),{reasoning_effort:'medium'},'untouched gpt-oss does not override server sampling');
- await g.element('s-apply').onclick();
- ok(g.ctx.samplingUntouched(g.storage.sampling),'applying displayed gpt-oss defaults retains default intent');
- equal(g.ctx.sharedDefaults(g.ctx.settings),{reasoning_effort:'medium'},'applying without changes still sends no sampling overrides');
- const greload=fixture(g.storage.sampling);greload.model('gpt-oss-20b');greload.ctx.loadDrawer();
- equal(shown(greload),[1,1,0],'reload restores model defaults without persisting the legacy display tuple as an override');
- g.element('s-temp').value=.7;await g.element('s-apply').onclick();
- equal(g.ctx.sharedDefaults(g.ctx.settings),{reasoning_effort:'medium',temperature:.7,top_p:1,top_k:0},'changing only temperature retains full-vocabulary gpt-oss sampling');
- const custom=fixture(g.storage.sampling);custom.model('gpt-oss-20b');custom.ctx.loadDrawer();
- equal(shown(custom),[.7,1,0],'saved gpt-oss customization survives reload');
- custom.element('s-reset').onclick();
- equal(shown(custom),[1,1,0],'gpt-oss reset stages its own model defaults');
- equal(custom.ctx.settings.temperature,.7,'reset preserves saved customization until Apply');
- await custom.element('s-apply').onclick();
- ok(custom.ctx.samplingUntouched(custom.storage.sampling),'reset Apply returns to omitted sampling overrides');
- for(const id of ids){
-  greload.model(id);greload.ctx.loadDrawer();
-  equal(shown(greload),[1,.95,20],'switching away restores the previous five-model factory display');
-  equal(greload.element('s-topk').min,'1','existing models retain their top-k control range');
-  ok(greload.ctx.samplingUntouched(greload.ctx.settings),'switching models does not create sampling overrides');
- }
- const legacy=fixture({temperature:.85,top_p:.8,top_k:37,seed:'123'});legacy.model('gpt-oss-20b');legacy.ctx.loadDrawer();
- equal(shown(legacy),[.85,.8,37],'existing explicit browser customization wins over new model defaults');
- equal(legacy.ctx.settings.seed,'123','model-aware sampling leaves unrelated saved settings intact');
- for(const alias of ['high','xhigh','max','maximum']){
-  const saved=fixture({thinkingByModel:{'gpt-oss-20b':alias,[ids[4]]:'xhigh'}});saved.model('gpt-oss-20b');
-  equal(saved.element('composer-effort').value,'high','saved gpt-oss '+alias+' migrates to high');
-  equal(saved.ctx.thinkingPayload(),{reasoning_effort:'high'},'gpt-oss sends canonical high for '+alias);
-  equal(saved.ctx.settings.thinkingByModel[ids[4]],'xhigh','gpt-oss migration preserves Tiel xhigh');
- }
+ const legacy=fixture({temperature:.85,top_p:.8,top_k:37,seed:'123'});legacy.model(ids[0]);legacy.ctx.loadDrawer();
+ equal(shown(legacy),[.85,.8,37],'existing explicit browser customization survives retirement');
+ equal(legacy.ctx.settings.seed,'123','sampling migration leaves unrelated saved settings intact');
+ legacy.element('s-reset').onclick();
+ equal(shown(legacy),[1,.95,20],'reset stages the factory defaults');
+ equal(legacy.ctx.settings.temperature,.85,'reset preserves saved customization until Apply');
+ await legacy.element('s-apply').onclick();
+ ok(legacy.ctx.samplingUntouched(legacy.storage.sampling),'reset Apply returns to omitted sampling overrides');
  console.log(`ui thinking controls: ${checks} checks PASS`);
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

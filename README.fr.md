@@ -40,25 +40,15 @@ Clover propose aussi une recherche optionnelle de répétitions : `--clover-look
 
 Les moteurs Qwen, Gemma et LFM utilisent un cache automatique d’experts en VRAM, le calcul d’experts sur CPU depuis la RAM, le streaming des poids à l’entrée et les CUDA Graphs. Ils partagent la même API et permettent de changer de modèle sans redémarrer, avec des paramètres enregistrés séparément pour chaque modèle. Aucun expert sélectionné n’est omis. Ils permettent aussi la croissance automatique de la mémoire KV physique, sans modifier la capacité maximale de contexte.
 
-**gpt-oss 20B MXFP4** utilise le [GGUF ggml-org fixé](https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/blob/15dcfc7e7c608c6161507211ed43c5b590801b4b/gpt-oss-20b-MXFP4.gguf) (**12.110 Go**). Il accepte uniquement du texte, avec un contexte maximal de **128K**, un cache **KV INT8** par défaut et aucune tête MTP. Le raisonnement propose **Faible / Moyen / Élevé**, avec **Moyen** par défaut. Lancez `run-api.bat --model-family gpt-oss` (port **18085**, `config-gpt-oss.json`) ; il partage le fichier exécutable de Gemma. Échantillonnage par défaut : température **1.0**, top-p **1.0**, top-k **0** (sans limite).
+**La prise en charge de GPT-OSS est arrêtée.** Le modèle ne fait plus partie des cibles actuelles de téléchargement, de lancement ou de benchmark. Les [mesures historiques](benchmark/results/gptoss-adoption-20261110.md) sont conservées ; voir les [conditions de réintroduction](docs/gpt-oss-reintroduction.md).
 
-[Mesures et validation locales HIP](benchmark/results/gptoss-adoption-20261110.md) : MXFP4 MMQ est activé par défaut sous HIP (`-DSTRATA_HIP_MXFP4_MMQ=OFF` compile le repli matvec ; `TINYSTRATA_GPTOSS_MMQ=0` désactive MMQ pour le diagnostic). Le mode natif `--serve --lookup-draft 7` reste optionnel ; lookup reste à **0** par défaut, car les gains ne sont pas uniformes avec échantillonnage.
-
-Les requêtes GPT-OSS admissibles sur un seul GPU échantillonnent tout le vocabulaire sur GPU par défaut ; le mode glouton, les filtres et les pénalités actives conservent le chemin CPU. `TINYSTRATA_GPTOSS_GPU_SAMPLE=0` sélectionne le CPU pour le diagnostic. [Mesures et vérifications de l’échantillonnage GPU](benchmark/results/gptoss-gpu-sampling-20261110.md).
-
-HIP active par défaut l’attention complète admissible au-delà de 8192 clés, en conservant les requêtes FP32, toutes les lignes KV et les sinks appris. Elle est désactivée par défaut sous CUDA ; `TINYSTRATA_GPTOSS_SINK_ATTN=1` l’active explicitement. `TINYSTRATA_GPTOSS_SINK_ATTN=0` sélectionne le chemin précédent pour le diagnostic. [Mesures, différences numériques et périmètre de validation](benchmark/results/gptoss-sink-attention-20261110.md).
-
-Sur un seul GPU HIP gfx1200, les projections down MXFP4 des Experts GPT-OSS en cache réutilisent par défaut les activations en mémoire partagée, en conservant les codes existants des poids et activations. `TINYSTRATA_GPTOSS_MXFP4_DOWN=0` sélectionne le noyau précédent pour le diagnostic. [Mesures, différences numériques et périmètre](benchmark/results/gptoss-mxfp4-down-20261110.md).
-
-Sur un seul GPU HIP gfx1200, GPT-OSS fusionne l’attention d’entrée INT8 complète et locale, y compris les préfixes longs, ainsi que l’activation MMQ avec des octets identiques. La précision FP16/FP32 existante est conservée ; la fusion d’activation du décodage reste optionnelle. [Mesures, différences numériques et périmètre](benchmark/results/gptoss-fusions-20261110.md).
-
-| Fonction | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) | [gpt-oss](https://huggingface.co/openai/gpt-oss-20b) |
-| --- | --- | --- | --- | --- | --- |
-| Contexte maximal | 256K | 256K | 128K | 256K (extension) | 128K |
-| Entrée d’images | Oui ; encodeur sur GPU par défaut | Oui ; encodeur sur GPU par défaut | Non | Oui (extension TinyStrata ; encodeur résident GPU par défaut) | Non |
-| MTP | 3 | 3 | Non | Non (auto-spéculation exacte D3 optionnelle) | Non |
-| Formats KV | FP32 / INT8 / FP8 natif | FP16 / INT8 / FP8 natif (expérimental) | FP16 / INT8 / FP8 natif | FP32 / INT8 / FP8 natif | FP16 / INT8 |
-| KV automatique (par défaut) | FP8 → INT8 | INT8 | FP8 → INT8 | INT8 | INT8 |
+| Fonction | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) |
+| --- | --- | --- | --- | --- |
+| Contexte maximal | 256K | 256K | 128K | 256K (extension) |
+| Entrée d’images | Oui ; encodeur sur GPU par défaut | Oui ; encodeur sur GPU par défaut | Non | Oui (extension TinyStrata ; encodeur résident GPU par défaut) |
+| MTP | 3 | 3 | Non | Non (auto-spéculation exacte D3 optionnelle) |
+| Formats KV | FP32 / INT8 / FP8 natif | FP16 / INT8 / FP8 natif (expérimental) | FP16 / INT8 / FP8 natif | FP32 / INT8 / FP8 natif |
+| KV automatique (par défaut) | FP8 → INT8 | INT8 | FP8 → INT8 | INT8 |
 
 Les images pour Clover sont une extension de TinyStrata, pas une fonction officielle de Clover.
 
@@ -68,7 +58,7 @@ Gemma utilise INT8 par défaut. Le FP8 natif est expérimental et peut être sé
 
 La **capacité de contexte automatique** dépend de la VRAM totale du GPU, comme indiqué ci-dessous ; la VRAM libre détermine la taille du cache d’experts. Une valeur explicite de `--max-context N` est prioritaire.
 
-| VRAM totale (exemples) | Qwen3.6 / Gemma 4 / Clover | LFM2.5 / gpt-oss |
+| VRAM totale (exemples) | Qwen3.6 / Gemma 4 / Clover | LFM2.5 |
 | --- | ---: | ---: |
 | 8 GB | 64K | 64K |
 | 12 GB | 128K | 128K |

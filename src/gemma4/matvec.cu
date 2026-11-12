@@ -124,11 +124,6 @@ struct IQ4NLBlock {
     half d;
     uint8_t qs[16];
 };
-// MXFP4: a byte of exponent, then 32 four-bit codes.  No alignment: a run of them has blocks at every byte.
-struct MXFP4Block {
-    uint8_t e;
-    uint8_t qs[16];
-};
 static_assert(sizeof(Q5KBlock) == 176 && alignof(Q5KBlock) == 4);
 static_assert(sizeof(Q81Block) == 36 && alignof(Q81Block) == 4);
 static_assert(sizeof(Q20Block) == 18 && alignof(Q20Block) == 2 && offsetof(Q20Block, qs) == 2);
@@ -151,7 +146,6 @@ static_assert(sizeof(Q50Block) == 22 && alignof(Q50Block) == 2 &&
               offsetof(Q50Block, qh) == 2 && offsetof(Q50Block, qs) == 6);
 static_assert(sizeof(Q80Block) == 34 && alignof(Q80Block) == 2 && offsetof(Q80Block, qs) == 2);
 static_assert(sizeof(IQ4NLBlock) == 18 && alignof(IQ4NLBlock) == 2 && offsetof(IQ4NLBlock, qs) == 2);
-static_assert(sizeof(MXFP4Block) == 17 && alignof(MXFP4Block) == 1 && offsetof(MXFP4Block, qs) == 1);
 
 __device__ __forceinline__ float warp_sum(float x) {
 #pragma unroll
@@ -570,8 +564,6 @@ __device__ __align__(4) int8_t iq4nl_values[16] = {
     -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113
 };
 
-// MXFP4's codes are E2M1 values doubled, so a block's scale is its power of two halved: llama.cpp's kvalues_mxfp4.
-__device__ __align__(4) int8_t mxfp4_values[16] = {0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12};
 
 // Eight four-bit codes of q4 looked up in a codebook of 16: the even nibbles' values in .x, the odd ones' in .y.
 __device__ __forceinline__ int2 table16_lookup(const int8_t* table, int q4) {
@@ -609,10 +601,6 @@ __device__ __forceinline__ int load_int_b1(const void* ptr, int i32) {
 }
 
 // A block's power of two, halved, as llama.cpp's ggml_cuda_e8m0_to_fp32(e) * 0.5f.
-__device__ __forceinline__ float mxfp4_scale(uint8_t e) {
-    return __uint_as_float(e == 0 ? 0x00400000u : (uint32_t) e << 23) * 0.5f;
-}
-
 // Exact pinned vec_dot_iq4_xs_q8_1: a lane consumes one 32-element subblock,
 // computes integer dot products, applies signed scale in the integer domain,
 // then multiplies the two half scales and integer sum in the original order.
@@ -916,22 +904,7 @@ __device__ __forceinline__ float small_q8_dot(const IQ4NLBlock* __restrict__ w,
     return d * sumi;
 }
 
-// llama.cpp's vec_dot_mxfp4_q8_1 with VDR 2.
-__device__ __forceinline__ float small_q8_dot(const MXFP4Block* __restrict__ w,
-                                             const Q81Block* __restrict__ x, int iqs) {
-    const int* q8 = reinterpret_cast<const int*>(x->qs) + iqs;
-    int sumi = 0;
-#pragma unroll
-    for (int i = 0; i < 2; ++i) {
-        const int2 v = table16_lookup(mxfp4_values, load_int_b1(w->qs, iqs + i));
-        sumi = STRATA_DP4A(v.x, q8[i], sumi);
-        sumi = STRATA_DP4A(v.y, q8[i + 4], sumi);
-    }
-    const float d = mxfp4_scale(w->e) * __low2float(x->ds);
-    return d * sumi;
-}
-
-// QI=4 for Q4_0/Q5_0/IQ4_NL/MXFP4 and QI=8 for Q8_0. With VDR=2 this preserves
+// QI=4 for Q4_0/Q5_0/IQ4_NL and QI=8 for Q8_0. With VDR=2 this preserves
 // the pinned 64/32-block iteration and 2048/1024-element small-K thresholds.
 template<typename Weight, int Qi, bool SmallK>
 __launch_bounds__(WARPS * WARP, 1)
@@ -1297,32 +1270,6 @@ struct SmallTraits<IQ4NLBlock, 4> {
 #pragma unroll
         for (int i = 0; i < 2; ++i) r.v[i] = iq4_table_lookup(load_int_b2(w->qs, iqs + i));
         r.dw = __half2float(w->d);
-        return r;
-    }
-    __device__ static float apply(const W& r, const Q81Block* __restrict__ x, int iqs) {
-        const int* q8 = reinterpret_cast<const int*>(x->qs) + iqs;
-        int sumi = 0;
-#pragma unroll
-        for (int i = 0; i < 2; ++i) {
-            sumi = STRATA_DP4A(r.v[i].x, q8[i], sumi);
-            sumi = STRATA_DP4A(r.v[i].y, q8[i + 4], sumi);
-        }
-        const float d = r.dw * __low2float(x->ds);
-        return d * sumi;
-    }
-};
-
-template<>
-struct SmallTraits<MXFP4Block, 4> {
-    using Block = MXFP4Block;
-    static constexpr int DIV = 32, T = 2, KBY = 1, BPI = 2 * WARPS * WARP / 4;
-    __device__ static int kqs(int tid) { return 2 * (tid % 2); }
-    struct W { int2 v[2]; float dw; };
-    __device__ static W load(const Block* __restrict__ w, int iqs) {
-        W r;
-#pragma unroll
-        for (int i = 0; i < 2; ++i) r.v[i] = table16_lookup(mxfp4_values, load_int_b1(w->qs, iqs + i));
-        r.dw = mxfp4_scale(w->e);
         return r;
     }
     __device__ static float apply(const W& r, const Q81Block* __restrict__ x, int iqs) {
@@ -3080,7 +3027,7 @@ bool gemma_native_mmvq_supported(int ggml_type) noexcept {
     return ggml_type == 2 || ggml_type == 6 || ggml_type == 7 || ggml_type == 8 || ggml_type == 10 || ggml_type == 11 ||
            ggml_type == 12 || ggml_type == 13 || ggml_type == 14 || ggml_type == 20 ||
            ggml_type == 23 || ggml_type == 42 || ggml_type == 16 || ggml_type == 17 || ggml_type == 18 ||
-           ggml_type == 21 || ggml_type == 22 || ggml_type == 29 || ggml_type == 39;
+           ggml_type == 21 || ggml_type == 22 || ggml_type == 29;
 }
 
 std::size_t gemma_native_mmvq_weight_bytes(int ggml_type, int n_in, int n_out) {
@@ -3091,7 +3038,6 @@ std::size_t gemma_native_mmvq_weight_bytes(int ggml_type, int n_in, int n_out) {
     case 7: block_elems = 32; block_bytes = 24; break;
     case 8: block_elems = 32; block_bytes = 34; break;
     case 20: block_elems = 32; block_bytes = 18; break;
-    case 39: block_elems = 32; block_bytes = 17; break;
     case 10: block_elems = 256; block_bytes = 84; break;
     case 11: block_elems = 256; block_bytes = 110; break;
     case 12: block_elems = 256; block_bytes = 144; break;
@@ -3120,7 +3066,6 @@ void gemma_native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, f
     case 7: iq_mmvq(ggml_type, weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
     case 8: gemma_native_q8_0_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
     case 20: gemma_native_iq4_nl_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
-    case 39: small_mmvq<MXFP4Block, 4>(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
     case 10: gemma_native_q2_k_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
     case 11: gemma_native_q3_k_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
     case 12: gemma_native_q4_k_mmvq(weights, x_q8_1, y, n_in, n_out, ncols, stream); break;
@@ -3143,7 +3088,7 @@ int slots_kind(int ggml_type) {
     return 0;   // the wave layout has no kernel for it
 #else
     switch (ggml_type) {
-    case 2: case 6: case 8: case 20: case 39: case 10: case 11: case 12: case 13: case 14: case 23: case 42: return 1;
+    case 2: case 6: case 8: case 20: case 10: case 11: case 12: case 13: case 14: case 23: case 42: return 1;
     // I-quant slots are not part of this LFM 4-bit adapter. Their single-matrix
     // fallback remains available through the existing TinyStrata kernels.
     default: return 0;
@@ -3153,7 +3098,7 @@ int slots_kind(int ggml_type) {
 
 template<typename S>
 void launch_slots_of(int ggml_type, const S& slots, int count, int n_in, int n_out, void* stream) {
-    const bool small = ggml_type == 2 || ggml_type == 6 || ggml_type == 8 || ggml_type == 20 || ggml_type == 39;
+    const bool small = ggml_type == 2 || ggml_type == 6 || ggml_type == 8 || ggml_type == 20;
     validate_shape(n_in, 1, small || ggml_type == 7 ? 32 : ggml_type == 42 ? 64 : 256);
     validate_stream(stream);
     const auto s = static_cast<cudaStream_t>(stream);
@@ -3162,7 +3107,6 @@ void launch_slots_of(int ggml_type, const S& slots, int count, int n_in, int n_o
     case 6: launch_slots<SmallTraits<Q50Block, 4>>(slots, count, n_in, n_out, s); break;
     case 8: launch_slots<SmallTraits<Q80Block, 8>>(slots, count, n_in, n_out, s); break;
     case 20: launch_slots<SmallTraits<IQ4NLBlock, 4>>(slots, count, n_in, n_out, s); break;
-    case 39: launch_slots<SmallTraits<MXFP4Block, 4>>(slots, count, n_in, n_out, s); break;
     case 10: launch_slots<Q2KTraits>(slots, count, n_in, n_out, s); break;
     case 11: launch_slots<Q3KTraits>(slots, count, n_in, n_out, s); break;
     case 12: launch_slots<Q4KTraits>(slots, count, n_in, n_out, s); break;

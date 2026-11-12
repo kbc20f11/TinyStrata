@@ -100,34 +100,6 @@ class SameArchitectureProfiles(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "another model architecture"):
             self.profiles({**self.cfg, "model_name": "gemma-4-26b-a4b-it"})
 
-    def test_gpt_oss_owns_a_text_only_profile_without_an_assistant(self):
-        profiles = self.profiles()
-        profile = profiles.get("gptoss")
-        self.assertEqual(profile.id, "gpt-oss-20b")
-        self.assertEqual(profile.arch, "gpt-oss")
-        self.assertEqual(profile.path, self.root / "config-gpt-oss.json")
-        self.assertEqual(model_setup.model_path(profile.config).name, model_download.FIXED_GPT_OSS_MODEL.filename)
-        self.assertEqual(config.value_of(profile.config, "mtp"), 0)
-        self.assertEqual(profile.config["reasoning_effort"], "medium")
-        self.assertEqual(profile.config["sampling"]["top_k"], 0)
-        self.assertEqual(profile.config["vision_mode"], "no")
-        self.assertIsNone(model_download.projector_for_arch(profile.arch, profile.id))
-        self.assertNotIn("--draft-model", profile.config["args"])
-        self.assertFalse(profile.path.exists(), "Catalog reads must not persist an inactive profile")
-        restarted = self.profiles(profile.config, profile.path)
-        self.assertEqual(restarted.current_id, "gpt-oss-20b")
-        self.assertEqual(restarted.get("gpt-oss").path, profile.path)
-
-    def test_gpt_oss_switch_inherits_the_selected_hip_device(self):
-        saved = {"arch": "gpt-oss", "model_name": "gpt-oss-20b", "backend": "cuda", "gpu": "0",
-                 "args": ["--max-context", "auto", "--kv-type", "auto", "--mtp", "0"]}
-        (self.root / "config-gpt-oss.json").write_text(json.dumps(saved), encoding="utf-8")
-        profiles = self.profiles({**self.cfg, "backend": "hip", "hip_ordinal": 1, "lib_dirs": ["selected SDK"]})
-        profile = profiles.get("gpt-oss")
-        self.assertEqual(profile.config["backend"], "hip")
-        self.assertEqual(profile.config["hip_ordinal"], 1)
-        self.assertNotIn("gpu", profile.config)
-        self.assertEqual(profile.config["lib_dirs"], ["selected SDK"])
 
     def test_same_architecture_wrong_identity_cannot_update_or_prepare(self):
         profiles = self.profiles()
@@ -159,14 +131,14 @@ class SameArchitectureProfiles(unittest.TestCase):
         profiles = self.profiles(cfg)
         self.assertEqual(profiles.get(TIEL).path, self.path)
         self.assertEqual(profiles.get(QWEN).path, self.root / "config-qwen36.json")
-        self.assertEqual(len({p.path for p in profiles._profiles.values()}), 6)
+        self.assertEqual(len({p.path for p in profiles._profiles.values()}), 5)
 
     def test_catalog_availability_checks_only_the_matching_artifact(self):
         directory = self.root / "model-files"
         directory.mkdir()
         (directory / model_download.FIXED_TIEL_MODEL.filename).write_bytes(b"fixture")
         rows = {row["id"]: row for row in self.profiles().list()}
-        self.assertEqual(len(rows), 6)
+        self.assertEqual(len(rows), 5)
         self.assertTrue(rows[TIEL]["installed"])
         self.assertFalse(rows[QWEN]["installed"])
         self.assertEqual(rows[TIEL]["context"]["model_limit"], 262144)

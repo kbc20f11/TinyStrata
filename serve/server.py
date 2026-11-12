@@ -1266,9 +1266,7 @@ class StrataEngine:
             keys += f" top_p={float(tp)!r}"
         tk = sampling.get("top_k")
         if isinstance(tk, int) and not isinstance(tk, bool) and tk >= 0:
-            # gpt-oss uses the Gemma-family full-vocabulary sampler. Other
-            # engines retain their existing 64-candidate compatibility behavior.
-            keys += f" top_k={0 if arch == 'gpt-oss' and tk == 0 else tk if 1 <= tk <= 64 else 64}"
+            keys += f" top_k={tk if 1 <= tk <= 64 else 64}"
         for key, value in config.clover_request_options(sampling).items():
             keys += f" {key}={value!r}" if isinstance(value, float) else f" {key}={value}"
         for key, value in config.speculation_request_options(sampling).items():
@@ -4252,8 +4250,6 @@ class Service:
         count = len(ids)
         if images:
             if not self.vision_available():
-                if getattr(self.engine, "_tinystrata_arch", None) == "gpt-oss":
-                    raise ValueError("gpt-oss-20b is text-only and does not support image input")
                 raise ValueError(self.vision_off_reason())
             gemma = self.call_format == "gemma"
             mark = "<|image|>" if gemma else IMAGE_PAD
@@ -4361,26 +4357,13 @@ class Service:
         spawn = getattr(self.engine, "spawn", ())
         args = list(spawn[1]) if len(spawn) > 1 and isinstance(spawn[1], (tuple, list)) else []
         arch = getattr(self.engine, "_tinystrata_arch", None)
-        supported = arch in ("qwen35moe", "gemma4", "gpt-oss") or (arch is None and
-            self.model.startswith(("qwen3.6", "gemma-4", "tiel-coder", "gpt-oss")))
+        supported = arch in ("qwen35moe", "gemma4") or (arch is None and
+            self.model.startswith(("qwen3.6", "gemma-4", "tiel-coder")))
         if not supported:
             if options:
-                raise ValueError(f"{next(iter(options))}: this option requires Qwen35MoE or Gemma 4 or gpt-oss")
+                raise ValueError(f"{next(iter(options))}: this option requires Qwen35MoE or Gemma 4")
             return None
-        cfg = {"args": args, "arch": "gpt-oss" if arch == "gpt-oss" or
-               (arch is None and self.model.startswith("gpt-oss")) else arch}
-        # A lazy/unloaded engine may not have INFO yet. Its saved spawn still
-        # identifies the resident EAGLE route; an explicit zero request control
-        # is allowed, but enabling another drafter must fail before native GEN.
-        try:
-            eagle_active = int(info.get("eagle") or 0) > 0
-        except (TypeError, ValueError):
-            eagle_active = False
-        if "--eagle" in args[:-1]:
-            try:
-                eagle_active = eagle_active or int(args[args.index("--eagle") + 1]) > 0
-            except (TypeError, ValueError):
-                pass
+        cfg = {"args": args, "arch": arch}
         settings = {}
         for key in config.SPECULATION_REQUEST_KEYS:
             value = options.get(key, info.get(key, config.value_of(cfg, key)))
@@ -4389,8 +4372,6 @@ class Service:
                     value = int(value)
                 except ValueError:
                     pass
-            if eagle_active and isinstance(value, (int, float)) and value > 0:
-                raise ValueError(f"{key}: EAGLE3 cannot be combined with lookup_draft or mtp_auto")
             settings[key] = config.check(key, 0 if value is None else value, cfg)
         if settings["lookup_draft"]:
             temperature = (req or {}).get("temperature")
@@ -4526,8 +4507,6 @@ class Service:
             self.embeddings.turn_at = turn_at
         if images:
             if not self.vision_available():
-                if getattr(self.engine, "_tinystrata_arch", None) == "gpt-oss":
-                    raise ValueError("gpt-oss-20b is text-only and does not support image input")
                 raise ValueError(self.vision_off_reason())
             gemma = self.call_format == "gemma"
             mark = "<|image|>" if gemma else IMAGE_PAD
@@ -7112,8 +7091,7 @@ def clean_shared_defaults(d, model: str | None = None) -> dict:
         raise ValueError("defaults must be an object")
     out = {}
     policy = thinking_api.capabilities(model) if model else None
-    from serve.model_download import is_gpt_oss_model
-    minimum_top_k = 0 if is_gpt_oss_model(model) else 1
+    minimum_top_k = 1
     for key, value in d.items():
         if value is None or value == "":
             continue
@@ -7199,9 +7177,10 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
     always win - an explicit temperature=0 still means greedy, a field set to null falls back to the default.
     A bad value refuses to start the server (a typo'd config should not quietly change sampling); unknown keys
     are named at startup and ignored."""
+    from serve.model_download import reject_retired_model
+    reject_retired_model(cfg.get("arch"), cfg.get("model_name"))
     out = {}
-    from serve.tinyconfig import (DEFAULT_SAMPLING, LFM2_SAMPLING, GEMMA4_SAMPLING, CLOVER_SAMPLING, TIEL_SAMPLING,
-                                  GPT_OSS_SAMPLING)
+    from serve.tinyconfig import (DEFAULT_SAMPLING, LFM2_SAMPLING, GEMMA4_SAMPLING, CLOVER_SAMPLING, TIEL_SAMPLING)
     from serve.model_download import is_tiel_model
     block = dict(cfg.get("sampling") or {})
     for alias, canon in SAMPLING_ALIASES.items():      # #1819: llama.cpp's names for the same two fields
@@ -7210,7 +7189,7 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
                 raise SystemExit(f"[strata] config sampling: both {alias!r} and {canon!r} are set; they are the same "
                                  f"setting, keep one")
             block[canon] = block.pop(alias)
-    defaults = {"lfm2moe": LFM2_SAMPLING, "gemma4": GEMMA4_SAMPLING, "gpt-oss": GPT_OSS_SAMPLING,
+    defaults = {"lfm2moe": LFM2_SAMPLING, "gemma4": GEMMA4_SAMPLING,
                 "clover_moe": CLOVER_SAMPLING}.get(cfg.get("arch"), DEFAULT_SAMPLING)
     if is_tiel_model(cfg.get("model_name")):
         defaults = TIEL_SAMPLING
@@ -7232,7 +7211,7 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
                 raise SystemExit(f"[strata] config sampling.min_p={value!r}: expected 0 <= min_p <= 1")
             out[key] = float(value)
         elif key == "top_k":
-            minimum_top_k = 0 if cfg.get("arch") == "gpt-oss" else 1
+            minimum_top_k = 1
             if not number or value != int(value) or not minimum_top_k <= value <= 64:
                 raise SystemExit(f"[strata] config sampling.top_k={value!r}: the sampled path takes an integer {minimum_top_k}..64")
             out[key] = int(value)
@@ -7315,7 +7294,7 @@ def check_request_sampling(req) -> None:
     replaced the configured default in run()'s merge and sampling_keys dropped it, so the reply was greedy.  Only
     types are checked: a number (int or float, never bool) for temperature, top_p, min_p and the three penalties; an
     integer (never bool or float) for top_k, penalty_last_n and seed.  Ranges behave as before (a temperature <= 0 is
-    greedy, top_k above 64 is clamped and 0 is full-vocabulary only for gpt-oss,
+    greedy, top_k above 64 or 0 is clamped to the 64-candidate sampled path,
     a seed <= 0 is unset), and an absent or null field is not checked."""
     config.clover_request_options(req)
     config.speculation_request_options(req)
@@ -7353,12 +7332,13 @@ def check_request_sampling(req) -> None:
 
 # the API's model name per model family (the GGUF architecture, "arch" in the config) when the config names none
 FAMILY_MODEL_NAMES = {"qwen35moe": "qwen3.6-35b-a3b", "lfm2moe": "lfm2.5-24b-a2b", "gemma4": "gemma-4-26b-a4b-it",
-                      "clover_moe": "clover-35b-a3b-preview", "gpt-oss": "gpt-oss-20b"}
+                      "clover_moe": "clover-35b-a3b-preview"}
 
 
 def default_model_name(cfg: dict) -> str:
     """The configured API name, or TinyStrata's Qwen3.6 model name."""
-    from serve.model_download import is_tiel_model
+    from serve.model_download import is_tiel_model, reject_retired_model
+    reject_retired_model(cfg.get("arch"), cfg.get("model_name"))
     if is_tiel_model(cfg.get("model_name")):
         return "tiel-coder-35b-a3b"
     return cfg.get("model_name") or FAMILY_MODEL_NAMES.get(cfg.get("arch", "qwen35moe"), FAMILY_MODEL_NAMES["qwen35moe"])
@@ -7415,7 +7395,7 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
         if exe is None or not Path(exe).is_file():
             raise ValueError("the model is downloaded, but the native executable is missing; build TinyStrata "
                              "and configure it with run.py --exe PATH, then retry")
-        want_vision = updated.get("arch") not in ("lfm2moe", "gpt-oss") and updated.get("vision_mode") != "no"
+        want_vision = updated.get("arch") != "lfm2moe" and updated.get("vision_mode") != "no"
         if want_vision and not updated.get("vision"):
             raise ValueError("the model and projector are verified, but tinystrata-vision is missing; "
                              "reinstall or build the image encoder, then retry")
@@ -7502,7 +7482,7 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
                     projector_paths=(Path(projector),) if projector else (),
                     _manifests=(manifest_for_arch("clover_moe", cfg.get("model_name")),
                                 projector_for_arch("clover_moe", cfg.get("model_name"))))
-    elif cfg.get("arch") in ("lfm2moe", "clover_moe", "gpt-oss"):
+    elif cfg.get("arch") in ("lfm2moe", "clover_moe"):
         svc.downloads = FixedModelDownloader(directory, on_ready=activate,
                                              existing_paths=(existing,) if existing is not None else (),
                                              _manifest=manifest_for_arch(cfg["arch"], cfg.get("model_name")))
