@@ -1,6 +1,6 @@
 # GPT-OSS support and reintroduction
 
-GPT-OSS is retired from TinyStrata's active model lineup as of 2026-11-12. Its download, launcher, model-picker and benchmark targets are no longer supported. GPT-OSS-specific native/MXFP4 build work is also being removed. Historical measurements remain available; they describe earlier builds and are not current launch instructions.
+GPT-OSS is retired from TinyStrata's active model lineup as of 2026-11-12. Its download, launcher, model-picker and benchmark targets are no longer supported. GPT-OSS-specific native/MXFP4 build targets have also been removed. Historical measurements remain available; they describe earlier builds and are not current launch instructions.
 
 This policy applies specifically to GPT-OSS reintroduction.
 
