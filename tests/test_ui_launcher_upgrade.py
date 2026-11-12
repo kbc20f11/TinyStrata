@@ -232,6 +232,19 @@ class LauncherUpgradeTests(unittest.TestCase):
         self.assertFalse(launch.matching_ui_process({**metadata, "command": rewritten.replace("server.py", "other.py")},
                                                   42, command, 44))
 
+    @unittest.skipUnless(os.name == "nt", "Windows physical interpreter image integration")
+    def test_store_alias_uses_loaded_image_without_accepting_another_python_file(self):
+        import psutil
+        image = psutil.Process(os.getpid()).exe()
+        command = [sys.executable, "-B", str(self.source / "ui/server.py")]
+        actual = [image, *command[1:]]
+        metadata = {"executable": image, "command": subprocess.list2cmdline(actual), "parent": 44, "owners": [42]}
+        with mock.patch.object(sys, "_base_executable", str(self.source / "app-alias/python.exe")):
+            self.assertTrue(launch.matching_ui_process(metadata, 42, command, 44))
+            unrelated = self.source / "python.exe"
+            unrelated.write_bytes(b"not the loaded interpreter")
+            self.assertFalse(launch.matching_ui_process({**metadata, "executable": str(unrelated)}, 42, command, 44))
+
     def test_ready_ui_ownership_failure_is_not_replaced_by_a_timeout(self):
         child = mock.Mock(pid=42)
         child.poll.return_value = None

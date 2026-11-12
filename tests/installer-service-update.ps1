@@ -16,12 +16,24 @@ $directory = Join-Path ([IO.Path]::GetTempPath()) ('tinystrata-update-contract-'
 $modulePath = Join-Path $directory 'inspector.py'
 $testPath = Join-Path $directory 'contracts.py'
 $tests = @'
-import pathlib,sys,unittest
+import pathlib,sys,unittest,tempfile,os
 from unittest import mock
 n={'__name__':'installer_contract_fixture'}
 exec(compile(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'),'shipping-inspector','exec'),n)
 Path=pathlib.Path
 class Contracts(unittest.TestCase):
+ def test_current_os_image_handles_store_alias_without_accepting_other_python_images(self):
+  image=n['psutil'].Process(os.getpid()).exe();source=Path.cwd()
+  expected=[sys.executable,'-B','server.py','--port','19191']
+  actual=[image,*expected[1:]]
+  metadata={'command':actual,'cwd':str(source),'executable':image}
+  with mock.patch.object(sys,'_base_executable',str(source/'app-execution-alias/python.exe')):
+   n['verify_process'](metadata,expected,source,Path(sys.executable))
+   with tempfile.TemporaryDirectory() as folder:
+    foreign=Path(folder)/'python.exe';foreign.write_bytes(b'not this interpreter image')
+    with self.assertRaisesRegex(RuntimeError,'interpreter image'):
+     n['verify_process']({**metadata,'executable':str(foreign)},expected,source,Path(sys.executable))
+    self.assertFalse(n['same_invocation']([str(foreign),*actual[1:]],expected,Path(sys.executable)))
  def test_redirector_changes_only_the_verified_interpreter(self):
   expected=[sys.executable,'-B','server.py','--port','19191']
   actual=[sys._base_executable,*expected[1:]]

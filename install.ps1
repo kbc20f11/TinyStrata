@@ -1705,10 +1705,15 @@ def options(command,kind,source):
     return result
 def verify_process(m,command,source,python):
     if not same_invocation(m['command'],command,python) or norm(m['cwd'])!=norm(source):raise RuntimeError('Server command or working directory changed; no process was stopped')
-    if not any(same(m['executable'],p) for p in (python,getattr(sys,'_base_executable',sys.executable))):
+    if not any(same(m['executable'],p) for p in interpreter_images(python)):
         raise RuntimeError('The server interpreter image belongs to another installation')
+def interpreter_images(python):
+    # A Microsoft Store App Execution Alias is not the physical image reported
+    # for its process. This inspector is itself launched by the verified private
+    # venv, so its current OS image is an independent trusted identity too.
+    return (python,getattr(sys,'_base_executable',sys.executable),psutil.Process(os.getpid()).exe())
 def same_invocation(actual,expected,python):
-    images=(python,getattr(sys,'_base_executable',sys.executable))
+    images=interpreter_images(python)
     return (isinstance(actual,list) and isinstance(expected,list) and len(actual)==len(expected) and
             len(actual)>1 and actual[1:]==expected[1:] and
             any(same(actual[0],p) for p in images) and any(same(expected[0],p) for p in images))
