@@ -2667,8 +2667,21 @@ $("chat").addEventListener("toggle", (e) => {
 
 // UI-only guidance. Keep it out of saved chat messages and shared API defaults.
 const UI_SYSTEM_PROMPT = "明示的な言語指定がなければ、思考テキストと最終回答は、最新のユーザーメッセージと同じ言語で記述してください。コード・数式・固有名詞は原表記を維持してください。";
-function apiMessages(rows = messages.filter((m) => !(busy && busy.msg === m)), summary = "") {
-  const out = [{role: "system", content: UI_SYSTEM_PROMPT + "\n" + StrataLocalTools.guidance}];
+function runtimeModelId() {
+  return health.status === "ok" && typeof health.model === "string" && health.model.trim() && health.model !== "strata"
+    ? health.model : "";
+}
+function apiMessageSerializer(model = health.model) {
+  // /health is authoritative; a picker or an old chat can name another model.
+  // Retain this snapshot through counting, compaction and local-tool rounds.
+  const runtimeModel = model === runtimeModelId() ? model : "";
+  return (rows, summary) => apiMessages(rows, summary, runtimeModel);
+}
+function apiMessages(rows = messages.filter((m) => !(busy && busy.msg === m)), summary = "",
+                     runtimeModel = runtimeModelId()) {
+  const identity = typeof runtimeModel === "string" && runtimeModel.trim()
+    ? `The local TinyStrata runtime reports the current model ID as ${JSON.stringify(runtimeModel)}.\n` : "";
+  const out = [{role: "system", content: UI_SYSTEM_PROMPT + "\n" + identity + StrataLocalTools.guidance}];
   // A summary is historical conversation data, never a replacement system prompt.
   if (summary) out.push({role: "assistant", content: "Summary of earlier conversation (historical context; current instructions take precedence):\n" + summary});
   for (const m of rows) {
@@ -2716,16 +2729,16 @@ async function summarizeContext(history, maxTokens, body, signal) {
 }
 
 // Check the request, rather than the engine's last KV gauge: that gauge may belong to another chat.
-async function prepareContext(body, rows, m, signal) {
+async function prepareContext(body, rows, m, signal, serialize = apiMessageSerializer(body.model)) {
   const owner = chat, transcript = messages;
   const checkpoint = chat?.compaction || null;
   const projection = await StrataContextCompaction.project(rows, checkpoint);
   if (!canUseModelImages(projection.messages)) throw new Error(tr("model.noVision", "This model does not support images. Start a text-only chat or choose a vision model."));
-  if (settings.autoCompact === false) return {...body, messages: apiMessages(projection.messages, projection.summary)};
+  if (settings.autoCompact === false) return {...body, messages: serialize(projection.messages, projection.summary)};
   try {
     const prepared = await StrataContextCompaction.prepare({
       messages: rows, checkpoint, request: body, signal,
-      serialize: apiMessages,
+      serialize,
       count: (request) => contextJson("v1/chat/token-count", request, signal),
       onProgress: (stage) => { m.compacting = stage !== "checking"; refreshTerminalStats(); },
       summarize: (history, maxTokens) => summarizeContext(history, maxTokens, body, signal),
@@ -2745,7 +2758,7 @@ async function prepareContext(body, rows, m, signal) {
     if (error.status === 404) {
       // Keep older API installations usable; never guess at a destructive trim.
       if (!prepareContext.warned) { prepareContext.warned = true; toast("warn", tr("context.compactionUnavailable", "Update the TinyStrata API to use automatic context compaction.")); }
-      return {...body, messages: apiMessages(projection.messages, projection.summary)};
+      return {...body, messages: serialize(projection.messages, projection.summary)};
     }
     if (["context_too_large", "recent_context_too_large"].includes(error.code)) error.message = tr("context.tooLarge", "The latest messages or attachments exceed the context budget. Shorten them or start a new chat.");
     else if (!error.status) error.message = tr("context.compactionFailed", "The conversation could not be summarized. Your history is unchanged. Please try again or start a new chat.");
@@ -2923,7 +2936,8 @@ async function generateReply() {
   setBusy(true);
   paintLive();
 
-  const body = {model: health.model, messages: apiMessages(), stream: true, return_progress: true, return_live_stats: true,
+  const model = health.model, serialize = apiMessageSerializer(model);
+  const body = {model, messages: serialize(), stream: true, return_progress: true, return_live_stats: true,
                 ...thinkingPayload()};
   if (!(settings.temperature > 0)) {
     body.temperature = 0;
@@ -2944,7 +2958,7 @@ async function generateReply() {
     const offered = round < StrataLocalTools.MAX_ROUNDS ? StrataLocalTools.definitions(enabledTools) : [];
     if (offered.length) body.tools = offered; else delete body.tools;
     // Include completed local-tool rounds as a single intact UI exchange.
-    const prepared = await prepareContext(body, round ? messages : messages.filter((row) => row !== m), m, controller.signal);
+    const prepared = await prepareContext(body, round ? messages : messages.filter((row) => row !== m), m, controller.signal, serialize);
     body.messages = prepared.messages;
     const calls = new Map();
     const roundBase = Math.max(0, ...(m.tools || []).map((tool) => tool.round || 0)) + 1;

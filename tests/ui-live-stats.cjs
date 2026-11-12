@@ -147,7 +147,7 @@ async function streamingFixture({tool=false,cancel=false,legacy=false}={}){
  const f=fixture(),c=f.ctx;let fetches=0,paintCalls=0,scrollCalls=0,telemetryChecks=0;
  c.messages=[];c.busy=null;c.modelSwitching=false;c.modelSwitchAvailable=false;c.modelCatalog=[];c.resourceOperation=null;c.health={model:'clover-35b-a3b-preview'};
  c.settings={temperature:0,mcp:false};c.mcpInfo={tools:0};c.globalTools={max_concurrency:1};c.headers=()=>({});
- c.saveChat=()=>{};c.settlePending=()=>{};c.setBusy=()=>{};c.paintLive=()=>{};c.apiMessages=()=>[];c.effortForModel=()=> 'none';c.projectionLoaded=()=>false;
+ c.saveChat=()=>{};c.settlePending=()=>{};c.setBusy=()=>{};c.paintLive=()=>{};c.apiMessages=()=>[];c.apiMessageSerializer=()=>c.apiMessages;c.effortForModel=()=> 'none';c.projectionLoaded=()=>false;
  vm.runInContext(fs.readFileSync(path.join(__dirname,'../ui/web/thinking-controls.js'),'utf8')+'\n'+
    source.slice(source.indexOf('function effortForModel('),source.indexOf('function syncComposerControls(')),c);
  c.renderChat=()=>{};c.samplingUntouched=()=>true;c.toast=()=>{};

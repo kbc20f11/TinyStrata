@@ -31,7 +31,8 @@ function resourceSnapshot() {
 async function readResourceKV({signal, model}) {
   const owner = chatId, source = messages;
   const projection = await StrataContextCompaction.project(source, chat?.compaction);
-  const body = {...resourceChatRequest(projection.messages), messages: apiMessages(projection.messages, projection.summary)};
+  const body = resourceChatRequest(projection.messages);
+  body.messages = apiMessageSerializer(body.model)(projection.messages, projection.summary);
   const count = await contextJson("v1/chat/token-count", body, signal);
   if (model !== health.model || count.model !== model || owner !== chatId || source !== messages)
     throw new Error(tr("resources.modelChanged", "The model changed. Reopen this dialog to continue."));
@@ -63,8 +64,9 @@ async function compactResourceKV({signal, model, onProgress}) {
   setBusy(false);
   try {
     const body = resourceChatRequest(source);
+    const serialize = apiMessageSerializer(body.model);
     const prepared = await StrataContextCompaction.prepare({messages: source, checkpoint: owner?.compaction, request: body, force: true,
-      signal, serialize: apiMessages, count: (request) => contextJson("v1/chat/token-count", request, signal),
+      signal, serialize, count: (request) => contextJson("v1/chat/token-count", request, signal),
       summarize: (history, maxTokens) => summarizeContext(history, maxTokens, body, signal),
       onProgress: () => onProgress(tr("resources.compacting", "Summarizing earlier conversation…"))});
     if (!prepared.changed) throw new Error(tr("resources.noChange", "This conversation is already compact enough. Recent turns are kept in full."));
