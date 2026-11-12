@@ -94,6 +94,19 @@ class InstallerAdmissionTests(unittest.TestCase):
         self.assertTrue(self.f.control.status()['downloading'])
         manager.status = lambda: {'state':'error'}
         self.assertFalse(self.f.control.status()['downloading'])
+        manager.running = True
+        self.assertTrue(self.f.control.status()['downloading'])
+        manager.running = False
+        self.assertFalse(self.f.control.status()['downloading'])
+
+    def test_real_bundle_downloaders_keep_health_ready_without_starting_transfers(self):
+        for model in (fixtures.QWEN, fixtures.GEMMA, fixtures.CLOVER, fixtures.TIEL):
+            self.f.control._downloader(model)
+        self.assertFalse(self.f.control.status()['downloading'])
+        self.start_http()
+        for path in ('/health', '/v1/model/switch'):
+            status, result = self.http(method='GET', path=path)
+            self.assertEqual(status, 200, result)
 
 
 if __name__ == '__main__':

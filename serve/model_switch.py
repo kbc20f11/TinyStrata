@@ -90,15 +90,19 @@ class ModelSwitcher:
 
     def status(self) -> dict:
         with self._lock:
+            downloading = False
+            for manager in self._downloads.values():
+                running = getattr(manager, 'running', False)
+                if (running() if callable(running) else running) or manager.status().get('state') in ('downloading', 'verifying', 'loading'):
+                    downloading = True
+                    break
             return {'state': self._state, 'phase': self._phase, 'model': self.active_id,
                     'target': self._target, 'loaded': self.svc.loaded(), 'error': self._error,
                     'context': self.context_info(),
                     'rolled_back': self._rollback, 'started_at': self._started,
                     'finished_at': self._finished, 'in_flight': self._requests,
                     'switching': self._busy,
-                    'downloading': any(getattr(manager, 'running', lambda: False)() or manager.status().get('state') in
-                                       ('downloading', 'verifying', 'loading')
-                                       for manager in self._downloads.values())}
+                    'downloading': downloading}
 
     def _open(self, *, allow_update=False):
         if self._closed or self.svc.stopping.is_set():
