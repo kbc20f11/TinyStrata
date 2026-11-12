@@ -1,0 +1,463 @@
+{
+  "schema": 1,
+  "generated_at": "2026-11-12T09:13:46.488789+09:00",
+  "report_kind": "Bounded Gemma CUDA4K prefill regression diagnosis; no product optimization or speedup claim",
+  "compared_source_commits": {
+    "legacy": "1a021b19b9a063d22a6b89598be3bee422badf14",
+    "current_runtime_code": "710af982e5593b740c0f8f48386225e47edbe7b3"
+  },
+  "original_native_sha256": {
+    "legacy": "9d14f49db28cc06389fdefd889cef810f4124770ec03e2020c8d9acca52aaa51",
+    "current": "12fb8702e8dbc16e11755c321463872f81a49369cb656b1b8282dff0697455d3"
+  },
+  "private_trace_native_sha256": {
+    "old": "37cf3daf337548125ab99149dd7a35a884d8ceedaafba1cde73f464745da5047",
+    "current": "f0096381c53d9360f1bfc9b919718b5a87a4c25eda4cdff22b52e47ac1331b65"
+  },
+  "diagnostic": {
+    "created": 1794442174.6434698,
+    "complete": true,
+    "CPU_review_only_by_this_agent": true,
+    "GPU_execution_by_parent": true,
+    "task": "Gemma4K prefill old/current regression diagnosis",
+    "decision": "Retain the current product path. No rollback or new optimization is justified: the two truly cache-and-work-matched4K reads show no slowdown, and the earlier7–10% gap did not persist across three bounded screens.",
+    "scope": "Rules out a stable7–10% old/current source-path slowdown for the captured INT8 4K / chunk1120 hybrid shape with identical962-Expert placement. Does not establish identical speed for all models, VRAM capacities, or future workloads.",
+    "captured_matched_configuration": {
+      "expert_cache_gib_diagnostic": 3.0,
+      "Expert_slots_old_current": [
+        962,
+        962
+      ],
+      "expert_cache_mib_old_current": [
+        3069,
+        3069
+      ],
+      "context": 32768,
+      "chunk": 1120,
+      "KV": "int8",
+      "KV_growth": true,
+      "weight_precision": "Same original Q4_0 Gemma weights and draft model",
+      "MTP": 3,
+      "vision": true,
+      "sampling": "Same saved sampler and canonical seed",
+      "requests_per_binary": 2,
+      "diagnostic_output_cap": 2,
+      "real_pressure_remaining_capacity_target_gib": 12,
+      "physical_12GB_device_claim": false
+    },
+    "matched_diagnostic_rows": [
+      {
+        "screen": "fixed3g",
+        "index": 0,
+        "old_prompt_ms": 1836.8,
+        "current_prompt_ms": 1834.1,
+        "added_ms": -2.7000000000000455,
+        "prompt_time_change_pct": -0.14699477351917123,
+        "throughput_change_pct": 0.1472111662395692,
+        "bulk_collector_wall_ms": [
+          1799.6999,
+          1797.4258
+        ],
+        "last_prompt_token_wall_ms": [
+          32.2399,
+          31.8305
+        ],
+        "collector_total_old_ms": 1831.9398,
+        "collector_total_current_ms": 1829.2563,
+        "collector_added_ms": -2.6835000000000946,
+        "cache_and_launch_identity_proven": true,
+        "cache_id_matches": {
+          "after_cover": true,
+          "before_cover": true,
+          "after_main_and_mtp": true,
+          "after_widen": true
+        },
+        "work_identity_matches": {
+          "moe_rows": true,
+          "after_cover": true,
+          "pinned_bytes": true,
+          "before_cover": true,
+          "cached_classes": true,
+          "after_main_and_mtp": true,
+          "staged_groups": true,
+          "moe_formats": true,
+          "moe_groups": true,
+          "after_widen": true
+        },
+        "bulk_work": [
+          {
+            "logical": 982800,
+            "cached": 235972,
+            "staged": 746828,
+            "cpu_experts": 0
+          },
+          {
+            "logical": 982800,
+            "cached": 235972,
+            "staged": 746828,
+            "cpu_experts": 0
+          }
+        ]
+      },
+      {
+        "screen": "fixed3g",
+        "index": 1,
+        "old_prompt_ms": 1814.3,
+        "current_prompt_ms": 1753.7,
+        "added_ms": -60.59999999999991,
+        "prompt_time_change_pct": -3.340131180069439,
+        "throughput_change_pct": 3.4555511204880984,
+        "bulk_collector_wall_ms": [
+          1744.0517,
+          1725.3007
+        ],
+        "last_prompt_token_wall_ms": [
+          23.8917,
+          23.0596
+        ],
+        "collector_total_old_ms": 1767.9433999999999,
+        "collector_total_current_ms": 1748.3603,
+        "collector_added_ms": -19.58309999999983,
+        "cache_and_launch_identity_proven": true,
+        "cache_id_matches": {
+          "after_cover": true,
+          "before_cover": true,
+          "after_main_and_mtp": true,
+          "after_widen": true
+        },
+        "work_identity_matches": {
+          "moe_rows": true,
+          "staged_groups": true,
+          "after_cover": true,
+          "moe_formats": true,
+          "before_cover": true,
+          "cached_classes": true,
+          "after_main_and_mtp": true,
+          "moe_groups": true,
+          "after_widen": true
+        },
+        "bulk_work": [
+          {
+            "logical": 982800,
+            "cached": 235972,
+            "staged": 746828,
+            "cpu_experts": 0
+          },
+          {
+            "logical": 982800,
+            "cached": 235972,
+            "staged": 746828,
+            "cpu_experts": 0
+          }
+        ]
+      }
+    ],
+    "all_bounded_diagnostic_rows": [
+      {
+        "screen": "v2",
+        "index": 0,
+        "old_prompt_ms": 1721.9,
+        "current_prompt_ms": 1753.0,
+        "added_ms": 31.09999999999991,
+        "prompt_time_change_pct": 1.8061443753992545,
+        "throughput_change_pct": -1.774101540216766,
+        "cache_and_launch_identity_proven": false,
+        "cache_id_matches": {
+          "after_widen": false,
+          "after_main_and_mtp": false,
+          "after_cover": false,
+          "before_cover": false
+        },
+        "bulk_work": [
+          {
+            "logical": 982800,
+            "cached": 359155,
+            "staged": 623645,
+            "cpu_experts": 0
+          },
+          {
+            "logical": 982800,
+            "cached": 361172,
+            "staged": 621628,
+            "cpu_experts": 0
+          }
+        ]
+      },
+      {
+        "screen": "v2",
+        "index": 1,
+        "old_prompt_ms": 1699.3,
+        "current_prompt_ms": 1697.7,
+        "added_ms": -1.599999999999909,
+        "prompt_time_change_pct": -0.09415641734831226,
+        "throughput_change_pct": 0.09424515520999321,
+        "cache_and_launch_identity_proven": false,
+        "cache_id_matches": {
+          "after_widen": false,
+          "after_main_and_mtp": false,
+          "after_cover": false,
+          "before_cover": false
+        },
+        "bulk_work": [
+          {
+            "logical": 982800,
+            "cached": 359304,
+            "staged": 623496,
+            "cpu_experts": 0
+          },
+          {
+            "logical": 982800,
+            "cached": 360895,
+            "staged": 621905,
+            "cpu_experts": 0
+          }
+        ]
+      },
+      {
+        "screen": "fixed4g",
+        "index": 0,
+        "old_prompt_ms": 1799.5,
+        "current_prompt_ms": 1811.9,
+        "added_ms": 12.400000000000091,
+        "prompt_time_change_pct": 0.6890803000833667,
+        "throughput_change_pct": -0.6843644792759007,
+        "cache_and_launch_identity_proven": false,
+        "cache_id_matches": {
+          "before_cover": false,
+          "after_widen": false,
+          "after_cover": false,
+          "after_main_and_mtp": false
+        },
+        "bulk_work": [
+          {
+            "logical": 982800,
+            "cached": 329355,
+            "staged": 653445,
+            "cpu_experts": 0
+          },
+          {
+            "logical": 982800,
+            "cached": 322408,
+            "staged": 660392,
+            "cpu_experts": 0
+          }
+        ]
+      },
+      {
+        "screen": "fixed4g",
+        "index": 1,
+        "old_prompt_ms": 1720.6,
+        "current_prompt_ms": 1745.2,
+        "added_ms": 24.600000000000136,
+        "prompt_time_change_pct": 1.429733813785905,
+        "throughput_change_pct": -1.4095805638322356,
+        "cache_and_launch_identity_proven": false,
+        "cache_id_matches": {
+          "before_cover": false,
+          "after_widen": false,
+          "after_cover": false,
+          "after_main_and_mtp": false
+        },
+        "bulk_work": [
+          {
+            "logical": 982800,
+            "cached": 329764,
+            "staged": 653036,
+            "cpu_experts": 0
+          },
+          {
+            "logical": 982800,
+            "cached": 423951,
+            "staged": 558849,
+            "cpu_experts": 0
+          }
+        ]
+      },
+      {
+        "screen": "fixed3g",
+        "index": 0,
+        "old_prompt_ms": 1836.8,
+        "current_prompt_ms": 1834.1,
+        "added_ms": -2.7000000000000455,
+        "prompt_time_change_pct": -0.14699477351917123,
+        "throughput_change_pct": 0.1472111662395692,
+        "bulk_collector_wall_ms": [
+          1799.6999,
+          1797.4258
+        ],
+        "last_prompt_token_wall_ms": [
+          32.2399,
+          31.8305
+        ],
+        "collector_total_old_ms": 1831.9398,
+        "collector_total_current_ms": 1829.2563,
+        "collector_added_ms": -2.6835000000000946,
+        "cache_and_launch_identity_proven": true,
+        "cache_id_matches": {
+          "after_cover": true,
+          "before_cover": true,
+          "after_main_and_mtp": true,
+          "after_widen": true
+        },
+        "work_identity_matches": {
+          "moe_rows": true,
+          "after_cover": true,
+          "pinned_bytes": true,
+          "before_cover": true,
+          "cached_classes": true,
+          "after_main_and_mtp": true,
+          "staged_groups": true,
+          "moe_formats": true,
+          "moe_groups": true,
+          "after_widen": true
+        },
+        "bulk_work": [
+          {
+            "logical": 982800,
+            "cached": 235972,
+            "staged": 746828,
+            "cpu_experts": 0
+          },
+          {
+            "logical": 982800,
+            "cached": 235972,
+            "staged": 746828,
+            "cpu_experts": 0
+          }
+        ]
+      },
+      {
+        "screen": "fixed3g",
+        "index": 1,
+        "old_prompt_ms": 1814.3,
+        "current_prompt_ms": 1753.7,
+        "added_ms": -60.59999999999991,
+        "prompt_time_change_pct": -3.340131180069439,
+        "throughput_change_pct": 3.4555511204880984,
+        "bulk_collector_wall_ms": [
+          1744.0517,
+          1725.3007
+        ],
+        "last_prompt_token_wall_ms": [
+          23.8917,
+          23.0596
+        ],
+        "collector_total_old_ms": 1767.9433999999999,
+        "collector_total_current_ms": 1748.3603,
+        "collector_added_ms": -19.58309999999983,
+        "cache_and_launch_identity_proven": true,
+        "cache_id_matches": {
+          "after_cover": true,
+          "before_cover": true,
+          "after_main_and_mtp": true,
+          "after_widen": true
+        },
+        "work_identity_matches": {
+          "moe_rows": true,
+          "staged_groups": true,
+          "after_cover": true,
+          "moe_formats": true,
+          "before_cover": true,
+          "cached_classes": true,
+          "after_main_and_mtp": true,
+          "moe_groups": true,
+          "after_widen": true
+        },
+        "bulk_work": [
+          {
+            "logical": 982800,
+            "cached": 235972,
+            "staged": 746828,
+            "cpu_experts": 0
+          },
+          {
+            "logical": 982800,
+            "cached": 235972,
+            "staged": 746828,
+            "cpu_experts": 0
+          }
+        ]
+      }
+    ],
+    "phase_findings": [
+      "All normalized Expert IDs, slot order/offsets, cached-MMQ classes, staged group shapes and counters match in both final pairs.",
+      "Each read has982800 Expert rows:235972cached and746828staged, with0bulk CPU Experts.",
+      "KV cover, stage widening, pinned allocation, embeddings, main-layer phases, MTP prompt and final output/head reveal no persistent100–170ms newer-path overhead.",
+      "CPU route/plan times include existing GPU-event waits and must not be called CPU routing computation time.",
+      "Instrumented native totals include diagnostic events and deferred stderr I/O; do not advertise the apparent3.46% second-read speed gain as an adopted performance improvement."
+    ],
+    "static_findings": {
+      "shared_MMQ_executable_text_sections": 269,
+      "byte_identical": 269,
+      "changed_shared_sections": 0,
+      "current_additional_MXFP4_sections": 64,
+      "scope": "Existing Q4/Q6/Q8 MMQ shader bodies unchanged; this does not prove every host path or attention kernel identical."
+    },
+    "historical_negative_results_preserved": {
+      "source": "C:\\Users\\user\\TinyStrata-work\\gptoss-cuda-correctness-20261112\\gemma12-prefill-work-source-audit.json",
+      "sha256": "65d2f9d058cf267c9460f8fdad1ee4336c6c6006b88114533a07f5a146ddc141",
+      "default12GB_4K_throughput_change_pct": [
+        -7.172852116672345,
+        -9.681302304253103
+      ],
+      "added_prompt_ms": [
+        126.4,
+        168.9
+      ],
+      "status": "Still valid recorded negative screens. Exact cached IDs/launch shapes were not recorded for these historical runs; they are not erased or relabelled as passing."
+    },
+    "diagnosis": "Under the user criterion, classify the original observed gap as dependent on measurement conditions, cache placement and execution history rather than a reproducible general Gemma code slowdown. The individual contribution of each historical condition is not determined.",
+    "rejected_claims": [
+      "FP8 caused this regression: all authoritative Gemma measurements here use INT8 KV; the earlier FP8 label was incorrect.",
+      "Thermals or CPU clock caused the gap: neither was isolated.",
+      "The first two trace screens matched cache placement: their guards explicitly failed.",
+      "All workloads and placements are proven regression-free: this diagnostic is bounded."
+    ],
+    "product_changes": {
+      "source_edits": 0,
+      "rollback": false,
+      "new_kernel_or_heuristic": false,
+      "HIP_route_changes": false,
+      "precision_changes": false,
+      "other_model_KV_defaults_changed": false
+    },
+    "verification_scope": "Real parent-run native/API diagnostic outputs and phase counters were inspected. This is a two-token prefill performance probe, not a new source-document accuracy or UI quality test.",
+    "evidence": {
+      "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\runtime-result-fixed3g.json": "db360098af85bf65798259b3fd41109807ae81b11e8a739e636807ef283489cc",
+      "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\phase-comparison-fixed3g.json": "c3986b5307fa886a5de8de6f56907a2a1c34c35c6fb11d17f6a8855d1132a876",
+      "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\runtime-plan-fixed3g.json": "0813558d4ed833dbc864453a765651f4af2c3a557dfaa7c8a0c93434d35fb76d",
+      "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\bounded-trace-audit.json": "b035fca83ca3905fca3889bc2ae18f34f35e10f000c19718b37302de59d85084",
+      "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\mmq-sass-section-audit.json": "48a70a6518b7b1c480f4d3cbd81e85a35e93e230aaefd5fd59119117e3c1dd50",
+      "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\old-runtime-fixed3g\\result.json": "8fe546eae4289397b52f1fc9a278d9bbd0b019206dabb7026a3a68271579a720",
+      "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\current-runtime-fixed3g\\result.json": "0b01d69f91c415776a2331e6199948eed0540b629093b38875f389f29380a8e8"
+    }
+  },
+  "raw_artifacts_sha256": {
+    "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\old-runtime-fixed3g\\engine.log": "e33b0be58dfabaa485fd003f6e0d90dff02b14198e66b354c7368a73076a15f2",
+    "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\old-runtime-fixed3g\\result.json": "8fe546eae4289397b52f1fc9a278d9bbd0b019206dabb7026a3a68271579a720",
+    "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\old-runtime-fixed3g\\config.json": "364045e5d1f4c86b404ad4232ba1bf2d9941f3b5afb213fb86fe76629281a16b",
+    "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\old-runtime-fixed3g\\request-0.json": "4532349b29f0bb9ff4de7af02dfa383d78921f0d34012e963067e0e178146662",
+    "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\old-runtime-fixed3g\\request-1.json": "4532349b29f0bb9ff4de7af02dfa383d78921f0d34012e963067e0e178146662",
+    "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\old-runtime-fixed3g\\raw-0.json": "76e24db7c1ee832e9d38f93c47db3bf61ef9c4d4a893f39818a8125728ad0707",
+    "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\old-runtime-fixed3g\\raw-1.json": "76f100761797ab9d73eb3533538ba447e83d54cfa6a734f034f739e32d4467a4",
+    "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\current-runtime-fixed3g\\engine.log": "0f7dcd801b4d92eb2e6e505bd9c5b2305fbcdfbc1d33ca600c6665514a93994f",
+    "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\current-runtime-fixed3g\\result.json": "0b01d69f91c415776a2331e6199948eed0540b629093b38875f389f29380a8e8",
+    "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\current-runtime-fixed3g\\config.json": "cccc300165e1b4b0566627de114f8b686e6717e855f8c0a5e9da22f4cb974380",
+    "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\current-runtime-fixed3g\\request-0.json": "4532349b29f0bb9ff4de7af02dfa383d78921f0d34012e963067e0e178146662",
+    "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\current-runtime-fixed3g\\request-1.json": "4532349b29f0bb9ff4de7af02dfa383d78921f0d34012e963067e0e178146662",
+    "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\current-runtime-fixed3g\\raw-0.json": "927eff8038189ef58833e2932957a73ae2058912feaf6abd070382d8f33e044c",
+    "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\current-runtime-fixed3g\\raw-1.json": "4c892194297c8a292920b9a33ff6943572bab8bae88ddcc6931245106891d3e0",
+    "C:\\Users\\user\\TinyStrata-work\\gptoss-cuda-correctness-20261112\\nvidia-final-lowcaps\\12gb-gemma-baseline\\input_4k-result.json": "04ebe4b5685b05d070ae90d77c272279cf240c8bc430c2db7815b9d25cf7bf7e",
+    "C:\\Users\\user\\TinyStrata-work\\gptoss-cuda-correctness-20261112\\nvidia-final-lowcaps\\12gb-gemma-candidate\\input_4k-result.json": "bcdc0908be7dc489a1f43e08b87474db910fc457ff901376885029b467b797d4",
+    "C:\\Users\\user\\TinyStrata-work\\gptoss-cuda-correctness-20261112\\nvidia-gemma12-reversed\\12gb-gemma-baseline\\input_4k-result.json": "eeda311117e8fce9d4526d7d41d2d325a3d650ed74b7bcfb78178f4caba7025a",
+    "C:\\Users\\user\\TinyStrata-work\\gptoss-cuda-correctness-20261112\\nvidia-gemma12-reversed\\12gb-gemma-candidate\\input_4k-result.json": "89fc3eb01f4d82b02310bb840ff014266e85ff27ebff2a21ad474c8e792c1932",
+    "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\trace-build-result-v2.json": "8b7edae5c1719fab189fb37bc09a0f9a913ba55bca977d0f2b691b7644b5274c",
+    "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\instrumented-sources.json": "cce5ef332565c56af959e0a5511dba81884913d9e3146b2b064891d4d0ff636b",
+    "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\phase-comparison-fixed3g.json": "c3986b5307fa886a5de8de6f56907a2a1c34c35c6fb11d17f6a8855d1132a876",
+    "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\formal-diagnosis.json": "a204062f4916461b1542a96822601905235f26e8a3d341be8c0709b0d7889850",
+    "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\mmq-sass-section-audit.json": "48a70a6518b7b1c480f4d3cbd81e85a35e93e230aaefd5fd59119117e3c1dd50",
+    "C:\\Users\\user\\TinyStrata-work\\gptoss-quality-gemma-prefill-20261112\\gemma-prefill\\bounded-trace-audit.json": "b035fca83ca3905fca3889bc2ae18f34f35e10f000c19718b37302de59d85084"
+  },
+  "scope": "Actual parent-run CUDA/API diagnostic. These private traces do not replace standard benchmark rows, source-document content QA, or AMD runtime coverage.",
+  "no_product_kernel_or_policy_change": true
+}
