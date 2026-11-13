@@ -154,7 +154,7 @@ Fragen Sie `GET /v1/model/switch` bis `state: ready` ab. Zum Zurückwechseln sen
 
 **Neueste Kapazitätsmessung (2026-11-12):** [Alle fünf Modelle mit 24/16/12/8 GB](benchmark/results/rtx-pro-4000-blackwell-sff-20261112.md), mit den aktuellen KV-Standardpfaden, realer VRAM-Reservierung und einem Start pro Bedingung. Gemessen werden Generierung, 4K-/16K-Eingaben und Bilder. Diese Einzelmessung bleibt von den historischen wiederholten KV-Vergleichen unten getrennt.
 
-Gemessen am **2026-11-03** unter Windows mit einer RTX PRO 4000 Blackwell SFF Edition (24 GB), einem Ryzen 9 7945HX3D, 64 GB Arbeitsspeicher und dem festgelegten Unsloth-MTP-UD-IQ3_XXS-Modell. Der Bildencoder blieb bei den API-Anfragen auf der GPU. Thinking, die Sampling-Standardwerte des Modells (Temperatur 0.7) und MTP 3 waren aktiv. Prompt-Chunks und Expertenplatzierung wurden automatisch gewählt; die Kontextkapazität wurde entsprechend der VRAM-Klasse festgelegt. Der hybride CUDA-Graph-Pfad blieb standardmäßig aus, die normalen CUDA Graphs bei vollständigem GPU-Betrieb blieben aktiv.
+Gemessen am **2026-11-03** unter Windows mit einer RTX PRO 4000 Blackwell SFF Edition (24 GB), einem Ryzen 9 7945HX3D, 64 GB Arbeitsspeicher und dem festgelegten Unsloth-MTP-UD-IQ3_XXS-Modell. Der Bildencoder blieb bei den API-Anfragen auf der GPU. Thinking, die damaligen Sampling-Standardwerte des Modells (Temperatur 0.7) und MTP 3 waren aktiv. Prompt-Chunks und Expertenplatzierung wurden automatisch gewählt; die Kontextkapazität wurde entsprechend der VRAM-Klasse festgelegt. Der hybride CUDA-Graph-Pfad blieb standardmäßig aus, die normalen CUDA Graphs bei vollständigem GPU-Betrieb blieben aktiv.
 
 | Verfügbarer Speicher | Kontextkapazität | INT8-Generierung | Native FP8-Generierung | Anmerkungen |
 | --- | ---: | ---: | ---: | --- |
@@ -304,7 +304,7 @@ Neue Launcher-Konfigurationen verwenden MTP 3, das mehrere Token im Voraus vorsc
 
 MTP unterstützt sowohl Greedy-Generierung als auch temperaturbasiertes Sampling, einschließlich Wiederholungs-, Häufigkeits- und Präsenzstrafen. Bei Sampling-Anfragen zieht das Hauptmodell für jede Überprüfungszeile eine Stichprobe, und nur das übereinstimmende Präfix des Entwurfs wird akzeptiert.
 
-Qwen und Gemma bieten außerdem optional `--lookup-draft N` (**0–7**, maximale Anzahl vorgeschlagener Tokens) und experimentell `--mtp-auto 0|1`; **beide sind standardmäßig 0/aus**. Lookup kopiert bekannte Fortsetzungen aus Prompt oder Verlauf und prüft jedes Token mit dem bestehenden Sampler des Hauptmodells und denselben Penalties, auch bei normalen Temperaturen. Alle ausgewählten Experten werden berechnet; es gibt weder approximative Annahme noch übersprungene Endstücke. **MTP 3** und die Temperaturen (**Qwen 0.7 / Gemma 1.0**) bleiben Standard. Automatisches MTP beschleunigt nicht jede Aufgabe und bleibt aus. Siehe die [kontrollierten Entwicklungsmessungen und Grenzen](benchmark/results/qwen-gemma-speculation-20261107.md), getrennt vom festen v1-Benchmark.
+Qwen und Gemma bieten außerdem optional `--lookup-draft N` (**0–7**, maximale Anzahl vorgeschlagener Tokens) und experimentell `--mtp-auto 0|1`; **beide sind standardmäßig 0/aus**. Lookup kopiert bekannte Fortsetzungen aus Prompt oder Verlauf und prüft jedes Token mit dem bestehenden Sampler des Hauptmodells und denselben Penalties, auch bei normalen Temperaturen. Alle ausgewählten Experten werden berechnet; es gibt weder approximative Annahme noch übersprungene Endstücke. Standard sind **MTP 3** und die Temperaturen **Qwen 1.0 / Gemma 1.0**. Automatisches MTP beschleunigt nicht jede Aufgabe und bleibt aus. Siehe die [kontrollierten Entwicklungsmessungen und Grenzen](benchmark/results/qwen-gemma-speculation-20261107.md), getrennt vom festen v1-Benchmark.
 
 Explizite Einstellungen überschreiben die automatische Auswahl, und bereits manuell gewählte Einstellungen bleiben wirksam. Beispielsweise legt `run-api.bat --kv-type int8` INT8 fest; `run-api.bat --kv-type auto --max-context auto --expert-vram auto` stellt die automatische Auswahl von KV, Kontext und Expertenplatzierung wieder her.
 
@@ -314,9 +314,11 @@ TinyStrata stellt OpenAI-kompatible APIs für Chat Completions (`/v1/chat/comple
 
 Neue Konfigurationen verwenden modellspezifische Sampling-Standardwerte. Werte pro Anfrage haben Vorrang; gespeicherte benutzerdefinierte Einstellungen bleiben erhalten.
 
+Qwen3.6 verwendet die [offiziellen Empfehlungen für allgemeine Aufgaben im Thinking-Modus](https://huggingface.co/Qwen/Qwen3.6-35B-A3B#best-practices). Frühere Benchmark-Tabellen behalten die bei der Messung verwendete Temperatur 0.7 bei; das feste v1-Protokoll bleibt unverändert.
+
 | Einstellung | Qwen3.6 | Gemma 4 | LFM2.5 | Clover |
 | --- | ---: | ---: | ---: | ---: |
-| `temperature` | 0.7 | 1.0 | 0.1 | 0.0 |
+| `temperature` | 1.0 | 1.0 | 0.1 | 0.0 |
 | `top_p` | 0.95 | 0.95 | 1.0 | 1.0 |
 | `top_k` | 20 | 64 | 50 | 64 |
 | `min_p` | 0.0 | 0.0 | 0.0 | 0.0 |

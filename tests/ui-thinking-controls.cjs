@@ -41,6 +41,9 @@ function fixture(saved={thinking:'high'}){
  vm.createContext(ctx);vm.runInContext(library,ctx);
  ctx.settings=ctx.StrataThinkingControls.migrate({...ctx.DEFAULTS,...saved});
  vm.runInContext(sampling+'\n'+helpers+'\n'+drawer+'\n'+composer+'\n'+shared+'\n'+reset+'\n'+apply,ctx);
+ ctx.settings=ctx.migrateSampling(ctx.settings);
+ const defaults=[[1,.95,20],[0,1,64],[1,.95,64],[.1,1,50],[1,.95,20]];
+ ids.forEach((model,i)=>ctx.receiveSamplingDefaults(model,{model_alias:model,default_generation_settings:{params:{temperature:defaults[i][0],top_p:defaults[i][1],top_k:defaults[i][2]}}}));
  ctx.syncComposerControls=()=>ctx.syncThinkingControls();
  ctx.setComposerTools=changes=>{ctx.settings={...ctx.settings,...changes};};
  const busy=element('s-busy');for(const value of ['wait','queue','interject']){const b=new Element('button');b.dataset.v=value;b.setAttribute('aria-checked',String(value==='wait'));busy.appendChild(b);}
@@ -111,7 +114,7 @@ async function main(){
  const g=fixture(),shown=x=>['s-temp','s-topp','s-topk'].map(id=>+x.element(id).value);
  for(const id of ids){
   g.model(id);g.ctx.loadDrawer();
-  equal(shown(g),[1,.95,20],'supported models retain the factory sampling display');
+  equal(shown(g),[[1,.95,20],[0,1,64],[1,.95,64],[.1,1,50],[1,.95,20]][ids.indexOf(id)],'drawer displays effective per-model server defaults');
   equal(g.element('s-topk').min,'1','supported models retain their top-k control range');
   ok(g.ctx.samplingUntouched(g.ctx.settings),'switching models does not create sampling overrides');
  }

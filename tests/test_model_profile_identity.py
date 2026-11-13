@@ -195,6 +195,57 @@ class SameArchitectureProfiles(unittest.TestCase):
         self.assertEqual(sampling_defaults_from_config(migrated), expected)
         self.assertNotIn("sampling", original)
 
+    def test_qwen_official_thinking_sampler_defaults_reach_profiles_and_api(self):
+        original = {"arch": "qwen35moe", "model_name": QWEN}
+        expected = {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0,
+                    "presence_penalty": 1.5, "repetition_penalty": 1.0}
+        migrated, _ = tinyconfig.migrate_generation_settings(original)
+        self.assertEqual(migrated["sampling"], expected)
+        self.assertTrue(migrated["enable_thinking"])
+        self.assertEqual(sampling_defaults_from_config(original), expected)
+        self.assertEqual(sampling_defaults_from_config(migrated), expected)
+        self.assertEqual(self.profiles().get(QWEN).config["sampling"], expected)
+        self.assertNotIn("sampling", original)
+        self.assertEqual(self.path.read_bytes(), self.original)
+
+    def test_saved_qwen_sampling_choices_are_not_reclassified_as_defaults(self):
+        # Old stock 0.7 and a deliberate choice of the same numbers cannot be
+        # distinguished in a saved profile. Preserve both rather than guessing.
+        old_stock = {**tinyconfig.DEFAULT_SAMPLING, "temperature": 0.7}
+        choices = (old_stock, {"temperature": 0},
+                   {"temperature": 0.6, "top_p": 0.8, "presence_penalty": 0.2},
+                   {"top_k": 50, "repeat_penalty": 1.1})
+        for choice in choices:
+            with self.subTest(sampling=choice):
+                cfg = {"arch": "qwen35moe", "model_name": QWEN,
+                       "generation_policy_version": tinyconfig.GENERATION_POLICY_VERSION,
+                       "sampling": deepcopy(choice), "enable_thinking": False,
+                       "max_tokens": 2048, "args": ["--kv-type", "fp32"]}
+                migrated, _ = tinyconfig.migrate_generation_settings(cfg)
+                for key, value in choice.items():
+                    self.assertEqual(migrated["sampling"][key], value)
+                effective = sampling_defaults_from_config(migrated)
+                for key, value in choice.items():
+                    self.assertEqual(effective["repetition_penalty" if key == "repeat_penalty" else key], value)
+                self.assertFalse(migrated["enable_thinking"])
+                self.assertEqual(migrated["max_tokens"], 2048)
+                self.assertEqual(migrated["args"], cfg["args"])
+                again, changed = tinyconfig.migrate_generation_settings(migrated)
+                self.assertFalse(changed)
+                self.assertEqual(again, migrated)
+
+    def test_qwen_default_change_preserves_other_model_sampler_contracts(self):
+        for arch, model, expected in (
+                ("gemma4", "gemma-4-26b-a4b-it", tinyconfig.GEMMA4_SAMPLING),
+                ("lfm2moe", "lfm2.5-24b-a2b", tinyconfig.LFM2_SAMPLING),
+                ("clover_moe", "clover-35b-a3b-preview", tinyconfig.CLOVER_SAMPLING),
+                ("qwen35moe", TIEL, tinyconfig.TIEL_SAMPLING)):
+            with self.subTest(model=model):
+                cfg = {"arch": arch, "model_name": model}
+                migrated, _ = tinyconfig.migrate_generation_settings(cfg)
+                self.assertEqual(migrated["sampling"], expected)
+                self.assertEqual(sampling_defaults_from_config(cfg), expected)
+
     def test_handwritten_tiel_aliases_keep_artifact_projector_api_and_sampler_identity(self):
         for name in ("tiel", " TIEL-CODER ", TIEL):
             with self.subTest(model_name=name):

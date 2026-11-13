@@ -154,7 +154,7 @@ Invoke-RestMethod "$api/v1/model/switch"
 
 **最新显存容量测试（2026-11-12）：** [五个模型在24／16／12／8 GB条件下的结果](benchmark/results/rtx-pro-4000-blackwell-sff-20261112.md)。采用当前默认KV路径和实际显存预留，每种条件启动一次，测量生成、4K／16K输入及图像输入。此次单轮结果与下方历史多轮KV对比单独记录。
 
-于 **2026-11-03** 在 Windows 上测量，使用 RTX PRO 4000 Blackwell SFF Edition（24 GB）、Ryzen 9 7945HX3D、64 GB 系统内存和固定的 Unsloth MTP UD-IQ3_XXS 模型。图像编码器常驻 GPU，通过 API 进行测量；启用思考、模型默认采样设置（温度 0.7）及 MTP 3。输入分块和专家分配自动选择，上下文容量按各显存档位设置。混合 CUDA Graph 保持默认关闭，全部专家常驻 GPU 时的常规 CUDA Graph 保持启用。
+于 **2026-11-03** 在 Windows 上测量，使用 RTX PRO 4000 Blackwell SFF Edition（24 GB）、Ryzen 9 7945HX3D、64 GB 系统内存和固定的 Unsloth MTP UD-IQ3_XXS 模型。图像编码器常驻 GPU，通过 API 进行测量；启用思考、当时的模型默认采样设置（温度 0.7）及 MTP 3。输入分块和专家分配自动选择，上下文容量按各显存档位设置。混合 CUDA Graph 保持默认关闭，全部专家常驻 GPU 时的常规 CUDA Graph 保持启用。
 
 | 可用内存条件 | 上下文容量 | INT8 生成 | 原生 FP8 生成 | 备注 |
 | --- | ---: | ---: | ---: | --- |
@@ -304,7 +304,7 @@ GGUF 权重量化与 KV 精度是两回事。选用的 UD-IQ3_XXS 模型使用�
 
 MTP 同时支持贪心生成和基于温度的采样，包括重复惩罚、频率惩罚和存在惩罚。对于采样请求，主模型会对每个验证行进行采样，只接受与之匹配的草稿前缀。
 
-Qwen 和 Gemma 还提供可选的 `--lookup-draft N`（最多提议 **0–7 个 token**）与实验性的 `--mtp-auto 0|1`；**两者均默认 0（关闭）**。lookup 复制输入或历史中已有的后续片段，在常规温度设置下也使用现有的主模型采样器和惩罚逐 token 验证。所有选中的 Expert 仍会计算，不使用近似接受或跳过尾部。默认 **MTP 3** 和温度（**Qwen 0.7 / Gemma 1.0**）保持不变。自动 MTP 并非在所有任务中都更快，因此默认关闭。参见与固定 v1 基准分开的[受控开发测量与限制](benchmark/results/qwen-gemma-speculation-20261107.md)。
+Qwen 和 Gemma 还提供可选的 `--lookup-draft N`（最多提议 **0–7 个 token**）与实验性的 `--mtp-auto 0|1`；**两者均默认 0（关闭）**。lookup 复制输入或历史中已有的后续片段，在常规温度设置下也使用现有的主模型采样器和惩罚逐 token 验证。所有选中的 Expert 仍会计算，不使用近似接受或跳过尾部。默认使用 **MTP 3**，温度为 **Qwen 1.0 / Gemma 1.0**。自动 MTP 并非在所有任务中都更快，因此默认关闭。参见与固定 v1 基准分开的[受控开发测量与限制](benchmark/results/qwen-gemma-speculation-20261107.md)。
 
 显式设置会覆盖自动选择，现有的手动设置也会继续生效。例如，`run-api.bat --kv-type int8` 会固定使用 INT8；`run-api.bat --kv-type auto --max-context auto --expert-vram auto` 会恢复自动选择 KV、上下文和专家放置。
 
@@ -314,9 +314,11 @@ TinyStrata 提供兼容 OpenAI 的 Chat Completions（`/v1/chat/completions`）�
 
 新配置采用各模型自己的采样默认值。每次请求指定的值优先；已保存的自定义设置保持不变。
 
+Qwen3.6 采用[官方针对思考模式下通用任务的推荐设置](https://huggingface.co/Qwen/Qwen3.6-35B-A3B#best-practices)。历史基准表保留测量时使用的温度 0.7，固定 v1 协议也保持不变。
+
 | 设置 | Qwen3.6 | Gemma 4 | LFM2.5 | Clover |
 | --- | ---: | ---: | ---: | ---: |
-| `temperature` | 0.7 | 1.0 | 0.1 | 0.0 |
+| `temperature` | 1.0 | 1.0 | 0.1 | 0.0 |
 | `top_p` | 0.95 | 0.95 | 1.0 | 1.0 |
 | `top_k` | 20 | 64 | 50 | 64 |
 | `min_p` | 0.0 | 0.0 | 0.0 | 0.0 |

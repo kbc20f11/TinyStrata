@@ -78,6 +78,7 @@
 !/tests/ui-chatstore.cjs
 !/tests/ui-local-tools.cjs
 !/tests/ui-runtime-model.cjs
+!/tests/ui-sampling-defaults.cjs
 !/tests/ui-context-compaction.cjs
 !/tests/test_chat_token_count.py
 !/tests/ui-resource-dialogs.cjs

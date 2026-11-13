@@ -1057,31 +1057,57 @@ function markdown(text) {
 }
 
 // ------------------------------------------------------------------ Chat
-// Untouched controls send no sampling fields: the server uses the model's
-// configured defaults. The legacy tuple remains the browser's default marker.
+// Model defaults omit sampling fields; explicit slider edits always send their
+// values. Recognize the old numeric sentinel only while migrating old settings.
 const DEFAULTS = {thinkingByModel: {}, temperature: 1.0, top_p: 0.95, top_k: 20, max: "", seed: "", show: true, esp: true, mcp: true, math: true,
                   chatList: true, whileBusy: "wait", webSearch: true, autoCompact: true};
 const OLD_DEFAULT_TEMPERATURE = 0.6;
+const serverSamplingDefaults = new Map();
+let samplingDefaultsEpoch = 0;
 function samplingUntouched(s) {
+  if (s.samplingMode === "model" || s.samplingMode === "custom") return s.samplingMode === "model";
   const t = +s.temperature;
   return (t === DEFAULTS.temperature || t === OLD_DEFAULT_TEMPERATURE) && +s.top_p === DEFAULTS.top_p && +s.top_k === DEFAULTS.top_k;
 }
+function migrateSampling(s) {
+  return {...s, samplingMode: samplingUntouched(s) ? "model" : "custom"};
+}
 function modelSamplingDefaults() {
-  return {temperature: DEFAULTS.temperature, top_p: DEFAULTS.top_p, top_k: DEFAULTS.top_k};
+  return serverSamplingDefaults.get(health.model) || null;
 }
 function displayedSampling(s) {
   return samplingUntouched(s) ? modelSamplingDefaults() : s;
 }
-function storedSampling(s) {
-  const defaults = modelSamplingDefaults();
-  return Object.keys(defaults).every((key) => +s[key] === defaults[key])
-    ? {temperature: DEFAULTS.temperature, top_p: DEFAULTS.top_p, top_k: DEFAULTS.top_k} : s;
+function storedSampling(s, mode = "custom") {
+  return {...s, samplingMode: mode === "model" ? "model" : "custom"};
 }
-let settings = StrataThinkingControls.migrate({...DEFAULTS, ...store.get("sampling", {})});
+function receiveSamplingDefaults(model, props) {
+  const values = props?.default_generation_settings?.params;
+  if (props?.model_alias !== model || !values || !Number.isFinite(values.temperature) || values.temperature < 0 ||
+      !Number.isFinite(values.top_p) || values.top_p <= 0 || values.top_p > 1 ||
+      !Number.isInteger(values.top_k) || values.top_k < 0) return false;
+  serverSamplingDefaults.set(model, {temperature: values.temperature, top_p: values.top_p, top_k: values.top_k});
+  return true;
+}
+async function loadSamplingDefaults() {
+  const model = runtimeModelId(), epoch = ++samplingDefaultsEpoch;
+  if (!model) { syncSamplingInputs(); return; }
+  try {
+    const response = await fetch(`props?model=${encodeURIComponent(model)}`, {headers: headers(), cache: "no-store"});
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const props = await response.json();
+    if (epoch !== samplingDefaultsEpoch || model !== health.model) return;
+    if (!receiveSamplingDefaults(model, props)) throw new Error("Model sampling defaults are unavailable");
+  } catch (_) {
+    if (epoch === samplingDefaultsEpoch && model === health.model) serverSamplingDefaults.delete(model);
+  } finally {
+    if (epoch === samplingDefaultsEpoch && model === health.model) syncSamplingInputs();
+  }
+}
+let settings = StrataThinkingControls.migrate(migrateSampling({...DEFAULTS, ...store.get("sampling", {})}));
 let globalTools = null, toolSettingsSaving = false;
 delete settings.chatEdit;                            // retired: message actions are always available
 delete settings.codeExecution;                       // Python is always available; its runtime still loads on first use.
-if (samplingUntouched(settings)) settings.temperature = DEFAULTS.temperature;
 let messages = store.get("chat", []);   // the open chat's messages (chats-ui.js: with the saved-chats list on, also that chat's own)
 let attachments = [];                 // {name, url}
 let busy = null;                      // {controller, msg, cut, cutAfterTool}
@@ -2939,10 +2965,9 @@ async function generateReply() {
   const model = health.model, serialize = apiMessageSerializer(model);
   const body = {model, messages: serialize(), stream: true, return_progress: true, return_live_stats: true,
                 ...thinkingPayload()};
-  if (!(settings.temperature > 0)) {
-    body.temperature = 0;
-  } else if (!samplingUntouched(settings)) {
-    Object.assign(body, {temperature: +settings.temperature, top_p: +settings.top_p, top_k: +settings.top_k});
+  if (!samplingUntouched(settings)) {
+    if (!(settings.temperature > 0)) body.temperature = 0;
+    else Object.assign(body, {temperature: +settings.temperature, top_p: +settings.top_p, top_k: +settings.top_k});
   }
   if (settings.seed) body.seed = +settings.seed;
   if (settings.max) body.max_tokens = +settings.max;
@@ -3228,14 +3253,29 @@ function loadDrawer(s = settings) {
   $("s-list").setAttribute("aria-checked", String(!!s.chatList));
   $("s-compact").setAttribute("aria-checked", String(s.autoCompact !== false));
   for (const b of $("s-busy").children) b.setAttribute("aria-checked", String(b.dataset.v === (s.whileBusy || "wait")));
-  syncSamplingInputs(s);
+  syncSamplingInputs(s, true);
 }
-function syncSamplingInputs(s = settings) {
+function syncSamplingInputs(s = settings, reset = false) {
+  // A late /props reply must not replace a slider edit staged in the drawer.
+  if (!reset && $("drawer").dataset.open === "true") {
+    const staged = $("s-temp").dataset.samplingMode;
+    if (staged === "custom") return;
+    if (staged === "model") s = {...s, samplingMode: "model"};
+  }
   const sampling = displayedSampling(s);
-  $("s-topk").min = "1";
-  $("s-temp").value = sampling.temperature;
-  $("s-topp").value = sampling.top_p;
-  $("s-topk").value = sampling.top_k;
+  $("s-temp").dataset.samplingMode = samplingUntouched(s) ? "model" : "custom";
+  $("s-temp").dataset.samplingKnown = sampling ? "true" : "false";
+  if (sampling) {
+    $("s-temp").max = String(Math.max(1.5, sampling.temperature));
+    $("s-temp").step = "any";
+    $("s-topp").min = String(Math.min(.05, sampling.top_p));
+    $("s-topp").step = "any";
+    $("s-topk").min = sampling.top_k === 0 ? "0" : "1";
+    $("s-topk").max = String(Math.max(64, sampling.top_k));
+    $("s-temp").value = sampling.temperature;
+    $("s-topp").value = sampling.top_p;
+    $("s-topk").value = sampling.top_k;
+  }
   outputs();
 }
 function renderLocalToolStatus() {
@@ -3304,11 +3344,14 @@ async function loadShared() {
     if (r.ok) sharedOn = !!(await r.json()).shared;
   } catch (e) { /* an older server: the switch just stays off */ }
   $("s-share").setAttribute("aria-checked", String(sharedOn));
+  await loadSamplingDefaults();
 }
 function sharedDefaults(s) {
   const d = thinkingPayload(s, true);
-  if (!(+s.temperature > 0)) d.temperature = 0;
-  else if (!samplingUntouched(s)) Object.assign(d, {temperature: +s.temperature, top_p: +s.top_p, top_k: +s.top_k});
+  if (!samplingUntouched(s)) {
+    if (!(+s.temperature > 0)) d.temperature = 0;
+    else Object.assign(d, {temperature: +s.temperature, top_p: +s.top_p, top_k: +s.top_k});
+  }
   if (s.seed) d.seed = +s.seed;
   if (s.max) d.max_tokens = +s.max;
   if (projectionLoaded()) d.experimental_speed_projection = s.esp !== false;
@@ -3326,6 +3369,7 @@ async function saveShared(on, s) {
       throw new Error(msg);
     }
     sharedOn = !!(await r.json()).shared;
+    await loadSamplingDefaults();
   } finally {
     sharedSaving = false;
     syncComposerControls();
@@ -3337,18 +3381,24 @@ function projectionLoaded() {
   return !!c && c !== "0";
 }
 function outputs() {
+  const known = $("s-temp").dataset.samplingKnown !== "false";
   const t = +$("s-temp").value;
-  $("o-temp").textContent = t === 0 ? tr("drawer.greedy", "0 · greedy") : t.toFixed(2);
-  $("o-topp").textContent = (+$("s-topp").value).toFixed(2);
-  $("o-topk").textContent = $("s-topk").value;
+  const number = (n) => Number.isInteger(n * 100) ? n.toFixed(2) : String(n);
+  $("o-temp").textContent = !known ? "—" : t === 0 ? tr("drawer.greedy", "0 · greedy") : number(t);
+  $("o-topp").textContent = known ? number(+$("s-topp").value) : "—";
+  $("o-topk").textContent = known ? $("s-topk").value : "—";
   const busyMode = segValue("s-busy");
   $("o-busy").textContent = {wait: tr("drawer.busyWaitNote", "Send is off until the answer is done, as before."),
     queue: tr("drawer.busyQueueNote", "Your message waits and goes as soon as the answer is done."),
     interject: tr("drawer.busyInterjectNote", "The answer stops where it is (what is written stays) and your message goes at once. A tool that is running finishes first.")}[busyMode] || "";
-  for (const id of ["s-topp", "s-topk"]) $(id).disabled = t === 0;
+  $("s-temp").disabled = !known;
+  for (const id of ["s-topp", "s-topk"]) $(id).disabled = !known || t === 0;
 }
 for (const b of $("s-busy").children) b.onclick = () => { for (const x of $("s-busy").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
-for (const id of ["s-temp", "s-topp", "s-topk"]) $(id).oninput = outputs;
+for (const id of ["s-temp", "s-topp", "s-topk"]) $(id).oninput = () => {
+  $("s-temp").dataset.samplingMode = "custom";
+  outputs();
+};
 for (const id of ["s-math", "s-show", "s-esp", "s-mcp", "s-share", "s-list", "s-compact"]) {
   $(id).onclick = () => $(id).setAttribute("aria-checked", String($(id).getAttribute("aria-checked") !== "true"));
 }
@@ -3371,7 +3421,8 @@ $("s-apply").onclick = async () => {
   const prev = settings;
   // Changing the list replaces the messages on the screen, so wait for an open operation.
   const locked = !!busy || !!resourceOperation || !!panel;
-  const sampling = storedSampling({temperature: +$("s-temp").value, top_p: +$("s-topp").value, top_k: +$("s-topk").value});
+  const sampling = storedSampling({temperature: +$("s-temp").value, top_p: +$("s-topp").value, top_k: +$("s-topk").value},
+                                  $("s-temp").dataset.samplingMode);
   settings = {...setThinkingChoice(segValue("s-thinking")), ...sampling,
               max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
               math: checked("s-math"), show: checked("s-show"), esp: checked("s-esp"), mcp: checked("s-mcp"),

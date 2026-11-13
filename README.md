@@ -178,7 +178,7 @@ Poll `GET /v1/model/switch` until `state` is `ready`. To return to Qwen, send th
 
 **Latest capacity measurement (2026-11-12):** [All five models at 24/16/12/8 GB](benchmark/results/rtx-pro-4000-blackwell-sff-20261112.md), using current default KV paths, one start per condition, real VRAM reservations, and generation/4K/16K/image tests. This one-pass result is separate from the historical repeated KV comparisons below.
 
-Measured on **2026-11-03** using Windows, an RTX PRO 4000 Blackwell SFF Edition (24 GB), a Ryzen 9 7945HX3D, 64 GB of system RAM and the fixed Unsloth MTP UD-IQ3_XXS model. The image encoder stayed on the GPU during API requests. Thinking, the model’s sampling defaults (temperature 0.7) and MTP 3 were enabled. Prompt chunks and Expert placement were automatic; context capacity was set for each VRAM class. Hybrid CUDA Graphs stayed at their default off; normal all-GPU CUDA Graphs remained enabled.
+Measured on **2026-11-03** using Windows, an RTX PRO 4000 Blackwell SFF Edition (24 GB), a Ryzen 9 7945HX3D, 64 GB of system RAM and the fixed Unsloth MTP UD-IQ3_XXS model. The image encoder stayed on the GPU during API requests. Thinking, the model’s then-current sampling defaults (temperature 0.7) and MTP 3 were enabled. Prompt chunks and Expert placement were automatic; context capacity was set for each VRAM class. Hybrid CUDA Graphs stayed at their default off; normal all-GPU CUDA Graphs remained enabled.
 
 | Available VRAM | Context capacity | INT8 generation | Native FP8 generation | Notes |
 | --- | ---: | ---: | ---: | --- |
@@ -332,7 +332,7 @@ New launcher configurations use MTP 3, which proposes several tokens ahead and v
 
 MTP supports both greedy generation and temperature-based sampling, including repetition, frequency and presence penalties. For sampled requests, the main model samples each verification row, and only the matching draft prefix is accepted.
 
-Qwen and Gemma also offer optional `--lookup-draft N` (**0–7**, the maximum proposed tokens) and experimental `--mtp-auto 0|1`; **both default to 0/off**. Lookup copies known prompt/history continuations and verifies each token with the existing target sampler and penalties, including at normal temperatures. All selected Experts still run; there is no approximate acceptance or tail skipping. Default **MTP 3** and temperatures (**Qwen 0.7 / Gemma 1.0**) stay unchanged. Automatic MTP is not a uniform speedup and remains off. See the [controlled development measurements and limits](benchmark/results/qwen-gemma-speculation-20261107.md), separate from the fixed v1 benchmark.
+Qwen and Gemma also offer optional `--lookup-draft N` (**0–7**, the maximum proposed tokens) and experimental `--mtp-auto 0|1`; **both default to 0/off**. Lookup copies known prompt/history continuations and verifies each token with the existing target sampler and penalties, including at normal temperatures. All selected Experts still run; there is no approximate acceptance or tail skipping. Defaults are **MTP 3** and temperatures **Qwen 1.0 / Gemma 1.0**. Automatic MTP is not a uniform speedup and remains off. See the [controlled development measurements and limits](benchmark/results/qwen-gemma-speculation-20261107.md), separate from the fixed v1 benchmark.
 
 CUDA Qwen automatically uses the interleaved dense matvec fast path with MTP 1–3 when the main Experts stay on the GPU and CUDA Graphs are enabled. `TINYSTRATA_Q36_MMVQ_IL=0` restores the previous matvec dispatch while MTP remains enabled. Main-model prompt MMQ can also be selected independently of unsupported MTP weight formats, from 128 input rows. This automatic choice is made after Expert placement and requires enough extra workspace and headroom; hybrid main-model execution uses native CPU/GPU kernels. `TINYSTRATA_Q36_MAIN_MMQ=0` restores the previous MMQ selection. [Controlled CUDA comparisons and validation](benchmark/results/qwen-cuda-20261103.md).
 
@@ -362,9 +362,11 @@ TinyStrata provides OpenAI-compatible Chat Completions (`/v1/chat/completions`) 
 
 New configurations use model-specific sampling defaults. Per-request settings take precedence; saved custom settings remain in effect.
 
+Qwen3.6 follows the [official general-task recommendations for thinking mode](https://huggingface.co/Qwen/Qwen3.6-35B-A3B#best-practices). Earlier benchmark tables retain the temperature 0.7 used when measured; the fixed v1 protocol is unchanged.
+
 | Setting | Qwen3.6 | Gemma 4 | LFM2.5 | Clover |
 | --- | ---: | ---: | ---: | ---: |
-| `temperature` | 0.7 | 1.0 | 0.1 | 0.0 |
+| `temperature` | 1.0 | 1.0 | 0.1 | 0.0 |
 | `top_p` | 0.95 | 0.95 | 1.0 | 1.0 |
 | `top_k` | 20 | 64 | 50 | 64 |
 | `min_p` | 0.0 | 0.0 | 0.0 | 0.0 |
