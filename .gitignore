@@ -8,6 +8,7 @@
 !/docs/development-memory.md
 !/docs/gpt-oss-reintroduction.md
 !/docs/qwen-ui-model-identity-20261112.md
+!/docs/intel-windows.md
 !/CMakeLists.txt
 !/LICENSE
 !/NOTICE
@@ -36,6 +37,21 @@
 
 # Keep only the public regression tests, not local test artifacts.
 /tests/**
+!/tests/intel-memory-policy.cpp
+!/tests/intel-speculative-distribution.cpp
+!/tests/intel-draft-vocabulary.cpp
+!/tests/test_intel_options.py
+!/tests/test_intel_runtime_stage.py
+!/tests/test_intel_telemetry.py
+!/tests/test_intel_backend.py
+!/tests/test_intel_launch.py
+!/tests/test_intel_server_integration.py
+!/tests/installer-intel-runtime.ps1
+!/tests/intel-qwen-ops.cpp
+!/tests/intel-quant-reference.py
+!/tests/intel-npu-projection.cpp
+!/tests/test_intel_native.py
+!/tests/test_intel_api.py
 !/tests/installer-entrypoints.ps1
 !/tests/installer-hip-runtime.ps1
 !/tests/installer-update-transaction.ps1
@@ -126,6 +142,10 @@
 /cmake/**
 !/cmake/**/
 !/cmake/**/*.cmake
+!/cmake/build-intel.ps1
+!/cmake/stage-intel-runtime.ps1
+!/cmake/install-intel-runtime.ps1
+!/cmake/stage-intel-runtime.md
 /include/**
 !/include/**/
 !/include/**/*.h
@@ -286,6 +306,7 @@ CMakeFiles/
 !/tests/q36-hybrid-buffer-policy.cpp
 !/tests/q36-hybrid-buffer-dma.cu
 !/benchmark/results/cuda-revalidation-20261112.json
+!/benchmark/results/intel-uma-windows-20261114.json
 !/benchmark/results/gemma-prefill-diagnosis-20261112.json
 !/tests/test_retired_model.py
 !/tests/test_installer_request_admission.py

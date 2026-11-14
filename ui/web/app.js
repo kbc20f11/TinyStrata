@@ -235,7 +235,7 @@ const METRICS = [
 ];
 $("metrics").innerHTML = METRICS.map((m) => `
   <div class="st-card metric-card"><div class="st-metric">
-    <span class="st-metric__label">${icon(m.icon, "st-icon st-icon--sm")}<span data-i18n="metrics.${m.key}">${esc(m.label)}</span></span>
+    <span class="st-metric__label">${icon(m.icon, "st-icon st-icon--sm")}<span id="ml-${m.key}" data-i18n="metrics.${m.key}">${esc(m.label)}</span></span>
     ${m.key === "speed" ? `<div class="speed-values">
       <div><span class="st-metric__value" id="mv-speed">-</span><span class="st-metric__sub" id="ms-speed" data-i18n="monitor.decode">Decode</span></div>
       <div class="speed-prefill"><span class="st-metric__value" id="mv-prefill">-</span><span class="st-metric__sub" id="ms-prefill" data-i18n="monitor.prefill">Prefill</span></div>
@@ -288,6 +288,17 @@ function setGpuMetric(key, value, unit, sub, hw, group) {
   el.dataset.state = reading.state;
   el.title = reading.hint;
   if (value == null) el.innerHTML = `<small>${esc(reading.label)}</small>`;
+}
+
+function umaMemory(eng, st) {
+  return eng.memory_model === "uma" || st.gpu_memory_model === "uma";
+}
+function gpuMemoryReading(eng, hw, st, history) {
+  const uma = umaMemory(eng, st);
+  return {uma, used: uma ? hw.gpu_shared_mem_used : hw.gpu_mem_used,
+    total: uma ? null : hw.gpu_mem_total,
+    history: uma ? history.gpu_shared_mem_used : history.gpu_mem_used,
+    group: uma ? "shared_mem_used" : "mem_used"};
 }
 
 let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
@@ -502,7 +513,9 @@ function expertPlacement(eng) {
 function renderPlacement(m) {
   const el = $("chat-placement"), live = m && m.live || {};
   const unloaded = live.state === "unloaded";
-  const sample = placementSampleValid && !modelSwitching && !modelOp && !unloaded && m ? expertPlacement(m.engine) : null;
+  const uma = m && umaMemory(m.engine || {}, m.hardware_static || {});
+  // The discrete cache's slot counts do not measure CPU/GPU placement on UMA.
+  const sample = placementSampleValid && !modelSwitching && !modelOp && !unloaded && m && !uma ? expertPlacement(m.engine) : null;
   const label = tr("placement.label", "Expert placement");
   el.dataset.state = sample ? "ready" : "unknown";
   $("placement-track").hidden = !sample;
@@ -510,7 +523,8 @@ function renderPlacement(m) {
   $("placement-gpu").textContent = sample ? `${fmt(sample.gpuPct, 1)}%` : "–";
   $("placement-cpu-bar").style.width = sample ? `${100 * sample.cpu / sample.total}%` : "0%";
   $("placement-gpu-bar").style.width = sample ? `${100 * sample.gpu / sample.total}%` : "0%";
-  const note = tr("placement.hint", "GPU shows the experts resident in VRAM; CPU shows the remainder on the RAM side. Shared weights, KV cache and the image encoder are excluded. This is placement, not hardware utilization.");
+  const note = uma ? tr("placement.umaHint", "CPU and GPU share system RAM. Separate expert placement measurements are unavailable.")
+    : tr("placement.hint", "GPU shows the experts resident in VRAM; CPU shows the remainder on the RAM side. Shared weights, KV cache and the image encoder are excluded. This is placement, not hardware utilization.");
   const detail = sample ? tr("placement.counts", "GPU {gpu} / {total} experts · CPU {cpu} / {total}",
     {gpu: fmt(sample.gpu), cpu: fmt(sample.cpu), total: fmt(sample.total)})
     : modelSwitching ? tr("model.switching", "Switching model…")
@@ -627,6 +641,7 @@ function renderTotals(t) {
   return tr("monitor.totals", "Since {when}: {requests} requests · {read} prompt tokens read{inputRate} ({reused} reused) · {output} written{outputRate}", {when: since, requests: fmt(t.requests), read: fmt(read), inputRate: pSpeed, reused: fmt(t.reused), output: fmt(t.output_tokens), outputRate: oSpeed});
 }
 function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
+  const memory = gpuMemoryReading(eng, hw, st, h);
   // model state
   // A local turn keeps metrics on "unloaded" for the whole engine start.
   const imageNow = imageLive(live);
@@ -692,10 +707,14 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   setGpuMetric("gpu", hw.gpu_util == null ? null : fmt(hw.gpu_util), "%",
             multi ? per((g) => (g.util == null ? "–" : `${fmt(g.util)}%`)) : st.gpu_name || (st.gpu_note ? tr("monitor.unavailable", "not available") : ""), hw, "util");
   spark("sp-gpu", hw.gpu_util == null ? [] : h.gpu_util, 100);
-  setGpuMetric("vram", hw.gpu_mem_used == null ? null : gb(hw.gpu_mem_used), hw.gpu_mem_total ? `/ ${gb(hw.gpu_mem_total, 0)} GB` : "GB",
-            multi ? per((g) => (g.mem_used == null ? "–" : `${gb(g.mem_used)} GB`))
-                  : eng.expert_slots ? tr("monitor.cachedExperts", "{n} experts cached", {n: fmt(eng.expert_slots)}) : "", hw, "mem_used");
-  spark("sp-vram", hw.gpu_mem_used == null ? [] : h.gpu_mem_used, hw.gpu_mem_total);
+  $("ml-vram").removeAttribute("data-i18n");
+  $("ml-vram").textContent = memory.uma ? tr("metrics.sharedRam", "GPU shared RAM") : tr("metrics.vram", "VRAM");
+  const sharedNote = tr("monitor.sharedRamNote", "Adapter total; included in RAM");
+  setGpuMetric("vram", memory.used == null ? null : gb(memory.used), memory.total ? `/ ${gb(memory.total, 0)} GB` : "GB",
+            memory.uma ? sharedNote : multi ? per((g) => (g.mem_used == null ? "–" : `${gb(g.mem_used)} GB`))
+                  : eng.expert_slots ? tr("monitor.cachedExperts", "{n} experts cached", {n: fmt(eng.expert_slots)}) : "", hw, memory.group);
+  if (memory.uma) $("mv-vram").title = [$("mv-vram").title, tr("monitor.sharedRamHint", "Windows adapter-wide shared GPU memory usage includes other applications and overlaps physical RAM. It is not additional capacity or this model's memory usage.")].filter(Boolean).join(" ");
+  spark("sp-vram", memory.used == null ? [] : memory.history, memory.total);
   setGpuMetric("temp", hw.gpu_temp == null ? null : fmt(hw.gpu_temp), "°C",
             multi ? per((g) => (g.temp == null ? "–" : `${fmt(g.temp)}°`)) : "", hw, "temp");
   spark("sp-temp", hw.gpu_temp == null ? [] : h.gpu_temp, 90);
@@ -733,8 +752,12 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   $("ctx-pct").textContent = context ? `${Math.round(frac * 100)}%` : "–";
   $("ctx-sub").textContent = context ? `${kfmt(context.used)} / ${ctxfmt(context.total)}` : "–";
   const cacheBytes = (eng.expert_cache_mib || 0) * 1048576;
-  $("slots-text").textContent = eng.expert_slots ? `${fmt(eng.expert_slots)} · ${gb(cacheBytes)} GB` : "–";
-  $("slots-bar").style.width = hw.gpu_mem_total ? `${Math.min(100, (100 * cacheBytes) / hw.gpu_mem_total)}%` : "0%";
+  const slotsLabel = $("slots-text").previousElementSibling;
+  slotsLabel.removeAttribute("data-i18n");
+  slotsLabel.textContent = memory.uma ? tr("placement.label", "Expert placement") : tr("monitor.expertsVram", "Experts in VRAM");
+  $("slots-text").textContent = memory.uma ? tr("monitor.metricUnavailable", "Unavailable") : eng.expert_slots ? `${fmt(eng.expert_slots)} · ${gb(cacheBytes)} GB` : "–";
+  $("slots-bar").parentElement.hidden = memory.uma;
+  $("slots-bar").style.width = memory.total ? `${Math.min(100, (100 * cacheBytes) / memory.total)}%` : "0%";
   $("ram-text").textContent = hw.ram_total ? `${gb(hw.ram_used)} / ${gb(hw.ram_total, 0)} GB` : "–";
   const ramPct = hw.ram_total ? (100 * hw.ram_used) / hw.ram_total : 0;
   $("ram-bar").style.width = `${ramPct}%`;
@@ -747,8 +770,9 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
 
   // recent requests
   const body = $("req-body");
+  body.closest("table").querySelector('[data-i18n="monitor.hitRate"]').hidden = memory.uma;
   if (!requests.length) {
-    setStableHtml(body, `<tr><td colspan="9" class="muted">${esc(tr("monitor.noRequests", "No requests yet"))}</td></tr>`);
+    setStableHtml(body, `<tr><td colspan="${memory.uma ? 8 : 9}" class="muted">${esc(tr("monitor.noRequests", "No requests yet"))}</td></tr>`);
   } else {
     const badge = {stop: ["st-badge--success", tr("monitor.done", "Done"), "done"], length: ["", tr("monitor.maxTokens", "Max tokens"), "info"], cancel: ["st-badge--queued", tr("monitor.stopped", "Stopped"), "stopped"],
                    disconnect: ["st-badge--queued", tr("monitor.closed", "Closed"), "stopped"], error: ["st-badge--error", tr("monitor.error", "Error"), "error"],
@@ -765,7 +789,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
       const prefillRate = fresh > 0 && r.prompt_ms > 0 ? fresh / (r.prompt_ms / 1000) : null;
       return `<tr><td>${esc(t)}</td><td><span class="st-badge st-badge--icon ${cls}">${statusIcon(state)}${esc(text)}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
         <td class="num">${fmt(r.reused)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(prefillRate)}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>
-        <td class="num">${hit}</td><td class="num">${fmt(r.duration_s, 1)} s</td></tr>`;
+        ${memory.uma ? "" : `<td class="num">${hit}</td>`}<td class="num">${fmt(r.duration_s, 1)} s</td></tr>`;
     }).join(""));
   }
   const all = $("req-all");
@@ -834,20 +858,22 @@ function cloverGenerationText(eng) {
 }
 function renderAbout(eng, hw, st) {
   const kv = {int8: "INT8", q4_0: "Q4_0", fp16: "FP16", fp8: "FP8"}[eng.kv] || eng.kv;
+  const uma = umaMemory(eng, st);
   facts($("facts-engine"), [
     [tr("about.model", "Model"), eng.model],
     [tr("about.engine", "Engine"), eng.version ? `v${eng.version}` : tr("about.fromSource", "built from source")],
     [tr("about.context", "Context"), eng.max_context ? tr("common.tokenCount", "{n} tokens", {n: fmt(eng.max_context)}) : null],
     [tr("about.generationMode", "Generation mode"), cloverGenerationText(eng)],
-    [tr("about.kvCache", "KV cache"), kv ? `${kv} · ${eng.kv_resident ? tr("about.streamedKv", "{n} positions per layer in VRAM; the rest in RAM", {n: fmt(eng.kv_resident)}) : tr("about.residentKv", "all in VRAM")}` : null],
-    [tr("monitor.expertsVram", "Experts in VRAM"), eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)` : null],
+    [tr("about.kvCache", "KV cache"), kv ? `${kv} · ${uma ? tr("about.umaKv", "shared system RAM") : eng.kv_resident ? tr("about.streamedKv", "{n} positions per layer in VRAM; the rest in RAM", {n: fmt(eng.kv_resident)}) : tr("about.residentKv", "all in VRAM")}` : null],
+    [tr("monitor.expertsVram", "Experts in VRAM"), !uma && eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)` : null],
     [tr("about.speculation", "Speculation"), eng.clover_draft ? tr("about.selfDraft", "Self-speculative drafts up to {n} tokens", {n: fmt(eng.clover_draft)})
       : eng.spec ? tr("about.mtp", "MTP drafts up to {n} tokens", {n: fmt(Math.max(0, (eng.mtp_max || eng.spec) - 1))}) + (eng.lookup ? tr("about.lookupOn", " · prompt lookup on") : "") : null],
     [tr("tab.images", "Images"), eng.images ? tr("common.on", "on") : tr("common.off", "off")],
     [tr("about.projectionLabel", "Experimental speed projection"), projectionText(eng.cvec)],
   ]);
   facts($("facts-hw"), [
-    ["GPU", st.gpu_name ? `${st.gpu_name}${hw.gpu_mem_total ? `, ${gb(hw.gpu_mem_total, 0)} GB` : ""}` : (st.gpu_note || tr("about.gpuUnavailable", "GPU information unavailable"))],
+    ["GPU", st.gpu_name ? `${st.gpu_name}${!uma && hw.gpu_mem_total ? `, ${gb(hw.gpu_mem_total, 0)} GB` : ""}` : (st.gpu_note || tr("about.gpuUnavailable", "GPU information unavailable"))],
+    [tr("about.memoryTopology", "Memory"), uma ? tr("about.umaMemory", "CPU/GPU share system RAM") : null],
     ["CPU", st.cpu_name ? `${st.cpu_name}${st.threads ? ` · ${tr("monitor.threads", "{n} threads", {n: fmt(st.threads)})}` : ""}` : null],
     ["RAM", hw.ram_total ? `${gb(hw.ram_total, 0)} GB` : null],
   ]);

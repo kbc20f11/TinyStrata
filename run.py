@@ -93,6 +93,14 @@ def prepare(a) -> tuple[dict, Path]:
                                    resolve_executable, save_settings, shared_library_dirs, migrate_managed_clover_model)
     from serve.model_download import is_tiel_model, reject_retired_model
 
+    requested_backend = getattr(a, "backend", None)
+    intel_profile = getattr(a, "intel_profile", None)
+    if intel_profile is not None and requested_backend not in (None, "auto", "sycl"):
+        raise ValueError("--intel-profile requires --backend sycl")
+    explicit_exe = getattr(a, "exe", None)
+    explicit_backend = (executable_backend(explicit_exe, [str(p) for p in getattr(a, "lib_dir", None) or []])
+                        if explicit_exe and requested_backend in (None, "auto") else None)
+    intel_requested = requested_backend == "sycl" or explicit_backend == "sycl" or intel_profile is not None
     selected = getattr(a, "model_family", None)
     reject_retired_model(model_name=selected)
     requested_arch = {"qwen36": "qwen35moe", "qwen3.6": "qwen35moe",
@@ -109,7 +117,7 @@ def prepare(a) -> tuple[dict, Path]:
             raise ValueError("--model-family does not match the local GGUF architecture")
         requested_arch = actual_arch
     config_path = getattr(a, "config", None)
-    path = (config_path or RUNTIME / ".tinystrata" / ("config-tiel-coder.json" if tiel else
+    path = (config_path or RUNTIME / ".tinystrata" / ("config-sycl.json" if intel_requested else "config-tiel-coder.json" if tiel else
             {"lfm2moe": "config-lfm2.json", "gemma4": "config-gemma4.json", "clover_moe": "config-clover.json"}
             .get(requested_arch, "config.json"))).expanduser().resolve()
     from serve.install_guard import assert_installation_ready
@@ -122,11 +130,25 @@ def prepare(a) -> tuple[dict, Path]:
                                     .get(arch, "qwen3.6-35b-a3b")),
         "cwd": str(ROOT),
         "args": ["--max-context", "auto", "--kv-type", "auto", "--chunk", "auto"] +
-                ([] if arch in ("clover_moe", "lfm2moe") else ["--mtp", "3"]),
+                ([] if intel_requested or arch in ("clover_moe", "lfm2moe") else ["--mtp", "3"]),
         "memory_policy_version": MEMORY_POLICY_VERSION,
         "host": "127.0.0.1",
     }
     reject_retired_model(cfg.get("arch"), cfg.get("model_name"))
+    if intel_requested and not fresh and cfg.get("backend") != "sycl":
+        raise ValueError("Use a separate Intel --config path; an existing CUDA/HIP configuration is not overwritten")
+    if cfg.get("backend") == "sycl" and requested_backend not in (None, "auto", "sycl"):
+        raise ValueError("Use a separate configuration when selecting another backend")
+    if intel_requested or cfg.get("backend") == "sycl":
+        if fresh:
+            cfg.update(backend="sycl", vision_mode="no")
+        if intel_profile is not None:
+            cfg["intel_profile"] = intel_profile
+        # Explicit MTP0 must be present before profile defaults are filled.
+        if getattr(a, "mtp", None) is not None:
+            set_arg(cfg, "--mtp", a.mtp)
+        cfg = configure_backend(cfg, "sycl", explicit_kv=a.kv_type)
+        requested_backend = "sycl"
     if is_tiel_model(cfg.get("model_name")):
         cfg["model_name"] = "tiel-coder-35b-a3b"
     if requested_arch is not None and cfg.get("arch", "qwen35moe") != requested_arch:
@@ -147,12 +169,11 @@ def prepare(a) -> tuple[dict, Path]:
             cfg["clover_decode_policy_version"] = CLOVER_DECODE_POLICY_VERSION
         cfg = migrate_managed_clover_model(cfg, path)
     cfg, migrated = migrate_settings(cfg)
-    requested_backend = getattr(a, "backend", None)
+    requested_backend = "sycl" if cfg.get("backend") == "sycl" else getattr(a, "backend", None)
     if requested_backend in (None, "auto") and not cfg.get("backend"):
-        explicit_backend = executable_backend(a.exe, [str(p) for p in a.lib_dir or []]) if a.exe else None
         requested_backend = explicit_backend or hardware_backend()
     cfg = configure_backend(cfg, requested_backend, explicit_kv=a.kv_type)
-    cfg.setdefault("port", 18084 if cfg.get("model_name") == "tiel-coder-35b-a3b" else
+    cfg.setdefault("port", 18085 if cfg.get("backend") == "sycl" else 18084 if cfg.get("model_name") == "tiel-coder-35b-a3b" else
                    {"lfm2moe": 18081, "gemma4": 18082, "clover_moe": 18083}.get(cfg.get("arch"), 18080))
     if a.model:
         set_arg(cfg, "--model", a.model.expanduser().resolve())
@@ -233,7 +254,7 @@ def prepare(a) -> tuple[dict, Path]:
     check_files(cfg, allow_uninstalled=True)
     if a.model and not model.is_file():
         raise ValueError(f"TinyStrata model not found: {model}")
-    cfg["log"] = str(path.parent / ("engine-tiel-coder.log" if cfg.get("model_name") == "tiel-coder-35b-a3b" else
+    cfg["log"] = str(path.parent / ("engine-intel.log" if cfg.get("backend") == "sycl" else "engine-tiel-coder.log" if cfg.get("model_name") == "tiel-coder-35b-a3b" else
                     {"lfm2moe": "engine-lfm2.log", "gemma4": "engine-gemma4.log", "clover_moe": "engine-clover.log"}
                     .get(cfg.get("arch"), "engine.log")))
     if model.is_file():
@@ -259,8 +280,10 @@ def main() -> int:
                     help="Qwen3.6 (default), LFM2.5, Gemma4, Clover or Tiel Coder; settings are separate per model")
     ap.add_argument("--draft-model", type=Path, help="existing Gemma4 QAT assistant GGUF for MTP")
     ap.add_argument("--exe", type=Path, help="built tinystrata executable")
-    ap.add_argument("--backend", choices=("auto", "cuda", "hip"), default="auto",
-                    help="GPU backend (default: saved setting or native executable); HIP supports native FP8 on RDNA4")
+    ap.add_argument("--backend", choices=("auto", "cuda", "hip", "sycl"), default="auto",
+                    help="GPU backend; sycl is experimental native Windows Intel Qwen3.6 text, with separate settings")
+    ap.add_argument("--intel-profile", choices=("generic", "b390-qwen36"),
+                    help="explicit Intel profile; b390-qwen36 selects the tested B390 execution options")
     ap.add_argument("--vision-exe", type=Path, help="built tinystrata-vision image encoder")
     ap.add_argument("--vision", choices=("gpu", "cpu", "no", "yes", "none"),
                     help="image encoder: gpu (default), cpu or no; yes = gpu, none = no; saved for later starts")
@@ -268,7 +291,7 @@ def main() -> int:
                     help="maximum image tokens per picture (default: 4096); saved for later starts")
     ap.add_argument("--config", type=Path, help="configuration path (default: a separate file per model family)")
     ap.add_argument("--max-context", type=context_limit, metavar="auto|TOKENS",
-                    help="choose context capacity from total GPU VRAM (default: auto), or set a token limit")
+                    help="auto uses the selected backend's memory policy; Intel uses a bounded shared-RAM context")
     ap.add_argument("--kv-type", choices=("auto", "fp16", "fp32", "fp8", "fp8-mma", "int8"),
                     help="auto: Qwen/LFM use native FP8 when supported, otherwise INT8; Gemma uses INT8")
     kv_allocation = ap.add_mutually_exclusive_group()
@@ -306,7 +329,7 @@ def main() -> int:
     for key in config.CONVERSATION_CACHE_KEYS:
         ap.add_argument(config.ENGINE_OPTIONS[key][0], type=int, metavar="N",
                         help="Gemma4/LFM2.5 conversation parking setting; omitted keeps the engine default")
-    ap.add_argument("--gpu", type=int, help="GPU index")
+    ap.add_argument("--gpu", type=int, help="GPU index in the selected backend's device list")
     ap.add_argument("--lib-dir", type=Path, action="append", help="GPU runtime DLL directory (repeatable)")
     ap.add_argument("--port", type=int, help="API port (default: saved setting or 18080)")
     ap.add_argument("--host", help="API bind address (default: 127.0.0.1)")

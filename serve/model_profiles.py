@@ -61,6 +61,13 @@ class ModelProfiles:
 
     def __init__(self, config_path: str | Path, cfg: dict):
         current_path = Path(config_path).expanduser().resolve()
+        self._intel = cfg.get("backend") == "sycl"
+        if self._intel:
+            from serve.intel_backend import validate_config
+            validate_config(cfg, allow_uninstalled=True)
+            # Keep the class-level alias resolver for existing CUDA/HIP callers,
+            # but reject unsupported Intel jobs before the controller starts one.
+            self.resolve = self._resolve_intel
         current_arch = cfg.get("arch", "qwen35moe")
         reject_retired_model(current_arch, cfg.get("model_name"))
         if current_arch not in _MODELS.values():
@@ -69,11 +76,21 @@ class ModelProfiles:
         parent = current_path.parent
         self._managed_work = (parent.parent.parent if parent.name.lower() == ".tinystrata"
                               and parent.parent.name.lower() == "runtime" else None)
-        self._hardware = {key: deepcopy(cfg[key]) for key in ("gpu", "hip_ordinal", "backend", "lib_dirs") if key in cfg}
+        hardware_keys = (("gpu", "backend", "lib_dirs", "intel_profile", "exe") if self._intel else
+                         ("gpu", "hip_ordinal", "backend", "lib_dirs"))
+        self._hardware = {key: deepcopy(cfg[key]) for key in hardware_keys if key in cfg}
+        if self._intel:
+            from serve.intel_backend import engine_args
+            native_args = engine_args(cfg, allow_uninstalled=True)
+            self._hardware["gpu"] = int(native_args[native_args.index("--device") + 1])
+            self._hardware.setdefault("intel_profile", "generic")
+            self._hardware.setdefault("lib_dirs", [])
         self._engine = model_setup.resolve_executable(cfg)
+        if self._intel and self._engine is not None:
+            self._hardware["exe"] = str(self._engine)
         self._profiles = {self.current_id: ModelProfile(self.current_id, current_arch, current_path, deepcopy(cfg))}
         for name, arch in _MODELS.items():
-            if name == self.current_id:
+            if self._intel or name == self.current_id:
                 continue
             path = self._profile_path(current_path.parent, arch, current_path, name)
             loaded = config.load(path) if path.is_file() else self._defaults(name, arch)
@@ -108,6 +125,14 @@ class ModelProfiles:
         if key in _ALIASES:
             return _ALIASES[key]
         raise ValueError(f"Unknown TinyStrata model: {name!r}")
+
+    @staticmethod
+    def _resolve_intel(name: str) -> str:
+        from serve.intel_backend import QWEN_MODEL
+        selected = ModelProfiles.resolve(name)
+        if selected != QWEN_MODEL:
+            raise ValueError("Intel currently supports Qwen3.6 only; other models are unvalidated")
+        return selected
 
     @classmethod
     def _configured_model(cls, cfg: dict) -> str:
@@ -195,6 +220,19 @@ class ModelProfiles:
                 (len(parts) == 2 or len(parts) == 3 and parts[1] == "release"))
 
     def _settings(self, cfg: dict, profile: ModelProfile) -> dict:
+        if self._intel:
+            from serve.intel_backend import configure_backend, validate_config
+            if cfg.get("backend") != "sycl":
+                raise ValueError("The Intel profile must keep the sycl backend; use a separate CUDA/HIP config")
+            validate_config(cfg, allow_uninstalled=True)
+            self._check_arch(profile.path, cfg, profile.arch, profile.id)
+            source = deepcopy(cfg)
+            source.update(deepcopy(self._hardware))
+            source["model_name"] = profile.id
+            result = configure_backend(source)
+            if "--model" not in result.get("args", []):
+                result = model_setup.configure_download(result, profile.path)
+            return result
         from serve.backend import configure_backend
         self._check_arch(profile.path, cfg, profile.arch, profile.id)
         source = deepcopy(cfg)
@@ -295,6 +333,12 @@ class ModelProfiles:
     def context_info(self, name: str) -> dict:
         """Configured context and model ceiling; allocation requires native READY."""
         profile = self.get(name)
+        if self._intel:
+            from serve.intel_backend import MAX_CONTEXT, context_tokens
+            context_tokens(profile.config)
+            requested = config.value_of(profile.config, "max_context")
+            return {"allocated_tokens": None, "model_limit": MAX_CONTEXT,
+                    "requested": "auto" if requested in (None, "auto", 0) else int(requested)}
         limit = _CONTEXT_LIMITS[profile.arch]
         requested = config.value_of(profile.config, "max_context")
         if requested in (None, "auto", 0):
@@ -317,13 +361,15 @@ class ModelProfiles:
                             "executable": str(exe) if exe is not None else None,
                             "config_path": str(profile.path), "shared_settings_path": str(profile.shared_path),
                             "context": self.context_info(profile.id),
-                            "vision": profile.arch in ("qwen35moe", "gemma4", "clover_moe") and profile.config.get("vision_mode", "gpu") != "no"})
+                            "vision": not self._intel and profile.arch in ("qwen35moe", "gemma4", "clover_moe") and profile.config.get("vision_mode", "gpu") != "no"})
         return entries
 
     def update(self, name: str, cfg: dict, *, save: bool = False) -> ModelProfile:
         """Update the controller's profile cache; optionally persist that profile."""
         current = self.get(name)
         self._check_arch(current.path, cfg, current.arch, current.id)
+        if self._intel:
+            cfg = self._settings(cfg, current)
         profile = ModelProfile(current.id, current.arch, current.path, deepcopy(cfg))
         if save:
             model_setup.save_settings(profile.path, profile.config)
@@ -339,6 +385,8 @@ class ModelProfiles:
         The controller must verify native/Vision readiness before unloading the
         old model. A supplied model_path is used by a verified download callback.
         """
+        if self._intel and (projector is not None or assistant is not None):
+            raise ValueError("Intel images and assistant models are unsupported")
         profile = self.get(name)
         saved = config.load(profile.path) if profile.path.is_file() else profile.config
         cfg = self._settings(saved, profile)
@@ -346,7 +394,10 @@ class ModelProfiles:
         if model is None or not model.is_file():
             raise ValueError(f"{profile.id} is not installed; download it before switching")
         if model_path is not None:
-            cfg["args"][cfg["args"].index("--model") + 1] = str(model)
+            if self._intel and "--model" not in cfg["args"]:
+                cfg["args"] += ["--model", str(model)]
+            else:
+                cfg["args"][cfg["args"].index("--model") + 1] = str(model)
         tinyconfig.validate(cfg, allow_uninstalled=True)
         extra = {"assistant": Path(assistant) if assistant is not None else None,
                  "assistant_verified": assistant_verified} if profile.arch == "gemma4" else {}

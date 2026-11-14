@@ -69,6 +69,7 @@ MODEL_FIELDS = (
 class ModelSwitcher:
     def __init__(self, svc, cfg: dict, config_path, api):
         self.svc, self.api = svc, api
+        self._intel = cfg.get('backend') == 'sycl'
         self._config_path = config_path
         self.profiles = ModelProfiles(config_path, cfg)
         self.active_id = self.profiles.current_id
@@ -383,6 +384,8 @@ class ModelSwitcher:
 
     def expert_placement(self) -> dict:
         """Requested placement and observed expert residency are separate figures."""
+        if getattr(self, '_intel', False):
+            raise ModelControlError(400, 'Intel UMA expert placement is unsupported')
         with self._lock:
             self._open()
             profile = self.profiles.get(self.active_id)
@@ -443,6 +446,8 @@ class ModelSwitcher:
         return self._start_expert_placement(model, gpu_experts, mode='count')
 
     def _start_expert_placement(self, model, choice, *, mode) -> dict:
+        if getattr(self, '_intel', False):
+            raise ModelControlError(400, 'Intel UMA expert placement is unsupported')
         with self._lock:
             self._open()
             if model != self.active_id:
@@ -493,6 +498,11 @@ class ModelSwitcher:
             cfg = deepcopy(configuration)
             tinyconfig.validate(cfg, allow_uninstalled=True)
             tinyconfig.check_files(cfg, allow_uninstalled=True)
+        if getattr(self, '_intel', False):
+            from serve.intel_backend import validate_config
+            if cfg.get('backend') != 'sycl':
+                raise ValueError('An Intel model reload must keep its sycl runtime')
+            validate_config(cfg, allow_uninstalled=True)
         profile = self.profiles.get(model)
         from serve.model_setup import resolve_executable
         exe = resolve_executable(cfg)
@@ -769,7 +779,11 @@ class ModelSwitcher:
             extra = {'assistant': assistant, 'assistant_verified': True} if profile.arch == 'gemma4' else {}
             self.profiles.prepare(model, model_path=path, projector=projector, projector_verified=True, **extra)
 
-        if profile.arch == 'clover_moe' and cfg.get('vision_mode') != 'no':
+        if cfg.get('backend') == 'sycl':
+            manager = FixedModelDownloader(directory, on_ready=prepared,
+                                           existing_paths=(existing,) if existing is not None else (),
+                                           _manifest=artifact)
+        elif profile.arch == 'clover_moe' and cfg.get('vision_mode') != 'no':
             projector = (cfg.get('vision') or {}).get('mmproj') or cfg.get('vision_mmproj')
             manager = FixedModelBundleDownloader(directory, on_ready=prepared,
                                                  existing_paths=(existing,) if existing is not None else (),

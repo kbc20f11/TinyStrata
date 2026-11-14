@@ -214,7 +214,7 @@ def migrate_chunk_settings(cfg: dict) -> tuple[dict, bool]:
 
 def check_vision_options(cfg: dict) -> str:
     """Validate launcher preferences independently of installed image assets."""
-    text_only = cfg.get("arch") == "lfm2moe"
+    text_only = cfg.get("arch") == "lfm2moe" or cfg.get("backend") == "sycl"
     mode = cfg.get("vision_mode", "no" if text_only else "gpu")
     if mode not in ("gpu", "cpu", "no"):
         raise ValueError("vision_mode must be gpu, cpu or no")
@@ -223,7 +223,8 @@ def check_vision_options(cfg: dict) -> str:
         if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
             raise ValueError("vision_tokens must be a positive whole number")
     if text_only and (mode != "no" or cfg.get("vision")):
-        raise ValueError(f"{MODEL_NAMES[cfg['arch']]} is text-only; use --vision no")
+        model = "The experimental Intel backend" if cfg.get("backend") == "sycl" else MODEL_NAMES[cfg["arch"]]
+        raise ValueError(f"{model} is text-only; use --vision no")
     return mode
 
 
@@ -249,6 +250,16 @@ def disable_vision(cfg: dict) -> dict:
 def migrate_settings(cfg: dict) -> tuple[dict, bool]:
     """Retain backend preferences while removing settings for the retired web UI."""
     reject_retired_model(cfg.get("arch"), cfg.get("model_name"))
+    if cfg.get("backend") == "sycl":
+        from copy import deepcopy
+        # Intel has one physical RAM pool. Discrete expert-budget and historical
+        # chunk migrations must not rewrite explicit Intel settings before they
+        # are validated. Keep normal generation defaults and saved user values.
+        new = deepcopy(cfg)
+        new["vision_mode"] = check_vision_options(new)
+        new, _ = migrate_generation_settings(new)
+        new = {key: value for key, value in new.items() if key not in {"open_browser", "api_monitor"}}
+        return new, new != cfg
     # Check the existing memory-policy marker before the memory migration adds it.
     new, changed = migrate_chunk_settings(cfg)
     new, memory_changed = migrate_memory_settings(new)
@@ -279,13 +290,17 @@ def migrate_settings(cfg: dict) -> tuple[dict, bool]:
 def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
     reject_retired_model(cfg.get("arch"), cfg.get("model_name"))
     check_vision_options(cfg)
-    if cfg.get("backend") not in (None, "cuda", "hip"):
-        raise ValueError("backend must be cuda or hip")
+    if cfg.get("backend") not in (None, "cuda", "hip", "sycl"):
+        raise ValueError("backend must be cuda, hip or sycl")
     if not isinstance(cfg.get("enable_thinking", True), bool):
         raise ValueError("enable_thinking must be true or false")
     max_tokens = cfg.get("max_tokens", DEFAULT_MAX_TOKENS)
     if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
         raise ValueError("max_tokens must be a positive whole number")
+    if cfg.get("backend") == "sycl":
+        from serve.intel_backend import validate_config
+        validate_config(cfg, allow_uninstalled=allow_uninstalled)
+        return
     arch = cfg.get("arch", "qwen35moe")
     if arch not in MODEL_NAMES:
         raise ValueError("TinyStrata supports qwen35moe, lfm2moe, gemma4 and clover_moe models")

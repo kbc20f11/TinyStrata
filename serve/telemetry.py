@@ -252,6 +252,17 @@ def gpu_reader(index=0, amd=False):
     return _Amd(index) if amd else _Nvml(index)
 
 
+class _UnavailableGpu:
+    """An explicitly selected backend must not borrow another vendor's card."""
+    total = None
+
+    def ok(self):
+        return False
+
+    def name(self):
+        return None
+
+
 _DISPLAY_CLASS = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
 
 
@@ -386,7 +397,7 @@ class _CpuRamFallback:
 
 # ------------------------------------------------------------------------------------------------ the sampler
 class Telemetry:
-    def __init__(self, extra=None, gpu_index=0, gpu_indices=None, amd=False, gpu_env=None):
+    def __init__(self, extra=None, gpu_index=0, gpu_indices=None, amd=False, gpu_env=None, intel_info=None):
         """`extra()` -> dict of more series to record each second (the server's tok/s).  `gpu_index`: the card the
         engine runs on, numbered as nvidia-smi and NVML number them (by PCI bus); `gpu_indices`: all of them when
         the model is split across several (issue #112) - the gpu_* readings are then their total (memory, power,
@@ -398,9 +409,16 @@ class Telemetry:
         self.lock = threading.Lock()
         self.now: dict = {}
         self.hist = collections.defaultdict(lambda: collections.deque(maxlen=HISTORY))
+        self.intel = intel_info is not None
         idx = list(gpu_indices) if gpu_indices and len(gpu_indices) > 1 else [gpu_index]
         self.gpus = []
-        if amd and os.name == "nt":
+        if self.intel:
+            try:
+                from serve.windows_intel_telemetry import WindowsIntelCard
+                self.gpus = [(gpu_index, WindowsIntelCard(intel_info))]
+            except Exception:  # unknown Intel identity never falls through to NVML
+                self.gpus = [(gpu_index, _UnavailableGpu())]
+        elif amd and os.name == "nt":
             try:
                 from serve.windows_amd_telemetry import hip_cards, WindowsAmdCard
                 cards = hip_cards(gpu_env)
@@ -442,6 +460,20 @@ class Telemetry:
             "threads": os.cpu_count(),
             "psutil": self.ps is not None,
         }
+        if self.intel:
+            identity = getattr(self.gpu, "identity", None) or {}
+            integrated = (isinstance(intel_info, dict) and intel_info.get("backend") == "sycl"
+                          and intel_info.get("device_vendor") == 0x8086
+                          and intel_info.get("device_integrated") == 1 and intel_info.get("memory_model") == "uma")
+            self.static.update({
+                "gpu_backend": "level_zero", "gpu_integrated": True if integrated else None,
+                "gpu_memory_model": "uma" if integrated else None,
+                "gpu_adapter_luid": identity.get("luid"),
+                "gpu_adapter_node_mask": identity.get("node_mask"),
+                "gpu_vram_total_mib": None,
+                "gpu_note": None if self.gpu.ok() else "Selected Intel adapter telemetry is unavailable",
+                "gpu_memory_note": "Shared GPU usage overlaps system RAM; adapter-wide." if integrated else None,
+            })
         self._disk_prev = None
         self._stop = threading.Event()
         threading.Thread(target=self._loop, daemon=True).start()
@@ -464,6 +496,10 @@ class Telemetry:
 
     def sample(self):
         s = {}
+        if self.intel:
+            s.update({"gpu_mem_used": None, "gpu_mem_total": None, "gpu_shared_mem_used": None,
+                      "gpu_memory_usage_scope": "adapter",
+                      "gpu_metric_status": {"mem_used": "unsupported", "shared_mem_used": "unavailable"}})
         if self.gpu.ok():
             reads = [(i, g.read()) for i, g in self.gpus]
             g = dict(reads[0][1])
@@ -487,6 +523,8 @@ class Telemetry:
             groups = {"util": ("util",), "temp": ("temp",), "power": ("power",),
                       "pcie": ("pcie_gen", "pcie_gen_max", "pcie_width", "pcie_rx_mb", "pcie_tx_mb"),
                       "mem_used": ("mem_used",)}
+            if self.intel:
+                groups["shared_mem_used"] = ("shared_mem_used",)
             statuses = {}
             for group, keys in groups.items():
                 if any(g.get(k) is not None for k in keys):
@@ -524,8 +562,9 @@ class Telemetry:
                 s = self.sample()
                 with self.lock:
                     self.now = s
-                    for k in ("gpu_util", "gpu_mem_used", "gpu_temp", "gpu_power", "gpu_pcie_rx_mb", "gpu_pcie_tx_mb", "cpu", "ram_used",
-                              "disk_read_mb", "tok_s", "prefill_tok_s_mean"):
+                    keys = ("gpu_util", "gpu_mem_used", "gpu_temp", "gpu_power", "gpu_pcie_rx_mb", "gpu_pcie_tx_mb", "cpu", "ram_used",
+                            "disk_read_mb", "tok_s", "prefill_tok_s_mean")
+                    for k in keys + (("gpu_shared_mem_used",) if self.intel else ()):
                         v = s.get(k)
                         self.hist[k].append(round(v, 2) if isinstance(v, float) else v)
                 self._stop.wait(1.0)

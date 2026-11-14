@@ -1,0 +1,645 @@
+{
+  "schema": 1,
+  "generated_at": "2026-11-14T18:37:48.220835+09:00",
+  "issue": "https://github.com/kbc20f11/TinyStrata/issues/11",
+  "status": "experimental; issue remains open",
+  "worktree_head": "068329fedae69791e957d5966b41d6de4710689f",
+  "uncommitted_implementation": true,
+  "machine": {
+    "model": "MouseComputer ISeNEi-16FHX31",
+    "cpu": "Core Ultra X7 358H",
+    "gpu": "Arc B390",
+    "pci_id": "8086:b082",
+    "architecture": "intel_gpu_ptl_h / Panther Lake Xe3",
+    "ram_gib": 32,
+    "ram_mt_s": 7467,
+    "windows": "Windows 11 Home build 26200",
+    "gpu_driver": "32.0.101.9175",
+    "power_plan": "Ultimate Performance"
+  },
+  "toolchain": {
+    "oneapi": "2026.2.0",
+    "mkl": "2026.2",
+    "ur": "0.12.0",
+    "level_zero_sdk": "1.35.0",
+    "level_zero_system_loader": "1.33.1",
+    "msvc_build_tools": "17.14.45",
+    "windows_sdk": "10.0.26100.0",
+    "cmake": "4.4.4"
+  },
+  "model": {
+    "filename": "Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf",
+    "bytes": 14069266720,
+    "sha256": "36f9ec0e4c775f6efd3a61c1ea76f0875128469c3d012e3d9e2495a90e7a7150",
+    "unchanged": true,
+    "all_selected_experts": 8
+  },
+  "build": {
+    "backend": "SYCL",
+    "aot_target": "intel_gpu_ptl_h",
+    "mkl": true,
+    "int8_xmx": true,
+    "exe_sha256": "149280c424e2e0efac5b7624c94fd1fc90dd7a512a24c0917a39ec59e9aef913",
+    "short_iq_packed_loads": true
+  },
+  "memory_policy": {
+    "weights": "one persistent host-USM compressed/interleaved arena",
+    "weight_bytes": 14305198080,
+    "kv": "explicit int8",
+    "recurrent_state": "fp32",
+    "gpu_scratch": "device USM; CPU logits/control shared",
+    "physical_ram_and_shared_gpu_are_not_summed": true,
+    "reserve_gib": 4,
+    "draft_vocabulary_extra_device_visible_ids_bytes": 8192,
+    "loader_upload_bytes": 0,
+    "loader_upload_accounting_note": "Loader explicit-copy count only; not a measurement of all physical driver/page traffic."
+  },
+  "candidate_flags": [
+    "--prefill-mkl",
+    "--decode-dp4a",
+    "--mtp",
+    "3",
+    "--verify-xmx",
+    "--prefill-int8-xmx",
+    "--vocab-xmx",
+    "--kv-type",
+    "int8",
+    "--mtp-stochastic",
+    "--expert-xmx-layout",
+    "--device-state",
+    "--dense-xmx-layout",
+    "--dense-split-k",
+    "--draft-vocab",
+    "2048"
+  ],
+  "measurement_policy": {
+    "generation_tok_s": "(accepted output tokens - first output token) / native decode seconds; rejected drafts excluded",
+    "model_loading_excluded_from_prefill_and_generation": true,
+    "serial_models": true,
+    "no_concurrent_build_or_staging_copy_during_measurements": true,
+    "normal_thinking": true,
+    "seed": 2026,
+    "temperature": 1,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0,
+    "presence_penalty": 1.5,
+    "repeat_penalty": 1,
+    "frequency_penalty": 0,
+    "penalty_last_n": 64,
+    "long_input_policy": "Existing closed-thinking source prompts; temperature=0 with the other listed penalties. These are separate from the normal-thinking rows."
+  },
+  "normal_settings_paired": [
+    {
+      "name": "control-before",
+      "draft_vocabulary_limit": 0,
+      "prompt_tokens": 84,
+      "output_tokens": 1658,
+      "prefill_seconds": 0.899959,
+      "prefill_tok_s": 93.33758537888949,
+      "decode_seconds": 63.884980000000006,
+      "decode_steps_tok_s": 25.937239081862433,
+      "first_token_seconds": 0.9059999999999491,
+      "finish": "stop",
+      "thinking_closed": true,
+      "correct": true,
+      "final_text": "{\n  \"id\": \"R17\",\n  \"participants\": 12,\n  \"fee\": 800,\n  \"venue\": 3200,\n  \"start\": \"14:30\",\n  \"remaining\": 6400\n}",
+      "exit": 0,
+      "statistics": [
+        "mtp_windows=492 mtp_offered=1476 mtp_accepted=1165 mtp_draft_ms=14434.419 mtp_verify_ms=47071.339 mtp_commit_ms=937.160"
+      ],
+      "exe_sha256": "acc343ac2f9e9231346be08143c026df3d8c61684bc4c07262d614632f687bf4"
+    },
+    {
+      "name": "vocab-256",
+      "draft_vocabulary_limit": 256,
+      "prompt_tokens": 84,
+      "output_tokens": 574,
+      "prefill_seconds": 0.85988,
+      "prefill_tok_s": 97.68804949527842,
+      "decode_seconds": 18.926432000000002,
+      "decode_steps_tok_s": 30.275120001487863,
+      "first_token_seconds": 0.8599999999996726,
+      "finish": "stop",
+      "thinking_closed": true,
+      "correct": true,
+      "final_text": "{\n  \"id\": \"R17\",\n  \"participants\": 12,\n  \"fee\": 800,\n  \"venue\": 3200,\n  \"start\": \"14:30\",\n  \"remaining\": 6400\n}",
+      "exit": 0,
+      "statistics": [
+        "mtp_windows=179 mtp_offered=537 mtp_accepted=394 mtp_draft_ms=1410.812 mtp_verify_ms=15990.987 mtp_commit_ms=382.238",
+        "draft_vocab_limit=256 draft_vocab_updates=179 draft_vocab_prepare_ms=694.939 target_full_vocabulary=1"
+      ],
+      "exe_sha256": "acc343ac2f9e9231346be08143c026df3d8c61684bc4c07262d614632f687bf4"
+    },
+    {
+      "name": "vocab-2048",
+      "draft_vocabulary_limit": 2048,
+      "prompt_tokens": 84,
+      "output_tokens": 1268,
+      "prefill_seconds": 0.999976,
+      "prefill_tok_s": 84.00201604838516,
+      "decode_seconds": 39.847946,
+      "decode_steps_tok_s": 31.7958672198562,
+      "first_token_seconds": 1.0,
+      "finish": "stop",
+      "thinking_closed": true,
+      "correct": true,
+      "final_text": "{\n  \"id\": \"R17\",\n  \"participants\": 12,\n  \"fee\": 800,\n  \"venue\": 3200,\n  \"start\": \"14:30\",\n  \"remaining\": 6400\n}",
+      "exit": 0,
+      "statistics": [
+        "mtp_windows=377 mtp_offered=1131 mtp_accepted=890 mtp_draft_ms=3507.398 mtp_verify_ms=33183.840 mtp_commit_ms=642.558",
+        "draft_vocab_limit=2048 draft_vocab_updates=377 draft_vocab_prepare_ms=1540.499 target_full_vocabulary=1"
+      ],
+      "exe_sha256": "acc343ac2f9e9231346be08143c026df3d8c61684bc4c07262d614632f687bf4"
+    },
+    {
+      "name": "control-after",
+      "draft_vocabulary_limit": 0,
+      "prompt_tokens": 84,
+      "output_tokens": 1658,
+      "prefill_seconds": 0.832468,
+      "prefill_tok_s": 100.90477952305675,
+      "decode_seconds": 59.08974,
+      "decode_steps_tok_s": 28.042093263568262,
+      "first_token_seconds": 0.8440000000000509,
+      "finish": "stop",
+      "thinking_closed": true,
+      "correct": true,
+      "final_text": "{\n  \"id\": \"R17\",\n  \"participants\": 12,\n  \"fee\": 800,\n  \"venue\": 3200,\n  \"start\": \"14:30\",\n  \"remaining\": 6400\n}",
+      "exit": 0,
+      "statistics": [
+        "mtp_windows=492 mtp_offered=1476 mtp_accepted=1165 mtp_draft_ms=13317.242 mtp_verify_ms=43669.833 mtp_commit_ms=808.485"
+      ],
+      "exe_sha256": "acc343ac2f9e9231346be08143c026df3d8c61684bc4c07262d614632f687bf4"
+    }
+  ],
+  "normal_settings_interpretation": "All final JSON facts correct; output lengths differ, so no precise percentage speedup or universal >=30 tok/s claim.",
+  "long_input_checks": [
+    {
+      "name": "source-4k",
+      "input_tokens": 4096,
+      "context": 8192,
+      "sampler": "temperature=0 top_p=0.95 top_k=20 min_p=0 penalty_present=1.5 penalty_repeat=1 penalty_freq=0 penalty_last_n=64 seed=2026",
+      "fresh_prompt_tokens": 4096,
+      "prefill_seconds": 12.025763000000001,
+      "prefill_tok_s": 340.6020890316897,
+      "output_tokens": 59,
+      "decode_seconds": 1.721249,
+      "decode_steps_tok_s": 33.69646111631728,
+      "first_token_seconds": 12.063000000000102,
+      "finish": "stop",
+      "correct": true,
+      "minimum_available_bytes": 7206014976,
+      "accepted_draft_tokens": 42,
+      "offered_draft_tokens": 48,
+      "exit": 0,
+      "exe_sha256": "acc343ac2f9e9231346be08143c026df3d8c61684bc4c07262d614632f687bf4"
+    },
+    {
+      "name": "source-16k",
+      "input_tokens": 16384,
+      "context": 32768,
+      "sampler": "temperature=0 top_p=0.95 top_k=20 min_p=0 penalty_present=1.5 penalty_repeat=1 penalty_freq=0 penalty_last_n=64 seed=2026",
+      "fresh_prompt_tokens": 16384,
+      "prefill_seconds": 53.542062,
+      "prefill_tok_s": 306.00240984368514,
+      "output_tokens": 59,
+      "decode_seconds": 2.2327220000000003,
+      "decode_steps_tok_s": 25.977260044018017,
+      "first_token_seconds": 53.57799999999952,
+      "finish": "stop",
+      "correct": true,
+      "minimum_available_bytes": 6618415104,
+      "accepted_draft_tokens": 42,
+      "offered_draft_tokens": 48,
+      "exit": 0,
+      "exe_sha256": "acc343ac2f9e9231346be08143c026df3d8c61684bc4c07262d614632f687bf4"
+    }
+  ],
+  "code_checks_closed_thinking": [
+    {
+      "case": "binary-search",
+      "passed": true,
+      "finish": "stop",
+      "input_tokens": 71,
+      "output_tokens": 108,
+      "prefill_tok_s": 92.50500960228058,
+      "decode_steps_tok_s": 40.774875055493844,
+      "independent_checks": "5100 binary-search cases passed",
+      "exe_sha256": "149280c424e2e0efac5b7624c94fd1fc90dd7a512a24c0917a39ec59e9aef913"
+    },
+    {
+      "case": "merge-sort-python",
+      "passed": true,
+      "finish": "stop",
+      "input_tokens": 64,
+      "output_tokens": 145,
+      "prefill_tok_s": 89.91529698039145,
+      "decode_steps_tok_s": 38.835799811160925,
+      "independent_checks": "100 independent Python sort cases passed",
+      "exe_sha256": "149280c424e2e0efac5b7624c94fd1fc90dd7a512a24c0917a39ec59e9aef913"
+    },
+    {
+      "case": "topological-sort",
+      "passed": true,
+      "finish": "stop",
+      "input_tokens": 96,
+      "output_tokens": 241,
+      "prefill_tok_s": 113.18792614959433,
+      "decode_steps_tok_s": 34.16218869171771,
+      "independent_checks": "32 DAG cases and three cycle cases passed",
+      "exe_sha256": "149280c424e2e0efac5b7624c94fd1fc90dd7a512a24c0917a39ec59e9aef913"
+    }
+  ],
+  "code_checks_normal_thinking": [
+    {
+      "case": "binary-search",
+      "passed": true,
+      "thinking_closed": true,
+      "prompt_tokens": 69,
+      "output_tokens": 1061,
+      "prefill_tok_s": 87.76180682481599,
+      "decode_steps_tok_s": 29.15793292591632,
+      "finish": "stop",
+      "test_log": "5100 binary-search cases passed\n",
+      "exe_sha256": "acc343ac2f9e9231346be08143c026df3d8c61684bc4c07262d614632f687bf4"
+    }
+  ],
+  "validation": {
+    "cpu_ctest": {
+      "passed": 3,
+      "tests": [
+        "intel_memory_policy",
+        "intel_speculative_distribution",
+        "intel_draft_vocabulary"
+      ]
+    },
+    "gpu_numerics": "Passed actual 27 tensor references, sparse Q6 tails 1/15/17, sparse capacity4096/tail/refusal and split-K 1MiB capacity with independent FP64 references. Numerical checks do not alone establish answer quality.",
+    "native_and_http": {
+      "passed": 11,
+      "includes": [
+        "prefix reuse/edit",
+        "invalid-request state preservation",
+        "prefill/decode cancellation and recovery",
+        "seeded sampling replay",
+        "Japanese arithmetic",
+        "streaming",
+        "official defaults",
+        "tool calls",
+        "explicit image refusal"
+      ]
+    },
+    "intel_python_cpu": {
+      "passed": 36,
+      "includes": "telemetry14, parser14, runtime staging8; staging8 rerun after payload-size correction"
+    },
+    "shared_regression": {
+      "python_passed": 74,
+      "node_assertions_passed": 396,
+      "node_suites": 6
+    },
+    "app_local_runtime_full_model_and_visual": {
+      "passed": true,
+      "model_startup_seconds": 17.735000000000582,
+      "prompt_tokens": 84,
+      "output_tokens": 1268,
+      "prefill_tok_s": 95.7,
+      "accepted_decode_tok_s": 33.0,
+      "first_token_seconds": 0.9219999999995707,
+      "finish": "stop",
+      "all_final_json_facts_correct": true,
+      "official_sampling_and_thinking_preserved": true,
+      "no_request_output_cap_override": true,
+      "more_than_1024_output_tokens": true,
+      "sdk_dll_count": 0,
+      "selected_adapter_luid": "00000000:0000ddff",
+      "selected_adapter_node_mask": 1,
+      "shared_memory_counter_available": true,
+      "shared_memory_scope": "adapter, overlaps system RAM",
+      "actual_monitor_and_about_dom_and_png": true,
+      "uma_hit_column_hidden_and_table_consistent": true,
+      "owned_processes_all_exited0_without_force": true,
+      "normal_settings_history_pointer_unchanged": true,
+      "evidence": "staged-api-packed-iq-ui-20261114-173910/result.json"
+    },
+    "current_exe_sha256": "149280c424e2e0efac5b7624c94fd1fc90dd7a512a24c0917a39ec59e9aef913"
+  },
+  "sparse_draft_policy": "Only proposal q uses selected real IDs. Full-vocabulary target p, sampling filters/penalties and exact min(1,p/q) plus positive-residual rejection remain in use. No approximate acceptance or expert omission. Default0 is off.",
+  "unsupported_or_pending": [
+    "Intel images",
+    "Tiel, Clover, Gemma and LFM validation",
+    "dynamic KV growth/shrink and broader memory pressure recovery",
+    "same-day same-model Windows SYCL/Vulkan/CPU baseline refresh",
+    "short-prompt prefill consistently >=100 tok/s; observed84..101 in paired84-token input",
+    "Universal >=30 tok/s is not established; previous16K closed-thinking source generation was25.98 tok/s on first sparse build; new short-IQ optimization is validated on the listed normal source/code tasks.",
+    "Installer Python-bootstrap network path and actual user Desktop shortcut were covered by existing fixtures, not rerun as real global/user installation; Intel private native generation/import/API/UI path passed."
+  ],
+  "preserved_adverse_results": [
+    {
+      "case": "initial app-local API validation",
+      "api_answer_correct": true,
+      "isolation_passed": false,
+      "reason": "SDK compiler intelocl64.dll loaded through registered CPU OpenCL ICD. Initial failure retained. Child-only Level Zero selector and UR prefilter subsequently passed fresh full-model app-local API/UI validation."
+    },
+    {
+      "case": "AOT normal thinking without sparse draft",
+      "prefill_tok_s": 91.75,
+      "decode_tok_s": 26.13,
+      "output_tokens": 1373,
+      "correct": true,
+      "speedup_claimed": false
+    },
+    {
+      "case": "first fresh sparse-draft live UI capture",
+      "api_correct": true,
+      "sdk_isolation_passed": true,
+      "visual_gate_passed": false,
+      "reason": "Private headless virtual-time capture observed Chat/Connecting before lazy Monitor/About rendering. Private real-time CDP tab sequencing corrected; recorded-only replay and subsequent fresh live packed-build run passed with no production startup exceptions."
+    },
+    {
+      "case": "first actual private installer import",
+      "passed": false,
+      "evidence": "installer-live-smoke/run-20261114-182328-31f662a2/result.json",
+      "reason": "Strict size check refused original staging manifest zero-byte SDK symbolic-link metadata. Staging fixed; v2 actual import and relocated runtime live tests passed."
+    },
+    {
+      "case": "first normal state-operation suite resident monitor",
+      "functional_operations_passed": true,
+      "overall_passed": false,
+      "evidence": "unified-intel-state-ops-20261114-182024/result.json",
+      "reason": "Private monitor counted a40.7ms --capabilities metadata process as resident. Corrected exact command/creation/exit classification kept unknown invocations failing; fresh installed-generation run proved max1 --serve model."
+    }
+  ],
+  "evidence_root": "../tinystrata-work/intel-20261114",
+  "evidence": [
+    "build-draft-vocab.log",
+    "draft-vocab-quant.log",
+    "draft-vocab-normal-paired/results.json",
+    "draft-vocab-integration.log",
+    "code-quality-draft-vocab/results.json",
+    "code-quality-draft-vocab-thinking/results.json",
+    "draft-vocab-long-20261114-171305-379061/results.json",
+    "draft-vocabulary-cpu/api-options.log",
+    "intel-uma-telemetry-cpu.log",
+    "intel-uma-shared-regression-python.log",
+    "intel-uma-shared-regression-node.json",
+    "runtime-stage-draft-vocab/.tinystrata-intel-runtime.json",
+    "expert-packed-iq-probe/run-result.json",
+    "expert-packed-iq-probe/timing-summary.json",
+    "expert-packed-iq-probe/production-apply.json",
+    "build-packed-iq.log",
+    "packed-iq-quant.log",
+    "code-quality-packed-iq-thinking-paired/results.json",
+    "packed-iq-normal/results.json",
+    "sampling-cpu-micro.jsonl",
+    "packed-iq-integration.log",
+    "code-quality-packed-iq/results.json",
+    "staged-api-packed-iq-ui-20261114-173910/result.json",
+    "staged-api-packed-iq-ui-20261114-173910/ui-monitor.png",
+    "staged-api-packed-iq-ui-20261114-173910/ui-about.png",
+    "intel-uma-hit-column-cpu.log",
+    "intel-uma-hit-column-node.json",
+    "intel-unified-root-final-cpu.log",
+    "intel-backend-device-limit-cpu.log",
+    "unified-launch-configure.log",
+    "unified-intel-api-ui-20261114-180929/result.json",
+    "intel-stage-size-regression.log",
+    "runtime-stage-packed-iq-v2/.tinystrata-intel-runtime.json",
+    "unified-intel-state-ops-20261114-182941/result.json",
+    "installer-live-smoke/run-20261114-182701-34b4f6c0/result.json",
+    "installer-intel-live-smoke-v2.log"
+  ],
+  "packed_iq_load_candidate": {
+    "guard": "Interleaved IQ2_S/IQ3_S and 2 <= plan.tokens <=8; T1, larger prefill, original-layout matrices and all Q6 paths retain old loads.",
+    "change": "Gather aligned physical DWORDs over 16 rows, then recover identical code/sign bytes in registers. Quantization, selected experts, DPAS and FP32 accumulation order unchanged.",
+    "exe_sha256": "149280c424e2e0efac5b7624c94fd1fc90dd7a512a24c0917a39ec59e9aef913",
+    "build_directory": "build-packed-iq",
+    "numerical_and_cpu_checks": "Fresh build, CPU3 and full GPU reference/capacity suite passed.",
+    "micro": {
+      "real_tensors": 3,
+      "token_counts": [
+        1,
+        4,
+        8
+      ],
+      "routing_patterns": [
+        "varied",
+        "stable",
+        "mixed"
+      ],
+      "repeats_per_path": 40,
+      "timing_variants": [
+        "compute-only",
+        "quantization included"
+      ],
+      "cases": 54,
+      "all_output_bits_equal": true,
+      "all_tail_canaries": true,
+      "quantization_included_t4_t8_cases_improved": 18,
+      "quantization_included_t4_t8_cases": 18,
+      "adverse_t1_wall_cases": 3,
+      "t1_kept_on_old_path": true,
+      "interpretation": "Kernel micro timings do not estimate complete model throughput."
+    },
+    "normal_thinking_code_same_output_comparison": [
+      {
+        "engine": "control-before",
+        "prompt_tokens": 69,
+        "output_tokens": 1061,
+        "prefill_tok_s": 86.83002456408812,
+        "decode_steps_tok_s": 29.090520285876384,
+        "thinking_closed": true,
+        "finish": "stop",
+        "passed": true,
+        "test_log": "5100 binary-search cases passed\n",
+        "exe_sha256": "acc343ac2f9e9231346be08143c026df3d8c61684bc4c07262d614632f687bf4"
+      },
+      {
+        "engine": "packed-iq",
+        "prompt_tokens": 69,
+        "output_tokens": 1061,
+        "prefill_tok_s": 86.43031524518025,
+        "decode_steps_tok_s": 32.80081113311516,
+        "thinking_closed": true,
+        "finish": "stop",
+        "passed": true,
+        "test_log": "5100 binary-search cases passed\n",
+        "exe_sha256": "149280c424e2e0efac5b7624c94fd1fc90dd7a512a24c0917a39ec59e9aef913"
+      },
+      {
+        "engine": "control-after",
+        "prompt_tokens": 69,
+        "output_tokens": 1061,
+        "prefill_tok_s": 91.16252031338769,
+        "decode_steps_tok_s": 30.772808275679072,
+        "thinking_closed": true,
+        "finish": "stop",
+        "passed": true,
+        "test_log": "5100 binary-search cases passed\n",
+        "exe_sha256": "acc343ac2f9e9231346be08143c026df3d8c61684bc4c07262d614632f687bf4"
+      }
+    ],
+    "code_output_ids_identical_all_three": true,
+    "normal_thinking_source_question": {
+      "prompt_tokens": 84,
+      "output_tokens": 1268,
+      "prefill_tok_s": 95.3181754739526,
+      "decode_steps_tok_s": 33.0553906337094,
+      "thinking_closed": true,
+      "correct": true,
+      "finish": "stop",
+      "final_text": "{\n  \"id\": \"R17\",\n  \"participants\": 12,\n  \"fee\": 800,\n  \"venue\": 3200,\n  \"start\": \"14:30\",\n  \"remaining\": 6400\n}",
+      "same_output_ids_as_prior_sparse2048": true,
+      "statistics": [
+        "mtp_windows=377 mtp_offered=1131 mtp_accepted=890 mtp_draft_ms=3606.723 mtp_verify_ms=31457.029 mtp_commit_ms=674.146",
+        "draft_vocab_limit=2048 draft_vocab_updates=377 draft_vocab_prepare_ms=1584.659 target_full_vocabulary=1"
+      ]
+    },
+    "native_api_and_closed_thinking_code": {
+      "native_http_passed": 11,
+      "closed_thinking_code_cases_passed": 3
+    },
+    "fresh_app_local_live_api_ui": {
+      "passed": true,
+      "model_startup_seconds": 17.735000000000582,
+      "prompt_tokens": 84,
+      "output_tokens": 1268,
+      "prefill_tok_s": 95.7,
+      "accepted_decode_tok_s": 33.0,
+      "first_token_seconds": 0.9219999999995707,
+      "finish": "stop",
+      "all_final_json_facts_correct": true,
+      "official_sampling_and_thinking_preserved": true,
+      "no_request_output_cap_override": true,
+      "more_than_1024_output_tokens": true,
+      "sdk_dll_count": 0,
+      "selected_adapter_luid": "00000000:0000ddff",
+      "selected_adapter_node_mask": 1,
+      "shared_memory_counter_available": true,
+      "shared_memory_scope": "adapter, overlaps system RAM",
+      "actual_monitor_and_about_dom_and_png": true,
+      "uma_hit_column_hidden_and_table_consistent": true,
+      "owned_processes_all_exited0_without_force": true,
+      "normal_settings_history_pointer_unchanged": true,
+      "evidence": "staged-api-packed-iq-ui-20261114-173910/result.json"
+    }
+  },
+  "first_sparse_draft_build": {
+    "backend": "SYCL",
+    "aot_target": "intel_gpu_ptl_h",
+    "mkl": true,
+    "int8_xmx": true,
+    "exe_sha256": "acc343ac2f9e9231346be08143c026df3d8c61684bc4c07262d614632f687bf4"
+  },
+  "prior_code_checks_closed_thinking": [
+    {
+      "case": "binary-search",
+      "passed": true,
+      "finish": "stop",
+      "input_tokens": 71,
+      "output_tokens": 108,
+      "prefill_tok_s": 92.06980706836767,
+      "decode_steps_tok_s": 37.532033766202794,
+      "independent_checks": "5100 binary-search cases passed",
+      "exe_sha256": "acc343ac2f9e9231346be08143c026df3d8c61684bc4c07262d614632f687bf4"
+    },
+    {
+      "case": "merge-sort-python",
+      "passed": true,
+      "finish": "stop",
+      "input_tokens": 64,
+      "output_tokens": 145,
+      "prefill_tok_s": 90.4871176035618,
+      "decode_steps_tok_s": 36.2583132884452,
+      "independent_checks": "100 independent Python sort cases passed",
+      "exe_sha256": "acc343ac2f9e9231346be08143c026df3d8c61684bc4c07262d614632f687bf4"
+    },
+    {
+      "case": "topological-sort",
+      "passed": true,
+      "finish": "stop",
+      "input_tokens": 96,
+      "output_tokens": 241,
+      "prefill_tok_s": 113.33009870343285,
+      "decode_steps_tok_s": 31.948362925948217,
+      "independent_checks": "32 DAG cases and three cycle cases passed",
+      "exe_sha256": "acc343ac2f9e9231346be08143c026df3d8c61684bc4c07262d614632f687bf4"
+    }
+  ],
+  "normal_launch_integration": {
+    "entry": "run.py --backend sycl --intel-profile b390-qwen36 -> serve.server",
+    "configuration": "separate config-sycl.json; default port18085; existing CUDA/HIP defaults preserved",
+    "auto_context_actual": 8192,
+    "saved_kv": "auto",
+    "actual_kv": "int8",
+    "current_model": "qwen3.6-35b-a3b",
+    "model_families_not_validated_on_intel_rejected": true,
+    "api_health_backend": "sycl",
+    "api_health_profile": "b390-qwen36",
+    "official_thinking_sampling_output_defaults_preserved": true,
+    "root_cpu_regression_passed": 140,
+    "root_cpu_regression_skipped": 0,
+    "live_api_ui_passed": true,
+    "prompt_tokens": 84,
+    "output_tokens": 1268,
+    "prefill_tok_s": 96.1,
+    "accepted_generation_tok_s": 32.7,
+    "first_token_seconds": 0.9210000000002765,
+    "finish": "stop",
+    "all_final_facts_correct": true,
+    "sdk_dlls": 0,
+    "actual_luid_and_shared_counter_and_ui_verified": true,
+    "normal_state_unchanged": true,
+    "all_owned_processes_exit0_without_force": true,
+    "state_operation_reload_and_installer_real_import_tests": "passed within the explicit boundaries below",
+    "evidence": "unified-intel-api-ui-20261114-180929/result.json",
+    "live_state_operations": {
+      "passed": true,
+      "authentication_rejections": 2,
+      "unsupported_operations_rejected": 11,
+      "unsupported_actions_keep_native_model_pid": true,
+      "mtp_reload_sequence": [
+        3,
+        0,
+        3
+      ],
+      "all_three_closed_thinking_arithmetic_answers": "2",
+      "resident_models_maximum": 1,
+      "metadata_probe_classified_separately": true,
+      "sdk_dlls": 0,
+      "all11_owned_processes_natural_exit0": true,
+      "source_config_stage_normal_UI_unchanged": true,
+      "evidence": "unified-intel-state-ops-20261114-182941/result.json"
+    },
+    "installer_real_import": {
+      "passed": true,
+      "files": 53,
+      "immutable_generation": "sycl-e85a71935109480697593e5a2f143e6c",
+      "source_stage": "runtime-stage-packed-iq-v2",
+      "manifest_hash": "b06d04713b49ba8448e46b86d0caeca1ebfd02be0ed8b0ca62d1506f1cb68662",
+      "normal_source_runtime_unchanged": true,
+      "local_model_stat_unchanged": true,
+      "guard_and_candidates_cleaned": true,
+      "no_api_UI_state_from_NoStart": true,
+      "test_boundary": "Actual shipping manifest/hash/license/import/guard/config candidate/publication functions. Python bootstrap explicitly reused existing private venv; fresh Python bootstrap/network/UI/Desktop were not exercised. Subsequent live state suite ran this installed generation.",
+      "evidence": "installer-live-smoke/run-20261114-182701-34b4f6c0/result.json"
+    },
+    "installer_cpu_checks": {
+      "intel_powershell": 60,
+      "intel_launcher_python": 7,
+      "existing_launcher_python": 26,
+      "existing_entrypoint_checks": 114,
+      "existing_ui_flow": 7,
+      "existing_desktop": 34,
+      "existing_transaction": 159,
+      "existing_service_updater_python": 12,
+      "overlap_not_added_to_a_grand_total": true
+    },
+    "stage_payload_size_fix": {
+      "cause": "SDK compiler/bin/umf.dll is a symbolic link: FileInfo.Length=0 while actual copied/hash-verified DLL is209720 bytes. Strict importer safely refused original manifest.",
+      "fix": "Staging reads payload stream length for runtime and license entries; original failed stage/import evidence retained, fresh v2 stage created.",
+      "stage_unit_tests_passed": 8,
+      "v2_all_file_bytes_match_real_payload": true
+    }
+  }
+}

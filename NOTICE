@@ -26,6 +26,22 @@ GGML-derived source and the pinned llama.cpp dependency are MIT licensed.
 See third_party/ggml/LICENSE and third_party/ggml/VERSION.txt.
 Existing file-level copyright and license notices remain in place.
 
+The experimental native Windows Intel route in src/intel and
+include/strata/intel follows TinyStrata's Qwen3.6 layer/serving semantics at
+068329fedae69791e957d5966b41d6de4710689f (derived from Strata, MIT).
+Its scalar block interpretation uses the existing pinned GGML block layouts
+and codebooks, and dequantization formulas reviewed in ggml-quants.c from
+aflin/momoe fbcfbe612a0a0c8bb414dec57b33d6478da15b01's vendored GGML
+(MIT, Copyright (c) 2023-2026 The ggml authors).
+The existing GGML license at third_party/ggml/LICENSE accompanies this code.
+
+The Intel dot-product candidate in src/intel/decode_dp4a.cpp
+adapts the sub-block decode/scale factoring approach and Q6_K packed-word
+unpacking in gufo-org/gufo e8f2fe0e066faa658972b835ee53eaf8bcd23585,
+src/families/qwen/hip_common/quant_ops.hpp (MIT, Copyright (c) 2026 gufo
+contributors). The ESIMD dispatch, Q8 activation and IQ2_S paths are TinyStrata's.
+See third_party/licenses/gufo.txt for the original MIT license.
+
 The HTTP API server and tokenizer are adapted from the same upstream commit.
 
 Checked MMQ row-map storage margins adapt Niko1221/Strata commit

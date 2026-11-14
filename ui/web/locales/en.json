@@ -680,5 +680,12 @@
   "thinking.alwaysOn": "Always on",
   "thinking.high": "High (xhigh)",
   "models.selectModel": "Select a model",
-  "models.downloadFirst": "Download a model from Models to start"
+  "models.downloadFirst": "Download a model from Models to start",
+  "metrics.sharedRam": "GPU shared RAM",
+  "monitor.sharedRamNote": "Adapter total; included in RAM",
+  "monitor.sharedRamHint": "Windows adapter-wide shared GPU memory usage includes other applications and overlaps physical RAM. It is not additional capacity or this model's memory usage.",
+  "placement.umaHint": "CPU and GPU share system RAM. Separate expert placement measurements are unavailable.",
+  "about.umaKv": "shared system RAM",
+  "about.memoryTopology": "Memory",
+  "about.umaMemory": "CPU/GPU share system RAM"
 }

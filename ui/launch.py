@@ -36,9 +36,13 @@ def reject_retired_model(name):
                          "Existing model files and chats have been kept.")
 
 
-def profile_path(runtime, family):
+def profile_path(runtime, family, backend=None):
     """A retired primary config stays intact; Qwen uses its separate profile."""
     parent = Path(runtime) / ".tinystrata"
+    if backend == "sycl":
+        if family != "qwen36":
+            raise ValueError("Experimental Intel supports Qwen3.6 text only")
+        return parent / "config-sycl.json"
     path = parent / PROFILES[family][1]
     if family == "qwen36" and path.is_file():
         try:
@@ -284,7 +288,12 @@ class Launcher:
         from serve.install_guard import assert_installation_ready
         assert_installation_ready(work_root=self.work, allow_installer=bool(getattr(args, "configure_only", False)))
         self.runtime = work / "runtime"
-        self.state_dir = self.runtime / "ui"
+        self.backend = getattr(args, "backend", None) or "auto"
+        self.intel_profile = getattr(args, "intel_profile", None) or "b390-qwen36"
+        if getattr(args, "intel_profile", None) and self.backend != "sycl":
+            raise ValueError("--intel-profile requires explicit --backend sycl")
+        self.state_name = "ui-sycl" if self.backend == "sycl" else "ui"
+        self.state_dir = self.runtime / self.state_name
         self.state_dir.mkdir(parents=True, exist_ok=True)
         settings_path = self.state_dir / "settings.json"
         try:
@@ -293,14 +302,16 @@ class Launcher:
             settings = {}
         if not isinstance(settings, dict):
             settings = {}
-        self.api_port = port_number(args.api_port if args.api_port is not None else settings.get("api_port", 18080))
-        self.port = port_number(args.port if args.port is not None else settings.get("port", 3000))
+        self.api_port = port_number(args.api_port if args.api_port is not None else settings.get("api_port", 18085 if self.backend == "sycl" else 18080))
+        self.port = port_number(args.port if args.port is not None else settings.get("port", 3005 if self.backend == "sycl" else 3000))
         selected_family = args.model_family or settings.get("model_family", "qwen36")
         if args.model_family:
             reject_retired_model(args.model_family)
-        elif retired_model(selected_family):
+        elif retired_model(selected_family) and self.backend != "sycl":
             selected_family = available_default_family(self.runtime)
         self.family = FAMILY_ALIASES.get(selected_family, selected_family)
+        if self.backend == "sycl" and (self.family != "qwen36" or self.intel_profile != "b390-qwen36"):
+            raise ValueError("Experimental Intel supports Qwen3.6 text with profile b390-qwen36 only")
         if self.family not in PROFILES:
             raise ValueError("Unknown saved model family; specify --model-family qwen36, gemma4, lfm2, clover or tiel")
         if self.api_port == self.port:
@@ -320,12 +331,14 @@ class Launcher:
         temporary.replace(target)
 
     def save_settings(self):
-        self.write_state("settings.json", {"source_dir": str(self.source), "work_dir": str(self.work),
-                                         "api_port": self.api_port, "port": self.port,
-                                         "model_family": self.family})
+        settings = {"source_dir": str(self.source), "work_dir": str(self.work),
+                    "api_port": self.api_port, "port": self.port, "model_family": self.family}
+        if self.backend == "sycl":
+            settings.update(backend="sycl", intel_profile=self.intel_profile)
+        self.write_state("settings.json", settings)
         # A small pointer in the normal sibling work directory lets run-ui.bat
         # find a custom installation's private Python without changing Git files.
-        location = self.source.with_name(self.source.name + "-work") / "runtime" / "ui" / "location.json"
+        location = self.source.with_name(self.source.name + "-work") / "runtime" / self.state_name / "location.json"
         location.parent.mkdir(parents=True, exist_ok=True)
         temporary = location.with_name(f"{location.name}.{os.getpid()}.tmp")
         temporary.write_text(json.dumps({"source_dir": str(self.source), "work_dir": str(self.work)},
@@ -392,6 +405,10 @@ class Launcher:
         # server directly so its PID is discoverable by a later installer update.
         arguments = ["--config", str(config), "--model-family", self.family,
                      "--port", str(self.api_port), "--host", "127.0.0.1", "--configure-only"]
+        if self.backend == "sycl":
+            arguments += ["--backend", "sycl", "--intel-profile", self.intel_profile]
+        elif self.backend != "auto":
+            arguments += ["--backend", self.backend]
         process = self.spawn(self.source / "run.py", arguments, "api-prepare")
         if process.wait() != 0:
             raise RuntimeError(f"API configuration failed; see {self.state_dir / 'api-prepare.stderr.log'}")
@@ -400,6 +417,8 @@ class Launcher:
         name = {"qwen36": "server-state.json", "gemma4": "server-state-gemma4.json",
                 "lfm2": "server-state-lfm2.json", "clover": "server-state-clover.json",
                 "tiel": "server-state-tiel-coder.json"}[self.family]
+        if self.backend == "sycl":
+            name = "server-state-sycl.json"
         target = self.runtime / name
         temporary = target.with_name(f"{target.name}.{os.getpid()}.tmp")
         values = {"pid": process.pid, "started": process_started(process.pid),
@@ -416,7 +435,7 @@ class Launcher:
                 health = request_json(self.api_port, "/health")
             except Exception as error:
                 raise RuntimeError(f"API port {self.api_port} is occupied or unresponsive; it was left unchanged") from error
-            if not api_identity(health):
+            if not self.selected_api_identity(health):
                 raise RuntimeError(f"API port {self.api_port} belongs to another application; it was left unchanged")
             expected_model = health["model"]
             self.family = MODELS[expected_model]
@@ -428,7 +447,7 @@ class Launcher:
         else:
             if no_start:
                 raise RuntimeError(f"No TinyStrata API is running on port {self.api_port}; --no-api-start leaves it unchanged")
-            config = profile_path(self.runtime, self.family)
+            config = profile_path(self.runtime, self.family, self.backend)
             if not config.is_file():
                 raise RuntimeError(f"Installed model configuration was not found: {config}. Run the installer first")
             self.prepare_api(config)
@@ -438,7 +457,7 @@ class Launcher:
         while time.monotonic() < deadline:
             try:
                 health = request_json(self.api_port, "/health")
-                if not api_identity(health):
+                if not self.selected_api_identity(health):
                     raise RuntimeError(f"API port {self.api_port} now belongs to another application; it was left unchanged")
                 if health["model"] != expected_model:
                     expected_model = health["model"]
@@ -453,6 +472,15 @@ class Launcher:
                 raise RuntimeError(f"TinyStrata exited before becoming ready; see {self.state_dir / 'api.stderr.log'}")
             time.sleep(.4)
         raise RuntimeError(f"TinyStrata did not become ready within 300 seconds; see {self.state_dir / 'api.stderr.log'}")
+
+    def selected_api_identity(self, health):
+        if not api_identity(health):
+            return False
+        if self.backend == "sycl":
+            return (health.get("backend") == "sycl" and health.get("experimental") is True and
+                    health.get("intel_profile") == self.intel_profile and
+                    health.get("model") == PROFILES["qwen36"][0])
+        return True
 
     def existing_ui(self):
         if not port_occupied(self.port):
@@ -603,6 +631,9 @@ def main():
     parser.add_argument("--api-port", type=port_number, help="API port (default: saved selection or 18080)")
     parser.add_argument("--port", type=port_number, help="UI port (default: saved selection or 3000)")
     parser.add_argument("--model-family", choices=(*PROFILES, *FAMILY_ALIASES), help="model for a new API (default: saved selection or qwen36)")
+    parser.add_argument("--backend", choices=("auto", "cuda", "hip", "sycl"),
+                        help="explicit sycl uses experimental Qwen3.6 text, config-sycl.json and separate ui-sycl history/settings (API 18085/UI 3005); default selection is unchanged")
+    parser.add_argument("--intel-profile", choices=("b390-qwen36",), help="requested Intel tuning profile; requires --backend sycl and does not certify detected hardware")
     parser.add_argument("--no-browser", action="store_true", help="do not open the browser")
     parser.add_argument("--no-api-start", action="store_true", help="require an existing healthy API; never start it or force model loading")
     parser.add_argument("--configure-only", action="store_true", help="save selections without starting services or opening the browser")
@@ -613,7 +644,7 @@ def main():
         default_work = source.with_name(source.name + "-work")
         selected_work = args.work_dir
         if selected_work is None:
-            location = default_work / "runtime" / "ui" / "location.json"
+            location = default_work / "runtime" / ("ui-sycl" if args.backend == "sycl" else "ui") / "location.json"
             try:
                 pointer = read_json(location)
                 if Path(pointer["source_dir"]).resolve() == source:

@@ -27,6 +27,16 @@ def model_architecture(path: str | Path) -> str:
 def shared_library_dirs(cfg: dict) -> dict:
     """Reuse a matching installed GPU runtime for another model config."""
     reject_retired_model(cfg.get("arch"), cfg.get("model_name"))
+    if cfg.get("backend") == "sycl":
+        # The staged executable owns its runtime; Intel must never borrow CUDA
+        # or HIP directories from another model's saved configuration.
+        directories = list(cfg.get("lib_dirs") or ())
+        if cfg.get("exe"):
+            executable = Path(cfg["exe"]).expanduser()
+            if not executable.is_absolute():
+                executable = Path(cfg.get("cwd") or ROOT) / executable
+            directories.insert(0, str(executable.resolve().parent))
+        return {**cfg, "lib_dirs": list(dict.fromkeys(directories))}
     if os.name == "nt" and cfg.get("backend") == "hip" and cfg.get("exe"):
         from serve.hip_runtime import resolve_hip_runtime
         executable = Path(cfg["exe"]).expanduser()
@@ -83,6 +93,15 @@ def resolve_executable(cfg: dict) -> Path | None:
         return path.resolve() if usable(path) else None
     suffix = ".exe" if os.name == "nt" else ""
     work = ROOT.with_name(ROOT.name + "-work")
+    if cfg.get("backend") == "sycl":
+        from serve.intel_backend import supports_model
+        if not supports_model(cfg):
+            return None
+        for folder in (work / "build-intel", work / "build-intel/Release", ROOT / "bin"):
+            candidate = folder / ("tinystrata-intel" + suffix)
+            if usable(candidate):
+                return candidate.resolve()
+        return None
     name = {"lfm2moe": "tinystrata-lfm2", "gemma4": "tinystrata-gemma4"}.get(cfg.get("arch"), "tinystrata")
     backend_build = work / ("build-hip" if cfg.get("backend") == "hip" else "build")
     for folder in (backend_build, backend_build / "Release", work / "build-cuda-132" if cfg.get("backend") != "hip" else backend_build,
@@ -314,6 +333,13 @@ def prepare_installed_model(cfg: dict, config_path: str | Path, model_path: str 
     actual_arch = model_architecture(model)
     if actual_arch != cfg.get("arch", "qwen35moe"):
         raise ValueError("The GGUF architecture differs from this configuration; use --model-family with a separate config")
+    if cfg.get("backend") == "sycl":
+        from serve.gguf_reader import GGUFFile
+        from serve.intel_backend import supports_model
+        metadata = GGUFFile(model).metadata
+        if not supports_model(cfg) or actual_arch != "qwen35moe" or \
+                "qwen3.6" not in str(metadata.get("general.name", "")).lower():
+            raise ValueError("Only Qwen3.6 text is enabled on Intel; this GGUF is not a validated Intel model")
     st = model.stat()
     identity = f"{model}\n{st.st_size}\n{st.st_mtime_ns}"
     cache = path.parent / "models" / hashlib.sha256(identity.encode()).hexdigest()[:16]
@@ -327,7 +353,7 @@ def prepare_installed_model(cfg: dict, config_path: str | Path, model_path: str 
     args = new["args"]
     args[args.index("--model") + 1] = str(model)
     new["tokenizer"] = str(tokenizer)
-    log_name = ("engine-tiel-coder.log" if cfg.get("model_name") == "tiel-coder-35b-a3b" else
+    log_name = ("engine-intel.log" if cfg.get("backend") == "sycl" else "engine-tiel-coder.log" if cfg.get("model_name") == "tiel-coder-35b-a3b" else
                 {"lfm2moe": "engine-lfm2.log", "gemma4": "engine-gemma4.log",
                  "clover_moe": "engine-clover.log"}.get(actual_arch, "engine.log"))
     new["log"] = str(path.parent / log_name)

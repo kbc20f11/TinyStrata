@@ -100,7 +100,7 @@ def _executable_backend(executable: str, modified_ns: int, size: int,
         report = json.loads(result.stdout) if result.returncode == 0 else {}
     except (OSError, ValueError, subprocess.TimeoutExpired):
         report = {}
-    if report.get("backend") in ("cuda", "hip"):
+    if report.get("backend") in ("cuda", "hip", "sycl"):
         return report["backend"]
     return None
 
@@ -110,11 +110,14 @@ def configure_backend(cfg: dict, requested: str | None = None, *, explicit_kv: s
     from serve.model_download import reject_retired_model
     reject_retired_model(cfg.get("arch"), cfg.get("model_name"))
     saved = cfg.get("backend")
-    if saved not in (None, "cuda", "hip"):
-        raise ValueError("backend must be cuda or hip")
+    if saved not in (None, "cuda", "hip", "sycl"):
+        raise ValueError("backend must be cuda, hip or sycl")
     backend = requested if requested not in (None, "auto") else saved or "cuda"
-    if backend not in ("cuda", "hip"):
-        raise ValueError("backend must be auto, cuda or hip")
+    if backend not in ("cuda", "hip", "sycl"):
+        raise ValueError("backend must be auto, cuda, hip or sycl")
+    if backend == "sycl":
+        from serve.intel_backend import configure_backend as configure_intel
+        return configure_intel(cfg, explicit_kv=explicit_kv)
     result = {**cfg, "args": list(cfg.get("args") or []), "backend": backend}
     if backend != (saved or "cuda"):
         # CUDA and HIP ordinals describe different device lists.

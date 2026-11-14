@@ -2735,6 +2735,10 @@ class Vision:
 def gpu_list(cfg: dict) -> list[int]:
     """The config's "gpu": one card (2), or several for a layer split ([0, 2] or "0,2"), numbered as nvidia-smi
     numbers them; [] when it names none."""
+    if cfg.get("backend") == "sycl":
+        from serve.intel_backend import engine_args as intel_engine_args
+        args = intel_engine_args(cfg, allow_uninstalled=True)
+        return [int(args[args.index("--device") + 1])]
     g = cfg.get("gpu")
     if g is None or g == "":
         return []
@@ -2835,6 +2839,9 @@ def engine_args(cfg: dict) -> list[str]:
     """The engine's arguments: the config's, and with several GPUs the layer split across them ("layer_split" in the
     config: "auto" by default, or the first layer of each later GPU's share, e.g. "18" or "16,32"; see
     layer_split_value)."""
+    if cfg.get("backend") == "sycl":
+        from serve.intel_backend import engine_args as intel_engine_args
+        return intel_engine_args(cfg)
     args = list(cfg["args"])
     if cfg.get("arch") == "lfm2moe" and "--mtp" in args:
         index = args.index("--mtp")
@@ -3053,6 +3060,10 @@ def ordered_gpus(cfg: dict, scores=None, vrams=None) -> list[int]:
 def child_env(cfg: dict) -> dict:
     """The engine's environment: the CUDA libraries setup installed (pip's nvidia packages, or the toolkit that
     compiled it) first on the library search path."""
+    if cfg.get("backend") == "sycl":
+        from serve.intel_backend import runtime_environment, validate_config
+        validate_config(cfg, allow_uninstalled=True)
+        return quiet_child_env(runtime_environment(cfg, os.environ))
     env = dict(os.environ)
     if cfg.get("arch") in ("qwen35moe", "clover_moe") and cfg.get("log"):
         # Rankings belong to managed runtime state, independently of current
@@ -3369,6 +3380,13 @@ class Service:
     def __init__(self, engine: Engine, tokenizer, template: ChatTemplate, model_name: str = "qwen3.6-35b-a3b",
                  vision: Vision | None = None, sampling_defaults: dict | None = None,
                  fit_max_tokens: bool = False, generation_defaults: dict | None = None):
+        if (generation_defaults or {}).get("backend") == "sycl":
+            from serve.intel_backend import validate_config
+            validate_config(generation_defaults, allow_uninstalled=True)
+            if vision is not None:
+                raise ValueError("Intel image encoders are unsupported")
+            self.backend = "sycl"
+            self.intel_profile = generation_defaults.get("intel_profile", "generic")
         self.engine, self.tok, self.template, self.model, self.vision = engine, tokenizer, template, model_name, vision
         # Keep the configured family on the engine bundle so live model switches
         # cannot leave request validation using the previous model's family.
@@ -3668,6 +3686,8 @@ class Service:
     def free_vram_mib(self) -> int | None:
         """Free VRAM on the engine's (first) GPU, from NVML (AMD backend: amdgpu's sysfs files, #301); None when it can't
         be read (then nothing is refused)."""
+        if getattr(self, "backend", None) == "sycl":
+            return None  # UMA shared usage is not a dedicated free-VRAM budget.
         try:
             if getattr(self, "backend", None) == "hip":
                 from serve.telemetry import free_vram_mib
@@ -3685,6 +3705,8 @@ class Service:
 
     def check_load_policy(self):
         """Apply the configured before-load hook and free-VRAM gate. Caller holds self.fifo."""
+        if getattr(self, "backend", None) == "sycl" and self.min_free_vram_mib:
+            raise ValueError("Intel UMA does not support a dedicated free-VRAM load gate")
         hook_failed = None
         if self.before_load:
             cmd = self.before_load
@@ -3797,6 +3819,8 @@ class Service:
         started with), applied between requests - a request that is running finishes first (up to wait_s).  Only an
         engine started with --vram-elastic (the config's "vram_elastic": true) can do it; it never resizes on its own.
         An unloaded engine applies it when it loads.  -> {"status": ..., and the engine's figures}."""
+        if getattr(self, "backend", None) == "sycl":
+            raise ValueError("Intel UMA does not support discrete VRAM resizing")
         if not hasattr(self.engine, "vram"):
             raise ValueError("this engine cannot resize its VRAM use")
         if not self.fifo.acquire(timeout=self.vram_wait_s):
@@ -4003,7 +4027,9 @@ class Service:
                                        gpu_index=int(getattr(self, "gpu_index", 0) or 0),
                                        gpu_indices=getattr(self, "gpu_indices", None),
                                        amd=getattr(self, "backend", None) == "hip",
-                                       gpu_env=getattr(self, "telemetry_env", None))
+                                       gpu_env=getattr(self, "telemetry_env", None),
+                                       intel_info=dict(getattr(self.engine, "info", {}) or {})
+                                       if getattr(self, "backend", None) == "sycl" else None)
             if getattr(self, "engine", None) is not None and hasattr(self.engine, "gpu_busy"):
                 # #1317: the quick frozen-engine check does not end an engine whose GPU is busy (a long prompt chunk on a
                 # slow card keeps the GPU at work while the host thread sleeps)
@@ -4166,7 +4192,10 @@ class Service:
                 "at": int(time.time()),
                 "gpu": {"name": static.get("gpu_name"), "used_mib": scaled(hw.get("gpu_mem_used"), 2 ** 20),
                         "total_mib": scaled(hw.get("gpu_mem_total"), 2 ** 20), "util_pct": hw.get("gpu_util"),
-                        "temp_c": hw.get("gpu_temp"), "power_w": hw.get("gpu_power")} if static.get("gpu_name") else None,
+                        "temp_c": hw.get("gpu_temp"), "power_w": hw.get("gpu_power"),
+                        **({"memory_model": "uma", "shared_used_mib": scaled(hw.get("gpu_shared_mem_used"), 2 ** 20),
+                            "memory_usage_scope": "adapter", "shared_overlaps_ram": True}
+                           if static.get("gpu_memory_model") == "uma" else {})} if static.get("gpu_name") else None,
                 "ram": {"used_gib": scaled(hw.get("ram_used"), 2 ** 30, 1),
                         "total_gib": scaled(hw.get("ram_total"), 2 ** 30, 1)} if hw.get("ram_total") else None}}
 
@@ -5984,8 +6013,14 @@ def make_handler(svc: Service):
 
         def _get(self):
             path = self.path.split("?")[0].rstrip("/")
+            if path == "/v1/vram" and getattr(svc, "backend", None) == "sycl":
+                if self._authorized():
+                    raise ValueError("Intel UMA does not support discrete VRAM resizing")
+                return
             if path == "/v1/model/expert-placement":
                 if self._authorized():
+                    if getattr(svc, "backend", None) == "sycl":
+                        raise ValueError("Intel UMA expert placement is unsupported")
                     if svc.models is None:
                         self._json(404, {"error": {"message": "expert placement is not configured"}})
                     else:
@@ -6046,12 +6081,13 @@ def make_handler(svc: Service):
                 if control.get("switching"):
                     self._json(200, {"status": "switching", "model": control["model"], "target": control["target"],
                                      "phase": control["phase"], "loaded": False, "images": False,
-                                     "max_context": 0, "api_key": bool(svc.api_key), "service": "strata"})
+                                     "max_context": 0, "api_key": bool(svc.api_key), "service": "strata",
+                                     **intel_health_fields(svc)})
                     return
                 self._json(200, {"status": "ok", "max_context": svc.reported_ctx(), "model": svc.model,
                                  "images": svc.vision_available(), "api_key": bool(svc.api_key),
                                  "image_generation": svc.images is not None,
-                                 "loaded": svc.loaded(), "service": "strata"})
+                                 "loaded": svc.loaded(), "service": "strata", **intel_health_fields(svc)})
             elif path.startswith("/v1/images/files/"):
                 # response_format url: the name (32 random hex digits) is the access, as an OpenAI image URL is
                 f = svc.images.file(path[len("/v1/images/files/"):]) if svc.images is not None else None
@@ -6187,6 +6223,8 @@ def make_handler(svc: Service):
                 if path == "/v1/model/expert-placement":
                     if not self._own_page("expert placement can be changed"):
                         return
+                    if getattr(svc, "backend", None) == "sycl":
+                        raise ValueError("Intel UMA expert placement is unsupported")
                     if set(req) not in ({"model", "gpu_percent"}, {"model", "gpu_experts"}):
                         raise ValueError("send a JSON object containing model and either gpu_experts or gpu_percent")
                     if svc.models is None:
@@ -7348,11 +7386,22 @@ def default_model_name(cfg: dict) -> str:
     return cfg.get("model_name") or FAMILY_MODEL_NAMES.get(cfg.get("arch", "qwen35moe"), FAMILY_MODEL_NAMES["qwen35moe"])
 
 
+def intel_health_fields(svc) -> dict:
+    """Public opt-in runtime identity; existing CUDA/HIP health stays unchanged."""
+    if getattr(svc, "backend", None) != "sycl":
+        return {}
+    return {"backend": "sycl", "intel_profile": getattr(svc, "intel_profile", None), "experimental": True}
+
+
 def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
     """Install the fixed GGUF and image projector before publishing inference readiness."""
     from serve.model_download import (FixedModelBundleDownloader, FixedModelDownloader,
                                       FixedGemma4BundleDownloader, manifest_for_arch, projector_for_arch)
     from serve.model_setup import model_path, prepare_installed_model, resolve_executable, save_settings
+
+    if cfg.get("backend") == "sycl":
+        from serve.intel_backend import validate_config
+        validate_config(cfg, allow_uninstalled=True)
 
     existing = model_path(cfg)
     directory = Path(cfg.get("download_dir") or Path(config_path).parent / "model-files")
@@ -7387,6 +7436,11 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
         # A previous activation may have failed before the native engine was
         # installed. Respect a subsequently configured executable on retry.
         latest = config.load(config_path) if Path(config_path).is_file() else cfg
+        if cfg.get("backend") == "sycl":
+            from serve.intel_backend import validate_config
+            if latest.get("backend") != "sycl":
+                raise ValueError("An Intel model activation must keep its sycl runtime")
+            validate_config(latest, allow_uninstalled=True)
         from serve.tinyconfig import validate
         validate(latest, allow_uninstalled=True)
         # Retain the installer/control API if either native startup fails. Only
@@ -7472,7 +7526,11 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
         print("[tinystrata] verified model" + (" and image encoder" if image_candidate is not None else "") +
               " loaded; inference API ready", flush=True)
 
-    if cfg.get("arch") == "gemma4":
+    if cfg.get("backend") == "sycl":
+        svc.downloads = FixedModelDownloader(directory, on_ready=activate,
+                    existing_paths=(existing,) if existing is not None else (),
+                    _manifest=manifest_for_arch("qwen35moe", "qwen3.6-35b-a3b"))
+    elif cfg.get("arch") == "gemma4":
         projector = (cfg.get("vision") or {}).get("mmproj") or cfg.get("vision_mmproj")
         assistant = cfg.get("draft_model")
         svc.downloads = FixedGemma4BundleDownloader(directory, on_ready=activate,
@@ -7563,6 +7621,12 @@ def main() -> int:
             cfg = migrated_runtime
             runtime_config_changed = True
 
+    if a.engine == "strata" and cfg.get("backend") == "sycl":
+        from serve.intel_backend import validate_config
+        try:
+            validate_config(cfg, allow_uninstalled=cfg.get("model_bootstrap") is True)
+        except ValueError as error:
+            ap.error(str(error))
     lift_reasoning_effort_arg(cfg)
     bootstrap = a.engine == "strata" and cfg.get("model_bootstrap") is True
     if a.engine == "strata":
@@ -7580,6 +7644,17 @@ def main() -> int:
     if a.gpu is not None:
         cfg["gpu"] = int(a.gpu) if a.gpu.strip().isdigit() else a.gpu
         cfg.pop("hip_ordinal", None)
+    if a.engine == "strata" and cfg.get("backend") == "sycl":
+        from serve.intel_backend import validate_config
+        candidate = dict(cfg)
+        if a.min_free_vram_mib is not None:
+            candidate["min_free_vram_mib"] = a.min_free_vram_mib
+        if a.slot_save_path is not None:
+            candidate["slot_save_path"] = a.slot_save_path
+        try:
+            validate_config(candidate, allow_uninstalled=bootstrap)
+        except ValueError as error:
+            ap.error(str(error))
     a.host = a.host or cfg.get("host") or "127.0.0.1"   # issue #26: the run scripts pass no --host, the config can
     try:                                                # before the minutes of loading: is the port free?
         Server((a.host, a.port), BaseHTTPRequestHandler).server_close()
@@ -7659,11 +7734,14 @@ def main() -> int:
             effort_end = effort_end_args(cfg, exe, tok)  # #458
         except ValueError as e:
             raise SystemExit(f"[strata] config {e}")
-        from serve import replicas as rp
-        try:
-            groups = rp.gpu_groups(cfg)
-        except rp.ReplicaConfigError as e:
-            raise SystemExit(f"[strata] config {e}")
+        if cfg.get("backend") == "sycl":
+            groups = []
+        else:
+            from serve import replicas as rp
+            try:
+                groups = rp.gpu_groups(cfg)
+            except rp.ReplicaConfigError as e:
+                raise SystemExit(f"[strata] config {e}")
         if groups:
             engine = start_replicas(cfg, groups, exe, effort_end or [], lazy)
         else:
@@ -7676,7 +7754,7 @@ def main() -> int:
             raise SystemExit("[tinystrata] the native engine does not support image embeddings; rebuild TinyStrata")
         warn_tight_ram(engine.info.get("arena_mib"))
         note = desktop_vram_note(cfg.get("backend"), engine.info.get("vram_free_mib"), engine.spawn[1],
-                                 linux_desktop()) if not groups else None
+                                 linux_desktop()) if not groups and cfg.get("backend") != "sycl" else None
         if note:                                        # #560 #516: account for desktop VRAM use
             print(note, flush=True)
     else:
