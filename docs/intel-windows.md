@@ -1,8 +1,18 @@
 # Experimental Intel UMA backend on native Windows
 
-This is the first causal-text proof of concept for [issue #11](https://github.com/kbc20f11/TinyStrata/issues/11), not a completed Intel release. It runs the standard Qwen3.6 GGUF on the Arc B390. The existing CUDA/HIP selection and engines are unchanged. Intel is selected explicitly by its build target and separate API entry point.
+The installer now supports the validated **Arc B390 / Core Ultra X7 358H / 32 GB RAM** configuration through a prebuilt, hash-pinned Intel runtime. It supports experimental **Qwen3.6 and Tiel Coder text**, with model-specific profiles and separate settings. Images, Gemma, LFM and Clover remain unsupported on Intel; the broader [Issue #11](https://github.com/kbc20f11/TinyStrata/issues/11) remains open.
 
-Images, Tiel, Clover, Gemma and LFM are not enabled. MTP defaults to zero; an explicit experimental `--mtp 1..7` candidate exists for Qwen3.6. The executable reports no fully validated model family in `--capabilities` yet. The wider quality, performance and lifecycle gates in the issue remain open.
+On 2026-11-14, the actual shipping installer prepared a fresh Python environment, imported 65 runtime/license files, created the Intel desktop shortcut and started the real API/UI on the B390-only PC. It used the local source checkout and existing verified GGUF rather than downloading a second model copy. Its normal Qwen request used 84 fresh input tokens and returned 1,268 tokens with thinking enabled: **107.2 tok/s prefill, 34.4 tok/s decode**, terminal stop and the correct six-field answer. No request output cap or sampler override was supplied. This earlier chunk512 checkpoint is retained separately. Real Qwen/Tiel switching, native unload/reload and live Monitor/About checks subsequently passed, preserving settings and keys with no compiler-SDK DLLs loaded.
+
+For ordinary installation, use the UI installer linked in the README. A local checkout accepts `install-ui.ps1 -Backend sycl`; a verified offline stage may instead be supplied with `-IntelRuntimeDirectory`. NVIDIA/AMD selection retains priority on mixed systems. Only the validated B390 device/target is accepted, with no generic fallback to untested Intel hardware. Runtime files and Microsoft VC++ release DLLs are app-local; the installer does not install an Intel SDK, replace a driver or edit global PATH.
+
+Qwen uses `b390-qwen36` / `config-sycl.json`; Tiel uses `b390-tiel-coder` / `config-tiel-coder-sycl.json`. Both resolve saved context `auto` to 8,192, KV `auto` to actual INT8, and chunk `auto` to 1,024. Explicit chunk settings, including 512, are retained. The native diagnostic CLI's default chunk128 is separate. The Intel shortcut normally uses UI 3005/API 18085. The `--intel-text` [benchmark variant](../benchmark/README.md) explicitly uses a private 32,768-cell context for its 16K input and labels its differences from fixed v1.
+
+Tiel's native medium-thinking tests returned the correct reservation calculation at **135.60 / 30.95 tok/s** (prefill/decode), and generated binary-search code at **130.57 / 29.21 tok/s**, passing 5,100 independent cases. Its no-think arithmetic error was reproduced by the independent llama.cpp SYCL reference; the owner explicitly excludes that known behavior from the adoption gate. The error remains recorded in the [measurement artifact](../benchmark/results/intel-uma-windows-20261114.json).
+
+The implementation began with a Qwen3.6-only causal-text proof of concept and a separate diagnostic API. The following engineering milestones retain those early measurements; the normal installer and model-specific profiles described above supersede that initial entry-point limitation.
+
+The native diagnostic CLI defaults MTP to zero; the normal B390 profiles select experimental MTP3. `--capabilities` retains an empty formal `model_families` list while separately declaring the two experimental text models, profile contracts and compiled quantization paths. Images, Clover, Gemma and LFM are not enabled on Intel. The wider gates in the issue remain open.
 
 Owner clarification on 2026-11-14: a working prototype is **not sufficient for adoption**. Upstream Coder already exceeds 20 tok/s with a model larger than 20 GiB. Prefill must reach at least 100 tok/s, with a dedicated-engine generation aim of 30–40 tok/s and the issue's separate 42.5 tok/s MTP reference retained. Keep model and speculation differences visible. Practical throughput and answer quality must both pass.
 
@@ -105,6 +115,8 @@ Initial MTP observations: a 51-token prime-function prompt produced the same 89 
 
 The fresh AOT build passed three CPU CTest cases, 27 actual-tensor numerical references, selected-head tails of 1/15/17 rows, capacity 4096 with tail/refusal checks, and the split-K 1 MiB boundary fixture. Native/API 11 tests and all three independently checked Python coding tasks passed. The measured configuration retains FP32 recurrent state, explicit INT8 KV and one 14,305,198,080-byte compressed/interleaved weight arena; 2,048 selected IDs require another 8 KiB. `gpu_upload_bytes=0` counts only loader-explicit copies, not all driver/page traffic. Conditions, results and private log references are recorded in the [Intel measurement artifact](../benchmark/results/intel-uma-windows-20261114.json).
 
+These earlier kernel milestones describe native diagnostic defaults. The normal B390 profiles now derive the measured optimization flags, MTP3, stochastic verification and draft vocabulary2048 for their child engines. A saved explicit MTP0/draft0 remains a user choice.
+
 ### Runtime staging and UMA telemetry
 
 The initial app-local staging trial completed an actual normal-settings API request: 84 prompt tokens, 1,658 output tokens, 95.8 prefill / 26.5 decode tok/s, with the six final JSON fields correct. However, the native process loaded the compiler installation's `intelocl64.dll`; the isolated-runtime check therefore **failed**. Preserve `staged-api-validation-initial/result.json` and its logs as a failed isolation trial, rather than a distribution success. The normal UI location pointer was unchanged.
@@ -119,7 +131,7 @@ The remaining recent-request VRAM-hit column was then hidden for UMA, including 
 
 The final **live** run used `runtime-stage-packed-iq` with draft limit 2,048 and official sampling/thinking, without a client output-cap override: 84 prompt / 1,268 output tokens, 95.7 prefill / 33.0 generation tok/s, TTFT 0.922 seconds, thinking completed, terminal stop/SSE DONE and six correct JSON facts. Its short-prompt prefill remains below the 100 tok/s floor. It verified actual UMA identity/counters, no compiler-SDK DLL loading, real Monitor/About rendering, and zero CDP runtime exceptions, console errors or network failures. All owned API/UI/native/browser processes exited normally without force; ordinary history/settings/location were unchanged. Evidence: `staged-api-packed-iq-ui-20261114-173910/result.json`, `summary.json`, `ui-cdp.json`, `ui-monitor.png`, `ui-about.png`. This completes that explicit staged text API/UI check, not ordinary installer/backend selection, model switching, images or other-model validation; issue #11 remains open.
 
-At the earlier staging checkpoint, draft-vocabulary actual-device validation was still pending. The later fresh-build measurements below supersede that pending status, without making it an adopted default or completing issue #11.
+At the earlier staging checkpoint, draft-vocabulary actual-device validation was still pending. Later measurements superseded that pending status; it is now selected by the explicit B390 profiles. The broader issue #11 remains open.
 
 ## Normal explicit Intel launch
 
@@ -132,7 +144,7 @@ python -B run.py --backend sycl --intel-profile b390-qwen36 `
   --lib-dir C:\path\to\intel-runtime
 ```
 
-This selects `config-sycl.json` and API port 18085. The Intel UI uses separate data/settings and a separate shortcut. Existing CUDA/HIP automatic selection and saved files are retained. The B390 profile resolves saved context `auto` to 8,192 cells and saved KV `auto` to actual INT8. Explicit MTP0 and user sampling/thinking/auth settings remain choices. Derived optimization flags are generated for the child, so they do not remain active after switching MTP off. Other Intel model families and images are refused before unloading the current model or starting a download job.
+This selects `config-sycl.json` and API port 18085. The Intel UI uses separate data/settings and a separate shortcut. Existing CUDA/HIP automatic selection and saved files are retained. The B390 profile resolves saved context `auto` to 8,192 cells and saved KV `auto` to actual INT8. Explicit MTP0 and user sampling/thinking/auth settings remain choices. Derived optimization flags are generated for the child, so they do not remain active after switching MTP off. Tiel uses its own model-specific profile; Gemma, LFM, Clover and images are refused before unloading the current model or starting a download job.
 
 The normal `run.py` configuration → `serve.server` → actual Monitor/About path measured **96.1 prefill / 32.7 accepted decode tok/s**, with the same 1,268 correct normal-thinking output tokens. Installed-generation tests passed authentication rejection, eleven unsupported operations with the resident PID retained, and MTP3→0→3 reload/recovery. A private NoStart import exercised all 53 runtime files, licenses, immutable generation and config publication. Its Python-bootstrap boundary reused the existing private environment; fresh Python download and actual user Desktop installation were not exercised. Separate CPU installer/update/shortcut fixtures and exact evidence are recorded in the public results JSON.
 
@@ -198,7 +210,7 @@ The requested GPU/NPU split was tested on the actual Intel NPU. At 512 tokens, t
 - The entire real GGUF loaded and unloaded in all three memory modes. GPU sampled visibility passed for all 753 tensors; host/shared reported zero explicit GPU weight-upload bytes, device mode uploaded one tensor payload. Process/RAM/WDDM readings are separate observations of overlapping memory, not capacities to sum.
 - FP64 CPU references cover RMS normalization, Q8 matrix products, GDN outputs/state, split inputs and state restoration. Independently generated NumPy/gguf references cover 27 real tensor cases across all nine types in this GGUF. Their dequantized samples matched exactly; matrix products passed the recorded numerical tolerances.
 - Native integration covers terminal tokens, continuation, edited prompts, invalid requests without state loss, cancellation/recovery and seeded sampling. HTTP integration uses the actual model and the existing tokenizer/template/handlers, including Japanese source arithmetic, SSE and a parsed `get_weather` call. Images fail with the expected unsupported-vision response.
-- These are initial observations, not proof of answer-quality equivalence to every existing CUDA/HIP workload. A successful kernel check is not an answer-quality evaluation. Other Intel models/features remain unvalidated.
+- These observations do not prove answer-quality equivalence for every existing CUDA/HIP workload. A successful kernel check is not an answer-quality evaluation. Gemma, LFM, Clover and images remain unvalidated on Intel.
 
 The private evidence is in `tinystrata-work/intel-20261114`: hardware/version records, full model checksum, raw probe and loader logs, numerical fixtures/results, native/HTTP transcripts and real generated answers. The initial installer collision, incorrect tokenizer-cache path and early baseline failures were investigated separately from successful inference.
 
@@ -215,3 +227,17 @@ A Modern Standby entry event can mark display-off/NoCS entry, rather than prove 
 Same-machine llama.cpp b12360 (`2d8a32502909ca065c41c4cf5f2fb1c427c047fc`) SYCL/Vulkan/CPU comparison binaries were obtained. The first SYCL default-load run was stopped when free physical RAM fell below 1 GiB; this is not a driver-crash diagnosis. Direct I/O allowed the diagnostic run to finish with ample headroom. llama-bench rejected FP32 KV, so those engineering references use F16 KV. They are random-token kernel measurements and are not directly comparable to this engine's real-prompt, FP32-KV timings or evidence of answer quality.
 
 Before adoption, finish larger-context/pressure and sustained-quality checks, batching/fusion and attention/kernel tuning, and ordinary install/update/backend-selection integration. Explicit INT8 KV and the staged text API/UI have the checks above; broader lifecycle and workload coverage remain open. The experimental MTP route needs broader acceptance/performance and quality evidence; images and other model families need their own ports. Issue #11 stays open.
+
+
+## Completed canonical Intel text measurements
+
+| Model | Generation tok/s | 4K prefill tok/s | 16K prefill tok/s |
+|---|---:|---:|---:|
+| Qwen3.6 | 31.65 | 292.40 | 264.32 |
+| Tiel Coder | 25.65 | 238.07 | 218.12 |
+
+These are completed four-start, two-pass `tinystrata-bench-v1-intel-text` results, `standard: false`, with exact canonical text inputs, seed1234, INT8 KV/MTP3, private context32768 and chunk1024. Qwen uses the fixed-v1 sampler; Tiel uses its official sampler. Image is unsupported/N/A. Saved configurations remained unchanged.
+
+The completed earlier chunk512 Qwen control was generation30.84, 4K prefill159.60 and 16K prefill85.72 tok/s. The new auto chunk1024 uses FP32 oneMKL attention for full1024-token batches; explicit chunk512 remains a user choice. Native weights, selected experts and the runtime ZIP are unchanged.
+
+The actual installed app, refreshed through its Desktop shortcut, returned the correct uncapped normal-thinking Qwen answer at111.0 prefill/35.3 generation tok/s (84 fresh input/1268 output tokens). Independent16K normal-thinking full-answer tests passed all six facts for both models: Qwen263.44/26.02 and Tiel212.82/25.52 tok/s. Long generation30 tok/s, the42.5 aspiration, and universal short-prefill100 are not achieved. Gemma/LFM/Clover/images remain unsupported on Intel; Issue #11 stays open.

@@ -6,6 +6,8 @@
 
 **NVIDIA Ampere 世代以降（CUDA）と AMD RDNA 4（HIP/ROCm）に対応しています。**
 
+Windowsの **Intel Arc B390 / 32 GB共有メモリー**には、Qwen3.6とTiel Coderのテキスト推論を実験対応しています。Intel版の画像入力・Gemma・LFM・Cloverは未対応です。[導入方法と実測・制約](docs/intel-windows.md)を参照してください。
+
 **AMD構成の映像出力制限:** AMD内蔵GPUと別体のRadeonを併用して推論する場合は、**Windowsを起動する前からRadeon側にモニターを接続してください**。内蔵GPU・マザーボード側の映像出力は当面使用しないでください。他ユーザーからPC全体が再起動する報告があり、検証機でも再現しました。起動後の接続変更だけでは再発を防げませんでした。原因は未特定です。[Issue #10](https://github.com/kbc20f11/TinyStrata/issues/10) を参照してください。
 
 ## TinyStrata を開発する理由
@@ -82,6 +84,15 @@ Gemma は `run-api.bat --model-family gemma4`（既定ポート 18082）、LFM �
 
 </details>
 
+Intel B390の規定テキスト計測（`standard: false`、4回起動・各2回、context32768/chunk1024、INT8 KV/MTP3、画像未対応）:
+
+| Model | Generation tok/s | 4K prefill tok/s | 16K prefill tok/s |
+|---|---:|---:|---:|
+| Qwen3.6 | 31.65 | 292.40 | 264.32 |
+| Tiel Coder | 25.65 | 238.07 | 218.12 |
+
+[Conditions and limitations / 条件と制約](docs/intel-windows.md)
+
 ## インストール方法
 
 64 ビット PowerShell で、どちらかのインストーラーを実行してください。
@@ -93,6 +104,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubu
 ```
 
 新規インストールも更新も同じコマンドです。**TinyStrata → モデル**を開いてモデルをダウンロードし、チャットで選択してください。UI のセットアップ中はモデルを自動ダウンロードしません。
+
+検証済みB390だけを搭載したPCでは、インストーラーがIntel実験版を選び、ハッシュを固定した配布ランタイムを取得します。Intel SDKの導入は不要です。IntelのUIは通常 `http://127.0.0.1:3005`、APIは `http://127.0.0.1:18085/v1` で、専用ショートカットを作成します。ローカルのインストーラーでは `-Backend sycl` でも明示選択できます。既存のCUDA/HIP設定・鍵・履歴は保持します。
 
 **API のみ**（[インストーラー](install.ps1)）：UI を導入せず、同じ API を利用できます。
 
@@ -312,7 +325,7 @@ KV キャッシュは VRAM に保持され、このオフロードの仕組み�
 
 ## 自動設定 — Qwen3.6
 
-新しい構成では、KV/Attention とコンテキスト容量が自動で選択されます。8 GB、12 GB、16 GB 向けの設定を自分で選ぶ必要はありません。
+以下はCUDA/HIPの自動設定です。KV/Attention とコンテキスト容量が自動で選択されるため、8 GB、12 GB、16 GB 向けの設定を自分で選ぶ必要はありません。Intel B390実験版は共有RAMを使い、実INT8 KV、事前確保するcontext `auto` = 8192、chunk `auto` = 1024です。明示設定は保持し、現在のcontext上限は32768です。[Intel版の説明](docs/intel-windows.md)を参照してください。
 
 Qwen3.6 と LFM2.5 では、RTX 3060 で INT8 が選択されます。対応する RTX 40/50 シリーズと AMD RDNA 4 環境では、ネイティブ FP8 を自動選択します。エンジンは、GPU の世代だけでなく、コンパイル済みカーネルと GPU の機能も確認します。ネイティブ FP8 が利用できない場合、自動モードは INT8 を使用します。Gemma の既定は NVIDIA・AMD ともに INT8 です。起動時に速度や品質のベンチマークを実行することなく、対応する処理経路を選択します。
 

@@ -84,6 +84,15 @@ Start Gemma with `run-api.bat --model-family gemma4` (default port 18082), or LF
 
 </details>
 
+Intel B390 experimental text benchmark (`standard: false`, four starts, two passes, context32768/chunk1024, INT8 KV/MTP3; images N/A):
+
+| Model | Generation tok/s | 4K prefill tok/s | 16K prefill tok/s |
+|---|---:|---:|---:|
+| Qwen3.6 | 31.65 | 292.40 | 264.32 |
+| Tiel Coder | 25.65 | 238.07 | 218.12 |
+
+[Conditions and limitations / 条件と制約](docs/intel-windows.md)
+
 ## Installation
 
 Run either installer in 64-bit PowerShell:
@@ -95,6 +104,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubu
 ```
 
 Use the same command for installation and updates. Open **TinyStrata → Models**, download a model, then select it in chat; UI setup itself does not download a model.
+
+On a validated Intel Arc B390-only Windows PC with 32 GB shared RAM, the installer selects the experimental Intel runtime and downloads its hash-pinned package. An Intel SDK is not required. This currently supports **Qwen3.6 and Tiel Coder text**; images, Gemma, LFM and Clover remain unsupported on Intel. The separate Intel shortcut normally opens UI port **3005**, with API port **18085**, preserving existing CUDA/HIP settings, keys and history. A local installer also accepts explicit `-Backend sycl`. See [Intel installation, measurements and limitations](docs/intel-windows.md).
 
 **API only** ([installer](install.ps1)): the same API without the UI.
 
@@ -314,7 +325,7 @@ The KV cache stays in VRAM; system RAM holds Expert data for this offload mechan
 
 ## Automatic settings — Qwen3.6
 
-New configurations choose KV/Attention and context capacity automatically. You do not need to select an 8 GB, 12 GB or 16 GB recipe.
+The following CUDA/HIP settings choose KV/Attention and context capacity automatically. You do not need to select an 8 GB, 12 GB or 16 GB recipe. The experimental Intel B390 profiles instead use one shared RAM pool, actual INT8 KV, preallocated context `auto` = 8192, and chunk `auto` = 1024; explicit settings are preserved. Intel context is currently limited to 32768. See the [Intel guide](docs/intel-windows.md).
 
 For Qwen3.6 and LFM2.5, an RTX 3060 selects INT8. Supported RTX 40/50-series and AMD RDNA 4 environments select native FP8 automatically; the engine checks the compiled kernels and GPU capabilities as well as the hardware generation. If native FP8 is unavailable, automatic mode uses INT8. Gemma uses INT8 by default on both NVIDIA and AMD. This chooses a supported path without running a speed or quality benchmark at startup.
 

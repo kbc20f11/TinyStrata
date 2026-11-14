@@ -1,10 +1,10 @@
 {
   "schema": 1,
-  "generated_at": "2026-11-14T18:37:48.220835+09:00",
+  "generated_at": "2026-11-14T21:22:18.342466+09:00",
   "issue": "https://github.com/kbc20f11/TinyStrata/issues/11",
   "status": "experimental; issue remains open",
-  "worktree_head": "068329fedae69791e957d5966b41d6de4710689f",
-  "uncommitted_implementation": true,
+  "worktree_head": "3e3f35d2e2d46454bc521182b24121fedff9d22c",
+  "uncommitted_implementation": false,
   "machine": {
     "model": "MouseComputer ISeNEi-16FHX31",
     "cpu": "Core Ultra X7 358H",
@@ -641,5 +641,1004 @@
       "stage_unit_tests_passed": 8,
       "v2_all_file_bytes_match_real_payload": true
     }
+  },
+  "checkpoint_commit": "5389ea8",
+  "packed_iq_prefill_followup": {
+    "status": "experimental; not a universal short-prefill or generation improvement claim",
+    "build_sha256": "641bc9457493a4e68cfb054521aed597f4fb4b179a68923a5870bf60600e06d1",
+    "condition": "normal thinking; official Qwen sampler; temperature1/top_p0.95/top_k20/presence1.5/seed2026; INT8 KV/MTP3/draft2048/context8192/chunk512",
+    "arithmetic_outputs_identical_1268_ids": true,
+    "rows": [
+      {
+        "name": "control-before",
+        "exit": 0,
+        "rounds": [
+          {
+            "prompt_tokens": 84,
+            "output_tokens": 1268,
+            "prefill_tok_s": 93.98475209283905,
+            "decode_steps_tok_s": 32.32196287326383,
+            "reused": 0,
+            "finish": "stop",
+            "correct": true
+          }
+        ]
+      },
+      {
+        "name": "prefill-packed",
+        "exit": 0,
+        "rounds": [
+          {
+            "prompt_tokens": 84,
+            "output_tokens": 1268,
+            "prefill_tok_s": 99.22123145360285,
+            "decode_steps_tok_s": 34.05150199643392,
+            "reused": 0,
+            "finish": "stop",
+            "correct": true
+          }
+        ]
+      },
+      {
+        "name": "control-after",
+        "exit": 0,
+        "rounds": [
+          {
+            "prompt_tokens": 84,
+            "output_tokens": 1268,
+            "prefill_tok_s": 97.01998496190232,
+            "decode_steps_tok_s": 34.323258179304204,
+            "reused": 0,
+            "finish": "stop",
+            "correct": true
+          }
+        ]
+      }
+    ],
+    "evidence": "prefill-packed-normal-paired/results.json",
+    "remaining": "Full answer run prefill 99.22 <100 tok/s; generation overlaps controls.",
+    "cold_warm_prefill_only": {
+      "condition": "GEN1 full fresh 84-token prompt each time; unrelated prompt between rounds, all RESUME0; no completion-quality or generation-speed claim",
+      "rows": [
+        {
+          "name": "control",
+          "exe_sha256": "149280c424e2e0efac5b7624c94fd1fc90dd7a512a24c0917a39ec59e9aef913",
+          "flags": [
+            "--prefill-mkl",
+            "--decode-dp4a",
+            "--mtp",
+            "3",
+            "--verify-xmx",
+            "--prefill-int8-xmx",
+            "--vocab-xmx",
+            "--kv-type",
+            "int8",
+            "--mtp-stochastic",
+            "--expert-xmx-layout",
+            "--device-state",
+            "--dense-xmx-layout",
+            "--dense-split-k",
+            "--draft-vocab",
+            "2048"
+          ],
+          "rounds": [
+            {
+              "condition": "cold",
+              "round": 0,
+              "reused": 0,
+              "prompt_tokens": 84,
+              "prefill_seconds": 0.8496130000000001,
+              "prefill_tok_s": 98.86854367812168,
+              "wall_seconds": 0.8590000000003783,
+              "first_token_ids": [
+                8160
+              ],
+              "finish": "length"
+            },
+            {
+              "condition": "warm",
+              "round": 1,
+              "reused": 0,
+              "prompt_tokens": 84,
+              "prefill_seconds": 1.039069,
+              "prefill_tok_s": 80.84159954728705,
+              "wall_seconds": 1.0469999999986612,
+              "first_token_ids": [
+                8160
+              ],
+              "finish": "length"
+            },
+            {
+              "condition": "warm",
+              "round": 2,
+              "reused": 0,
+              "prompt_tokens": 84,
+              "prefill_seconds": 0.9900460000000001,
+              "prefill_tok_s": 84.84454257680956,
+              "wall_seconds": 1.0,
+              "first_token_ids": [
+                8160
+              ],
+              "finish": "length"
+            },
+            {
+              "condition": "warm",
+              "round": 3,
+              "reused": 0,
+              "prompt_tokens": 84,
+              "prefill_seconds": 0.787892,
+              "prefill_tok_s": 106.61359678737695,
+              "wall_seconds": 0.7969999999986612,
+              "first_token_ids": [
+                8160
+              ],
+              "finish": "length"
+            }
+          ],
+          "condition": "GEN 1; full fresh prompt, no prefix reuse; first cold then three warm kernel rounds; not a generation or answer-quality benchmark",
+          "exit": 0
+        },
+        {
+          "name": "prefill-packed",
+          "exe_sha256": "641bc9457493a4e68cfb054521aed597f4fb4b179a68923a5870bf60600e06d1",
+          "flags": [
+            "--prefill-mkl",
+            "--decode-dp4a",
+            "--mtp",
+            "3",
+            "--verify-xmx",
+            "--prefill-int8-xmx",
+            "--vocab-xmx",
+            "--kv-type",
+            "int8",
+            "--mtp-stochastic",
+            "--expert-xmx-layout",
+            "--device-state",
+            "--dense-xmx-layout",
+            "--dense-split-k",
+            "--draft-vocab",
+            "2048"
+          ],
+          "rounds": [
+            {
+              "condition": "cold",
+              "round": 0,
+              "reused": 0,
+              "prompt_tokens": 84,
+              "prefill_seconds": 0.799387,
+              "prefill_tok_s": 105.0805179468768,
+              "wall_seconds": 0.8119999999998981,
+              "first_token_ids": [
+                8160
+              ],
+              "finish": "length"
+            },
+            {
+              "condition": "warm",
+              "round": 1,
+              "reused": 0,
+              "prompt_tokens": 84,
+              "prefill_seconds": 0.709661,
+              "prefill_tok_s": 118.36637493112909,
+              "wall_seconds": 0.7350000000005821,
+              "first_token_ids": [
+                8160
+              ],
+              "finish": "length"
+            },
+            {
+              "condition": "warm",
+              "round": 2,
+              "reused": 0,
+              "prompt_tokens": 84,
+              "prefill_seconds": 0.706787,
+              "prefill_tok_s": 118.84768678541059,
+              "wall_seconds": 0.7350000000005821,
+              "first_token_ids": [
+                8160
+              ],
+              "finish": "length"
+            },
+            {
+              "condition": "warm",
+              "round": 3,
+              "reused": 0,
+              "prompt_tokens": 84,
+              "prefill_seconds": 0.7481720000000001,
+              "prefill_tok_s": 112.27364830546986,
+              "wall_seconds": 0.7659999999996217,
+              "first_token_ids": [
+                8160
+              ],
+              "finish": "length"
+            }
+          ],
+          "condition": "GEN 1; full fresh prompt, no prefix reuse; first cold then three warm kernel rounds; not a generation or answer-quality benchmark",
+          "exit": 0
+        }
+      ],
+      "evidence": "prefill-cold-warm-20261114-191926/results.json",
+      "note": "The cold/warm diagnostic does not replace the earlier 99.22 tok/s full-answer result."
+    }
+  },
+  "type18_port_validation": {
+    "status": "kernel/fixture validation passed; public Tiel admission and full-model quality still pending",
+    "model": "Tiel-Coder-35B-A3B-MTP-UD-IQ3_XXS.gguf",
+    "bytes": 13600579424,
+    "sha256": "a4d8ffc7f030466c67db289543871a8f9e6d5340241b300c09fbaf16642273ca",
+    "full_model_download_verified": true,
+    "quant_block_bytes": 98,
+    "packed_block_bytes": 100,
+    "qwen_real_tensor_references": 27,
+    "tiel_real_tensor_references": 21,
+    "production_gpu_tests_passed": true,
+    "evidence": [
+      "type18-prefill-quant-result.json",
+      "type18-prefill-qwen-quant.log",
+      "type18-prefill-tiel-quant.log"
+    ],
+    "compile_failure_retained": "build-type18-prefill.log (const ESIMD view), corrected minimal nonconst view and successful retry build-type18-prefill-retry.log"
+  },
+  "new_native_capabilities_validation": {
+    "status": "passed",
+    "probe": {
+      "sha256": "641bc9457493a4e68cfb054521aed597f4fb4b179a68923a5870bf60600e06d1",
+      "report": {
+        "backend": "sycl",
+        "experimental": true,
+        "model_families": [],
+        "kv_types": [
+          "fp32",
+          "int8"
+        ],
+        "images": false,
+        "mtp": true,
+        "experimental_mtp_max_depth": 7,
+        "serve": true,
+        "capabilities_schema": 1,
+        "experimental_models": [
+          "qwen3.6-35b-a3b"
+        ],
+        "experimental_profiles": {
+          "b390-qwen36": 1
+        },
+        "build": {
+          "mkl": true,
+          "int8_xmx": true,
+          "aot_target": "intel_gpu_ptl_h"
+        },
+        "weight_types": {
+          "scalar": [
+            0,
+            1,
+            8,
+            10,
+            11,
+            14,
+            18,
+            21,
+            22,
+            23,
+            30
+          ],
+          "dp4a": [
+            8,
+            10,
+            11,
+            14,
+            18,
+            21,
+            22,
+            23
+          ],
+          "int8_xmx": [
+            14,
+            18,
+            21,
+            22
+          ]
+        }
+      }
+    },
+    "strict_private_import": "installer-live-smoke/run-20261114-192124-5d41cc67",
+    "files": 53,
+    "python_bootstrap": "existing private venv boundary; fresh bootstrap and Desktop not yet tested",
+    "stage": "runtime-stage-type18-prefill",
+    "normal_state_and_model_stat_unchanged": true
+  },
+  "tiel_full_model_native_quality": {
+    "status": "normal medium-thinking arithmetic and independent 5100-case code validation passed; public integration in progress",
+    "condition": {
+      "sampler": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 0.0,
+        "frequency_penalty": 0.0,
+        "repetition_penalty": 1.0
+      },
+      "context": 8192,
+      "chunk": 512,
+      "kv": "int8",
+      "mtp": 3,
+      "draft_vocab": 2048,
+      "thinking": "medium in normal cases"
+    },
+    "build_sha256": "d62ae34727614f08ba378e9174877733cd3e6066acef03b997fb26c05512d0bb",
+    "evidence": "tiel-native-sanity-quality-20261114-1942/result.json",
+    "records": [
+      {
+        "case": "sanity-mtp0",
+        "passed": true,
+        "thinking_enabled": false,
+        "prompt_tokens": 264,
+        "output_tokens": 52,
+        "finish": "stop",
+        "draft_offered": 0,
+        "draft_accepted": 0,
+        "prefill_tok_s": 21.09007908300336,
+        "decode_steps_tok_s": 7.992865975309881,
+        "final_text": "{\"id\": \"R17\", \"participants\": 12, \"fee\": 800, \"venue\": 3200, \"start\": \"14:30\", \"remaining\": 6800}",
+        "thinking_closed": true,
+        "json_correct": false,
+        "independent_reference": {
+          "path": "C:\\Users\\user\\git\\tinystrata-work\\intel-20261114\\tiel-independent-sanity-20261114-193137\\result.json",
+          "sha256": "9a357cdf9243ae810dc6365bc6bff858109b72ca15def343e0aba5d9393cb500",
+          "identical_closed_thinking_error": true,
+          "note": "The arithmetic error remains incorrect; only comparative behavior matches. Normal-thinking arithmetic must still be correct."
+        }
+      },
+      {
+        "case": "optimized-mtp3",
+        "passed": true,
+        "thinking_enabled": false,
+        "prompt_tokens": 264,
+        "output_tokens": 52,
+        "finish": "stop",
+        "draft_offered": 54,
+        "draft_accepted": 33,
+        "prefill_tok_s": 134.42133144328795,
+        "decode_steps_tok_s": 27.959836517191185,
+        "final_text": "{\"id\": \"R17\", \"participants\": 12, \"fee\": 800, \"venue\": 3200, \"start\": \"14:30\", \"remaining\": 6800}",
+        "thinking_closed": true,
+        "json_correct": false,
+        "independent_reference": {
+          "path": "C:\\Users\\user\\git\\tinystrata-work\\intel-20261114\\tiel-independent-sanity-20261114-193137\\result.json",
+          "sha256": "9a357cdf9243ae810dc6365bc6bff858109b72ca15def343e0aba5d9393cb500",
+          "identical_closed_thinking_error": true,
+          "note": "The arithmetic error remains incorrect; only comparative behavior matches. Normal-thinking arithmetic must still be correct."
+        }
+      },
+      {
+        "case": "normal-r17",
+        "passed": true,
+        "thinking_enabled": true,
+        "prompt_tokens": 263,
+        "output_tokens": 101,
+        "finish": "stop",
+        "draft_offered": 93,
+        "draft_accepted": 69,
+        "prefill_tok_s": 135.59622640342093,
+        "decode_steps_tok_s": 30.947066898893457,
+        "final_text": "{\"id\": \"R17\", \"participants\": 12, \"fee\": 800, \"venue\": 3200, \"start\": \"14:30\", \"remaining\": 6400}",
+        "thinking_closed": true,
+        "json_correct": true
+      },
+      {
+        "case": "normal-binary-search",
+        "passed": true,
+        "thinking_enabled": true,
+        "prompt_tokens": 248,
+        "output_tokens": 151,
+        "finish": "stop",
+        "draft_offered": 150,
+        "draft_accepted": 100,
+        "prefill_tok_s": 130.5657603928766,
+        "decode_steps_tok_s": 29.214674492044455,
+        "final_text": "```python\ndef binary_search(a, target):\n    low, high = 0, len(a)\n    while low < high:\n        mid = (low + high) // 2\n        if a[mid] < target:\n            low = mid + 1\n        else:\n            high = mid\n    return low if low < len(a) and a[low] == target else -1\n```",
+        "thinking_closed": true
+      }
+    ],
+    "closed_thinking_error": {
+      "expected_remaining": 6400,
+      "actual_remaining": 6800,
+      "independent_reference_identical": true,
+      "owner_policy": "Owner explicitly said to ignore Tiel no-think mental-arithmetic errors as an adoption blocker; preserve result.",
+      "reference": "tiel-independent-sanity-20261114-193137/result.json"
+    },
+    "exe_and_model_unchanged": true,
+    "all_owned_natural_exit_zero": true,
+    "failures_retained": [
+      "tiel-native-sanity-quality-20261114-1932: private parser rejected valid weight-load progress",
+      "tiel-native-sanity-quality-20261114-1934: closed-thinking arithmetic failed, normal cases stopped",
+      "tiel-native-sanity-quality-20261114-1937: private parser reversed accepted/offered DONE counters; corrected from native protocol before successful retry"
+    ]
+  },
+  "source_code_checkpoint": "3e3f35d2e2d46454bc521182b24121fedff9d22c",
+  "runtime_package_candidate": {
+    "archive": "C:\\Users\\user\\git\\tinystrata-work\\intel-20261114\\release-packages\\TinyStrata-intel-windows-x64-ptl-h-20261114.zip",
+    "bytes": 267541144,
+    "sha256": "0ed83ec5ebcf4793678dc4d0e0c68cf974795aede6166b68be8476f5a892753d",
+    "manifest_sha256": "02c99ad451b6ac37090316fe325ef1b335137142435ff729a55e1612d9ef3b08",
+    "executable_sha256": "499ff5003556797661fc0339195b4fc8656675766e99c7171b64d509a6f564bd",
+    "payload_files": 65,
+    "root_manifest": true,
+    "no_models_or_user_state": true,
+    "seconds": 25.76599999999962,
+    "source_commit": "4dc7ac8",
+    "published": false,
+    "native_capabilities": {
+      "backend": "sycl",
+      "experimental": true,
+      "model_families": [],
+      "kv_types": [
+        "fp32",
+        "int8"
+      ],
+      "images": false,
+      "mtp": true,
+      "experimental_mtp_max_depth": 7,
+      "serve": true,
+      "capabilities_schema": 1,
+      "experimental_models": [
+        "qwen3.6-35b-a3b",
+        "tiel-coder-35b-a3b"
+      ],
+      "experimental_profiles": {
+        "b390-qwen36": 1,
+        "b390-tiel-coder": 1
+      },
+      "build": {
+        "mkl": true,
+        "int8_xmx": true,
+        "aot_target": "intel_gpu_ptl_h"
+      },
+      "weight_types": {
+        "scalar": [
+          0,
+          1,
+          8,
+          10,
+          11,
+          14,
+          18,
+          21,
+          22,
+          23,
+          30
+        ],
+        "dp4a": [
+          8,
+          10,
+          11,
+          14,
+          18,
+          21,
+          22,
+          23
+        ],
+        "int8_xmx": [
+          14,
+          18,
+          21,
+          22
+        ]
+      }
+    },
+    "actual_device": {
+      "schema": 1,
+      "backend": "sycl",
+      "device_index": 0,
+      "vendor_id": 32902,
+      "device_id": 45186,
+      "integrated": true,
+      "architecture": "panther_lake_xe3",
+      "adapter_luid": "00000000:0000ddff",
+      "adapter_node_mask": 1,
+      "name": "Intel(R) Arc(TM) B390 GPU",
+      "driver": "1.17.39894+6"
+    },
+    "full_gpu_fixture_tests": [
+      {
+        "name": "qwen",
+        "exit": 0,
+        "seconds": 15.436999999999898,
+        "fixture": "quant-reference.bin",
+        "log": "C:\\Users\\user\\git\\tinystrata-work\\intel-20261114\\package-native-validation-20261114-195348\\qwen.log"
+      },
+      {
+        "name": "tiel",
+        "exit": 0,
+        "seconds": 15.734999999998763,
+        "fixture": "tiel-quant-reference.bin",
+        "log": "C:\\Users\\user\\git\\tinystrata-work\\intel-20261114\\package-native-validation-20261114-195348\\tiel.log"
+      }
+    ],
+    "all_passed": true,
+    "artifact_name": "TinyStrata-intel-windows-x64-ptl-h-20261114.zip",
+    "publication_note": "This measurement snapshot precedes main/release publication; verified publication links are posted to Issue #11."
+  },
+  "actual_installer_live": {
+    "status": "passed; real shipping installer and real app; no mocked bootstrap/runtime/UI",
+    "work_root": "%LOCALAPPDATA%/TinyStrata-Intel-work",
+    "source": "explicit local source checkout, not source download",
+    "model_source": "existing verified GGUF absolute path; no duplicate model download",
+    "python": "actual fresh work-root venv from installed Python3.12.10; actual pinned core and optional UI requirements installed",
+    "runtime_payload_files": 65,
+    "hardware": "Win32_VideoController lists only Intel Arc B390; native integrated/vendor/device/LUID match",
+    "desktop_shortcut": "TinyStrata Intel (Experimental).lnk",
+    "ports": {
+      "ui": 3005,
+      "api": 18085
+    },
+    "profile_conditions": {
+      "context": 8192,
+      "kv": "int8",
+      "chunk": 512,
+      "mtp": 3,
+      "draft_vocab": 2048
+    },
+    "first_seeded_qwen": {
+      "usage": {
+        "prompt_tokens": 84,
+        "completion_tokens": 1268,
+        "total_tokens": 1352,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 84,
+        "prompt_ms": 783.5,
+        "prompt_per_token_ms": 9.327,
+        "prompt_per_second": 107.2,
+        "predicted_n": 1268,
+        "predicted_ms": 36825.4,
+        "predicted_per_token_ms": 29.042,
+        "predicted_per_second": 34.4,
+        "draft_n": 1131,
+        "draft_n_accepted": 890
+      },
+      "correct": true
+    },
+    "live_phases": [
+      {
+        "name": "qwen-initial",
+        "model": "qwen3.6-35b-a3b",
+        "sdk_dll_count": 0,
+        "native_pid": 16508,
+        "completion": {
+          "passed": true,
+          "model": "qwen3.6-35b-a3b",
+          "sse_done": true,
+          "first_token_seconds": 0.7659999999996217,
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 84,
+            "completion_tokens": 1877,
+            "total_tokens": 1961,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            }
+          },
+          "timings": {
+            "cache_n": 0,
+            "prompt_n": 84,
+            "prompt_ms": 734.0,
+            "prompt_per_token_ms": 8.738,
+            "prompt_per_second": 114.4,
+            "predicted_n": 1877,
+            "predicted_ms": 57380.2,
+            "predicted_per_token_ms": 30.57,
+            "predicted_per_second": 32.7,
+            "draft_n": 1731,
+            "draft_n_accepted": 1299
+          },
+          "final_json": {
+            "id": "R17",
+            "participants": 12,
+            "fee": 800,
+            "venue": 3200,
+            "start": "14:30",
+            "remaining": 6400
+          },
+          "wall_seconds": 58.14099999999962
+        }
+      },
+      {
+        "name": "tiel-medium",
+        "model": "tiel-coder-35b-a3b",
+        "sdk_dll_count": 0,
+        "native_pid": 10236,
+        "completion": {
+          "passed": true,
+          "model": "tiel-coder-35b-a3b",
+          "sse_done": true,
+          "first_token_seconds": 2.5,
+          "finish_reason": "stop",
+          "usage": {
+            "prompt_tokens": 263,
+            "completion_tokens": 185,
+            "total_tokens": 448,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            }
+          },
+          "timings": {
+            "cache_n": 0,
+            "prompt_n": 263,
+            "prompt_ms": 2466.1,
+            "prompt_per_token_ms": 9.377,
+            "prompt_per_second": 106.6,
+            "predicted_n": 185,
+            "predicted_ms": 5929.8,
+            "predicted_per_token_ms": 32.053,
+            "predicted_per_second": 31.2,
+            "draft_n": 174,
+            "draft_n_accepted": 126
+          },
+          "final_json": {
+            "id": "R17",
+            "participants": 12,
+            "fee": 800,
+            "venue": 3200,
+            "start": "14:30",
+            "remaining": 6400
+          },
+          "wall_seconds": 8.42200000000048
+        }
+      },
+      {
+        "name": "qwen-restored",
+        "model": "qwen3.6-35b-a3b",
+        "sdk_dll_count": 0,
+        "native_pid": 1708,
+        "completion": null
+      },
+      {
+        "name": "qwen-native-restarted",
+        "model": "qwen3.6-35b-a3b",
+        "sdk_dll_count": 0,
+        "native_pid": 16908,
+        "completion": null
+      }
+    ],
+    "normal_state_unchanged_during_live_validation": true,
+    "actual_key_unchanged": true,
+    "native_restart": {
+      "operation": "Product POST /unload then /load; API/UI remain running",
+      "old_pid": 1708,
+      "new_pid": 16908
+    },
+    "ui": {
+      "live": true,
+      "monitor_about_visually_inspected": true,
+      "capture_errors": [],
+      "screenshots": [
+        "actual-installed-api-ui-20261114-201308/shipping-ui-cdp/ui-monitor.png",
+        "actual-installed-api-ui-20261114-201308/shipping-ui-cdp/ui-about.png"
+      ]
+    },
+    "full_api_ui_restart_performed": false,
+    "evidence": [
+      "actual-installer-first.log",
+      "actual-installed-qwen-20261114-200412/result.json",
+      "actual-installed-api-ui-20261114-201308/result.json"
+    ]
+  },
+  "canonical_intel_text": {
+    "protocol": "tinystrata-bench-v1-intel-text",
+    "standard": false,
+    "complete": true,
+    "conditions": {
+      "starts_per_model": 4,
+      "generation_passes": 2,
+      "generation_cases": 3,
+      "seed": 1234,
+      "context": 32768,
+      "chunk": 1024,
+      "kv": "int8",
+      "mtp": 3,
+      "images": "unsupported/N/A",
+      "ordinary_api_ui": "kept idle with ordinary model unloaded; no second resident model"
+    },
+    "models": {
+      "qwen": {
+        "aggregate": {
+          "generation": {
+            "tokens": 3072,
+            "milliseconds": 97053.294,
+            "tok_s": 31.652712374708273,
+            "requests": 24
+          },
+          "input_4k": {
+            "tokens": 16384,
+            "milliseconds": 56032.291,
+            "tok_s": 292.4028217943114,
+            "requests": 4
+          },
+          "input_16k": {
+            "tokens": 65536,
+            "milliseconds": 247941.595,
+            "tok_s": 264.32031301565195,
+            "requests": 4
+          },
+          "image": null,
+          "expert_cache": {
+            "startup_engine": [
+              null,
+              null,
+              null,
+              null
+            ],
+            "after_16k_engine": [
+              null,
+              null,
+              null,
+              null
+            ],
+            "applicable": false,
+            "reason": "UMA: independent Expert cache is not reported"
+          },
+          "complete_runs": 4
+        },
+        "sampling": {
+          "temperature": 0.7,
+          "top_p": 0.95,
+          "top_k": 20,
+          "min_p": 0.0,
+          "presence_penalty": 1.5,
+          "repetition_penalty": 1.0,
+          "frequency_penalty": 0.0
+        },
+        "assets": [
+          {
+            "file": "tinystrata-intel.exe",
+            "size": 5986304,
+            "sha256": "499ff5003556797661fc0339195b4fc8656675766e99c7171b64d509a6f564bd"
+          },
+          {
+            "file": "Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf",
+            "size": 14069266720,
+            "sha256": "36f9ec0e4c775f6efd3a61c1ea76f0875128469c3d012e3d9e2495a90e7a7150"
+          }
+        ],
+        "native_arguments": [
+          "--max-context",
+          "32768",
+          "--kv-type",
+          "int8",
+          "--chunk",
+          "1024",
+          "--mtp",
+          "3",
+          "--weight-memory",
+          "host",
+          "--model",
+          "C:\\Users\\user\\git\\tinystrata-work\\models\\Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf",
+          "--prefill-mkl",
+          "--decode-dp4a",
+          "--verify-xmx",
+          "--prefill-int8-xmx",
+          "--vocab-xmx",
+          "--expert-xmx-layout",
+          "--device-state",
+          "--dense-xmx-layout",
+          "--dense-split-k",
+          "--mtp-stochastic",
+          "--draft-vocab",
+          "2048",
+          "--device",
+          "0"
+        ],
+        "source_commit": "3e3f35d2e2d46454bc521182b24121fedff9d22c",
+        "configs_unchanged": true,
+        "evidence": "benchmark-c1024-qwen-20261114-210115\\result.json"
+      },
+      "tiel": {
+        "aggregate": {
+          "generation": {
+            "tokens": 3072,
+            "milliseconds": 119759.349,
+            "tok_s": 25.651442043159403,
+            "requests": 24
+          },
+          "input_4k": {
+            "tokens": 16384,
+            "milliseconds": 68820.52100000001,
+            "tok_s": 238.06852610139347,
+            "requests": 4
+          },
+          "input_16k": {
+            "tokens": 65536,
+            "milliseconds": 300462.58999999997,
+            "tok_s": 218.1170041834493,
+            "requests": 4
+          },
+          "image": null,
+          "expert_cache": {
+            "startup_engine": [
+              null,
+              null,
+              null,
+              null
+            ],
+            "after_16k_engine": [
+              null,
+              null,
+              null,
+              null
+            ],
+            "applicable": false,
+            "reason": "UMA: independent Expert cache is not reported"
+          },
+          "complete_runs": 4
+        },
+        "sampling": {
+          "temperature": 1.0,
+          "top_p": 0.95,
+          "top_k": 20,
+          "min_p": 0.0,
+          "presence_penalty": 0.0,
+          "frequency_penalty": 0.0,
+          "repetition_penalty": 1.0
+        },
+        "assets": [
+          {
+            "file": "tinystrata-intel.exe",
+            "size": 5986304,
+            "sha256": "499ff5003556797661fc0339195b4fc8656675766e99c7171b64d509a6f564bd"
+          },
+          {
+            "file": "Tiel-Coder-35B-A3B-MTP-UD-IQ3_XXS.gguf",
+            "size": 13600579424,
+            "sha256": "a4d8ffc7f030466c67db289543871a8f9e6d5340241b300c09fbaf16642273ca"
+          }
+        ],
+        "native_arguments": [
+          "--max-context",
+          "32768",
+          "--kv-type",
+          "int8",
+          "--chunk",
+          "1024",
+          "--mtp",
+          "3",
+          "--weight-memory",
+          "host",
+          "--model",
+          "C:\\Users\\user\\git\\tinystrata-work\\models\\Tiel-Coder-35B-A3B-MTP-UD-IQ3_XXS.gguf",
+          "--prefill-mkl",
+          "--decode-dp4a",
+          "--verify-xmx",
+          "--prefill-int8-xmx",
+          "--vocab-xmx",
+          "--expert-xmx-layout",
+          "--device-state",
+          "--dense-xmx-layout",
+          "--dense-split-k",
+          "--mtp-stochastic",
+          "--draft-vocab",
+          "2048",
+          "--experimental-tiel",
+          "--device",
+          "0"
+        ],
+        "source_commit": "3e3f35d2e2d46454bc521182b24121fedff9d22c",
+        "configs_unchanged": true,
+        "evidence": "benchmark-c1024-tiel-20261114-210115\\result.json"
+      }
+    },
+    "chunk512_control": {
+      "complete": true,
+      "evidence": "benchmark-final-qwen-20261114-201927/result.json",
+      "qwen_aggregate": {
+        "generation": {
+          "tokens": 3072,
+          "milliseconds": 99611.149,
+          "tok_s": 30.83992134253968,
+          "requests": 24
+        },
+        "input_4k": {
+          "tokens": 16384,
+          "milliseconds": 102658.822,
+          "tok_s": 159.5966102163144,
+          "requests": 4
+        },
+        "input_16k": {
+          "tokens": 65536,
+          "milliseconds": 764514.828,
+          "tok_s": 85.72233997271796,
+          "requests": 4
+        },
+        "image": null,
+        "expert_cache": {
+          "startup_engine": [
+            null,
+            null,
+            null,
+            null
+          ],
+          "after_16k_engine": [
+            null,
+            null,
+            null,
+            null
+          ],
+          "applicable": false,
+          "reason": "UMA: independent Expert cache is not reported"
+        },
+        "complete_runs": 4
+      }
+    }
+  },
+  "chunk1024_long_quality": {
+    "passed": true,
+    "scope": "independent normal-thinking final-answer quality; not canonical benchmark",
+    "input_tokens": 16384,
+    "context": 32768,
+    "chunk": 1024,
+    "max_output": 4096,
+    "selected_experts": 8,
+    "qwen": {
+      "output_tokens": 636,
+      "prefill_tok_s": 263.44313716397517,
+      "decode_tok_s": 26.022471038936295,
+      "six_facts_correct": true
+    },
+    "tiel": {
+      "output_tokens": 140,
+      "prefill_tok_s": 212.81975326859327,
+      "decode_tok_s": 25.521871785093353,
+      "six_facts_correct": true
+    },
+    "sdk_dlls": 0,
+    "native_natural_cleanup": true,
+    "evidence": "long-normal-c1024-20261114-205519/result.json"
+  },
+  "actual_chunk1024_refresh": {
+    "passed": true,
+    "api_shutdown": "verified API listener stopped with Windows TerminateProcess(0), explicitly forced; ordinary native was already unloaded",
+    "ui_kept_running": true,
+    "startup": "actual shipping Desktop shortcut",
+    "sdk_dlls": 0,
+    "normal_unchanged": true,
+    "key_unchanged": true,
+    "evidence": "actual-api-refresh-chunk1024-20261114-204908/result.json"
+  },
+  "actual_chunk1024_qwen_request": {
+    "passed": true,
+    "usage": {
+      "prompt_tokens": 84,
+      "completion_tokens": 1268,
+      "total_tokens": 1352,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 84,
+      "prompt_ms": 756.5,
+      "prompt_per_token_ms": 9.006,
+      "prompt_per_second": 111.0,
+      "predicted_n": 1268,
+      "predicted_ms": 35930.1,
+      "predicted_per_token_ms": 28.336,
+      "predicted_per_second": 35.3,
+      "draft_n": 1131,
+      "draft_n_accepted": 890
+    },
+    "final_json": {
+      "id": "R17",
+      "participants": 12,
+      "fee": 800,
+      "venue": 3200,
+      "start": "14:30",
+      "remaining": 6400
+    },
+    "evidence": "actual-installed-qwen-20261114-205123/result.json"
   }
 }

@@ -6,6 +6,15 @@
 
 Use **`tinystrata-bench-v1`** when submitting comparable TinyStrata measurements. The runner, fixed texts and image in this directory define the workload. Keep the protocol version and input SHA-256 hashes with the results; changing the workload requires a new protocol version. Older README measurements do not automatically become v1 results.
 
+The experimental Windows Intel text route has an explicit **`--intel-text`** variant:
+
+```powershell
+& $python .\benchmark\run.py --intel-text --model qwen --config-dir PATH_TO_CONFIG_DIRECTORY
+& $python .\benchmark\run.py --intel-text --model tiel --config-dir PATH_TO_CONFIG_DIRECTORY
+```
+
+It retains the canonical input hashes, seed 1234, excluded warm-up, four starts, two passes over the three generation texts, exact 4K/16K inputs and timing boundaries. Qwen retains the fixed-v1 sampler; Tiel uses its own official sampler and is an extension to the original model set. Results use `tinystrata-bench-v1-intel-text`, **`standard: false`**: images are unsupported, context is explicitly fixed at 32,768 instead of dynamically grown, and UMA has no separate Expert cache. The approved model-specific Intel profile uses actual INT8 KV, MTP3, a 1024-token chunk and the recorded native optimization flags. Saved settings are unchanged; actual executable/stage hashes and backend/profile identity are recorded. Stop the ordinary model before running measurements. Use `--prepare-only` to inspect the plan without loading another model. Earlier chunk512 measurements remain separately labelled diagnostics.
+
 ### Run
 
 Download the models to be measured using the normal installer/API first, then stop the regular TinyStrata API. In 64-bit PowerShell:
@@ -191,6 +200,10 @@ This is the allocated GPU Expert cache, not the model's file size or an estimate
 Use the same protocol/input hashes, model files and KV profile when comparing results. Report hardware and the actual automatic context/chunk settings alongside the table. Simulated VRAM limits are separate results from physical GPU measurements. Publish the complete run summary, not a single favourable sample.
 
 ## 日本語
+
+Intel実験版は **`--intel-text`** を明示して測定します。`--model qwen` は `config-sycl.json`、`--model tiel` は `config-tiel-coder-sycl.json` を読みます。必要に応じて `--config-dir` で導入済み設定のフォルダーを指定してください。
+
+固定入力・seed1234・除外ウォームアップ・4回起動・生成3課題各2回・正確な4K/16K入力・計測境界は維持します。Qwenは規定のサンプラー、追加モデルのTielは公式Tiel設定を使います。ただし画像未対応、動的KVの代わりに私有設定でcontext32768固定、UMAの独立Expert cacheは該当なしです。このため規約名は `tinystrata-bench-v1-intel-text`、**`standard: false`** とし、標準v1の結果へ混ぜません。実INT8 KV/MTP3/chunk1024・native引数・実行ファイルとstageのSHA・backend/profile識別を記録し、保存済み設定は変更しません。旧chunk512の結果は別の診断として残します。`--prepare-only` はモデルを追加読込せず計画だけ確認します。
 
 TinyStrata の比較用計測は **`tinystrata-bench-v1`** に統一します。このフォルダーの実行スクリプト・固定テキスト・画像が計測条件です。結果には規約バージョンと入力の SHA-256 を残します。入力や手順を変更する場合は規約も改版し、以前の README の数値を後から v1 の結果として扱いません。
 
