@@ -110,7 +110,7 @@ def context_tokens(cfg: dict) -> int:
 def _chunk(cfg, values):
     value = values.get("--chunk", "auto")
     if value in ("auto", "0"):
-        return 512 if _profile(cfg) in MODEL_PROFILES.values() else 128
+        return 1024 if _profile(cfg) in MODEL_PROFILES.values() else 128
     return _integer(value, "Intel chunk", 1, 1024)
 
 

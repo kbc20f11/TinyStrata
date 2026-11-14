@@ -232,7 +232,7 @@ class IntelTextBenchmarkVariant(unittest.TestCase):
         with patch.object(bench.subprocess, 'Popen', side_effect=AssertionError('No process')):
             cfg = self.configured(before)
         actual = engine_args(cfg)
-        for flag, value in (('--max-context', '32768'), ('--chunk', '512'), ('--kv-type', 'int8'),
+        for flag, value in (('--max-context', '32768'), ('--chunk', '1024'), ('--kv-type', 'int8'),
                             ('--mtp', '3'), ('--draft-vocab', '2048')):
             self.assertEqual(actual[actual.index(flag) + 1], value)
         self.assertEqual(config.value_of(cfg, 'chunk'), 'auto')
@@ -258,7 +258,7 @@ class IntelTextBenchmarkVariant(unittest.TestCase):
         for change in changes:
             with self.subTest(change=change), self.assertRaises(ValueError):
                 self.configured({**self.original(), **change})
-        for setting, value in (('mtp', 0), ('kv_type', 'fp32'), ('chunk', 128)):
+        for setting, value in (('mtp', 0), ('kv_type', 'fp32'), ('chunk', 128), ('chunk', 512)):
             modified, _ = config.apply(self.original(), {setting: value})
             with self.subTest(setting=setting), self.assertRaises(ValueError):
                 self.configured(modified)

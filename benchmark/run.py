@@ -232,7 +232,7 @@ def intel_text_config(original, model, folder, port, cases):
     validate_config(original, allow_uninstalled=True)
     selected = configure_backend(original)
     actual = engine_args(selected, allow_uninstalled=True)
-    required = {'--kv-type': 'int8', '--mtp': '3', '--chunk': '512',
+    required = {'--kv-type': 'int8', '--mtp': '3', '--chunk': '1024',
                 '--weight-memory': 'host', '--draft-vocab': '2048'}
     if selected.get('intel_profile', 'generic') == 'generic':
         raise ValueError('--intel-text requires the approved optimized Intel MTP3 profile')
@@ -280,7 +280,7 @@ def validate_intel_text_engine(info, health, cfg):
             info.get('vision') != 0 or info.get('device_vendor') != 32902 or info.get('device_integrated') != 1 or
             info.get('kv_grow') not in (None, False, 0)):
         raise ValueError(f'Intel engine does not match the fixed INT8/MTP3 UMA text variant: {info}')
-    if info.get('chunk') not in (None, 512):
+    if info.get('chunk') not in (None, 1024):
         raise ValueError('Intel engine reports a different input chunk size')
     cache_bytes(info, intel_text=True)
 
@@ -808,7 +808,7 @@ def render_report(report):
     if report.get('saved_profile'):
         lines[4:4] = ['Saved-profile variant: native settings and samplers are retained; each canonical generation text runs once per start.', '']
     if report.get('intel_text'):
-        lines[4:4] = ['Intel text variant: fixed context32768, INT8 KV, MTP3 and profile chunk512; '
+        lines[4:4] = ['Intel text variant: fixed context32768, INT8 KV, MTP3 and profile chunk1024; '
                       'GPU Vision, dynamic KV growth and independent Expert cache are unsupported. '
                       'Image is N/A. Canonical v1 text inputs, sampler, seed, warmup and repetitions are retained.', '']
     if profile:
@@ -994,7 +994,7 @@ def main():
                       config_hashes_before={str(p): sha256(p) for p in options.config_dir.glob('config*.json')},
                       protocol_differences={'vision': {'supported': False, 'image_case': 'unsupported'},
                           'kv_growth': {'supported': False, 'mode': 'fixed'}, 'context_tokens': 32768,
-                          'chunk_tokens': 512, 'chunk_policy': 'Intel profile auto',
+                          'chunk_tokens': 1024, 'chunk_policy': 'Intel profile auto',
                           'expert_cache': {'applicable': False, 'reason': 'UMA; no independent Expert cache'},
                           'expert_placement': {'applicable': False, 'reason': 'UMA single weight store; no discrete Expert VRAM budget'},
                           'cpu_workers': {'applicable': False, 'reason': 'Intel does not expose the CUDA/HIP Expert worker setting'},

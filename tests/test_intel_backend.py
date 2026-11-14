@@ -47,7 +47,7 @@ class IntelBackendPolicy(unittest.TestCase):
         self.assertIn("--experimental-tiel", native)
         self.assertNotIn("--experimental-tiel", prepared["args"])
         self.assertNotIn("--experimental-tiel", intel.engine_args(intel.configure_backend(configuration(intel_profile=intel.B390_PROFILE))))
-        self.assertEqual((value(native, "--max-context"), value(native, "--chunk"), value(native, "--mtp")), ("8192", "512", "3"))
+        self.assertEqual((value(native, "--max-context"), value(native, "--chunk"), value(native, "--mtp")), ("8192", "1024", "3"))
         self.assertEqual(prepared["sampling"], cfg["sampling"])
         self.assertEqual(prepared["reasoning_effort"], "medium")
         self.assertEqual(cfg, original)
@@ -87,7 +87,7 @@ class IntelBackendPolicy(unittest.TestCase):
         result = intel.configure_backend(configuration(), profile=intel.B390_PROFILE)
         command = intel.engine_args(result)
         self.assertEqual(value(command, "--max-context"), "8192")
-        self.assertEqual(value(command, "--chunk"), "512")
+        self.assertEqual(value(command, "--chunk"), "1024")
         self.assertEqual(value(command, "--mtp"), "3")
         self.assertEqual(value(command, "--draft-vocab"), "2048")
         for flag in ("--prefill-mkl", "--decode-dp4a", "--verify-xmx", "--prefill-int8-xmx", "--vocab-xmx",
@@ -163,6 +163,20 @@ class IntelBackendPolicy(unittest.TestCase):
         self.assertNotIn("--draft-vocab", command)
         result = intel.configure_backend(configuration("--mtp", "3", "--draft-vocab", "0"), profile=intel.B390_PROFILE)
         self.assertEqual(value(intel.engine_args(result), "--draft-vocab"), "0")
+
+    def test_b390_auto1024_preserves_both_explicit512_profiles(self):
+        for model, profile in intel.MODEL_PROFILES.items():
+            fields = {"model_name": model, "intel_profile": profile}
+            auto = intel.configure_backend(configuration(**fields))
+            self.assertEqual(value(auto["args"], "--chunk"), "auto")
+            self.assertEqual(value(intel.engine_args(auto), "--chunk"), "1024")
+            manual = configuration("--chunk", "512", sampling={"temperature": .37}, **fields)
+            before = deepcopy(manual)
+            configured = intel.configure_backend(manual)
+            self.assertEqual(value(intel.engine_args(configured), "--chunk"), "512")
+            self.assertEqual(value(configured["args"], "--chunk"), "512")
+            self.assertEqual(configured["sampling"], {"temperature": .37})
+            self.assertEqual(manual, before)
 
     def test_explicit_context_chunk_kv_and_device_are_not_retuned(self):
         result = intel.configure_backend(configuration("--max-context", "16384", "--chunk", "64", "--kv-type", "fp32", "--mtp", "0",
