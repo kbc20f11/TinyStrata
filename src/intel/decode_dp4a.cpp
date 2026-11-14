@@ -54,12 +54,14 @@ template<int Type> constexpr size_t row_bytes(size_t width) {
     if constexpr (Type == 10) return width / 256 * 84;
     if constexpr (Type == 11) return width / 256 * 110;
     if constexpr (Type == 14) return width / 256 * 210;
+    if constexpr (Type == 18) return width / 256 * 98;
     if constexpr (Type == 21) return width / 256 * 110;
     if constexpr (Type == 22) return width / 256 * 82;
     if constexpr (Type == 23) return width / 256 * 136;
 }
 template<int Type> SYCL_ESIMD_FUNCTION ESIMD_INLINE void decode(const uint8_t* w, U col,
-    const uint32_t* iq2, const uint32_t* iq3, const int8_t* iq4, U& packed, F& scale) {
+    const uint32_t* iq2, const uint32_t* iq3, const int8_t* iq4,
+    const uint32_t* iq3xxs, const uint8_t* iq_signs, U& packed, F& scale) {
     if constexpr (Type == 11) {
         const U group = col >> 4;
         const U low_scale = (bytes(w, 96 + (group & 7)) >> ((group >> 3) * 4)) & 15;
@@ -77,6 +79,17 @@ template<int Type> SYCL_ESIMD_FUNCTION ESIMD_INLINE void decode(const uint8_t* w
         U value = low | (high << 4);
         packed = ((value | 0x80808080u) - 0x20202020u) ^ 0x80808080u;
         scale = F(cached<int8_t, lanes>(reinterpret_cast<const int8_t*>(w), 192 + (col >> 4))) * half_scalar(w + 208);
+    }
+    if constexpr (Type == 18) {
+        const U group = col >> 5, octet = (col & 31) >> 3;
+        // The 98-byte block's auxiliary DWORDs start at byte 66. words()
+        // reads two aligned uint16 halves, including the final word at 94.
+        const U aux = words(w, 66 + group * 4);
+        const U code = bytes(w, 2 + group * 8 + ((col & 31) >> 2));
+        const U grid = cached<uint32_t, lanes>(iq3xxs, code * 4);
+        const U sign = bytes(iq_signs, (aux >> (octet * 7)) & 127);
+        packed = signs(grid, (sign >> (col & 7)) & 15);
+        scale = (half_scalar(w) * (F(aux >> 28) + .5f)) * .5f;
     }
     if constexpr (Type == 22) {
         U group = col >> 5, octet = (col & 31) >> 3;
@@ -144,7 +157,8 @@ template<int Tile> SYCL_ESIMD_FUNCTION ESIMD_INLINE void accumulate_affine(F (&s
 }
 template<int Type, int Tile, bool Grouped = false> sycl::event product(sycl::queue& q, const uint8_t* weights, const int8_t* input,
     const float* scales, const int32_t* ids, int picks, int tokens, float* output, int rows, int width, bool separate,
-    const uint32_t* iq2, const uint32_t* iq3, const int8_t* iq4, ExpertPlan plan = {}) {
+    const uint32_t* iq2, const uint32_t* iq3, const int8_t* iq4,
+    const uint32_t* iq3xxs, const uint8_t* iq_signs, ExpertPlan plan = {}) {
     const int bound = Grouped ? std::min(picks * tokens, (picks * tokens + Tile - 1) / Tile + plan.experts) : (ids ? picks * tokens : (tokens + Tile - 1) / Tile);
     const size_t stride = row_bytes<Type>(size_t(width)), entries = size_t(rows) * bound;
     return q.parallel_for(sycl::nd_range<1>(((entries + 15) / 16) * 16, 16),
@@ -187,7 +201,7 @@ template<int Type, int Tile, bool Grouped = false> sycl::event product(sycl::que
                     accumulate_affine<Tile>(sum, packed, dw, minimum, x, dx, base, width, tile_tokens, input_rows);
                 } else {
                     U packed; F dw;
-                    decode<11>(block, col, iq2, iq3, iq4, packed, dw);
+                    decode<11>(block, col, iq2, iq3, iq4, iq3xxs, iq_signs, packed, dw);
                     accumulate<Tile>(sum, packed, dw, x, dx, base, width, tile_tokens, input_rows);
                 }
             }
@@ -273,7 +287,7 @@ template<int Type, int Tile, bool Grouped = false> sycl::event product(sycl::que
         for (size_t base = 0; base < size_t(width); base += 64) {
             U col = columns + uint32_t(base % 256), packed;
             F dw;
-            decode<Type>(w + (base / 256) * row_bytes<Type>(256), col, iq2, iq3, iq4, packed, dw);
+            decode<Type>(w + (base / 256) * row_bytes<Type>(256), col, iq2, iq3, iq4, iq3xxs, iq_signs, packed, dw);
             accumulate<Tile>(sum, packed, dw, x, dx, base, width, tile_tokens, input_rows);
         }
         }
@@ -308,7 +322,8 @@ struct DecodeDp4a::Impl {
     int8_t *input = nullptr, *iq4 = nullptr;
     float *scales = nullptr, *dense_partials = nullptr;
     int32_t* error = nullptr;
-    uint32_t *iq2 = nullptr, *iq3 = nullptr;
+    uint32_t *iq2 = nullptr, *iq3 = nullptr, *iq3xxs = nullptr;
+    uint8_t* iq_signs = nullptr;
     sycl::event quantization;
     explicit Impl(sycl::queue& queue, bool windows, bool dense_split_k) : q(queue), xmx(windows) {
 #ifndef TINYSTRATA_INTEL_INT8_XMX
@@ -319,16 +334,18 @@ struct DecodeDp4a::Impl {
             error = sycl::malloc_shared<int32_t>(1, q);
             if (dense_split_k) dense_partials = sycl::malloc_device<float>(4 * 8 * 8192, q);
             iq2 = sycl::malloc_device<uint32_t>(2048, q); iq3 = sycl::malloc_device<uint32_t>(512, q); iq4 = sycl::malloc_device<int8_t>(16, q);
-            if (!input || !scales || !error || !iq2 || !iq3 || !iq4 || (dense_split_k && !dense_partials)) throw std::runtime_error("Intel DP4A scratch allocation failed");
+            iq3xxs = sycl::malloc_device<uint32_t>(256, q); iq_signs = sycl::malloc_device<uint8_t>(128, q);
+            if (!input || !scales || !error || !iq2 || !iq3 || !iq4 || !iq3xxs || !iq_signs || (dense_split_k && !dense_partials)) throw std::runtime_error("Intel DP4A scratch allocation failed");
             q.memset(error, 0, sizeof(int32_t)); q.memcpy(iq2, iq2s_grid, sizeof(iq2s_grid));
             q.memcpy(iq3, iq3s_grid, sizeof(iq3s_grid)); q.memcpy(iq4, kvalues_iq4nl, sizeof(kvalues_iq4nl));
+            q.memcpy(iq3xxs, iq3xxs_grid, sizeof(iq3xxs_grid)); q.memcpy(iq_signs, ksigns_iq2xs, sizeof(ksigns_iq2xs));
         } catch (...) { release(); throw; }
         std::fprintf(stderr, "Intel decode_dp4a=ESIMD Q8_activations=1 unchanged_GGUF_weights=1\n");
         if (xmx) std::fprintf(stderr, "Intel verify_xmx=INT8_DPAS unchanged_GGUF_weights=1\n");
     }
     void release() noexcept {
         try { q.wait_and_throw(); } catch (...) {}
-        for (void* p : {static_cast<void*>(input), static_cast<void*>(scales), static_cast<void*>(dense_partials), static_cast<void*>(error), static_cast<void*>(iq2), static_cast<void*>(iq3), static_cast<void*>(iq4)})
+        for (void* p : {static_cast<void*>(input), static_cast<void*>(scales), static_cast<void*>(dense_partials), static_cast<void*>(error), static_cast<void*>(iq2), static_cast<void*>(iq3), static_cast<void*>(iq4), static_cast<void*>(iq3xxs), static_cast<void*>(iq_signs)})
             if (p) try { sycl::free(p, q); } catch (...) {}
     }
     ~Impl() { release(); }
@@ -371,9 +388,9 @@ sycl::event DecodeDp4a::selected(int type, const uint8_t* weights, const int32_t
     if (rows < 1 || width < 64 || width > 8192 || width % 64 || (type != 8 && width % 256) || picks < 1 || picks > 8 || tokens < 1 || tokens > 8 || (!ids && (picks != 1 || separate)))
         throw std::invalid_argument("Invalid DP4A matrix shape");
     p.quantization = quantize_decode_input(p.q, input, p.input, p.scales, width, separate ? picks * tokens : tokens, p.error);
-#define PRODUCT(T,Tile) product<T,Tile>(p.q, weights, p.input, p.scales, ids, picks, tokens, output, rows, width, separate, p.iq2, p.iq3, p.iq4)
+#define PRODUCT(T,Tile) product<T,Tile>(p.q, weights, p.input, p.scales, ids, picks, tokens, output, rows, width, separate, p.iq2, p.iq3, p.iq4, p.iq3xxs, p.iq_signs)
 #define RUN(T) ((!ids && tokens > 4) ? PRODUCT(T,8) : (!ids && tokens > 1) ? PRODUCT(T,4) : PRODUCT(T,1))
-    switch (type) { case 8: return RUN(8); case 10: return RUN(10); case 11: return RUN(11); case 14: return RUN(14); case 21: return RUN(21); case 22: return RUN(22); case 23: return RUN(23);
+    switch (type) { case 8: return RUN(8); case 10: return RUN(10); case 11: return RUN(11); case 14: return RUN(14); case 18: return RUN(18); case 21: return RUN(21); case 22: return RUN(22); case 23: return RUN(23);
         default: throw std::invalid_argument("Unsupported DP4A weight type"); }
 #undef RUN
 #undef PRODUCT
@@ -393,11 +410,11 @@ sycl::event DecodeDp4a::grouped(int type, const uint8_t* weights, ExpertPlan pla
     p.quantization = quantize_decode_input(p.q, input, p.input, p.scales, width, separate ? plan.picks * plan.tokens : plan.tokens, p.error);
 #ifdef TINYSTRATA_INTEL_INT8_XMX
     if (xmx_shape && (plan.tile_width == 1 || plan.tile_width == 4))
-        return q8_xmx_product(p.q, type, weights, p.input, p.scales, output, rows, width, plan, separate, p.iq2, p.iq3, interleaved);
+        return q8_xmx_product(p.q, type, weights, p.input, p.scales, output, rows, width, plan, separate, p.iq2, p.iq3, interleaved, p.iq3xxs, p.iq_signs);
 #endif
-#define GROUP_PRODUCT(T,Tile) product<T,Tile,true>(p.q, weights, p.input, p.scales, nullptr, plan.picks, plan.tokens, output, rows, width, separate, p.iq2, p.iq3, p.iq4, plan)
+#define GROUP_PRODUCT(T,Tile) product<T,Tile,true>(p.q, weights, p.input, p.scales, nullptr, plan.picks, plan.tokens, output, rows, width, separate, p.iq2, p.iq3, p.iq4, p.iq3xxs, p.iq_signs, plan)
 #define RUN(T) (plan.tile_width == 2 ? GROUP_PRODUCT(T,2) : GROUP_PRODUCT(T,4))
-    switch (type) { case 8: return RUN(8); case 10: return RUN(10); case 11: return RUN(11); case 14: return RUN(14); case 21: return RUN(21); case 22: return RUN(22); case 23: return RUN(23);
+    switch (type) { case 8: return RUN(8); case 10: return RUN(10); case 11: return RUN(11); case 14: return RUN(14); case 18: return RUN(18); case 21: return RUN(21); case 22: return RUN(22); case 23: return RUN(23);
         default: throw std::invalid_argument("Unsupported grouped DP4A weight type"); }
 #undef RUN
 #undef GROUP_PRODUCT

@@ -15,7 +15,9 @@ sycl::event dequantize_q8_kv(sycl::queue& q, Q8Kv cache, float* key, float* valu
 // 1..8 token rows with independent causal positions. Query/gate/output are
 // token-major; scratch needs tokens*heads*context scores and
 // tokens*heads*ceil(context/256)*256 partial coefficients.
+// actual_visible is the CPU-known exclusive visible end; 0 retains the old
+// path. Graph capture/replay passes 0, never its padded extent as visibility.
 sycl::event decode_attention_q8(sycl::queue& q, const float* query, const float* gate, Q8Kv cache,
     float* scores, float* partial, float* output, int heads, const int32_t* position,
-    int extent, sycl::event* stages = nullptr, int tokens = 1);
+    int extent, sycl::event* stages = nullptr, int tokens = 1, int actual_visible = 0);
 }

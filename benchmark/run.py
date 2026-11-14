@@ -43,6 +43,7 @@ MODELS = {
 }
 TEXT_ONLY_MODELS = ('lfm', 'clover')
 TIEL_MODEL = ('config-tiel-coder.json', 'qwen35moe', 'tiel-coder-35b-a3b')
+INTEL_TEXT_CONFIGS = {'qwen': 'config-sycl.json', 'tiel': 'config-tiel-coder-sycl.json'}
 # Adding a model must not change the existing v1 texts/image or their hashes.
 CLOVER_SAMPLING = {'temperature': 0.0, 'top_p': 1.0, 'top_k': 64, 'min_p': 0.0,
                    'presence_penalty': 0.9, 'repetition_penalty': 1.05, 'frequency_penalty': 0.0}
@@ -68,6 +69,9 @@ ENGINE_KEYS = ('model', 'family', 'version', 'kv', 'kv_grow', 'mtp', 'clover_dra
                'q36_mmq_min_rows', 'q36_mmq_auto_workspace_bytes',
                'hip_vmm_family', 'hip_vmm_verified', 'hip_vmm_driver_min_kib', 'hip_vmm_quantum_kib',
                'hip_runtime_version', 'hip_compiled_version', 'hip_vmm_reason')
+ENGINE_KEYS += ('backend', 'experimental', 'intel_profile', 'memory_model', 'single_weight_store',
+                'device_vendor', 'device_id', 'device_integrated', 'device_architecture',
+                'adapter_luid', 'adapter_node_mask')
 CLOVER_INFO_FLOATS = ('clover_threshold', 'clover_last_threshold', 'clover_preview_ms',
                       'clover_replay_ms', 'clover_select_ms', 'clover_preview_cpu_ms',
                       'clover_accept_ratio', 'clover_accept_delta', 'clover_last_accept_ratio', 'clover_last_accept_delta')
@@ -154,7 +158,15 @@ def model_definition(model):
     return TIEL_MODEL if model == 'tiel' else MODELS[model]
 
 
-def benchmark_models(model, saved_profile=False):
+def benchmark_models(model, saved_profile=False, *, intel_text=False):
+    if intel_text:
+        if model not in INTEL_TEXT_CONFIGS:
+            raise ValueError('--intel-text requires one explicit --model qwen or tiel')
+        from serve.intel_backend import supports_model
+        _, arch, name = model_definition(model)
+        if not supports_model({'arch': arch, 'model_name': name}):
+            raise ValueError(f'{name} is not enabled by the public Intel backend; private port checks do not admit it')
+        return [model]
     if model not in (*MODELS, 'tiel', 'all'):
         raise ValueError(f'Unsupported benchmark model: {model}')
     if model == 'tiel' and not saved_profile:
@@ -168,6 +180,8 @@ def generation_passes(saved_profile=False):
 
 def saved_config(original, model, folder, port, cases, *, copy_profiles=False):
     """Retain actual native/model choices; isolate only benchmark side effects."""
+    if original.get('backend') == 'sycl':
+        raise ValueError('Intel benchmarking requires the explicit --intel-text variant')
     file, arch, name = model_definition(model)
     if original.get('arch', 'qwen35moe') != arch:
         raise ValueError(f'{file} does not select {arch}')
@@ -201,6 +215,91 @@ def saved_config(original, model, folder, port, cases, *, copy_profiles=False):
     return cfg
 
 
+def intel_text_config(original, model, folder, port, cases):
+    """Retain the approved Intel native profile with explicit fixed-context differences.
+
+    This is a pure configuration plan. Runtime build metadata and installed
+    assets are checked separately before starting any benchmark service.
+    """
+    benchmark_models(model, intel_text=True)
+    from serve import config as engine_config
+    from serve.intel_backend import configure_backend, engine_args, validate_config
+    if original.get('backend') != 'sycl':
+        raise ValueError('--intel-text requires an explicitly installed sycl profile')
+    _, arch, name = model_definition(model)
+    if original.get('arch', 'qwen35moe') != arch:
+        raise ValueError('The Intel profile does not match the selected model architecture')
+    validate_config(original, allow_uninstalled=True)
+    selected = configure_backend(original)
+    actual = engine_args(selected, allow_uninstalled=True)
+    required = {'--kv-type': 'int8', '--mtp': '3', '--chunk': '512',
+                '--weight-memory': 'host', '--draft-vocab': '2048'}
+    if selected.get('intel_profile', 'generic') == 'generic':
+        raise ValueError('--intel-text requires the approved optimized Intel MTP3 profile')
+    for flag, expected in required.items():
+        if flag not in actual or actual[actual.index(flag) + 1] != expected:
+            raise ValueError(f'Intel text profile requires {flag} {expected}')
+    if any(flag in actual for flag in ('--profile', '--no-graph', '--verify-graph')):
+        raise ValueError('Intel text benchmarking does not combine profiling or manual graph variants')
+    env = selected.get('env') or {}
+    if any(key.upper() not in ('ONEAPI_DEVICE_SELECTOR', 'UR_LOADER_PRELOAD_FILTER', 'STRATA_API_KEY') for key in env):
+        raise ValueError('Intel text benchmarking does not combine saved tuning environment overrides')
+    cfg = {key: copy.deepcopy(selected[key]) for key in
+           ('exe', 'tokenizer', 'backend', 'lib_dirs', 'gpu', 'intel_profile', 'args') if key in selected}
+    base = Path(original.get('cwd') or ROOT).expanduser().resolve()
+    def resolved(value):
+        path = Path(value).expanduser()
+        return str((path if path.is_absolute() else base / path).resolve())
+    cfg, _ = engine_config.apply(cfg, {'max_context': 32768, 'chunk': 'auto', 'kv_type': 'int8', 'mtp': 3})
+    model_at = cfg['args'].index('--model') + 1
+    cfg['args'][model_at] = resolved(cfg['args'][model_at])
+    for key in ('exe', 'tokenizer'):
+        if key in cfg:
+            cfg[key] = resolved(cfg[key])
+    cfg['lib_dirs'] = [resolved(path) for path in cfg.get('lib_dirs', [])]
+    cfg.update(arch=arch, model_name=name, cwd=str(ROOT), host='127.0.0.1', port=port,
+               log=str(Path(folder) / 'engine.log'), parallel=1, vision_mode='no',
+               enable_thinking=True, max_tokens=32768,
+               sampling=dict(tinyconfig.TIEL_SAMPLING) if model == 'tiel' else model_sampling(model, cases),
+               env={key: value for key, value in env.items() if key.upper() != 'STRATA_API_KEY'},
+               memory_policy_version=tinyconfig.MEMORY_POLICY_VERSION,
+               chunk_policy_version=tinyconfig.CHUNK_POLICY_VERSION,
+               generation_policy_version=tinyconfig.GENERATION_POLICY_VERSION)
+    validate_config(cfg, allow_uninstalled=True)
+    return cfg
+
+
+def validate_intel_text_engine(info, health, cfg):
+    """Confirm the actual API/device and the fixed-context text variant."""
+    if (health.get('backend') != 'sycl' or health.get('intel_profile') != cfg['intel_profile'] or
+            health.get('experimental') is not True or health.get('model') != cfg['model_name'] or
+            health.get('images') is not False):
+        raise ValueError('The owned API does not identify the selected experimental Intel text profile')
+    if (info.get('backend') != 'sycl' or info.get('memory_model') != 'uma' or
+            info.get('kv') != 'int8' or info.get('mtp') != 3 or info.get('max_context') != 32768 or
+            info.get('vision') != 0 or info.get('device_vendor') != 32902 or info.get('device_integrated') != 1 or
+            info.get('kv_grow') not in (None, False, 0)):
+        raise ValueError(f'Intel engine does not match the fixed INT8/MTP3 UMA text variant: {info}')
+    if info.get('chunk') not in (None, 512):
+        raise ValueError('Intel engine reports a different input chunk size')
+    cache_bytes(info, intel_text=True)
+
+
+def intel_text_build(cfg):
+    from serve.model_setup import validate_intel_executable
+    proof = validate_intel_executable(cfg, allow_legacy=False)
+    if proof is None:
+        raise ValueError('--intel-text requires an installed native build with current capability metadata')
+    folders = [Path(cfg['exe']).parent, *(Path(path) for path in cfg.get('lib_dirs', []))]
+    manifests = list(dict.fromkeys(path / '.tinystrata-intel-runtime.json' for path in folders
+                                  if (path / '.tinystrata-intel-runtime.json').is_file()))
+    if not manifests:
+        raise ValueError('--intel-text requires an app-local staged/imported runtime manifest')
+    return {'executable': proof.executable, 'executable_sha256': proof.sha256,
+            'capabilities': proof.report,
+            'stage_manifests': [{'path': str(path), 'sha256': sha256(path)} for path in manifests]}
+
+
 def chunk_option(value):
     if value == 'auto':
         return 'auto'
@@ -225,6 +324,8 @@ def controlled_config(original, model, folder, port, cases, *, clover_mode='caus
                       clover_workers=None, clover_chunk='auto', clover_env=None, clover_thinking=True,
                       clover_draft=None, clover_accept='exact', clover_accept_ratio=0.9, clover_accept_delta=0.6,
                       clover_vision=False):
+    if original.get('backend') == 'sycl':
+        raise ValueError('Intel benchmarking requires the explicit --intel-text variant')
     file, arch, name = model_definition(model)
     if original.get('arch', 'qwen35moe') != arch:
         raise ValueError(f'{file} does not select {arch}')
@@ -411,7 +512,12 @@ def exact_length_text(count_fn, paragraph, question, target):
     raise ValueError(f'Could not construct exactly{target} complete input tokens')
 
 
-def cache_bytes(info):
+def cache_bytes(info, *, intel_text=False):
+    if intel_text:
+        if (info.get('backend') != 'sycl' or info.get('memory_model') != 'uma' or
+                info.get('expert_cache_bytes') is not None or info.get('expert_cache_mib') is not None):
+            raise ValueError('Intel UMA has no separately reported Expert cache; do not substitute arena or RAM usage')
+        return None
     value = info.get('expert_cache_bytes')
     if value is None and info.get('expert_cache_mib') is not None:
         value = info['expert_cache_mib'] * (1 << 20)
@@ -428,7 +534,7 @@ def validate_64k_context(info, output_limit):
                          f'(65,536 input + {output_limit} output); engine reports {capacity!r}')
 
 
-def aggregate_model(runs):
+def aggregate_model(runs, *, intel_text=False):
     records = [x for run in runs if run.get('complete') for x in run['records']]
     out = {}
     for category in ('generation', 'input_4k', 'input_16k', 'input_64k'):
@@ -448,8 +554,10 @@ def aggregate_model(runs):
     out['image'] = dict(requests=len(images), first_output_s=statistics.median(r['response']['first_output_s'] for r in images),
                         elapsed_s=statistics.median(r['response']['elapsed_s'] for r in images)) if images else None
     complete = [r for r in runs if r.get('complete')]
-    out['expert_cache'] = {key: [cache_bytes(r[key]) for r in complete]
+    out['expert_cache'] = {key: [cache_bytes(r[key], intel_text=intel_text) for r in complete]
                            for key in ('startup_engine', 'after_16k_engine')}
+    if intel_text:
+        out['expert_cache'].update(applicable=False, reason='UMA: independent Expert cache is not reported')
     if any('after_64k_engine' in r for r in complete):
         out['expert_cache']['after_64k_engine'] = [cache_bytes(r['after_64k_engine']) for r in complete]
     out['complete_runs'] = len(complete)
@@ -464,10 +572,14 @@ class Service:
         self.stdout = (self.folder / 'api.stdout.log').open('w', encoding='utf-8')
         self.stderr = (self.folder / 'api.stderr.log').open('w', encoding='utf-8')
         self.owned, self.lock, self.stop = {}, threading.Lock(), threading.Event()
+        environment = child_environment()
+        if cfg.get('backend') == 'sycl':
+            from serve.intel_capabilities import capability_environment
+            environment = capability_environment(cfg, environment)
         self.process = subprocess.Popen([sys.executable, '-B', '-m', 'serve.server',
             '--engine', 'tinystrata', '--config', str(self.folder / 'config.json'),
             '--host', '127.0.0.1', '--port', str(cfg['port'])], cwd=ROOT,
-            stdout=self.stdout, stderr=self.stderr, env=child_environment(),
+            stdout=self.stdout, stderr=self.stderr, env=environment,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         self.remember()
         self.watcher = threading.Thread(target=self.watch, daemon=True)
@@ -532,6 +644,32 @@ class Service:
     def engine(self):
         metrics = self.json('/metrics')
         return engine_snapshot(metrics['engine'])
+
+    def intel_native_identity(self):
+        """Record the real --serve child, excluding model-free capability probes."""
+        from serve.intel_backend import engine_args
+        self.remember()
+        expected = os.path.normcase(os.path.realpath(self.cfg['exe']))
+        arguments = engine_args(self.cfg)
+        matches = []
+        with self.lock:
+            owned = dict(self.owned)
+        for pid, created in owned.items():
+            try:
+                proc = psutil.Process(pid)
+                if (abs(proc.create_time() - created) < .001 and proc.is_running() and
+                        os.path.normcase(os.path.realpath(proc.exe())) == expected):
+                    command = proc.cmdline()
+                    if command[1:] == ['--capabilities']:
+                        continue
+                    if command[1:] != ['--serve', *arguments]:
+                        raise ValueError(f'The Intel native child arguments differ from its selected profile: {command}')
+                    matches.append(dict(pid=pid, created=created, executable=proc.exe(), arguments=command[1:]))
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        if len(matches) != 1:
+            raise ValueError('Expected one owned Intel --serve model process')
+        return matches[0]
 
     def vision_identity(self):
         if not self.cfg.get('vision'):
@@ -669,6 +807,10 @@ def render_report(report):
     profile = report.get('clover_profile')
     if report.get('saved_profile'):
         lines[4:4] = ['Saved-profile variant: native settings and samplers are retained; each canonical generation text runs once per start.', '']
+    if report.get('intel_text'):
+        lines[4:4] = ['Intel text variant: fixed context32768, INT8 KV, MTP3 and profile chunk512; '
+                      'GPU Vision, dynamic KV growth and independent Expert cache are unsupported. '
+                      'Image is N/A. Canonical v1 text inputs, sampler, seed, warmup and repetitions are retained.', '']
     if profile:
         details = (f'Clover profile: {profile["mode"]}, KV {profile["kv"]}, '
                    f'workers {profile["cpu_workers"]}, chunk {profile["chunk"]}, '
@@ -682,12 +824,14 @@ def render_report(report):
         details += ', environment ' + (', '.join(f'{key}={value}' for key, value in profile['env'].items()) or 'none') + '.'
         lines[4:4] = [details, '']
     for model, data in report['models'].items():
-        result = aggregate_model(data['runs'])
+        result = aggregate_model(data['runs'], intel_text=bool(data.get('intel_text')))
         def rate(key):
             return f'{result[key]["tok_s"]:.2f}' if key in result else '—'
         image = result['image']
         image_text = f'{image["first_output_s"]:.2f} / {image["elapsed_s"]:.2f}' if image else 'N/A'
         def span(values):
+            if data.get('intel_text'):
+                return 'N/A (UMA)'
             values = [v / GIB for v in values]
             if not values:
                 return '—'
@@ -718,6 +862,8 @@ def main():
     parser.add_argument('--model', choices=(*MODELS, 'tiel', 'all'), default='all')
     parser.add_argument('--saved-profile', action='store_true',
                         help='Nonstandard variant: retain saved native/sampling/Vision settings, include Tiel in all, run each generation text once')
+    parser.add_argument('--intel-text', action='store_true',
+                        help='Nonstandard explicit SYCL text variant; fixed context32768, no Vision/dynamic KV/independent Expert cache')
     parser.add_argument('--config-dir', type=Path, default=local / 'TinyStrata-work/runtime/.tinystrata')
     parser.add_argument('--output', type=Path, default=local / 'TinyStrata-work/benchmarks' / time.strftime('%Y%m%d-%H%M%S'))
     parser.add_argument('--runs', type=int, default=4, help='Protocol v1 uses4; other counts are diagnostic')
@@ -752,6 +898,12 @@ def main():
                         help='Clover-only STRATA_*/TINYSTRATA_* engine override (repeatable)')
     parser.add_argument('--prepare-only', action='store_true', help='Validate configs and write plans without starting an API')
     options = parser.parse_args()
+    if options.intel_text and (options.saved_profile or options.include_64k or options.clover_vision or
+            options.clover_mode != 'causal' or options.clover_block_size != 32 or options.clover_threshold != .95 or
+            options.thinking != 'on' or options.engine_env or
+            any(value is not None for value in (options.kv_type, options.cpu_workers, options.chunk,
+                options.clover_draft, options.clover_accept, options.clover_accept_ratio, options.clover_accept_delta))):
+        parser.error('--intel-text does not combine saved-profile, Clover, KV, worker, chunk, environment or thinking overrides')
     if not 1 <= options.runs <= 20 or options.request_timeout <= 0 or options.startup_timeout <= 0:
         parser.error('runs must be1..20 and timeouts must be positive')
     if not math.isfinite(options.clover_threshold) or not 0 <= options.clover_threshold <= 1:
@@ -796,7 +948,7 @@ def main():
     if options.include_64k and cases['prefill_max_tokens'] != 32:
         parser.error('--include-64k requires the canonical 32-token long-input output limit')
     try:
-        models = benchmark_models(options.model, options.saved_profile)
+        models = benchmark_models(options.model, options.saved_profile, intel_text=options.intel_text)
     except ValueError as error:
         parser.error(str(error))
     options.output.mkdir(parents=True, exist_ok=False)
@@ -807,8 +959,8 @@ def main():
         commit = None
     diffusion_variant = options.clover_mode == 'diffusion'
     self_spec_variant = options.clover_mode == 'self-spec'
-    variant = options.saved_profile or diffusion_variant or self_spec_variant or manual_variant or options.include_64k
-    variant_suffix = ('-saved-profile' if options.saved_profile else '-clover-diffusion' if diffusion_variant else '-clover-self-spec' if self_spec_variant
+    variant = options.intel_text or options.saved_profile or diffusion_variant or self_spec_variant or manual_variant or options.include_64k
+    variant_suffix = ('-intel-text' if options.intel_text else '-saved-profile' if options.saved_profile else '-clover-diffusion' if diffusion_variant else '-clover-self-spec' if self_spec_variant
                       else '-clover-causal-variant' if manual_variant else '')
     if options.include_64k:
         variant_suffix = (variant_suffix or '-clover-causal') + '-64k'
@@ -837,6 +989,16 @@ def main():
     if options.saved_profile:
         report.update(saved_profile=True, generation_passes=1, configuration_scope='saved native profile; eager private startup; private logs/ports/authentication/profile writes',
                       config_hashes_before={str(p): sha256(p) for p in options.config_dir.glob('config*.json')})
+    if options.intel_text:
+        report.update(intel_text=True, generation_passes=2,
+                      config_hashes_before={str(p): sha256(p) for p in options.config_dir.glob('config*.json')},
+                      protocol_differences={'vision': {'supported': False, 'image_case': 'unsupported'},
+                          'kv_growth': {'supported': False, 'mode': 'fixed'}, 'context_tokens': 32768,
+                          'chunk_tokens': 512, 'chunk_policy': 'Intel profile auto',
+                          'expert_cache': {'applicable': False, 'reason': 'UMA; no independent Expert cache'},
+                          'expert_placement': {'applicable': False, 'reason': 'UMA single weight store; no discrete Expert VRAM budget'},
+                          'cpu_workers': {'applicable': False, 'reason': 'Intel does not expose the CUDA/HIP Expert worker setting'},
+                          'native_profile': 'Retained approved Intel MTP3/INT8/draft2048; graphs use profile defaults'})
     if options.include_64k:
         report['include_64k'] = True
     if self_spec_variant:
@@ -849,11 +1011,17 @@ def main():
     all_hashes = {}
     try:
         for model in models:
-            profile_path = options.config_dir / model_definition(model)[0]
+            profile_path = options.config_dir / (INTEL_TEXT_CONFIGS[model] if options.intel_text else model_definition(model)[0])
             original = json.loads(profile_path.read_text(encoding='utf-8-sig'))
-            sampling = copy.deepcopy(original.get('sampling') or model_sampling(model, cases)) if options.saved_profile else model_sampling(model, cases)
+            sampling = (dict(tinyconfig.TIEL_SAMPLING) if options.intel_text and model == 'tiel' else
+                        copy.deepcopy(original.get('sampling') or model_sampling(model, cases)) if options.saved_profile else model_sampling(model, cases))
             data = dict(runs=[], sampling=sampling, assets=[],
-                        image_supported=bool(original.get('vision')) if options.saved_profile else model not in TEXT_ONLY_MODELS or (model == 'clover' and options.clover_vision))
+                        image_supported=False if options.intel_text else bool(original.get('vision')) if options.saved_profile else model not in TEXT_ONLY_MODELS or (model == 'clover' and options.clover_vision))
+            if options.intel_text:
+                data.update(intel_text=True, profile_path=str(profile_path), source_config_sha256=sha256(profile_path),
+                            intel_profile=original.get('intel_profile'),
+                            unsupported_cases=[{'category': 'image', 'status': 'unsupported',
+                                                'reason': 'The Intel native text backend has no image encoder'}])
             if options.saved_profile:
                 data.update(saved_config_sha256=sha256(profile_path), native_args=original.get('args', []),
                             saved_enable_thinking=original.get('enable_thinking', True), saved_vision_mode=original.get('vision_mode'))
@@ -866,11 +1034,15 @@ def main():
             if self_spec_variant:
                 profile_options.update(clover_draft=options.clover_draft, clover_accept=options.clover_accept,
                                        clover_accept_ratio=options.clover_accept_ratio, clover_accept_delta=options.clover_accept_delta)
-            prepared = saved_config(original, model, options.output, free_port(), cases) if options.saved_profile else \
+            prepared = intel_text_config(original, model, options.output, free_port(), cases) if options.intel_text else \
+                saved_config(original, model, options.output, free_port(), cases) if options.saved_profile else \
                 controlled_config(original, model, options.output, free_port(), cases, **profile_options)
             sys.path.insert(0, str(ROOT))
-            from serve import tinyconfig
             tinyconfig.validate(prepared)
+            if options.intel_text:
+                data['native_build'] = intel_text_build(prepared)
+                from serve.intel_backend import engine_args as intel_args
+                data['resolved_native_arguments'] = intel_args(prepared)
             for path in assets(prepared):
                 if not path.is_file():
                     raise FileNotFoundError(f'Install the model/binary before benchmarking: {path}')
@@ -882,7 +1054,8 @@ def main():
             for number in range(1, options.runs + 1):
                 folder = options.output / f'{model}-{number}'
                 folder.mkdir()
-                cfg = saved_config(original, model, folder, free_port(), cases, copy_profiles=not options.prepare_only) if options.saved_profile else \
+                cfg = intel_text_config(original, model, folder, free_port(), cases) if options.intel_text else \
+                    saved_config(original, model, folder, free_port(), cases, copy_profiles=not options.prepare_only) if options.saved_profile else \
                     controlled_config(original, model, folder, free_port(), cases, **profile_options)
                 tinyconfig.validate(cfg)
                 save(folder / 'config.json', cfg)
@@ -898,10 +1071,19 @@ def main():
                     run['startup_engine'] = service.engine()
                     info = run['startup_engine']
                     validate_engine_snapshot(info)
+                    if options.intel_text:
+                        run['api_identity'] = service.json('/health')
+                        validate_intel_text_engine(info, run['api_identity'], cfg)
+                        run['native_identity'] = service.intel_native_identity()
+                        run['native_build'] = intel_text_build(cfg)
+                        if run['native_build'] != data['native_build']:
+                            raise ValueError('Intel native/runtime metadata changed after benchmark preparation')
+                        run['kv_growth'] = {'supported': False, 'mode': 'fixed', 'native_reported': info.get('kv_grow')}
+                        run['unsupported_cases'] = copy.deepcopy(data['unsupported_cases'])
                     if options.include_64k:
                         validate_64k_context(info, cases['prefill_max_tokens'])
                     expected_kv = clover_profile['kv'] if model == 'clover' else 'int8'
-                    if not options.saved_profile and (info.get('kv') != expected_kv or info.get('kv_grow') != 1 or info.get('mtp') != (0 if model in TEXT_ONLY_MODELS else 3)):
+                    if not options.saved_profile and not options.intel_text and (info.get('kv') != expected_kv or info.get('kv_grow') != 1 or info.get('mtp') != (0 if model in TEXT_ONLY_MODELS else 3)):
                         raise ValueError(f'Engine does not match protocol settings: {info}')
                     if not options.saved_profile and model == 'clover' and not self_spec_variant and info.get('clover_draft') != 0:
                         raise ValueError(f'The causal/diffusion profiles do not use self-speculative drafts: {info}')
@@ -921,11 +1103,11 @@ def main():
                             raise ValueError(f'Clover diffusion settings differ from requested profile: {info}')
                         if self_spec_variant:
                             validate_clover_self_spec(info, clover_profile)
-                    cache_bytes(info)
+                    cache_bytes(info, intel_text=options.intel_text)
                     thinking = cfg.get('enable_thinking', True) if options.saved_profile else options.thinking == 'on' if model == 'clover' else True
                     def body(text, limit, *, thinking=thinking):
                         return request_body(model, text, limit, cases, thinking=thinking,
-                                            sampling=sampling if options.saved_profile else None)
+                                            sampling=sampling if options.saved_profile or options.intel_text else None)
                     warmup = body(cases['warmup_text'], cases['warmup_max_tokens'])
                     save(folder / 'warmup.json', service.generate(warmup))
                     def measure(category, name, body, target=None):
@@ -974,6 +1156,10 @@ def main():
                         image_body = body([image, dict(type='text', text=cases['image_prompt'])], cases['image_max_tokens'], thinking=False)
                         measure('image', 'image', image_body)
                     run['vision_end'] = service.vision_identity()
+                    if options.intel_text:
+                        validate_intel_text_engine(run['after_16k_engine'], service.json('/health'), cfg)
+                        if service.intel_native_identity() != run['native_identity'] or intel_text_build(cfg) != run['native_build']:
+                            raise ValueError('Intel native identity changed during the benchmark')
                     run['complete'] = True
                 except BaseException as error:
                     run['error'] = repr(error)
@@ -992,7 +1178,7 @@ def main():
                     persist()
                     if run.get('lifecycle_error'):
                         raise RuntimeError(run['lifecycle_error'])
-            data['aggregate'] = aggregate_model(data['runs'])
+            data['aggregate'] = aggregate_model(data['runs'], intel_text=options.intel_text)
             persist()
         report['complete'] = not options.prepare_only
         report['prepared_only'] = options.prepare_only
@@ -1001,11 +1187,11 @@ def main():
         raise
     finally:
         report['finished'] = time.time()
-        if options.saved_profile:
+        if options.saved_profile or options.intel_text:
             report['configs_unchanged'] = report['config_hashes_before'] == {str(p): sha256(p) for p in options.config_dir.glob('config*.json')}
             if not report['configs_unchanged']: report['complete'] = False
         persist()
-        if options.saved_profile and not report['configs_unchanged']:
+        if (options.saved_profile or options.intel_text) and not report['configs_unchanged']:
             raise RuntimeError('Saved model configurations changed during benchmarking; results are incomplete')
     print(f'Results: {options.output / "report.md"}', flush=True)
 

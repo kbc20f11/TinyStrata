@@ -117,7 +117,8 @@ def prepare(a) -> tuple[dict, Path]:
             raise ValueError("--model-family does not match the local GGUF architecture")
         requested_arch = actual_arch
     config_path = getattr(a, "config", None)
-    path = (config_path or RUNTIME / ".tinystrata" / ("config-sycl.json" if intel_requested else "config-tiel-coder.json" if tiel else
+    path = (config_path or RUNTIME / ".tinystrata" / ("config-tiel-coder-sycl.json" if intel_requested and tiel else
+            "config-sycl.json" if intel_requested else "config-tiel-coder.json" if tiel else
             {"lfm2moe": "config-lfm2.json", "gemma4": "config-gemma4.json", "clover_moe": "config-clover.json"}
             .get(requested_arch, "config.json"))).expanduser().resolve()
     from serve.install_guard import assert_installation_ready
@@ -252,9 +253,13 @@ def prepare(a) -> tuple[dict, Path]:
         cfg = configure_vision(cfg, model)
     validate(cfg, allow_uninstalled=True)
     check_files(cfg, allow_uninstalled=True)
+    if cfg.get("backend") == "sycl":
+        from serve.model_setup import validate_intel_executable
+        validate_intel_executable(cfg)
     if a.model and not model.is_file():
         raise ValueError(f"TinyStrata model not found: {model}")
-    cfg["log"] = str(path.parent / ("engine-intel.log" if cfg.get("backend") == "sycl" else "engine-tiel-coder.log" if cfg.get("model_name") == "tiel-coder-35b-a3b" else
+    cfg["log"] = str(path.parent / ("engine-intel-tiel.log" if cfg.get("backend") == "sycl" and cfg.get("model_name") == "tiel-coder-35b-a3b" else
+                                  "engine-intel.log" if cfg.get("backend") == "sycl" else "engine-tiel-coder.log" if cfg.get("model_name") == "tiel-coder-35b-a3b" else
                     {"lfm2moe": "engine-lfm2.log", "gemma4": "engine-gemma4.log", "clover_moe": "engine-clover.log"}
                     .get(cfg.get("arch"), "engine.log")))
     if model.is_file():
@@ -281,9 +286,9 @@ def main() -> int:
     ap.add_argument("--draft-model", type=Path, help="existing Gemma4 QAT assistant GGUF for MTP")
     ap.add_argument("--exe", type=Path, help="built tinystrata executable")
     ap.add_argument("--backend", choices=("auto", "cuda", "hip", "sycl"), default="auto",
-                    help="GPU backend; sycl is experimental native Windows Intel Qwen3.6 text, with separate settings")
-    ap.add_argument("--intel-profile", choices=("generic", "b390-qwen36"),
-                    help="explicit Intel profile; b390-qwen36 selects the tested B390 execution options")
+                    help="GPU backend; sycl is experimental native Windows Intel Qwen3.6/Tiel text, with separate settings")
+    ap.add_argument("--intel-profile", choices=("generic", "b390-qwen36", "b390-tiel-coder"),
+                    help="explicit model-specific Intel profile; B390 profiles select the tested execution options")
     ap.add_argument("--vision-exe", type=Path, help="built tinystrata-vision image encoder")
     ap.add_argument("--vision", choices=("gpu", "cpu", "no", "yes", "none"),
                     help="image encoder: gpu (default), cpu or no; yes = gpu, none = no; saved for later starts")

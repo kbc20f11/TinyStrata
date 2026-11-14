@@ -33,6 +33,66 @@ struct PlannedTensor {
     uint64_t stored_bytes;
     WeightLayout layout;
 };
+// Admission for the separately selected experimental Tiel artifact. This
+// metadata/layout check does not replace its pinned downloader SHA256.
+void check_experimental_tiel(const strata::GgufModel& model, const strata::core::ModelGeometry& g) {
+    const auto& meta = model.meta();
+    const auto text = [&](const char* key, const char* value) {
+        const auto* item = meta.get(key);
+        return item && item->type == strata::MetaType::STRING && item->s == value;
+    };
+    const auto number = [&](const char* key, double value) {
+        const auto* item = meta.get(key);
+        return item && item->is_num() && item->num() == value;
+    };
+    if (!text("general.name", "Ornith-1.5-35B") || !text("general.basename", "ornith-1.5") ||
+        !text("general.architecture", "qwen35moe") || !text("tokenizer.ggml.model", "gpt2") ||
+        !text("tokenizer.ggml.pre", "qwen35") || !number("general.quantization_version", 2) ||
+        !number("general.file_type", 23) || !number("tokenizer.ggml.eos_token_id", 248046) ||
+        !number("tokenizer.ggml.bos_token_id", 248044) || !number("tokenizer.ggml.padding_token_id", 248044) ||
+        !number("tokenizer.ggml.add_bos_token", 0) || !number("qwen35moe.rope.dimension_count", 64) ||
+        !number("qwen35moe.rope.freq_base", 1e7) || !number("qwen35moe.attention.layer_norm_rms_epsilon", double(float(1e-6))))
+        throw std::runtime_error("Experimental Tiel metadata does not match the pinned IQ3_XXS artifact");
+    const auto* sections = meta.get("qwen35moe.rope.dimension_sections");
+    constexpr int expected_sections[] = {11, 11, 10, 0};
+    if (!sections || sections->type != strata::MetaType::ARRAY || sections->count != 4 || sections->items.size() != 4)
+        throw std::runtime_error("Experimental Tiel rotary sections differ");
+    for (int i = 0; i < 4; ++i) if (!sections->items[i].is_num() || sections->items[i].num() != expected_sections[i])
+        throw std::runtime_error("Experimental Tiel rotary sections differ");
+    if (g.n_embd != 2048 || g.n_layers != 40 || g.n_mtp_layers != 1 || g.n_vocab != 248320 ||
+        g.n_head != 16 || g.n_head_kv != 2 || g.head_dim != 256 || g.full_attention_interval != 4 ||
+        g.n_expert != 256 || g.n_expert_used != 8 || g.n_ff != 512 || g.n_ff_shexp != 512 ||
+        g.ssm_d_conv != 4 || g.ssm_state_size != 128 || g.ssm_k_heads != 16 || g.ssm_v_heads != 32 ||
+        g.ssm_value_dim != 4096 || g.ssm_conv_channels != 8192)
+        throw std::runtime_error("Experimental Tiel geometry differs from the pinned IQ3_XXS artifact");
+    // check_gguf_layout has already checked every required name/shape and
+    // rejected extras. Match the pinned quantization at every tensor too.
+    const auto is = [](const std::string& value, std::initializer_list<const char*> names) {
+        return std::any_of(names.begin(), names.end(), [&](const char* name) { return value == name; });
+    };
+    size_t checked = 0;
+    for (size_t shard = 0; shard < model.size(); ++shard) for (const auto& tensor : model.shard(shard).tensors()) {
+        int expected = -1;
+        if (tensor.name == "output.weight" || tensor.name == "token_embd.weight") expected = 14;
+        else if (tensor.name == "output_norm.weight") expected = 0;
+        else if (tensor.name.rfind("blk.", 0) == 0) {
+            const auto dot = tensor.name.find('.', 4);
+            const int layer = std::stoi(tensor.name.substr(4, dot - 4));
+            const auto suffix = tensor.name.substr(dot + 1);
+            if (is(suffix, {"attn_norm.weight", "post_attention_norm.weight", "ffn_gate_inp.weight", "ffn_gate_inp_shexp.weight",
+                "ssm_a", "ssm_alpha.weight", "ssm_beta.weight", "ssm_conv1d.weight", "ssm_dt.bias", "ssm_norm.weight",
+                "attn_q_norm.weight", "attn_k_norm.weight", "nextn.enorm.weight", "nextn.hnorm.weight", "nextn.shared_head_norm.weight"})) expected = 0;
+            else if (suffix == "ffn_gate_exps.weight" || suffix == "ffn_up_exps.weight") expected = layer == 40 ? 11 : 22;
+            else if (suffix == "ffn_down_exps.weight") expected = layer == 40 ? 11 : layer == 34 || layer == 38 || layer == 39 ? 23 : 18;
+            else if (is(suffix, {"attn_gate.weight", "attn_qkv.weight", "ssm_out.weight", "attn_q.weight", "attn_k.weight",
+                "attn_v.weight", "attn_output.weight", "ffn_gate_shexp.weight", "ffn_up_shexp.weight", "ffn_down_shexp.weight", "nextn.eh_proj.weight"})) expected = layer == 40 ? 8 : 14;
+        }
+        if (expected < 0 || tensor.type != uint32_t(expected))
+            throw std::runtime_error("Experimental Tiel tensor quantization differs: " + tensor.name);
+        ++checked;
+    }
+    if (checked != 753) throw std::runtime_error("Experimental Tiel tensor count differs");
+}
 }
 WeightStore::~WeightStore() {
     if (arena_) {
@@ -40,7 +100,7 @@ WeightStore::~WeightStore() {
         catch (const std::exception& error) { std::fprintf(stderr, "Intel weight release failed: %s\n", error.what()); }
     }
 }
-std::unique_ptr<WeightStore> WeightStore::load(sycl::queue queue, const std::string& gguf, WeightMemory kind, bool interleave_output, bool interleave_experts, bool interleave_dense, bool interleave_split_output) {
+std::unique_ptr<WeightStore> WeightStore::load(sycl::queue queue, const std::string& gguf, WeightMemory kind, bool interleave_output, bool interleave_experts, bool interleave_dense, bool interleave_split_output, bool allow_experimental_tiel) {
     if (!queue.has_property<sycl::property::queue::in_order>()) throw std::invalid_argument("Weight loading requires an in-order queue");
     const auto device = inspect_device(queue.get_device());
     if (!device.integrated) throw std::runtime_error("Single-pool Intel weight storage currently requires an integrated GPU");
@@ -61,7 +121,8 @@ std::unique_ptr<WeightStore> WeightStore::load(sycl::queue queue, const std::str
         const auto* architecture = model.meta().get("general.architecture");
         if (!architecture || architecture->s != "qwen35moe") throw std::runtime_error("The initial Intel weight loader accepts qwen35moe only");
         const auto* name = model.meta().get("general.name");
-        if (!name || name->s.find("Qwen3.6") == std::string::npos)
+        const bool qwen = name && name->s.find("Qwen3.6") != std::string::npos;
+        if (!qwen && !allow_experimental_tiel)
             throw std::runtime_error("The initial Intel route is enabled only for Qwen3.6; Tiel and other models are unvalidated");
         const auto error = strata::check_architecture_qwen35moe(model.meta());
         if (!error.empty()) throw std::runtime_error("Qwen GGUF: " + error);
@@ -70,6 +131,13 @@ std::unique_ptr<WeightStore> WeightStore::load(sycl::queue queue, const std::str
         if (!strata::core::geometry_from_gguf(model.meta(), store->geometry_, top_k, layout_error) ||
             !strata::core::check_gguf_layout(model, store->geometry_, layout_error))
             throw std::runtime_error("Qwen GGUF layout: " + layout_error);
+        if (!qwen) {
+            LARGE_INTEGER size;
+            if (model.size() != 1 || !GetFileSizeEx(files[0]->handle, &size) || size.QuadPart != 13600579424LL)
+                throw std::runtime_error("Experimental Tiel requires the pinned single-file IQ3_XXS artifact size");
+            check_experimental_tiel(model, store->geometry_);
+            std::fprintf(stderr, "Intel experimental_tiel=1 metadata_geometry_quant_layout_checked=1\n");
+        }
         store->metadata_ = model.meta().metadata();
         // Keep each layer's expert trio in one layout. Mixed GGUF quantization
         // (including the draft layer) retains the original GPU path when any
@@ -80,7 +148,7 @@ std::unique_ptr<WeightStore> WeightStore::load(sycl::queue queue, const std::str
                 const auto prefix = tensor.name.substr(0, tensor.name.rfind(".ffn_"));
                 auto [it, inserted] = expert_layers.try_emplace(prefix, std::make_pair(0, true));
                 ++it->second.first;
-                it->second.second = it->second.second && (tensor.type == 14 || tensor.type == 21 || tensor.type == 22) &&
+                it->second.second = it->second.second && (tensor.type == 14 || tensor.type == 18 || tensor.type == 21 || tensor.type == 22) &&
                     tensor.shape.size() == 3 && tensor.shape[0] <= 8192 && tensor.shape[1] % 16 == 0 && tensor.shape[2] <= 256;
             }
         for (size_t shard = 0; shard < model.size(); ++shard) {
@@ -98,11 +166,11 @@ std::unique_ptr<WeightStore> WeightStore::load(sycl::queue queue, const std::str
                     (tensor.name == "output.weight" || tensor.shape[0] * tensor.shape[1] <= 8192 * 2048);
                 if (dense) ++packed_dense_tensors;
                 const bool packed = expert || dense || (interleave_output && tensor.name == "output.weight");
-                if (packed && ((expert ? tensor.type != 14 && tensor.type != 21 && tensor.type != 22 : tensor.type != 14) ||
+                if (packed && ((expert ? tensor.type != 14 && tensor.type != 18 && tensor.type != 21 && tensor.type != 22 : tensor.type != 14) ||
                     tensor.shape.size() != size_t(expert ? 3 : 2) || tensor.shape[0] > 8192 || tensor.shape[1] > 1000000 ||
                     (expert && (tensor.shape[1] % 16 || tensor.shape[2] > 256))))
-                    throw std::runtime_error("Interleaved weights need validated Q6_K/IQ2_S/IQ3_S geometry");
-                const int block_bytes = tensor.type == 14 ? 210 : tensor.type == 21 ? 110 : 82;
+                    throw std::runtime_error("Interleaved weights need supported Q6_K/IQ3_XXS/IQ2_S/IQ3_S geometry");
+                const int block_bytes = tensor.type == 14 ? 210 : tensor.type == 18 ? 98 : tensor.type == 21 ? 110 : 82;
                 const uint64_t stored_bytes = packed ? quant_interleaved_bytes(int(tensor.shape[1] * (expert ? tensor.shape[2] : 1)), int(tensor.shape[0]), block_bytes) : bytes;
                 const uint64_t aligned = (stored_bytes + 255) & ~uint64_t{255};
                 if (stored_bytes > std::numeric_limits<uint64_t>::max() - 255 || aligned > std::numeric_limits<uint64_t>::max() - store->bytes_)
@@ -139,7 +207,7 @@ std::unique_ptr<WeightStore> WeightStore::load(sycl::queue queue, const std::str
         uint64_t expected = 0;
         const bool packed = tensor.layout != WeightLayout::Original;
         const int width = packed ? int(tensor.tensor.shape[0]) : 0;
-        const int block_bytes = tensor.tensor.type == 14 ? 210 : tensor.tensor.type == 21 ? 110 : 82;
+        const int block_bytes = tensor.tensor.type == 14 ? 210 : tensor.tensor.type == 18 ? 98 : tensor.tensor.type == 21 ? 110 : 82;
         // Sample each 64 KiB plus the final byte independently on CPU and GPU.
         // This is a visibility/transfer check, not a cryptographic checksum.
         constexpr uint64_t sample_stride = 64 * 1024;

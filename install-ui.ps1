@@ -11,9 +11,10 @@ param(
     [string]$SourceDir,
     [string]$WorkDir,
     [ValidateSet('auto', 'cuda', 'hip', 'sycl')][string]$Backend = 'auto',
+    [switch]$SelectBackend,
     # Explicit Intel uses separate ui-sycl history/settings and an experimental shortcut.
     [string]$IntelRuntimeDirectory,
-    [ValidateSet('b390-qwen36')][string]$IntelProfile = 'b390-qwen36',
+    [ValidateSet('b390-qwen36','b390-tiel-coder')][string]$IntelProfile = 'b390-qwen36',
     [string]$HipDirectory,
     # An omitted value is empty under irm | iex and selects GPU auto-detection.
     [ValidatePattern('^(gfx[0-9a-f]+(;gfx[0-9a-f]+)*)?$')][string]$HipArchitectures,

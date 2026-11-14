@@ -11,6 +11,7 @@ template<int Type> constexpr size_t row_bytes(size_t width) {
     if constexpr (Type == 1 || Type == 30) return width * 2;
     if constexpr (Type == 8) return width / 32 * 34;
     if constexpr (Type == 14) return width / 256 * 210;
+    if constexpr (Type == 18) return width / 256 * 98;
     if constexpr (Type == 10) return width / 256 * 84;
     if constexpr (Type == 11 || Type == 21) return width / 256 * 110;
     if constexpr (Type == 22) return width / 256 * 82;
@@ -82,6 +83,7 @@ void validate(const sycl::queue& q, int rows, int width, int tokens) {
     case 10: return product<10, G>(q,w,input,output,rows,width,tokens,plan,separate); \
     case 11: return product<11, G>(q,w,input,output,rows,width,tokens,plan,separate); \
     case 14: return product<14, G>(q,w,input,output,rows,width,tokens,plan,separate); \
+    case 18: return product<18, G>(q,w,input,output,rows,width,tokens,plan,separate); \
     case 21: return product<21, G>(q,w,input,output,rows,width,tokens,plan,separate); \
     case 22: return product<22, G>(q,w,input,output,rows,width,tokens,plan,separate); \
     case 23: return product<23, G>(q,w,input,output,rows,width,tokens,plan,separate); \

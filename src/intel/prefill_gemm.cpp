@@ -83,7 +83,7 @@ sycl::event PrefillGemm::selected(int type, const uint8_t* weights, size_t exper
     const float* input, float* output, int rows, int width, bool separate_inputs, bool interleaved) {
     auto& p = *impl_;
     p.validate(rows, width, plan.tokens, true);
-    const int block_bytes = type == 14 ? 210 : type == 21 ? 110 : type == 22 ? 82 : 0;
+    const int block_bytes = type == 14 ? 210 : type == 18 ? 98 : type == 21 ? 110 : type == 22 ? 82 : 0;
     const size_t original_bytes = block_bytes ? size_t(rows) * (width / 256) * block_bytes : 0;
     if (interleaved && (!block_bytes || rows % 16 || width % 256 ||
             original_bytes > Impl::output_elements * sizeof(float) ||

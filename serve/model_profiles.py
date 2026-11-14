@@ -29,6 +29,8 @@ _PROFILE_FILES = {
     "clover-35b-a3b-preview": ("config-clover.json", "config-clover-profile.json"),
     "tiel-coder-35b-a3b": ("config-tiel-coder.json", "config-tiel-coder-profile.json"),
 }
+_INTEL_PROFILE_FILES = {"qwen3.6-35b-a3b": "config-sycl.json",
+                        "tiel-coder-35b-a3b": "config-tiel-coder-sycl.json"}
 # TinyStrata engine ceilings, not automatically allocated KV capacities. Clover's
 # 256K capacity extends its official 128K limit; general long-context quality is unverified.
 _CONTEXT_LIMITS = {"qwen35moe": 262144, "lfm2moe": 131072, "gemma4": 262144, "clover_moe": 262144}
@@ -76,23 +78,25 @@ class ModelProfiles:
         parent = current_path.parent
         self._managed_work = (parent.parent.parent if parent.name.lower() == ".tinystrata"
                               and parent.parent.name.lower() == "runtime" else None)
-        hardware_keys = (("gpu", "backend", "lib_dirs", "intel_profile", "exe") if self._intel else
+        hardware_keys = (("gpu", "backend", "lib_dirs", "exe") if self._intel else
                          ("gpu", "hip_ordinal", "backend", "lib_dirs"))
         self._hardware = {key: deepcopy(cfg[key]) for key in hardware_keys if key in cfg}
         if self._intel:
             from serve.intel_backend import engine_args
             native_args = engine_args(cfg, allow_uninstalled=True)
             self._hardware["gpu"] = int(native_args[native_args.index("--device") + 1])
-            self._hardware.setdefault("intel_profile", "generic")
             self._hardware.setdefault("lib_dirs", [])
         self._engine = model_setup.resolve_executable(cfg)
         if self._intel and self._engine is not None:
             self._hardware["exe"] = str(self._engine)
         self._profiles = {self.current_id: ModelProfile(self.current_id, current_arch, current_path, deepcopy(cfg))}
         for name, arch in _MODELS.items():
-            if self._intel or name == self.current_id:
+            if name == self.current_id or self._intel and name not in _INTEL_PROFILE_FILES:
                 continue
-            path = self._profile_path(current_path.parent, arch, current_path, name)
+            path = (current_path.parent / _INTEL_PROFILE_FILES[name] if self._intel else
+                    self._profile_path(current_path.parent, arch, current_path, name))
+            if path == current_path:
+                raise ValueError("Intel models require separate Qwen and Tiel configuration files")
             loaded = config.load(path) if path.is_file() else self._defaults(name, arch)
             self._check_arch(path, loaded, arch, name)
             self._profiles[name] = ModelProfile(name, arch, path, loaded)
@@ -128,10 +132,9 @@ class ModelProfiles:
 
     @staticmethod
     def _resolve_intel(name: str) -> str:
-        from serve.intel_backend import QWEN_MODEL
         selected = ModelProfiles.resolve(name)
-        if selected != QWEN_MODEL:
-            raise ValueError("Intel currently supports Qwen3.6 only; other models are unvalidated")
+        if selected not in _INTEL_PROFILE_FILES:
+            raise ValueError("Intel currently supports pinned Qwen3.6 and Tiel text models only")
         return selected
 
     @classmethod
@@ -192,6 +195,13 @@ class ModelProfiles:
             result["reasoning_effort"] = thinking["default"]
         elif thinking:
             result["enable_thinking"] = True
+        if self._intel:
+            from serve.intel_backend import configure_backend, MODEL_PROFILES, TIEL_MODEL
+            result.update(intel_profile=MODEL_PROFILES[name], vision_mode="no",
+                          sampling=deepcopy(tinyconfig.TIEL_SAMPLING if name == TIEL_MODEL else tinyconfig.DEFAULT_SAMPLING))
+            if self._engine is not None:
+                result["exe"] = str(self._engine)
+            return configure_backend(result)
         result = tinyconfig.clover_vision_defaults(tinyconfig.clover_decode_defaults(result))
         if self._engine is not None:
             filename = {"lfm2moe": "tinystrata-lfm2", "gemma4": "tinystrata-gemma4"}.get(arch, "tinystrata")
@@ -232,6 +242,13 @@ class ModelProfiles:
             result = configure_backend(source)
             if "--model" not in result.get("args", []):
                 result = model_setup.configure_download(result, profile.path)
+            existing = model_setup.model_path(result)
+            if existing is None or not existing.is_file():
+                artifact = manifest_for_arch(profile.arch, profile.id)
+                found = next((directory / artifact.filename for directory in self._directories
+                              if (directory / artifact.filename).is_file()), None)
+                if found is not None:
+                    result["args"][result["args"].index("--model") + 1] = str(found)
             return result
         from serve.backend import configure_backend
         self._check_arch(profile.path, cfg, profile.arch, profile.id)

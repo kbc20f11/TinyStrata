@@ -150,6 +150,32 @@ function Get-Item {
         self.assertIn("Unresolved dependency", result.stderr)
         self.assertFalse(self.destination.exists())
 
+    def test_selected_app_local_vc_runtime_closes_imports_and_keeps_notice(self):
+        runtime = self.root / "vc-runtime"
+        for name in ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140_atomic_wait.dll"):
+            pe(runtime / name)
+        pe(runtime / "vcruntime140d.dll")
+        pe(runtime / "unlisted.dll")
+        notice = self.root / "vc-redistribution.txt"
+        notice.write_text("Microsoft redistributable package provenance fixture")
+        pe(self.exe, ["sycl9.dll", "ze_loader.dll", "msvcp140.dll", "vcruntime140.dll"])
+        command = self.plan_command() + " -VcRuntimeDirectory " + quote(runtime) + " -VcRedistributionNotice " + quote(notice)
+        result = self.powershell("$plan = " + command + "; Write-IntelRuntimeStage $plan")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plan = json.loads((self.destination / ".tinystrata-intel-runtime.json").read_text(encoding="utf-8"))
+        names = {file["RelativePath"] for file in plan["Files"]}
+        self.assertTrue({"msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140_atomic_wait.dll",
+                         "licenses/microsoft-vc/redistribution.txt"}.issubset(names))
+        self.assertNotIn("vcruntime140d.dll", names)
+        self.assertNotIn("unlisted.dll", names)
+        self.assertNotIn("msvcp140.dll", {x["Name"] for x in plan["ExternalPrerequisites"]})
+
+    def test_app_local_vc_runtime_requires_redistribution_notice(self):
+        result = self.powershell(self.plan_command() + " -VcRuntimeDirectory " + quote(self.root / "vc-runtime"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("requires both", result.stderr)
+        self.assertFalse(self.destination.exists())
+
     def test_umf_hwloc_dependency_requires_selected_tcm_notices(self):
         pe(self.compiler / "bin" / "umf.dll", ["libhwloc-15.dll"])
         licensing = self.tcm / "share" / "doc" / "tcm" / "licensing"

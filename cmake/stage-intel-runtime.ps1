@@ -13,6 +13,8 @@ param(
     [string]$TbbRoot = 'C:\Program Files (x86)\Intel\oneAPI\tbb\latest',
     [string]$TcmRoot = 'C:\Program Files (x86)\Intel\oneAPI\tcm\latest',
     [string]$UmfRoot = 'C:\Program Files (x86)\Intel\oneAPI\umf\latest',
+    [string]$VcRuntimeDirectory,
+    [string]$VcRedistributionNotice,
     [switch]$PlanOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -130,15 +132,34 @@ function Get-IntelRuntimePlan {
     param([string]$ExecutablePath, [string]$Destination, [string]$CompilerRoot, [string]$MklRoot, [string]$TbbRoot,
           [string]$TcmRoot = 'C:\Program Files (x86)\Intel\oneAPI\tcm\latest',
           [string]$UmfRoot = 'C:\Program Files (x86)\Intel\oneAPI\umf\latest',
-          [string]$SystemDirectory = [Environment]::SystemDirectory)
+          [string]$SystemDirectory = [Environment]::SystemDirectory,
+          [string]$VcRuntimeDirectory, [string]$VcRedistributionNotice)
     $mkl = $null; $tbb = $null; $tcm = $null; $umf = $null
     $exe = (Get-Item -LiteralPath $ExecutablePath -ErrorAction Stop).FullName
     $compiler = (Get-Item -LiteralPath $CompilerRoot -ErrorAction Stop).FullName
-    $destinationPath = Assert-IntelStageDestination $Destination @((Split-Path -Parent $exe), $compiler, $MklRoot, $TbbRoot, $TcmRoot, $UmfRoot)
+    $destinationPath = Assert-IntelStageDestination $Destination @((Split-Path -Parent $exe), $compiler, $MklRoot, $TbbRoot, $TcmRoot, $UmfRoot, $VcRuntimeDirectory)
     $redist = Join-Path $compiler 'share\doc\compiler\credist.txt'
     $agreement = Join-Path $compiler 'share\doc\compiler\licensing\c\LICENSE.rtf'
     if (-not (Test-Path -LiteralPath $redist -PathType Leaf) -or -not (Test-Path -LiteralPath $agreement -PathType Leaf)) { throw 'The compiler redistribution list and license are required.' }
     $approved = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([StringComparer]::OrdinalIgnoreCase)
+    $vcSeeds = @()
+    if ([bool]$VcRuntimeDirectory -ne [bool]$VcRedistributionNotice) { throw 'App-local VC runtime requires both its directory and redistribution notice.' }
+    if ($VcRuntimeDirectory) {
+        $VcRuntimeDirectory = (Get-Item -LiteralPath $VcRuntimeDirectory -ErrorAction Stop).FullName
+        $VcRedistributionNotice = (Get-Item -LiteralPath $VcRedistributionNotice -ErrorAction Stop).FullName
+        if (-not (Test-Path -LiteralPath $VcRuntimeDirectory -PathType Container) -or
+            -not (Test-Path -LiteralPath $VcRedistributionNotice -PathType Leaf)) { throw 'Invalid VC runtime payload or notice.' }
+        foreach ($name in @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $VcRuntimeDirectory $name) -PathType Leaf)) { throw "Missing app-local VC runtime: $name" }
+        }
+        # Only release x64 CRT/OpenMP files from a separately verified Microsoft
+        # redistributable payload. Never search PATH, System32, or DebugCRT.
+        foreach ($file in Get-ChildItem -LiteralPath $VcRuntimeDirectory -Filter '*.dll' -File) {
+            if ($file.Name -notmatch '^(msvcp140(_[12]|_atomic_wait|_codecvt_ids)?|vcruntime140(_1|_threads)?|vcomp140|concrt140|vccorlib140)\.dll$') { continue }
+            $approved[$file.Name] = [pscustomobject]@{ Path=$file.FullName; Component='microsoft-vc'; Evidence='licenses/microsoft-vc/redistribution.txt' }
+            $vcSeeds += $file.Name
+        }
+    }
     foreach ($line in Get-Content -LiteralPath $redist) {
         if ($line.Trim() -match '^<installdir>/bin/([^/]+\.dll)$') {
             $name = $matches[1]; $file = Join-Path $compiler ('bin\' + $name)
@@ -155,6 +176,7 @@ function Get-IntelRuntimePlan {
     if ($mklBlas.Count -gt 1) { throw 'The executable imports multiple oneMKL BLAS runtime generations.' }
     $mklEnabled = $mklBlas.Count -eq 1
     $seeds = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($name in $vcSeeds) { $seeds.Add($name) }
     foreach ($name in @($sycl[0], 'ur_win_proxy_loader.dll', 'ur_loader_shared.dll', 'ur_adapter_level_zero.dll', 'ur_adapter_level_zero_v2.dll', 'umf.dll', 'sycl-jit.dll')) { $seeds.Add($name) }
     $licenseRoots = @([pscustomobject]@{ Root = (Join-Path $compiler 'share\doc\compiler\licensing'); Component = 'compiler' })
     if ($mklEnabled) {
@@ -228,6 +250,7 @@ function Get-IntelRuntimePlan {
         $files += [pscustomobject]@{ Source = $info.FullName; RelativePath = $info.Name; Component = $entry.Component; RedistributionEvidence = $entry.Evidence; Bytes = (Get-IntelPayloadLength $info.FullName); FileVersion = $info.VersionInfo.FileVersion; Sha256 = (Get-FileHash -LiteralPath $info.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
     }
     $notices = @([pscustomobject]@{ Source = $redist; RelativePath = 'licenses/compiler/credist.txt'; Component = 'compiler' })
+    if ($VcRuntimeDirectory) { $notices += [pscustomobject]@{ Source=$VcRedistributionNotice; RelativePath='licenses/microsoft-vc/redistribution.txt'; Component='microsoft-vc' } }
     if ($chosen.ContainsKey('umf.dll')) {
         $umf = (Get-Item -LiteralPath $UmfRoot -ErrorAction Stop).FullName
         foreach ($name in @('LICENSE.TXT', 'licensing\third-party-programs.txt')) {
@@ -253,6 +276,7 @@ function Get-IntelRuntimePlan {
         CreatedUtc = [DateTime]::UtcNow.ToString('o'); Destination = $destinationPath; ExecutablePath = $exe
         CompilerRoot = $compiler; MklEnabled = $mklEnabled; MklRoot = $(if ($mklEnabled) { $mkl } else { $null }); TbbRoot = $(if ($mklEnabled) { $tbb } else { $null })
         TcmRoot = $tcm; UmfRoot = $umf
+        VcRuntimeDirectory = $VcRuntimeDirectory; VcRedistributionNotice = $VcRedistributionNotice
         DriverIncluded = $false; GlobalPathChanged = $false; GpuValidation = 'not performed by staging helper'
         DynamicRuntimeSeeds = @($seeds | Sort-Object -Unique); ExternalPrerequisites = @($external.Values | Sort-Object Name)
         Files = @($files | Sort-Object RelativePath); State = 'planned'
@@ -261,7 +285,7 @@ function Get-IntelRuntimePlan {
 
 function Write-IntelRuntimeStage {
     param([Parameter(Mandatory=$true)]$Plan)
-    $root = Assert-IntelStageDestination $Plan.Destination @((Split-Path -Parent $Plan.ExecutablePath), $Plan.CompilerRoot, $Plan.MklRoot, $Plan.TbbRoot, $Plan.TcmRoot, $Plan.UmfRoot)
+    $root = Assert-IntelStageDestination $Plan.Destination @((Split-Path -Parent $Plan.ExecutablePath), $Plan.CompilerRoot, $Plan.MklRoot, $Plan.TbbRoot, $Plan.TcmRoot, $Plan.UmfRoot, $Plan.VcRuntimeDirectory)
     $null = [IO.Directory]::CreateDirectory($root)
     foreach ($file in $Plan.Files) {
         $target = [IO.Path]::GetFullPath((Join-Path $root $file.RelativePath))
@@ -278,7 +302,7 @@ function Write-IntelRuntimeStage {
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
-    $plan = Get-IntelRuntimePlan -ExecutablePath $ExecutablePath -Destination $Destination -CompilerRoot $CompilerRoot -MklRoot $MklRoot -TbbRoot $TbbRoot -TcmRoot $TcmRoot -UmfRoot $UmfRoot
+    $plan = Get-IntelRuntimePlan -ExecutablePath $ExecutablePath -Destination $Destination -CompilerRoot $CompilerRoot -MklRoot $MklRoot -TbbRoot $TbbRoot -TcmRoot $TcmRoot -UmfRoot $UmfRoot -VcRuntimeDirectory $VcRuntimeDirectory -VcRedistributionNotice $VcRedistributionNotice
     if ($PlanOnly) { $plan | ConvertTo-Json -Depth 8 }
     else { Write-Output (Write-IntelRuntimeStage $plan) }
 }

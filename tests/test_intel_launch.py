@@ -64,12 +64,24 @@ class IntelLaunch(unittest.TestCase):
             self.prepare(config=self.primary)
         self.assertEqual(self.primary.read_bytes(), self.original_bytes)
 
-    def test_other_family_and_same_architecture_tiel_reject_before_save(self):
-        for family in ("tiel", "gemma4", "lfm2", "clover"):
+    def test_unvalidated_family_rejects_before_save(self):
+        for family in ("gemma4", "lfm2", "clover"):
             with self.subTest(family=family), self.assertRaisesRegex(ValueError, "Qwen3.6"):
                 self.prepare(model_family=family)
             self.assertFalse(self.primary.with_name("config-sycl.json").exists())
         self.assertEqual(self.primary.read_bytes(), self.original_bytes)
+
+    def test_tiel_uses_model_specific_config_sampling_and_profile(self):
+        cfg, path = self.prepare(model_family="tiel", intel_profile="b390-tiel-coder")
+        self.assertEqual(path, self.primary.with_name("config-tiel-coder-sycl.json"))
+        self.assertEqual(cfg["model_name"], "tiel-coder-35b-a3b")
+        self.assertEqual(cfg["sampling"]["presence_penalty"], 0)
+        self.assertEqual(cfg["intel_profile"], "b390-tiel-coder")
+        self.assertEqual(Path(cfg["log"]).name, "engine-intel-tiel.log")
+        native = intel_backend.engine_args(cfg, allow_uninstalled=True)
+        self.assertIn("--experimental-tiel", native)
+        self.assertEqual(self.primary.read_bytes(), self.original_bytes)
+        self.assertFalse(self.primary.with_name("config-sycl.json").exists())
 
     def test_unsupported_context_or_images_do_not_publish(self):
         for options in ({"max_context": 32769}, {"vision": "gpu"}, {"expert_vram": 4}):
@@ -97,7 +109,7 @@ class IntelLaunch(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unsupported"):
             tinyconfig.validate(migrated, allow_uninstalled=True)
 
-    def test_actual_gguf_identity_rejects_tiel_before_tokenizer_or_config_writes(self):
+    def test_actual_gguf_identity_rejects_wrong_model_before_tokenizer_or_config_writes(self):
         model = self.root / "aliased-qwen.gguf"
         model.write_bytes(b"fixture; not a real model")
         cfg = {"backend": "sycl", "arch": "qwen35moe", "model_name": "qwen3.6-35b-a3b",
@@ -105,7 +117,7 @@ class IntelLaunch(unittest.TestCase):
         with patch.object(model_setup, "model_architecture", return_value="qwen35moe"), \
              patch("serve.gguf_reader.GGUFFile", return_value=SimpleNamespace(metadata={"general.name": "Tiel Coder"})), \
              patch.object(model_setup, "_extract_tokenizer") as extract:
-            with self.assertRaisesRegex(ValueError, "not a validated Intel model"):
+            with self.assertRaisesRegex(ValueError, "identity does not match"):
                 model_setup.prepare_installed_model(cfg, self.root / "new.json", model)
             extract.assert_not_called()
         self.assertFalse((self.root / "new.json").exists())
@@ -121,6 +133,45 @@ class IntelLaunch(unittest.TestCase):
         with patch.object(backend.subprocess, "run", return_value=result) as metadata:
             self.assertEqual(backend.executable_backend(exe), "sycl")
         self.assertEqual(metadata.call_args.args[0], [str(exe), "--capabilities"])
+
+    def test_missing_compiled_xmx_rejects_before_config_publication(self):
+        exe = self.root / "native.exe"
+        exe.write_bytes(b"fixture; never executed")
+        report = {"backend": "sycl", "experimental": True, "model_families": [], "images": False,
+                  "serve": True, "mtp": True, "kv_types": ["fp32", "int8"],
+                  "experimental_mtp_max_depth": 7, "capabilities_schema": 1,
+                  "experimental_models": ["qwen3.6-35b-a3b"], "experimental_profiles": {"generic": 1},
+                  "build": {"mkl": True, "int8_xmx": False, "aot_target": ""},
+                  "weight_types": {"scalar": [0, 8, 10, 11, 14, 21, 22, 23, 30],
+                                   "dp4a": [8, 10, 11, 14, 21, 22, 23], "int8_xmx": []}}
+        proof = SimpleNamespace(legacy=False, report=report)
+        with patch.object(backend, "executable_backend", return_value="sycl"), \
+             patch("serve.intel_capabilities.probe_capabilities", return_value=proof):
+            with self.assertRaisesRegex(ValueError, "b390-qwen36"):
+                self.prepare(exe=exe)
+        self.assertFalse(self.primary.with_name("config-sycl.json").exists())
+        self.assertEqual(self.primary.read_bytes(), self.original_bytes)
+
+    def test_metadata_gate_keeps_uninstalled_bootstrap_without_starting_probe(self):
+        cfg = {"backend": "sycl", "exe": str(self.root / "not-built.exe")}
+        with patch("serve.intel_capabilities.probe_capabilities") as probe:
+            self.assertIsNone(model_setup.validate_intel_executable(cfg))
+            self.assertIsNone(model_setup.validate_intel_executable({"backend": "cuda"}))
+        probe.assert_not_called()
+
+    def test_explicit_legacy_qwen_compatibility_does_not_change_saved_config(self):
+        exe = self.root / "legacy.exe"
+        exe.write_bytes(b"fixture; never executed")
+        cfg = {"backend": "sycl", "exe": str(exe), "intel_profile": "b390-qwen36"}
+        saved = deepcopy(cfg)
+        report = {"backend": "sycl", "experimental": True, "model_families": [], "images": False,
+                  "serve": True, "mtp": True, "kv_types": ["fp32", "int8"], "experimental_mtp_max_depth": 7}
+        proof = SimpleNamespace(legacy=True, report=report)
+        with patch("serve.intel_capabilities.probe_capabilities", return_value=proof):
+            self.assertIs(model_setup.validate_intel_executable(cfg), proof)
+            with self.assertRaisesRegex(ValueError, "Legacy Intel"):
+                model_setup.validate_intel_executable(cfg, allow_legacy=False)
+        self.assertEqual(cfg, saved)
 
 
 if __name__ == "__main__":

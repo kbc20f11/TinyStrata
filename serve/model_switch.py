@@ -70,6 +70,7 @@ class ModelSwitcher:
     def __init__(self, svc, cfg: dict, config_path, api):
         self.svc, self.api = svc, api
         self._intel = cfg.get('backend') == 'sycl'
+        self._intel_env = api.child_env(cfg) if self._intel else None
         self._config_path = config_path
         self.profiles = ModelProfiles(config_path, cfg)
         self.active_id = self.profiles.current_id
@@ -279,6 +280,7 @@ class ModelSwitcher:
             if any(d.status().get('state') in ('downloading', 'verifying', 'loading')
                    for d in self._downloads.values()):
                 raise ModelControlError(409, 'a model download or activation is running; wait for it first')
+            self._validate_intel_runtime(target)
             # Also cover non-HTTP work such as idle unload and session actions.
             if not self.svc.fifo.acquire(blocking=False):
                 raise ModelControlError(409, 'the model is busy')
@@ -487,8 +489,28 @@ class ModelSwitcher:
             self._open()
             self._phase = phase
 
+    def _validate_intel_runtime(self, model, configuration=None):
+        """Reject an incompatible build before jobs, profile saves or unloads."""
+        if not getattr(self, '_intel', False):
+            return
+        if configuration is None:
+            profile = self.profiles.get(model)
+            saved = engine_config.load(profile.path) if profile.path.is_file() else profile.config
+            # Use the same read-only normalization as prepare(), including the
+            # pinned app-local executable/device, without saving a profile.
+            cfg = self.profiles._settings(saved, profile)
+        else:
+            cfg = configuration
+        if cfg.get('backend') != 'sycl':
+            raise ValueError('An Intel model reload must keep its sycl runtime')
+        from serve.intel_backend import validate_config
+        from serve.model_setup import validate_intel_executable
+        validate_config(cfg, allow_uninstalled=True)
+        validate_intel_executable(cfg, allow_legacy=True)
+
     def _prepare(self, model, configuration=None) -> ModelBundle:
         api, svc = self.api, self.svc
+        self._validate_intel_runtime(model, configuration)
         if configuration is None:
             cfg = self.profiles.prepare(model)
         else:
@@ -516,6 +538,12 @@ class ModelSwitcher:
         if (api.gpu_list(cfg) or [0]) != (getattr(svc, 'gpu_indices', None) or [0]):
             raise ValueError('live switching requires both model profiles to use this server GPU')
         native_env = api.child_env(cfg)
+        if getattr(self, '_intel', False):
+            def value(environment, key):
+                return next((value for name, value in (environment or {}).items() if name.upper() == key), None)
+            if any(value(native_env, key) != value(self._intel_env, key)
+                   for key in ('ONEAPI_DEVICE_SELECTOR', 'UR_LOADER_PRELOAD_FILTER')):
+                raise ValueError('Live Intel switching requires the same Level Zero selection; restart the API to change it')
         live_env = getattr(svc, 'telemetry_env', None)
         if cfg.get('backend') == 'hip' and live_env:
             if any(native_env.get(key) != live_env.get(key)
@@ -606,6 +634,8 @@ class ModelSwitcher:
         with svc.status_lock:
             for name in MODEL_FIELDS:
                 setattr(svc, name, getattr(bundle.fresh, name))
+            if getattr(self, '_intel', False):
+                svc.intel_profile = bundle.fresh.intel_profile
             svc.model_available = True
         frontend.ENV_TO_USER = bundle.config.get('env_to_user') is True
         with frontend._TOOL_ORDERS_LOCK:
@@ -662,6 +692,7 @@ class ModelSwitcher:
         was_loaded, was_available = svc.loaded(), svc.model_available
         old_fields = {name: getattr(svc, name) for name in MODEL_FIELDS}
         old_id, old_downloads = self.active_id, svc.downloads
+        old_intel_profile = getattr(svc, 'intel_profile', None)
         old_env_to_user = frontend.ENV_TO_USER
         released, published = False, False
         try:
@@ -716,6 +747,8 @@ class ModelSwitcher:
                         for name, value in old_fields.items():
                             setattr(svc, name, value)
                         self.active_id, svc.downloads = old_id, old_downloads
+                        if getattr(self, '_intel', False):
+                            svc.intel_profile = old_intel_profile
                         frontend.ENV_TO_USER = old_env_to_user
                         if placement is not None:
                             try:
@@ -768,6 +801,7 @@ class ModelSwitcher:
         from serve.model_setup import model_path
         profile = self.profiles.get(model)
         cfg = profile.config
+        self._validate_intel_runtime(model)
         artifact = manifest_for_arch(profile.arch, profile.id)
         projector_artifact = projector_for_arch(profile.arch, profile.id)
         existing = model_path(cfg)
@@ -776,6 +810,7 @@ class ModelSwitcher:
         def prepared(path, projector=None, assistant=None):
             # Inactive download completion only prepares its profile. The
             # selected model and native processes are changed by start().
+            self._validate_intel_runtime(model)
             extra = {'assistant': assistant, 'assistant_verified': True} if profile.arch == 'gemma4' else {}
             self.profiles.prepare(model, model_path=path, projector=projector, projector_verified=True, **extra)
 
@@ -815,6 +850,8 @@ class ModelSwitcher:
             target = self.profiles.resolve(model) if model is not None else self.active_id
             if self._busy and (start or cancel):
                 raise ModelControlError(409, 'a model switch is running')
+            if start:
+                self._validate_intel_runtime(target)
             manager = self._downloader(target)
             result = manager.cancel() if cancel else manager.start() if start else manager.status()
             return {**result, 'model_id': target, 'active': target == self.active_id}

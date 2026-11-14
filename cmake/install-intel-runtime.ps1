@@ -49,7 +49,7 @@ function Get-TinyStrataIntelStagePlan {
         }
         if (-not $names.Add($relative)) { throw 'Duplicate Intel stage relative path.' }
         $component = [string]$file.Component
-        if ($component -notin @('tinystrata', 'compiler', 'mkl', 'tbb', 'umf', 'tcm') -or
+        if ($component -notin @('tinystrata', 'compiler', 'mkl', 'tbb', 'umf', 'tcm', 'microsoft-vc') -or
             -not [string]$file.RedistributionEvidence) { throw 'Intel runtime license/component evidence is missing.' }
         if ($relative -match '^licenses/') { [void]$licenses.Add($component) }
         else {

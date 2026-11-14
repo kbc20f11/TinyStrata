@@ -46,6 +46,7 @@
 !/tests/test_intel_backend.py
 !/tests/test_intel_launch.py
 !/tests/test_intel_server_integration.py
+!/tests/test_intel_capabilities.py
 !/tests/installer-intel-runtime.ps1
 !/tests/intel-qwen-ops.cpp
 !/tests/intel-quant-reference.py
@@ -144,6 +145,8 @@
 !/cmake/**/*.cmake
 !/cmake/build-intel.ps1
 !/cmake/stage-intel-runtime.ps1
+!/cmake/intel-runtime-package.ps1
+!/cmake/intel-runtime-catalog.json
 !/cmake/install-intel-runtime.ps1
 !/cmake/stage-intel-runtime.md
 /include/**

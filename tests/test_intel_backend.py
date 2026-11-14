@@ -25,16 +25,38 @@ class IntelBackendPolicy(unittest.TestCase):
             result = intel.configure_backend(configuration())
             self.assertEqual(value(intel.engine_args(result), "--kv-type"), "int8")
 
-    def test_qwen_identity_is_required_even_for_same_architecture(self):
+    def test_explicit_pinned_identity_is_required_even_for_same_architecture(self):
         for fields in ({"arch": "gemma4"}, {"arch": "lfm2moe"}, {"arch": "clover_moe"},
-                       {"model_name": "tiel-coder-35b-a3b"}, {"model_name": "tiel"},
                        {"model_name": "qwen3.8-flash"}, {"model_name": 7}):
             with self.subTest(fields=fields):
                 cfg = configuration(**fields)
                 self.assertFalse(intel.supports_model(cfg))
-                with self.assertRaisesRegex(ValueError, "Qwen3.6 only"):
+                with self.assertRaisesRegex(ValueError, "identities|models only"):
                     intel.configure_backend(cfg)
         self.assertTrue(intel.supports_model({"arch": "qwen35moe"}))
+
+    def test_tiel_requires_its_own_profile_and_derives_only_its_native_admission(self):
+        cfg = configuration(model_name=intel.TIEL_MODEL, intel_profile=intel.TIEL_PROFILE,
+                            sampling={"presence_penalty": 0.0}, reasoning_effort="medium")
+        self.assertTrue(intel.supports_model(cfg))
+        self.assertEqual(intel.canonical_model(cfg), intel.TIEL_MODEL)
+        self.assertEqual(intel.canonical_model(configuration()), intel.QWEN_MODEL)
+        original = deepcopy(cfg)
+        prepared = intel.configure_backend(cfg)
+        native = intel.engine_args(prepared)
+        self.assertIn("--experimental-tiel", native)
+        self.assertNotIn("--experimental-tiel", prepared["args"])
+        self.assertNotIn("--experimental-tiel", intel.engine_args(intel.configure_backend(configuration(intel_profile=intel.B390_PROFILE))))
+        self.assertEqual((value(native, "--max-context"), value(native, "--chunk"), value(native, "--mtp")), ("8192", "512", "3"))
+        self.assertEqual(prepared["sampling"], cfg["sampling"])
+        self.assertEqual(prepared["reasoning_effort"], "medium")
+        self.assertEqual(cfg, original)
+        for wrong in (configuration(model_name=intel.TIEL_MODEL),
+                      configuration(model_name=intel.TIEL_MODEL, intel_profile=intel.B390_PROFILE),
+                      configuration(intel_profile=intel.TIEL_PROFILE),
+                      configuration("--experimental-tiel", intel_profile=intel.B390_PROFILE)):
+            with self.subTest(wrong=wrong), self.assertRaises(ValueError):
+                intel.configure_backend(wrong)
 
     def test_configure_deepcopy_preserves_sampling_thinking_auth_history(self):
         original = configuration(sampling={"temperature": .42, "presence_penalty": .7},

@@ -12,7 +12,7 @@ class DecodeDp4a {
 public:
     explicit DecodeDp4a(sycl::queue& q, bool xmx_windows = false, bool dense_split_k = false);
     ~DecodeDp4a();
-    static bool supports(int type) { return type == 8 || type == 10 || type == 11 || type == 14 || type == 21 || type == 22 || type == 23; }
+    static bool supports(int type) { return type == 8 || type == 10 || type == 11 || type == 14 || type == 18 || type == 21 || type == 22 || type == 23; }
     bool valid() const noexcept;
     sycl::event quantization_event() const;
     sycl::event dense(int type, const uint8_t* weights, const float* input, float* output, int rows, int width, int tokens = 1);

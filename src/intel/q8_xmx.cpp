@@ -44,7 +44,7 @@ template<class T,int N,int Type,bool Interleaved> SYCL_ESIMD_FUNCTION ESIMD_INLI
 read(WeightView<Type,Interleaved> view,U<N> offsets,es::simd_mask<N> mask) {
     if constexpr(!Interleaved) return read<T,N>(reinterpret_cast<const T*>(view.pointer),offsets,mask);
     else {
-        constexpr uint32_t bytes=Type==14?210:Type==21?110:82,words=(bytes+3)/4;
+        constexpr uint32_t bytes=Type==14?210:Type==18?98:Type==21?110:82,words=(bytes+3)/4;
         U<N> lanes(0,1),row=lanes%16,within=offsets-row*view.row_bytes;
         U<N> block=within/bytes,byte=within%bytes;
         U<N> physical=((block*words+byte/4)*16+row)*4+byte%4;
@@ -82,11 +82,12 @@ template<int N> SYCL_ESIMD_FUNCTION ESIMD_INLINE U<N> signed_words(U<N> grid,U<N
         ((signs>>2)&1)*0xff0000u | ((signs>>3)&1)*0xff000000u;
     return (grid^mask)+(mask&0x01010101u);
 }
-template<int Type> constexpr int block_bytes() { return Type==14 ? 210 : Type==21 ? 110 : 82; }
+template<int Type> constexpr int block_bytes() { return Type==14 ? 210 : Type==18 ? 98 : Type==21 ? 110 : 82; }
 template<int Type,int M=4,bool Interleaved=false,bool PackedIq=false> sycl::event run(sycl::queue& q, const uint8_t* weights,
     const int8_t* input, const float* scales, float* output, int rows, int width,
-    ExpertPlan plan, bool separate, const uint32_t* iq2, const uint32_t* iq3) {
-    constexpr int N=16,Step=Type==21 ? 32 : 16,Words=Step/4,Count=Words*N;
+    ExpertPlan plan, bool separate, const uint32_t* iq2, const uint32_t* iq3,
+    const uint32_t* iq3xxs, const uint8_t* iq_signs) {
+    constexpr int N=16,Step=Type==21 || Type==18 ? 32 : 16,Words=Step/4,Count=Words*N;
     const size_t row_bytes=size_t(width/256)*block_bytes<Type>(), row_tiles=(rows+N-1)/N;
     const int bound=std::min(plan.tokens*plan.picks,(plan.tokens*plan.picks+plan.tile_width-1)/plan.tile_width+plan.experts);
     const size_t entries=row_tiles*bound;
@@ -127,6 +128,21 @@ template<int Type,int M=4,bool Interleaved=false,bool PackedIq=false> sycl::even
                 auto dh=read<uint16_t,N>(w,scale_offset+208,row_mask);
                 auto scale=read<int8_t,N>(w,scale_offset+192+uint32_t(col/16),row_mask);
                 dw=F<N>(dh.template bit_cast_view<sycl::half>().read())*F<N>(scale);
+            }else if constexpr(Type==18){
+                // IQ3_XXS uses one common scale for each 32 coefficients and
+                // two four-byte grid words per signed octet. The metadata
+                // DWORD begins at byte 66, so preserve the two-halfword load
+                // for original 98-byte and padded 100-byte interleaved blocks.
+                const auto aux=words<N>(w,scale_offset+66+uint32_t(group*4),row_mask);
+                const auto expanded=repeat_iq_rows<Count>(aux);
+                const U<Count> code(read<uint8_t,Count>(w,row_offset+2+uint32_t(group*8)+column_word,weight_mask));
+                const auto grid=read<uint32_t,Count>(iq3xxs,code*4,weight_mask);
+                const auto sign_index=(expanded>>((column_word/2)*7))&127;
+                const U<Count> sign_bytes(read<uint8_t,Count>(iq_signs,sign_index,weight_mask));
+                packed=signed_words<Count>(grid,(sign_bytes>>((column_word&1)*4))&15);
+                auto dh=read<uint16_t,N>(w,scale_offset,row_mask);
+                const F<N> delta(dh.template bit_cast_view<sycl::half>().read());
+                dw=(delta*(.5f+F<N>(aux>>28)))*.5f;
             }else{
                 auto dh=read<uint16_t,N>(w,scale_offset,row_mask);
                 F<N> delta(dh.template bit_cast_view<sycl::half>().read());
@@ -211,29 +227,33 @@ template<int Type,int M=4,bool Interleaved=false,bool PackedIq=false> sycl::even
             es::scatter<float,N>(output+size_t(output_slots[t])*rows+first_row,nr*4,sum.template select<N,1>(t*N).read(),row_mask);
     });
 }
-// Only short interleaved IQ2/IQ3 verification windows use packed gathers.
-// Keep T1, large prefill, Q6 and original-layout products on their old paths.
+// Only measured interleaved IQ2_S/IQ3_S windows use packed gathers. Prefill
+// measurements used four-row tiles; retain the old M1 path beyond T8. Keep
+// T1, 9..31, 129+, Q6 and original-layout products on their existing paths.
 template<int Type,int M> sycl::event dispatch_expert_product(sycl::queue& q,const uint8_t* weights,
     const int8_t* input,const float* scales,float* output,int rows,int width,ExpertPlan plan,
-    bool separate,const uint32_t* iq2,const uint32_t* iq3,bool interleaved) {
+    bool separate,const uint32_t* iq2,const uint32_t* iq3,bool interleaved,
+    const uint32_t* iq3xxs,const uint8_t* iq_signs) {
     if(interleaved) {
         if constexpr(Type==21 || Type==22) {
-            if(plan.tokens>=2 && plan.tokens<=8)
-                return run<Type,M,true,true>(q,weights,input,scales,output,rows,width,plan,separate,iq2,iq3);
+            if((plan.tokens>=2 && plan.tokens<=8) || (M==4 && plan.tokens>=32 && plan.tokens<=128))
+                return run<Type,M,true,true>(q,weights,input,scales,output,rows,width,plan,separate,iq2,iq3,iq3xxs,iq_signs);
         }
-        return run<Type,M,true,false>(q,weights,input,scales,output,rows,width,plan,separate,iq2,iq3);
+        return run<Type,M,true,false>(q,weights,input,scales,output,rows,width,plan,separate,iq2,iq3,iq3xxs,iq_signs);
     }
-    return run<Type,M,false,false>(q,weights,input,scales,output,rows,width,plan,separate,iq2,iq3);
+    return run<Type,M,false,false>(q,weights,input,scales,output,rows,width,plan,separate,iq2,iq3,iq3xxs,iq_signs);
 }
 }
 sycl::event q8_xmx_product(sycl::queue& q,int type,const uint8_t* weights,const int8_t* input,
-    const float* scales,float* output,int rows,int width,ExpertPlan plan,bool separate,const uint32_t* iq2,const uint32_t* iq3,bool interleaved){
+    const float* scales,float* output,int rows,int width,ExpertPlan plan,bool separate,const uint32_t* iq2,const uint32_t* iq3,bool interleaved,
+    const uint32_t* iq3xxs,const uint8_t* iq_signs){
     if(!q.has_property<sycl::property::queue::in_order>()||rows<1||width<256||width%256||plan.tokens<1||plan.tokens>1024||
         plan.experts<1||plan.experts>256||(plan.tile_width!=4&&plan.tile_width!=1)||plan.picks<1||plan.picks>8)throw std::invalid_argument("Invalid INT8 XMX product geometry");
     if(interleaved && rows%16) throw std::invalid_argument("Interleaved experts need complete 16-row tiles");
-#define PRODUCT(T,M) dispatch_expert_product<T,M>(q,weights,input,scales,output,rows,width,plan,separate,iq2,iq3,interleaved)
+    if(type==18 && (!iq3xxs || !iq_signs)) throw std::invalid_argument("IQ3_XXS XMX requires its grid and sign tables");
+#define PRODUCT(T,M) dispatch_expert_product<T,M>(q,weights,input,scales,output,rows,width,plan,separate,iq2,iq3,interleaved,iq3xxs,iq_signs)
 #define RUN(T) (plan.tile_width==1 ? PRODUCT(T,1) : PRODUCT(T,4))
-    switch(type){case 14:return RUN(14);case 21:return RUN(21);case 22:return RUN(22);default:throw std::invalid_argument("Unsupported INT8 XMX GGUF type");}
+    switch(type){case 14:return RUN(14);case 18:return RUN(18);case 21:return RUN(21);case 22:return RUN(22);default:throw std::invalid_argument("Unsupported INT8 XMX GGUF type");}
 #undef RUN
 #undef PRODUCT
 }

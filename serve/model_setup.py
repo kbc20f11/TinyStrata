@@ -78,6 +78,37 @@ def model_path(cfg: dict) -> Path | None:
     return (path if path.is_absolute() else Path(cfg.get("cwd") or ".") / path).resolve()
 
 
+def validate_intel_executable(cfg: dict, *, allow_legacy: bool = True):
+    """Check executable build compatibility without loading a GPU or model.
+
+    A missing executable stays in the existing bootstrap workflow; activation
+    must still pass check_files. The returned proof binds metadata to actual
+    executable bytes. GGUF identity and geometry remain separate checks.
+    """
+    if cfg.get("backend") != "sycl" or not cfg.get("exe"):
+        return None
+    executable = Path(cfg["exe"]).expanduser()
+    if not executable.is_absolute():
+        executable = Path(cfg.get("cwd") or ROOT) / executable
+    if not executable.is_file():
+        return None
+    from serve.intel_backend import canonical_model, MODEL_PROFILES, TIEL_MODEL
+    from serve.intel_capabilities import probe_capabilities, validate_capabilities
+    proof = probe_capabilities(cfg)
+    model = canonical_model(cfg)
+    required = None
+    if not proof.legacy:
+        required = {"scalar": [0, 8, 10, 11, 14, 21, 22, 23, 30]}
+        if cfg.get("intel_profile", "generic") in MODEL_PROFILES.values():
+            required.update(dp4a=[8, 10, 11, 14, 21, 22, 23], int8_xmx=[14, 21, 22])
+        if model == TIEL_MODEL:
+            for types in required.values():
+                types.append(18)
+    validate_capabilities(proof.report, model=model, profile=cfg.get("intel_profile", "generic"),
+                          required_types=required, allow_legacy=allow_legacy)
+    return proof
+
+
 def resolve_executable(cfg: dict) -> Path | None:
     """Resolve an existing engine, also finding a build made after API startup."""
     reject_retired_model(cfg.get("arch"), cfg.get("model_name"))
@@ -335,11 +366,16 @@ def prepare_installed_model(cfg: dict, config_path: str | Path, model_path: str 
         raise ValueError("The GGUF architecture differs from this configuration; use --model-family with a separate config")
     if cfg.get("backend") == "sycl":
         from serve.gguf_reader import GGUFFile
-        from serve.intel_backend import supports_model
+        from serve.intel_backend import canonical_model, QWEN_MODEL, TIEL_MODEL
+        from serve.model_download import TIEL_MODEL_FILENAME
         metadata = GGUFFile(model).metadata
-        if not supports_model(cfg) or actual_arch != "qwen35moe" or \
-                "qwen3.6" not in str(metadata.get("general.name", "")).lower():
-            raise ValueError("Only Qwen3.6 text is enabled on Intel; this GGUF is not a validated Intel model")
+        selected = canonical_model(cfg)
+        name = str(metadata.get("general.name", ""))
+        if (actual_arch != "qwen35moe" or
+                selected == QWEN_MODEL and "qwen3.6" not in name.lower() or
+                selected == TIEL_MODEL and (name != "Ornith-1.5-35B" or model.name != TIEL_MODEL_FILENAME)):
+            raise ValueError("The Intel GGUF identity does not match the selected pinned Qwen3.6 or Tiel artifact")
+        validate_intel_executable(cfg)
     st = model.stat()
     identity = f"{model}\n{st.st_size}\n{st.st_mtime_ns}"
     cache = path.parent / "models" / hashlib.sha256(identity.encode()).hexdigest()[:16]
@@ -353,7 +389,7 @@ def prepare_installed_model(cfg: dict, config_path: str | Path, model_path: str 
     args = new["args"]
     args[args.index("--model") + 1] = str(model)
     new["tokenizer"] = str(tokenizer)
-    log_name = ("engine-intel.log" if cfg.get("backend") == "sycl" else "engine-tiel-coder.log" if cfg.get("model_name") == "tiel-coder-35b-a3b" else
+    log_name = (("engine-intel-tiel.log" if selected == TIEL_MODEL else "engine-intel.log") if cfg.get("backend") == "sycl" else "engine-tiel-coder.log" if cfg.get("model_name") == "tiel-coder-35b-a3b" else
                 {"lfm2moe": "engine-lfm2.log", "gemma4": "engine-gemma4.log",
                  "clover_moe": "engine-clover.log"}.get(actual_arch, "engine.log"))
     new["log"] = str(path.parent / log_name)

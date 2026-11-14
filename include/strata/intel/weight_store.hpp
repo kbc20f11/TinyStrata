@@ -19,7 +19,8 @@ struct ResidentTensor {
 class WeightStore {
 public:
     static std::unique_ptr<WeightStore> load(sycl::queue queue, const std::string& gguf,
-                                            WeightMemory kind = WeightMemory::Host, bool interleave_output = false, bool interleave_experts = false, bool interleave_dense = false, bool interleave_split_output = false);
+                                            WeightMemory kind = WeightMemory::Host, bool interleave_output = false, bool interleave_experts = false, bool interleave_dense = false, bool interleave_split_output = false,
+                                            bool allow_experimental_tiel = false);
     ~WeightStore();
     WeightStore(const WeightStore&) = delete;
     const std::map<std::string, ResidentTensor>& tensors() const { return tensors_; }

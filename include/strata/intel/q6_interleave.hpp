@@ -5,15 +5,15 @@
 #include <stdexcept>
 
 namespace strata::intel {
-// Preserve every Q6_K byte; only pad each 210-byte block to 53 words and
-// interleave those words across 16 output rows for coalesced XMX loads.
+// Preserve every quantization byte; pad each block to whole four-byte words
+// and interleave those words across 16 output rows for coalesced XMX loads.
 inline size_t quant_interleaved_offset(size_t source_byte, int width, int block_bytes) {
     const size_t blocks = size_t(width / 256), row_bytes = blocks * block_bytes;
     const size_t row = source_byte / row_bytes, within = source_byte % row_bytes;
     return ((((row / 16) * blocks + within / block_bytes) * ((block_bytes + 3) / 4) + (within % block_bytes) / 4) * 16 + row % 16) * 4 + within % block_bytes % 4;
 }
 inline size_t quant_interleaved_bytes(int rows, int width, int block_bytes) {
-    if (rows < 1 || rows % 16 || width < 256 || width % 256 || (block_bytes != 82 && block_bytes != 110 && block_bytes != 210))
+    if (rows < 1 || rows % 16 || width < 256 || width % 256 || (block_bytes != 82 && block_bytes != 98 && block_bytes != 110 && block_bytes != 210))
         throw std::invalid_argument("Quant interleave needs complete 16-row/256-column tiles and a supported block size");
     return size_t(rows) * size_t(width / 256) * ((block_bytes + 3) / 4 * 4);
 }

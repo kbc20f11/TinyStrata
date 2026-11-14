@@ -3385,6 +3385,8 @@ class Service:
             validate_config(generation_defaults, allow_uninstalled=True)
             if vision is not None:
                 raise ValueError("Intel image encoders are unsupported")
+            from serve.model_setup import validate_intel_executable
+            validate_intel_executable(generation_defaults, allow_legacy=True)
             self.backend = "sycl"
             self.intel_profile = generation_defaults.get("intel_profile", "generic")
         self.engine, self.tok, self.template, self.model, self.vision = engine, tokenizer, template, model_name, vision
@@ -7402,6 +7404,8 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
     if cfg.get("backend") == "sycl":
         from serve.intel_backend import validate_config
         validate_config(cfg, allow_uninstalled=True)
+        from serve.model_setup import validate_intel_executable
+        validate_intel_executable(cfg, allow_legacy=True)
 
     existing = model_path(cfg)
     directory = Path(cfg.get("download_dir") or Path(config_path).parent / "model-files")
@@ -7441,6 +7445,8 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
             if latest.get("backend") != "sycl":
                 raise ValueError("An Intel model activation must keep its sycl runtime")
             validate_config(latest, allow_uninstalled=True)
+            from serve.model_setup import validate_intel_executable
+            validate_intel_executable(latest, allow_legacy=True)
         from serve.tinyconfig import validate
         validate(latest, allow_uninstalled=True)
         # Retain the installer/control API if either native startup fails. Only
@@ -7653,6 +7659,8 @@ def main() -> int:
             candidate["slot_save_path"] = a.slot_save_path
         try:
             validate_config(candidate, allow_uninstalled=bootstrap)
+            from serve.model_setup import validate_intel_executable
+            validate_intel_executable(candidate, allow_legacy=True)
         except ValueError as error:
             ap.error(str(error))
     a.host = a.host or cfg.get("host") or "127.0.0.1"   # issue #26: the run scripts pass no --host, the config can

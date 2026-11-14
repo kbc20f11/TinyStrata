@@ -5,6 +5,7 @@ param([string]$PythonExecutable = 'python.exe')
 $ErrorActionPreference = 'Stop'
 $repository = Split-Path -Parent $PSScriptRoot
 . (Join-Path $repository 'cmake\install-intel-runtime.ps1')
+. (Join-Path $repository 'cmake\intel-runtime-package.ps1')
 $checks = 0
 function Assert-Intel([bool]$Value, [string]$Message) {
     if (-not $Value) { throw "Intel installer fixture: $Message" }
@@ -140,12 +141,97 @@ try {
     $installerAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $repository 'install.ps1'), [ref]$tokens, [ref]$parseErrors)
     Assert-Intel ($parseErrors.Count -eq 0) 'installer parses under PowerShell 5.1'
     foreach ($name in @('Invoke-TinyStrataInstaller','Get-TinyStrataBackend','Get-TinyStrataConfig','Get-TinyStrataModelFamily',
-        'Enter-TinyStrataInstallationGuard','Exit-TinyStrataInstallationGuard','Remove-TinyStrataNativeGeneration','Initialize-TinyStrataDesktopShortcut')) {
+        'Enter-TinyStrataInstallationGuard','Exit-TinyStrataInstallationGuard','Remove-TinyStrataNativeGeneration','Initialize-TinyStrataDesktopShortcut','Assert-TinyStrataIntelCapabilities','Assert-TinyStrataIntelManagedDeviceSelection','Select-TinyStrataBackend','Test-TinyStrataInteractiveConsole','Get-VerifiedDownload')) {
         $definition = $installerAst.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
         Invoke-Expression $definition.Extent.Text
     }
     Assert-Intel ((Get-TinyStrataModelFamily qwen36 -Backend sycl).ConfigFile -eq 'config-sycl.json') 'explicit Intel has a dedicated config'
     Assert-IntelRejected { Get-TinyStrataModelFamily gemma4 -Backend sycl } 'unsupported family rejected before preparation'
+    Assert-IntelRejected {Assert-TinyStrataIntelManagedDeviceSelection @{gpu=1;args=@('--model','fixture.gguf')}} 'custom nonzero GPU cannot be certified with the device0 probe'
+    Assert-IntelRejected {Assert-TinyStrataIntelManagedDeviceSelection @{gpu=0;args=@('--device','1')}} 'native explicit nonzero device cannot be certified with the device0 probe'
+    $device0=@{gpu=0;args=@('--device','0','--model','fixture.gguf')}
+    $device0Before=$device0|ConvertTo-Json -Compress
+    Assert-TinyStrataIntelManagedDeviceSelection $device0
+    Assert-Intel (($device0|ConvertTo-Json -Compress) -ceq $device0Before) 'validated device0 configuration is accepted without mutation'
+    foreach($case in @(
+        @{Ids=@('PCI\VEN_8086&DEV_B082');Saved=$null;Smi=$false;Want='sycl'},
+        @{Ids=@('PCI\VEN_8086&DEV_B082');Saved='cuda';Smi=$false;Want='sycl'},
+        @{Ids=@('PCI\VEN_8086&DEV_B082','PCI\VEN_1002&DEV_1234');Saved=$null;Smi=$false;Want='hip'},
+        @{Ids=@('PCI\VEN_8086&DEV_B082','PCI\VEN_10DE&DEV_1234');Saved=$null;Smi=$true;Want='cuda'},
+        @{Ids=@('PCI\VEN_8086&DEV_B082','PCI\VEN_10DE&DEV_1234','PCI\VEN_1002&DEV_1234');Saved='hip';Smi=$true;Want='hip'})) {
+        $selected=& {
+            param($Case)
+            function Get-CimInstance {param($ClassName,$ErrorAction) return @($Case.Ids | ForEach-Object{[pscustomobject]@{PNPDeviceID=$_}})}
+            function Get-Command {param($Name,$ErrorAction) if($Case.Smi){return [pscustomobject]@{Source='Invoke-FakeNvidia'}};return $null}
+            function Invoke-FakeNvidia {$global:LASTEXITCODE=0;return 'GPU 0: fixture CUDA adapter'}
+            $cfg=if($Case.Saved){@{backend=$Case.Saved}}else{$null}
+            Get-TinyStrataBackend -Configuration $cfg
+        } $case
+        Assert-Intel ($selected -eq $case.Want) ('candidate priority preserves CUDA/HIP and enables Intel-only: '+$case.Want)
+    }
+    $menu=& {
+        function Test-TinyStrataInteractiveConsole {return $true}
+        function Read-Host {return '3'}
+        Select-TinyStrataBackend -Interactive $true
+    }
+    Assert-Intel ($menu -eq 'sycl') 'explicit optional menu can choose Intel without probing/starting it'
+    $unattended=& {
+        function Read-Host {throw 'Default installation must never prompt'}
+        Select-TinyStrataBackend -Requested sycl
+    }
+    Assert-Intel ($unattended -eq 'sycl') 'noninteractive explicit backend does not prompt'
+    Assert-IntelRejected { & {function Test-TinyStrataInteractiveConsole {return $false}; Select-TinyStrataBackend -Interactive $true} } 'menu request in noninteractive host fails before waiting for input'
+
+    $pendingCatalog=Get-Content -LiteralPath (Join-Path $repository 'cmake\intel-runtime-catalog.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $pendingCatalog.availability='pending_release'; $pendingCatalog.artifacts=@()
+    $pendingPath=Join-Path $fixtureRoot 'pending-catalog.json'
+    Write-IntelFixture $fixtureRoot 'pending-catalog.json' ($pendingCatalog | ConvertTo-Json -Depth 8)
+    Assert-IntelRejected {Get-TinyStrataIntelRuntimeArtifact -CatalogPath $pendingPath} 'pending release catalog cannot enable a placeholder download'
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $script:fixtureRuntimeZip=Join-Path $fixtureRoot 'fixture-runtime.zip'
+    [IO.Compression.ZipFile]::CreateFromDirectory($stage,$script:fixtureRuntimeZip)
+    $publicCatalog=Get-Content -LiteralPath (Join-Path $repository 'cmake\intel-runtime-catalog.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $publicCatalog.availability='published'
+    $artifact=[pscustomobject]@{id='fixture-b390';profile='b390-qwen36';model='qwen3.6-35b-a3b';aot_target='intel_gpu_ptl_h';experimental=$true;
+        url='https://github.com/kbc20f11/TinyStrata/releases/download/fixture/runtime.zip';bytes=(Get-Item -LiteralPath $script:fixtureRuntimeZip).Length;
+        sha256=(Get-FileHash -LiteralPath $script:fixtureRuntimeZip -Algorithm SHA256).Hash.ToLowerInvariant();
+        manifest_sha256=(Get-FileHash -LiteralPath (Join-Path $stage '.tinystrata-intel-runtime.json') -Algorithm SHA256).Hash.ToLowerInvariant();
+        executable_sha256=(Get-FileHash -LiteralPath (Join-Path $stage 'tinystrata-intel.exe') -Algorithm SHA256).Hash.ToLowerInvariant()}
+    $publicCatalog.artifacts=@($artifact)
+    $catalogFile=Join-Path $fixtureRoot 'published-catalog.json'
+    Write-IntelFixture $fixtureRoot 'published-catalog.json' ($publicCatalog | ConvertTo-Json -Depth 8)
+    $script:fixtureDownloadCount=0
+    function Get-TinyStrataOfficialFile {
+        param($Uri,$Destination)
+        Assert-Intel ($Uri -eq 'https://github.com/kbc20f11/TinyStrata/releases/download/fixture/runtime.zip') 'download URL comes only from the pinned catalog'
+        $script:fixtureDownloadCount++
+        [IO.File]::Copy($script:fixtureRuntimeZip,$Destination,$false)
+    }
+    $receipt=Receive-TinyStrataIntelRuntime -CatalogPath $catalogFile -CacheRoot (Join-Path $fixtureRoot 'download-cache')
+    Assert-Intel ($receipt.Artifact.sha256 -eq $artifact.sha256 -and (Get-TinyStrataIntelStagePlan $receipt.StageDirectory).Files.Count -eq 9) 'pinned receipt executes real ZIP/hash/license checks with only HTTP boundary mocked'
+    $secondReceipt=Receive-TinyStrataIntelRuntime -CatalogPath $catalogFile -CacheRoot (Join-Path $fixtureRoot 'download-cache')
+    Assert-Intel ($script:fixtureDownloadCount -eq 1 -and $receipt.StageDirectory -ne $secondReceipt.StageDirectory) 'cached verified archive is reused and stages remain separate immutable preparations'
+    $goodSha=$artifact.sha256;$artifact.sha256='0'*64
+    Write-IntelFixture $fixtureRoot 'published-catalog.json' ($publicCatalog | ConvertTo-Json -Depth 8)
+    Assert-IntelRejected {Receive-TinyStrataIntelRuntime -CatalogPath $catalogFile -CacheRoot (Join-Path $fixtureRoot 'bad-download-cache')} 'download hash mismatch is rejected before extraction/adoption'
+    $artifact.sha256=$goodSha
+    foreach($url in @('http://github.com/kbc20f11/TinyStrata/releases/download/tag/a.zip','https://example.com/a.zip','https://github.com/kbc20f11/TinyStrata/releases/latest/download/a.zip')){
+        $artifact.url=$url
+        Write-IntelFixture $fixtureRoot 'published-catalog.json' ($publicCatalog | ConvertTo-Json -Depth 8)
+        Assert-IntelRejected {Get-TinyStrataIntelRuntimeArtifact -CatalogPath $catalogFile} 'unpinned/nonofficial runtime URL is rejected'
+    }
+    $artifact.url='https://github.com/kbc20f11/TinyStrata/releases/download/fixture/runtime.zip'
+    Write-IntelFixture $fixtureRoot 'published-catalog.json' ($publicCatalog | ConvertTo-Json -Depth 8)
+    $unsafeIndex=0
+    foreach($names in @(@('../escape.dll'),@('C:/escape.dll'),@('licenses/../escape.dll'),@('file.dll:stream'),@('CON.dll'),@('a.dll','A.dll'))){
+        $unsafeIndex++
+        $path=Join-Path $fixtureRoot ('unsafe-'+$unsafeIndex+'.zip')
+        $archive=[IO.Compression.ZipFile]::Open($path,[IO.Compression.ZipArchiveMode]::Create)
+        try{foreach($name in $names){$entry=$archive.CreateEntry($name);$stream=$entry.Open();try{$stream.WriteByte(1)}finally{$stream.Dispose()}}}finally{$archive.Dispose()}
+        $unsafeDestination=Join-Path $fixtureRoot ('unsafe-output-'+$unsafeIndex)
+        Assert-IntelRejected {Expand-TinyStrataIntelRuntimeArchive -Archive $path -Destination $unsafeDestination} 'unsafe archive path/case collision is rejected before any extraction'
+        Assert-Intel (-not(Test-Path -LiteralPath $unsafeDestination)) 'rejected archive leaves no destination or escaped files'
+    }
     $shortcutWork=Join-Path $fixtureRoot 'shortcut-work'
     $shortcutSource=Join-Path $fixtureRoot 'shortcut-source'
     $desktop=Join-Path $fixtureRoot 'private-desktop'
@@ -160,8 +246,8 @@ try {
     Assert-Intel ((Get-FileHash -LiteralPath (Join-Path $desktop 'TinyStrata.lnk') -Algorithm SHA256).Hash -eq $normalLinkHash -and
         [IO.File]::ReadAllText((Join-Path $shortcutWork 'runtime\ui\history.json')) -eq 'ordinary history') 'Intel shortcut installation preserves the ordinary shortcut and history'
     $helperText=[IO.File]::ReadAllText($intelHelper)
-    Assert-Intel ($helperText.Contains("`$tinyStrataBackend = 'sycl'") -and $helperText.Contains("`$tinyStrataIntelProfile = 'b390-qwen36'") -and
-        $helperText.Contains("'--backend', 'sycl', '--intel-profile'")) 'persistent Intel helper passes the explicit backend and profile'
+    Assert-Intel ($helperText.Contains("`$tinyStrataBackend = 'sycl'") -and $helperText.Contains("'--backend', 'sycl'") -and
+        -not $helperText.Contains("'--intel-profile'")) 'persistent Intel helper selects its backend and follows the saved/current Intel model profile'
     [void][Management.Automation.Language.Parser]::ParseFile($intelHelper,[ref]$tokens,[ref]$parseErrors)
     Assert-Intel ($parseErrors.Count -eq 0) 'generated Intel launcher parses without running it'
 
@@ -193,7 +279,66 @@ function Invoke-TinyStrataInstaller {
     function Initialize-TinyStrataRuntime { throw 'Intel must not enter CUDA/HIP runtime discovery' }
     function Get-TinyStrataSourceFingerprint { throw 'Intel stage must not masquerade as a CUDA/HIP source build' }
     function Start-Process { throw 'CPU fixtures must never start a process' }
+    # Run the actual shipping probe/validation script and Python capability
+    # helper. Only the native --capabilities subprocess is replaced; hashing,
+    # expected-SHA binding and profile/build/legacy policy execute for real.
+    $adapter=Join-Path $fixtureRoot 'capability-adapter.py'
+    $adapterCode=@'
+import json, subprocess, sys
+from pathlib import Path
+from types import SimpleNamespace
+repository, report_path, code_path = sys.argv[1:4]
+sys.argv = [sys.argv[0], *sys.argv[4:]]
+sys.path.insert(0, repository)
+from serve import intel_capabilities as caps
+fixture = json.loads(Path(report_path).read_text(encoding="utf-8-sig"))
+def fake_native(command, **options):
+    if command == [sys.argv[2], "--capabilities"]: report = fixture["capabilities"]
+    elif command == [sys.argv[2], "--device-info", "--device", "0"]: report = fixture["device"]
+    else: raise AssertionError(command)
+    assert options["stdin"] == subprocess.DEVNULL
+    assert options["timeout"] <= 60
+    assert options["env"]["PATH"].split(";")[0] == str(Path(sys.argv[2]).parent)
+    assert not any("oneapi" in part.lower() for part in options["env"]["PATH"].split(";"))
+    return SimpleNamespace(returncode=0, stdout=json.dumps(report), stderr="")
+caps.subprocess.run = fake_native
+exec(compile(Path(code_path).read_text(encoding="utf-8-sig"), "shipping-installer-capability-gate", "exec"), {"__name__": "__main__"})
+'@
+    [IO.File]::WriteAllText($adapter,$adapterCode,(New-Object Text.UTF8Encoding($false)))
     function Invoke-IntelFixturePython {
+        if ($args.Count -ge 8 -and $args[0] -eq '-I' -and $args[1] -eq '-B' -and $args[2] -eq '-') {
+            $script:probeCallCount++
+            $probeCode=($input | Out-String)
+            $codePath=Join-Path $script:transactionWork 'capability-script.py'
+            Write-IntelFixture $script:transactionWork 'capability-script.py' $probeCode
+            $report=[ordered]@{backend='sycl';experimental=$true;model_families=@();kv_types=@('fp32','int8');images=$false;mtp=$true;
+                experimental_mtp_max_depth=7;serve=$true;capabilities_schema=1;experimental_models=@('qwen3.6-35b-a3b','tiel-coder-35b-a3b');
+                experimental_profiles=@{'b390-qwen36'=1;'b390-tiel-coder'=1};build=@{mkl=$true;int8_xmx=$true;aot_target='intel_gpu_ptl_h'};
+                weight_types=@{scalar=@(0,1,8,10,11,14,18,21,22,23,30);dp4a=@(8,10,11,14,18,21,22,23);int8_xmx=@(14,18,21,22)}}
+            switch ($script:capabilityMode) {
+                'mkl-on-xmx-off' { $report.build.int8_xmx=$false; $report.experimental_profiles=@{}; $report.weight_types.int8_xmx=@() }
+                'profile-missing' { $report.experimental_profiles=@{} }
+                'legacy-new' { foreach($key in @('capabilities_schema','experimental_models','experimental_profiles','build','weight_types')){$report.Remove($key)} }
+                'legacy-reuse' { foreach($key in @('capabilities_schema','experimental_models','experimental_profiles','build','weight_types')){$report.Remove($key)} }
+                'exe-changed' { [IO.File]::AppendAllText([string]$args[4],'changed after manifest copy') }
+                'tiel-no-type18' {foreach($path in @('scalar','dp4a','int8_xmx')){$report.weight_types[$path]=@($report.weight_types[$path]|Where-Object{$_ -ne 18})}}
+                'legacy-tiel' {foreach($key in @('capabilities_schema','experimental_models','experimental_profiles','build','weight_types')){$report.Remove($key)}}
+                'package-target-mismatch' {$report.build.aot_target=''}
+            }
+            $device=[ordered]@{schema=1;backend='sycl';device_index=0;vendor_id=32902;device_id=45186;integrated=$true;architecture='panther_lake_xe3';adapter_luid='00000000:00001234';adapter_node_mask=1}
+            switch($script:capabilityMode){
+                'discrete' {$device.integrated=$false}
+                'unknown-device' {$device.device_id=12345}
+                'ptl-u' {$device.device_id=45187}
+            }
+            $reportPath=Join-Path $script:transactionWork 'capability-report.json'
+            Write-IntelFixture $script:transactionWork 'capability-report.json' (@{capabilities=$report;device=$device} | ConvertTo-Json -Depth 8)
+            $probeArguments=@($args[3..($args.Count-1)])
+            & $PythonExecutable -I -B $adapter $repository $reportPath $codePath @probeArguments
+            $global:LASTEXITCODE=$LASTEXITCODE
+            return
+        }
+        $script:configureCallCount++
         $script:configureArguments = @($args)
         $path = [string]$args[[Array]::IndexOf($args,'--config')+1]
         $exe = [string]$args[[Array]::IndexOf($args,'--exe')+1]
@@ -206,34 +351,55 @@ function Invoke-TinyStrataInstaller {
         Write-IntelFixture (Split-Path -Parent $path) (Split-Path -Leaf $path) ($cfg | ConvertTo-Json -Depth 8)
         $global:LASTEXITCODE=0
     }
-    foreach ($fail in @($true,$false)) {
-        $script:failConfigure=$fail
-        $work = Join-Path $fixtureRoot ('transaction-' + $fail)
+    foreach ($scenario in @('configure-fail','success','mkl-on-xmx-off','profile-missing','legacy-new','exe-changed','discrete','unknown-device','ptl-u','tiel-success','tiel-no-type18','legacy-tiel','package-success','package-bad-sha','package-target-mismatch')) {
+        $fail=$scenario -notin @('success','tiel-success','package-success')
+        $fromPackage=$scenario -like 'package-*'
+        $family=if($scenario -in @('tiel-success','tiel-no-type18','legacy-tiel')){'tiel'}else{'qwen36'}
+        $familySpec=Get-TinyStrataModelFamily -Name $family -Backend sycl
+        $script:failConfigure=$scenario -eq 'configure-fail'
+        $script:capabilityMode=$scenario
+        $script:configureCallCount=0;$script:probeCallCount=0
+        $work = Join-Path $fixtureRoot ('transaction-' + $scenario)
         $script:transactionWork=$work
         # Source and work must be siblings, including the copied helper only.
-        $source = Join-Path $fixtureRoot ('source-' + $fail)
+        $source = Join-Path $fixtureRoot ('source-' + $scenario)
         [IO.Directory]::CreateDirectory((Join-Path $source 'cmake')) | Out-Null
         Copy-Item -LiteralPath (Join-Path $repository 'cmake\install-intel-runtime.ps1') -Destination (Join-Path $source 'cmake\install-intel-runtime.ps1')
+        Copy-Item -LiteralPath (Join-Path $repository 'cmake\intel-runtime-package.ps1') -Destination (Join-Path $source 'cmake\intel-runtime-package.ps1')
+        Copy-Item -LiteralPath (Join-Path $repository 'cmake\intel-runtime-catalog.json') -Destination (Join-Path $source 'cmake\intel-runtime-catalog.json')
+        if($fromPackage){
+            $fixtureCatalog=$publicCatalog|ConvertTo-Json -Depth 8|ConvertFrom-Json
+            if($scenario -eq 'package-bad-sha'){$fixtureCatalog.artifacts[0].sha256='0'*64}
+            Write-IntelFixture $source 'cmake\intel-runtime-catalog.json' ($fixtureCatalog|ConvertTo-Json -Depth 8)
+        }
         $oldDirectory = Join-Path $work 'native\sycl-00000000000000000000000000000000'
         Write-IntelFixture $oldDirectory 'keep.txt' 'previous generation'
         $configRoot = Join-Path $work 'runtime\.tinystrata'
-        $cfg = [ordered]@{backend='sycl'; intel_profile='b390-qwen36'; model_name='qwen3.6-35b-a3b'; arch='qwen35moe'; vision_mode='no';
+        $cfg = [ordered]@{backend='sycl'; intel_profile=$familySpec.IntelProfile; model_name=$familySpec.Model; arch='qwen35moe'; vision_mode='no';
             exe=(Join-Path $oldDirectory 'tinystrata-intel.exe'); lib_dirs=@($oldDirectory); api_key='fixture-secret-do-not-print'; args=@('--model','fixture.gguf')}
-        Write-IntelFixture $configRoot 'config-sycl.json' ($cfg | ConvertTo-Json -Depth 6)
+        Write-IntelFixture $configRoot $familySpec.ConfigFile ($cfg | ConvertTo-Json -Depth 6)
+        if($family -eq 'tiel'){Write-IntelFixture $configRoot 'config-sycl.json' '{"backend":"sycl","model_name":"qwen3.6-35b-a3b","sentinel":"Qwen remains unchanged"}'}
         Write-IntelFixture $configRoot 'config.json' '{"backend":"cuda","sentinel":"unchanged"}'
         Write-IntelFixture $work 'runtime\ui\settings.json' '{"model_family":"gemma4","port":3000}'
         Write-IntelFixture $work 'runtime\ui\history.json' 'old history'
-        $configPath = Join-Path $configRoot 'config-sycl.json'
+        $configPath = Join-Path $configRoot $familySpec.ConfigFile
+        $qwenHash=if($family -eq 'tiel'){(Get-FileHash -LiteralPath (Join-Path $configRoot 'config-sycl.json') -Algorithm SHA256).Hash}else{$null}
         $before = (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash
         $normalHash = (Get-FileHash -LiteralPath (Join-Path $configRoot 'config.json') -Algorithm SHA256).Hash
         $uiHash = (Get-FileHash -LiteralPath (Join-Path $work 'runtime\ui\settings.json') -Algorithm SHA256).Hash
         $caught=$false
-        try { Invoke-TinyStrataInstaller -SourceDirectory $source -WorkingDirectory $work -Backend sycl -IntelRuntimeDirectory $stage -DoNotStart $true -DoNotDownload $true }
+        $runtimeArgs=if($fromPackage){@{BuildAgain=$true}}else{@{IntelRuntimeDirectory=$stage}}
+        try { Invoke-TinyStrataInstaller -SourceDirectory $source -WorkingDirectory $work -Backend sycl -Family $family -DoNotStart $true -DoNotDownload $true @runtimeArgs }
         catch { if (-not $fail) { throw }; $caught=$true }
         Assert-Intel ($caught -eq $fail) 'configure failure rolls back, successful configure commits'
+        Assert-Intel ($script:probeCallCount -eq $(if($scenario -eq 'package-bad-sha'){0}else{1})) 'only verified copied executable reaches native metadata/device inspection'
+        if ($scenario -notin @('configure-fail','success','tiel-success','package-success')) {
+            Assert-Intel ($script:configureCallCount -eq 0) ('incompatible capability rejected before config preparation: '+$scenario)
+        }
         $nativeDirs = @(Get-ChildItem -LiteralPath (Join-Path $work 'native') -Directory)
         Assert-Intel ($nativeDirs.Count -eq $(if($fail){1}else{2})) 'only unpublished generation is removed on failure'
         Assert-Intel ((Get-FileHash -LiteralPath (Join-Path $configRoot 'config.json') -Algorithm SHA256).Hash -eq $normalHash) 'CUDA/HIP primary config stays byte-identical'
+        if($family -eq 'tiel'){Assert-Intel ((Get-FileHash -LiteralPath (Join-Path $configRoot 'config-sycl.json') -Algorithm SHA256).Hash -eq $qwenHash) 'Intel Tiel installation preserves the Intel Qwen profile byte-for-byte'}
         Assert-Intel ((Get-FileHash -LiteralPath (Join-Path $work 'runtime\ui\settings.json') -Algorithm SHA256).Hash -eq $uiHash -and
             [IO.File]::ReadAllText((Join-Path $work 'runtime\ui\history.json')) -eq 'old history') 'ordinary UI history/settings stay unchanged'
         Assert-Intel (-not (Test-Path -LiteralPath (Join-Path $work '.tinystrata-installing.json')) -and
@@ -243,9 +409,18 @@ function Invoke-TinyStrataInstaller {
             $committed=Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
             Assert-Intel ($committed.api_key -ceq $cfg.api_key -and $committed.lib_dirs.Count -eq 1 -and $committed.exe -ne $cfg.exe) 'successful candidate preserves explicit credentials and selects only its new generation'
             $firstExe=$committed.exe
-            Invoke-TinyStrataInstaller -SourceDirectory $source -WorkingDirectory $work -Backend sycl -DoNotStart $true -DoNotDownload $true
+            $script:capabilityMode=if($family -eq 'qwen36'){'legacy-reuse'}else{'tiel-success'}
+            Invoke-TinyStrataInstaller -SourceDirectory $source -WorkingDirectory $work -Backend sycl -Family $family -DoNotStart $true -DoNotDownload $true
             $reused=Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
             Assert-Intel ($reused.exe -eq $firstExe -and @(Get-ChildItem -LiteralPath (Join-Path $work 'native') -Directory).Count -eq 2) 'repeat configure verifies and reuses the published immutable generation'
+            Assert-Intel ($script:probeCallCount -eq 2) 'existing generation revalidates its model-specific capability contract'
+            if($family -eq 'tiel'){
+                $beforeMismatch=(Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash
+                $script:capabilityMode='legacy-tiel'
+                Assert-IntelRejected {Invoke-TinyStrataInstaller -SourceDirectory $source -WorkingDirectory $work -Backend sycl -Family tiel -DoNotStart $true -DoNotDownload $true} 'Tiel never inherits Qwen legacy metadata permission on reuse'
+                Assert-IntelRejected {Invoke-TinyStrataInstaller -SourceDirectory $source -WorkingDirectory $work -Backend sycl -Family tiel -IntelProfile b390-qwen36 -DoNotStart $true -DoNotDownload $true} 'explicit mismatched model/profile is rejected before preparation'
+                Assert-Intel ((Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash -eq $beforeMismatch) 'rejected Tiel legacy/profile operations keep the saved config unchanged'
+            }
         }
     }
     Assert-Intel ([Environment]::GetEnvironmentVariable('TINYSTRATA_INSTALLER_TRANSACTION','Process') -ceq $originalToken) 'installer transaction environment is restored'
@@ -324,6 +499,38 @@ class IntelLauncherFixtures(unittest.TestCase):
             self.args.model_family=family
             with self.subTest(family=family), self.assertRaises(ValueError):
                 launch.Launcher(self.args,self.source,self.work)
+
+    def test_tiel_profile_config_and_process_state_are_separate(self):
+        self.args.model_family='tiel'
+        self.args.intel_profile='b390-tiel-coder'
+        launcher=launch.Launcher(self.args,self.source,self.work)
+        self.assertEqual(launcher.family,'tiel')
+        self.assertEqual(launcher.intel_profile,'b390-tiel-coder')
+        config=launch.profile_path(launcher.runtime,'tiel','sycl')
+        self.assertEqual(config.name,'config-tiel-coder-sycl.json')
+        self.assertEqual(launch.profile_path(launcher.runtime,'tiel').name,'config-tiel-coder.json')
+        with mock.patch.object(launch,'process_started',return_value='fixture'):
+            launcher.save_api_process(mock.Mock(pid=123),config)
+        self.assertTrue((launcher.runtime/'server-state-tiel-coder-sycl.json').is_file())
+        self.assertFalse((launcher.runtime/'server-state-sycl.json').exists())
+
+    def test_omitted_profile_resolves_to_explicit_tiel_family(self):
+        self.args.model_family='tiel-coder'
+        self.args.intel_profile=None
+        launcher=launch.Launcher(self.args,self.source,self.work)
+        self.assertEqual(launcher.intel_profile,'b390-tiel-coder')
+
+    def test_default_intel_shortcut_follows_the_validated_active_model_pair(self):
+        self.args.intel_profile=None
+        launcher=launch.Launcher(self.args,self.source,self.work)
+        health={'status':'ok','service':'strata','model':'tiel-coder-35b-a3b','backend':'sycl','intel_profile':'b390-tiel-coder','experimental':True,'loaded':True}
+        with mock.patch.object(launch,'port_occupied',return_value=True),mock.patch.object(launch,'request_json',return_value=health),mock.patch.object(launcher,'spawn') as spawn:
+            launcher.ensure_api(no_start=True)
+            spawn.assert_not_called()
+        self.assertEqual((launcher.family,launcher.intel_profile),('tiel','b390-tiel-coder'))
+        launcher.save_settings()
+        self.assertEqual(launch.read_json(launcher.state_dir/'settings.json')['intel_profile'],'b390-tiel-coder')
+        self.assertFalse(launcher.selected_api_identity({**health,'intel_profile':'b390-qwen36'}))
 
     def test_default_launcher_still_uses_normal_selection(self):
         normal=launch.Launcher(argparse.Namespace(api_port=None,port=None,model_family=None),self.source,self.work)

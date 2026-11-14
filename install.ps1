@@ -10,18 +10,22 @@ The selected GPU driver must already be installed. AMD builds use the private
 pinned ROCm 10.2.0a20260930 SDK (HIP 7.17) by default; -HipDirectory selects a
 custom SDK. No persistent PATH or execution policy changes are made. Runtime
 data stays in the sibling TinyStrata-work folder.
-Explicit -Backend sycl -IntelRuntimeDirectory <stage> imports an experimental
-Qwen3.6 text runtime without installing Intel SDKs/drivers. Intel uses separate
-config-sycl.json and ui-sycl history/settings; automatic selection is unchanged.
+Intel-only machines can select experimental SYCL; NVIDIA/AMD priority is retained.
+-Backend sycl selects it explicitly, and -SelectBackend offers an optional console
+menu. Published runtimes use pinned archive/manifest/exe hashes; an offline
+-IntelRuntimeDirectory remains available. No Intel SDK/driver is installed.
+Intel uses separate config-sycl.json and ui-sycl history/settings.
 #>
 [CmdletBinding()]
 param(
     [string]$SourceDir,
     [string]$WorkDir,
     [ValidateSet('auto', 'cuda', 'hip', 'sycl')][string]$Backend = 'auto',
-    # Explicit experimental Intel import; no SDK/driver installation or automatic Intel selection.
+    # Optional menu only; ordinary/noninteractive installs never call Read-Host.
+    [switch]$SelectBackend,
+    # Optional offline override; otherwise use the pinned published runtime catalog.
     [string]$IntelRuntimeDirectory,
-    [ValidateSet('b390-qwen36')][string]$IntelProfile = 'b390-qwen36',
+    [ValidateSet('b390-qwen36','b390-tiel-coder')][string]$IntelProfile = 'b390-qwen36',
     [string]$HipDirectory,
     # An omitted value is empty under irm | iex and selects GPU auto-detection.
     [ValidatePattern('^(gfx[0-9a-f]+(;gfx[0-9a-f]+)*)?$')][string]$HipArchitectures,
@@ -382,15 +386,43 @@ function Ensure-TinyStrataCudaToolkit {
 function Get-TinyStrataBackend {
     param([ValidateSet('auto', 'cuda', 'hip', 'sycl')][string]$Requested = 'auto', $Configuration)
     if ($Requested -ne 'auto') { return $Requested }
-    if ($Configuration -and $Configuration.backend -in @('cuda', 'hip')) { return [string]$Configuration.backend }
+    $controllers = $null
+    if ($Configuration -and $Configuration.backend -in @('cuda', 'hip')) {
+        $controllers = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue)
+        $intelOnly = @($controllers | Where-Object {$_.PNPDeviceID -match '(?i)VEN_8086'}).Count -gt 0 -and
+                     @($controllers | Where-Object {$_.PNPDeviceID -match '(?i)VEN_10DE|VEN_1002'}).Count -eq 0
+        # Retain an existing CUDA/HIP choice, except when this machine reports
+        # only Intel and that former hardware is absent. Its config stays intact.
+        if (-not $intelOnly) { return [string]$Configuration.backend }
+    }
     $smi = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
     if ($smi) {
         $devices = @(& $smi.Source -L 2>$null)
         if ($LASTEXITCODE -eq 0 -and ($devices -join "`n") -match 'GPU \d+:') { return 'cuda' }
     }
-    $amd = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.PNPDeviceID -match '(?i)VEN_1002' })
+    if ($null -eq $controllers) { $controllers = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue) }
+    $amd = @($controllers | Where-Object { $_.PNPDeviceID -match '(?i)VEN_1002' })
     if ($amd.Count -gt 0) { return 'hip' }
-    throw 'No usable NVIDIA GPU or AMD Radeon adapter was detected. Install its GPU driver, or select -Backend cuda/hip explicitly.'
+    if (@($controllers | Where-Object {$_.PNPDeviceID -match '(?i)VEN_8086'}).Count -gt 0 -and
+        @($controllers | Where-Object {$_.PNPDeviceID -match '(?i)VEN_10DE|VEN_1002'}).Count -eq 0) { return 'sycl' }
+    throw 'No supported GPU candidate was detected. Install its graphics driver or explicitly select -Backend cuda/hip/sycl. Intel remains experimental and requires a validated integrated device.'
+}
+
+function Test-TinyStrataInteractiveConsole {
+    return ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected -and
+        [Environment]::GetCommandLineArgs() -notcontains '-NonInteractive' -and $Host.Name -eq 'ConsoleHost')
+}
+
+function Select-TinyStrataBackend {
+    param([string]$Requested = 'auto', [bool]$Interactive = $false)
+    if (-not $Interactive) { return $Requested }
+    if ($Requested -ne 'auto') { throw 'Use either -SelectBackend or an explicit -Backend; the explicit selection needs no prompt.' }
+    if (-not (Test-TinyStrataInteractiveConsole)) {
+        throw '-SelectBackend requires an interactive console. Use -Backend sycl (experimental Intel), cuda, hip or auto in unattended installs.'
+    }
+    Write-Host 'Backend: [Enter/0] automatic (NVIDIA/AMD priority; Intel-only experimental candidate), [1] CUDA, [2] HIP, [3] Intel SYCL experimental Qwen3.6/Tiel text (validated B390 only).'
+    $choice = Read-Host 'Backend'
+    switch ($choice.Trim()) { '' { return 'auto' } '0' { return 'auto' } '1' { return 'cuda' } '2' { return 'hip' } '3' { return 'sycl' } default { throw 'Unknown backend selection; no installation was prepared.' } }
 }
 
 function Get-TinyStrataHipCompiler {
@@ -1304,8 +1336,9 @@ function Test-TinyStrataInferenceReady {
 function Get-TinyStrataModelFamily {
     param([string]$Name = 'qwen36', [string]$Backend = 'auto')
     if ($Backend -eq 'sycl') {
-        if ($Name -notin @('qwen36', 'qwen3.6')) { throw 'Experimental Intel installs support Qwen3.6 text only.' }
-        return [pscustomobject]@{ Name='qwen36'; ConfigFile='config-sycl.json'; StateFile='server-state-sycl.json'; NativeFile='tinystrata-intel.exe'; Port=18085 }
+        if ($Name -in @('qwen36','qwen3.6')) { return [pscustomobject]@{ Name='qwen36'; Model='qwen3.6-35b-a3b'; IntelProfile='b390-qwen36'; ConfigFile='config-sycl.json'; StateFile='server-state-sycl.json'; NativeFile='tinystrata-intel.exe'; Port=18085 } }
+        if ($Name -in @('tiel','tiel-coder')) { return [pscustomobject]@{ Name='tiel'; Model='tiel-coder-35b-a3b'; IntelProfile='b390-tiel-coder'; ConfigFile='config-tiel-coder-sycl.json'; StateFile='server-state-tiel-coder-sycl.json'; NativeFile='tinystrata-intel.exe'; Port=18085 } }
+        throw 'Experimental Intel installs support validated Qwen3.6/Tiel text only.'
     }
     switch ($Name) {
         { $_ -in @('qwen36', 'qwen3.6') } {
@@ -1496,7 +1529,7 @@ try {
         throw 'TinyStrata files are missing. Run the UI installer again to repair the installation.'
     }
     $tinyStrataArguments = @('-B', $tinyStrataLauncher, '--source-dir', $tinyStrataSource, '--work-dir', $tinyStrataWork)
-    if ($tinyStrataBackend -eq 'sycl') { $tinyStrataArguments += @('--backend', 'sycl', '--intel-profile', $tinyStrataIntelProfile) }
+    if ($tinyStrataBackend -eq 'sycl') { $tinyStrataArguments += @('--backend', 'sycl') }
     $tinyStrataCommandLine = ($tinyStrataArguments | ForEach-Object { ConvertTo-TinyStrataWindowsArgument $_ }) -join ' '
     $tinyStrataProcess = Start-Process -FilePath $tinyStrataPython -ArgumentList $tinyStrataCommandLine `
         -WorkingDirectory $tinyStrataSource -WindowStyle Hidden -RedirectStandardOutput $tinyStrataStdout `
@@ -1524,7 +1557,7 @@ exit 0
     $shortcut.TargetPath = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $shortcut.Arguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $helperPath
     $shortcut.WorkingDirectory = $source
-    $shortcut.Description = if ($Backend -eq 'sycl') { 'Start experimental Intel Qwen3.6; separate ui-sycl history/settings' } else { 'Start TinyStrata and open the chat UI' }
+    $shortcut.Description = if ($Backend -eq 'sycl') { 'Start experimental Intel Qwen3.6/Tiel; separate ui-sycl history/settings' } else { 'Start TinyStrata and open the chat UI' }
     $shortcut.WindowStyle = 7
     $icon = Join-Path $source 'ui\web\terminal-logo.ico'
     $shortcut.IconLocation = if (Test-Path -LiteralPath $icon -PathType Leaf) { $icon + ',0' }
@@ -1549,7 +1582,7 @@ function Initialize-TinyStrataOptionalUI {
           [string]$Backend = 'auto', [string]$IntelProfile = 'b390-qwen36')
     $launcher = Join-Path $SourceRoot 'ui\launch.py'
     $python = Join-Path $WorkRoot 'runtime\.venv\Scripts\python.exe'
-    $retryEntry = if ($Backend -eq 'sycl') { 'the TinyStrata Intel (Experimental) shortcut, or ui\launch.py --backend sycl --intel-profile b390-qwen36 with this installation --work-dir' } else { Join-Path $SourceRoot 'run-ui.bat' }
+    $retryEntry = if ($Backend -eq 'sycl') { 'the TinyStrata Intel (Experimental) shortcut, or ui\launch.py --backend sycl with this installation --work-dir' } else { Join-Path $SourceRoot 'run-ui.bat' }
     Initialize-TinyStrataUiSource -SourceRoot $SourceRoot -WorkRoot $WorkRoot
     if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { throw "The UI needs the installed Python runtime: $python" }
     Initialize-TinyStrataUiDependencies -SourceRoot $SourceRoot -WorkRoot $WorkRoot -Python $python
@@ -2107,13 +2140,85 @@ function Remove-TinyStrataNativeGeneration {
     Remove-Item -LiteralPath $target -Recurse -Force
 }
 
+function Assert-TinyStrataIntelManagedDeviceSelection {
+    param($Configuration)
+    if (-not $Configuration) { return }
+    # The managed catalog/probe currently certifies enumerated device0 only.
+    # Preserve custom profiles, but never certify a different native selection
+    # using device0's identity. A future multi-device selector needs its own gate.
+    if ($null -ne $Configuration.gpu -and [string]$Configuration.gpu -ne '0') {
+        throw 'The managed Intel installer validates device0 only; the existing custom GPU selection was left unchanged.'
+    }
+    $nativeArguments = @($Configuration.args)
+    for ($index=0; $index -lt $nativeArguments.Count; $index++) {
+        if ($nativeArguments[$index] -eq '--device' -and ($index+1 -ge $nativeArguments.Count -or [string]$nativeArguments[$index+1] -ne '0')) {
+            throw 'The managed Intel installer validates device0 only; the existing native --device selection was left unchanged.'
+        }
+    }
+}
+
+function Assert-TinyStrataIntelCapabilities {
+    param([string]$Python, [string]$SourceRoot, [string]$Executable,
+          [string[]]$DllDirectories, [string]$ExpectedSha256,
+          [string]$Profile = 'b390-qwen36', [bool]$AllowLegacy = $false,
+          [string]$CatalogPath, [string]$ExpectedAotTarget, [string]$Model = 'qwen3.6-35b-a3b')
+    if ($ExpectedSha256 -notmatch '^[a-fA-F0-9]{64}$') { throw 'Intel runtime executable SHA256 evidence is missing.' }
+    # Explicit preparation-layer probe only. The pure stage importer never
+    # executes a binary. Native --capabilities exits before device/model setup;
+    # its report proves compiled paths, not hardware/quality approval.
+    $code = @'
+import json, subprocess, sys
+sys.path.insert(0, sys.argv[1])
+from serve.intel_capabilities import capability_environment, probe_capabilities, validate_capabilities
+try:
+    cfg = {"backend": "sycl", "cwd": sys.argv[1], "exe": sys.argv[2], "lib_dirs": sys.argv[7:]}
+    observed = probe_capabilities(cfg, expected_sha256=sys.argv[4])
+    required = {path: [18] for path in ("scalar", "dp4a", "int8_xmx")} if sys.argv[6] == "tiel-coder-35b-a3b" else None
+    validate_capabilities(observed.report, model=sys.argv[6], profile=sys.argv[3], allow_legacy=sys.argv[5] == "true", required_types=required)
+    device = None
+    if not observed.legacy:
+        native = subprocess.run([cfg["exe"], "--device-info", "--device", "0"], env=capability_environment(cfg), cwd=str(__import__('pathlib').Path(cfg['exe']).parent),
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="strict", timeout=10,
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if native.returncode != 0 or len(native.stdout) > 65536:
+            raise ValueError("Intel selected-device inspection failed; install a compatible graphics driver/runtime")
+        device = json.loads(native.stdout)
+        # Rehash after both native metadata commands, even when the capability
+        # result itself is cached. A replaced binary cannot certify a device.
+        observed = probe_capabilities(cfg, expected_sha256=sys.argv[4])
+    print(json.dumps({"validated": True, "sha256": observed.sha256, "legacy": observed.legacy,
+                      "capabilities_schema": observed.report.get("capabilities_schema"),
+                      "aot_target": observed.report.get("build", {}).get("aot_target"), "device": device,
+                      "model": sys.argv[6], "profile": sys.argv[3]}))
+except Exception as error:
+    print(json.dumps({"validated": False, "error": str(error)}))
+    raise SystemExit(1)
+'@
+    $legacy = if ($AllowLegacy -and $Model -eq 'qwen3.6-35b-a3b') { 'true' } else { 'false' }
+    $arguments = @('-I', '-B', '-', $SourceRoot, $Executable, $Profile, $ExpectedSha256.ToLowerInvariant(), $legacy, $Model) + @($DllDirectories)
+    $lines = @($code | & $Python @arguments)
+    if ($LASTEXITCODE -ne 0) { throw ('Intel runtime/model/profile capability validation failed before configuration: ' + (($lines -join ' ') | Select-Object -First 1)) }
+    try { $observed = ($lines -join "`n") | ConvertFrom-Json }
+    catch { throw 'Intel capability validation did not return a valid result.' }
+    if ($observed.validated -ne $true -or $observed.sha256 -ne $ExpectedSha256 -or $observed.model -ne $Model -or $observed.profile -ne $Profile -or
+        (-not $AllowLegacy -and ($observed.legacy -ne $false -or $observed.capabilities_schema -ne 1)) -or
+        (Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash -ne $ExpectedSha256) {
+        throw 'Intel capability validation was not bound to the verified executable/model/profile.'
+    }
+    if (-not $observed.legacy) {
+        if ($ExpectedAotTarget -and $observed.aot_target -ne $ExpectedAotTarget) { throw 'Intel compiled AOT target differs from the pinned runtime package.' }
+        $null = Assert-TinyStrataIntelDevice -Report $observed.device -CatalogPath $CatalogPath -Profile $Profile -AotTarget $observed.aot_target
+    }
+    return $observed
+}
+
 function Invoke-TinyStrataInstaller {
     param([string]$SourceDirectory, [string]$WorkingDirectory, [int]$ApiPort,
           [bool]$DoNotStart, [bool]$DoNotDownload, [bool]$InspectOnly, [bool]$BuildAgain, [bool]$RefreshSource,
           [string]$Family = 'qwen36', [string]$Backend = 'auto', [string]$HipDirectory, [string]$HipArchitectures,
           [bool]$IncludeUI = $false, [int]$UiPort = 3000, [string]$Revision, [bool]$FamilyExplicit = $false,
           [bool]$UiPortExplicit = $false, [string]$IntelRuntimeDirectory,
-          [string]$IntelProfile = 'b390-qwen36')
+          [string]$IntelProfile = 'b390-qwen36', [bool]$SelectBackend = $false, [bool]$IntelProfileExplicit = $false)
     if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitProcess) { throw 'Run this installer in 64-bit Windows PowerShell or PowerShell.' }
     $sourceRoot = [IO.Path]::GetFullPath($SourceDirectory).TrimEnd('\')
     $sourceReady = Test-TinyStrataSource -Directory $sourceRoot
@@ -2127,8 +2232,9 @@ function Invoke-TinyStrataInstaller {
     $workRoot = [IO.Path]::GetFullPath($WorkingDirectory).TrimEnd('\')
     if ($workRoot -eq $sourceRoot -or $workRoot.StartsWith($sourceRoot + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'WorkDir must be outside the source directory.' }
     $runtimeRoot = Join-Path $workRoot 'runtime'
-    if ($IntelRuntimeDirectory -and $Backend -ne 'sycl') { throw '-IntelRuntimeDirectory requires explicit -Backend sycl.' }
-    if ($Backend -eq 'sycl' -and $IntelProfile -ne 'b390-qwen36') { throw 'Unknown experimental Intel profile.' }
+    if ($SelectBackend) { $Backend = Select-TinyStrataBackend -Requested $Backend -Interactive $true }
+    if ($IntelRuntimeDirectory -and $Backend -notin @('auto','sycl')) { throw '-IntelRuntimeDirectory requires an Intel backend selection.' }
+    if ($IntelProfile -notin @('b390-qwen36','b390-tiel-coder')) { throw 'Unknown experimental Intel profile.' }
     $portAutomatic = $ApiPort -eq 0
     $selectedFamily = if ($Backend -eq 'sycl') { Get-TinyStrataModelFamily -Name $Family -Backend sycl } else { Get-TinyStrataModelFamily -Name $Family }
     $configPath = Join-Path (Join-Path $runtimeRoot '.tinystrata') $selectedFamily.ConfigFile
@@ -2140,10 +2246,29 @@ function Invoke-TinyStrataInstaller {
         $cfg = Get-TinyStrataConfig -Path $configPath
     }
     $selectedBackend = Get-TinyStrataBackend -Requested $Backend -Configuration $cfg
+    if ($IntelRuntimeDirectory -and $selectedBackend -ne 'sycl') { throw '-IntelRuntimeDirectory requires an Intel backend selection; use -Backend sycl explicitly.' }
     $uiSelection = @{}
     if ($selectedBackend -eq 'sycl') {
+        $familyExplicitHere = if ($PSBoundParameters.ContainsKey('FamilyExplicit')) { $FamilyExplicit } else { $PSBoundParameters.ContainsKey('Family') }
+        $intelSettings = Join-Path $runtimeRoot 'ui-sycl\settings.json'
+        $settings = $null
+        if ($IncludeUI -and (Test-Path -LiteralPath $intelSettings -PathType Leaf)) {
+            try { $settings = Get-Content -LiteralPath $intelSettings -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+        }
+        $familyHint = if ($familyExplicitHere) { $Family } elseif ($settings -and $settings.model_family -in @('qwen36','tiel','tiel-coder')) { $settings.model_family } else { 'qwen36' }
+        $selectedFamily = Get-TinyStrataModelFamily -Name $familyHint -Backend sycl
+        $profileExplicitHere = if ($PSBoundParameters.ContainsKey('IntelProfileExplicit')) { $IntelProfileExplicit } else { $PSBoundParameters.ContainsKey('IntelProfile') }
+        if ($profileExplicitHere -and $IntelProfile -ne $selectedFamily.IntelProfile) { throw 'The explicitly selected Intel profile does not match the selected model family.' }
+        $IntelProfile = $selectedFamily.IntelProfile
+        $configPath = Join-Path (Join-Path $runtimeRoot '.tinystrata') $selectedFamily.ConfigFile
+        $statePath = Join-Path $runtimeRoot $selectedFamily.StateFile
+        $cfg = Get-TinyStrataConfig -Path $configPath
+        Assert-TinyStrataIntelManagedDeviceSelection -Configuration $cfg
         $uiSelection = @{ Backend='sycl'; IntelProfile=$IntelProfile }
-        if (-not $PSBoundParameters.ContainsKey('UiPort')) { $UiPort = 3005 }
+        if (-not $UiPortExplicit) {
+            $UiPort = 3005
+            if ($settings -and $settings.port -ge 1 -and $settings.port -le 65535) { $UiPort = [int]$settings.port }
+        }
     }
     if ($ApiPort -eq 0) { $ApiPort = if ($cfg -and $cfg.port) { [int]$cfg.port } else { $selectedFamily.Port } }
     if ($ApiPort -lt 1 -or $ApiPort -gt 65535) { throw 'Port must be between 1 and 65535.' }
@@ -2160,8 +2285,8 @@ function Invoke-TinyStrataInstaller {
         if (-not $sourceReady -or $RefreshSource) { Write-Host 'First download TinyStrata sources from GitHub (no git installation required).' }
         Write-Host "Backend: $selectedBackend"
         if ($selectedBackend -eq 'sycl') {
-            Write-Host "Experimental Intel Qwen3.6 text; requested profile $IntelProfile is not a hardware approval."
-            Write-Host 'Import only a verified app-local -IntelRuntimeDirectory into an immutable native/sycl-* generation; no SDK/driver/PATH changes.'
+            Write-Host "Experimental Intel $($selectedFamily.Model) text; requested profile $IntelProfile is not a hardware approval."
+            Write-Host 'Use the pinned published runtime package, or an offline -IntelRuntimeDirectory, in an immutable native/sycl-* generation; no SDK/driver/PATH changes.'
             Write-Host 'Dedicated config-sycl.json and ui-sycl history/settings; existing CUDA/HIP state stays separate.'
         }
         Write-Host 'Plan: reuse installed components; prepare Python/dependencies; reuse or build the selected GPU engine; prepare its runtime; save configuration.'
@@ -2240,8 +2365,16 @@ function Invoke-TinyStrataInstaller {
         }
         if ($selectedBackend -eq 'sycl') {
             $intelHelper = Join-Path $sourceRoot 'cmake\install-intel-runtime.ps1'
-            if (-not (Test-Path -LiteralPath $intelHelper -PathType Leaf)) { throw 'Intel runtime import helper is missing; update TinyStrata sources.' }
+            $packageHelper = Join-Path $sourceRoot 'cmake\intel-runtime-package.ps1'
+            $catalogPath = Join-Path $sourceRoot 'cmake\intel-runtime-catalog.json'
+            if (-not (Test-Path -LiteralPath $intelHelper -PathType Leaf) -or -not (Test-Path -LiteralPath $packageHelper -PathType Leaf)) { throw 'Intel runtime helpers are missing; update TinyStrata sources.' }
             . $intelHelper
+            . $packageHelper
+            $receivedIntel = $null
+            if (-not $IntelRuntimeDirectory -and ($BuildAgain -or $RefreshSource -or -not $cfg -or $cfg.backend -ne 'sycl' -or -not $cfg.exe)) {
+                $receivedIntel = Receive-TinyStrataIntelRuntime -CatalogPath $catalogPath -CacheRoot $cacheRoot -Profile $IntelProfile
+                $IntelRuntimeDirectory = $receivedIntel.StageDirectory
+            }
             if ($IntelRuntimeDirectory) {
                 $stage = Get-TinyStrataIntelStagePlan -StageDirectory $IntelRuntimeDirectory
                 if ($stage.Manifest.MklEnabled -ne $true) { throw 'The b390-qwen36 profile requires an app-local MKL-enabled Intel stage.' }
@@ -2249,10 +2382,8 @@ function Invoke-TinyStrataInstaller {
                 $imported = Install-TinyStrataIntelRuntime -StageDirectory $stage.Root -Destination $generation
                 $exe = $imported.Exe
                 $dllDirs = @($imported.DllDirectories)
-                Write-Host "Imported $($imported.FileCount) verified Intel runtime/license files into an experimental immutable generation."
             } else {
-                if ($BuildAgain) { throw 'Experimental Intel -Rebuild requires a new -IntelRuntimeDirectory; SDK source builds are not performed by this installer.' }
-                if (-not $cfg -or $cfg.backend -ne 'sycl' -or -not $cfg.exe) { throw 'First experimental Intel installation requires -IntelRuntimeDirectory <verified app-local stage>.' }
+                if (-not $cfg -or $cfg.backend -ne 'sycl' -or -not $cfg.exe) { throw 'No published experimental Intel runtime or verified offline stage is available.' }
                 $exe = [IO.Path]::GetFullPath([string]$cfg.exe)
                 $savedGeneration = Split-Path -Parent $exe
                 $nativeRoot = [IO.Path]::GetFullPath((Join-Path $workRoot 'native')).TrimEnd('\') + '\'
@@ -2263,6 +2394,12 @@ function Invoke-TinyStrataInstaller {
                 if ($stage.Manifest.MklEnabled -ne $true -or [string]$stage.Manifest.ImportedFromManifestSha256 -notmatch '^[a-fA-F0-9]{64}$') { throw 'Saved Intel runtime import evidence is missing; specify -IntelRuntimeDirectory.' }
                 $dllDirs = @($savedGeneration)
             }
+            $exeEvidence = @($stage.Files | Where-Object { $_.RelativePath -eq 'tinystrata-intel.exe' })
+            if ($exeEvidence.Count -ne 1) { throw 'Intel stage has no unique executable hash evidence.' }
+            $null = Assert-TinyStrataIntelCapabilities -Python $python -SourceRoot $sourceRoot -Executable $exe -DllDirectories $dllDirs `
+                    -ExpectedSha256 $exeEvidence[0].Sha256 -Profile $IntelProfile -Model $selectedFamily.Model -AllowLegacy (-not [bool]$IntelRuntimeDirectory) -CatalogPath $catalogPath `
+                -ExpectedAotTarget $(if ($receivedIntel) { $receivedIntel.Artifact.aot_target } else { '' })
+            if ($IntelRuntimeDirectory) { Write-Host "Imported $($imported.FileCount) verified Intel runtime/license files and validated native model/profile capabilities into an experimental immutable generation." }
         } else {
         $search = @()
         if ($cfg -and $cfg.lib_dirs -and $cfg.backend -eq $selectedBackend) { $search += @($cfg.lib_dirs) }
@@ -2337,7 +2474,7 @@ function Invoke-TinyStrataInstaller {
         else { $arguments += @('--vision-exe', (Join-Path (Split-Path -Parent $exe) 'tinystrata-vision.exe')) }
         foreach ($directory in $dllDirs) { $arguments += @('--lib-dir', $directory) }
         $arguments += @('--port', [string]$ApiPort)
-        if ($selectedBackend -eq 'sycl') { Write-Host "Preparing experimental Intel Qwen3.6 text settings with requested profile $IntelProfile; actual device approval remains native." }
+        if ($selectedBackend -eq 'sycl') { Write-Host "Preparing experimental Intel $($selectedFamily.Model) text settings with requested profile $IntelProfile; actual device approval remains native." }
         else { Write-Host 'Preparing API settings (hardware and VRAM settings remain automatic by default)...' }
         $previousTransaction = [Environment]::GetEnvironmentVariable('TINYSTRATA_INSTALLER_TRANSACTION', 'Process')
         try {
@@ -2347,10 +2484,10 @@ function Invoke-TinyStrataInstaller {
         if ($LASTEXITCODE -ne 0) { throw 'TinyStrata configuration failed.' }
         $prepared = Get-TinyStrataConfig -Path $candidateConfig
         if (-not $prepared -or $prepared.backend -ne $selectedBackend -or $prepared.exe -ne $selectedExe) { throw 'Prepared configuration does not match the selected native runtime.' }
-        if ($selectedBackend -eq 'sycl' -and ($prepared.intel_profile -ne $IntelProfile -or $prepared.model_name -ne 'qwen3.6-35b-a3b' -or
+        if ($selectedBackend -eq 'sycl' -and ($prepared.intel_profile -ne $IntelProfile -or $prepared.model_name -ne $selectedFamily.Model -or
             $prepared.arch -ne 'qwen35moe' -or $prepared.vision_mode -ne 'no' -or $prepared.vision -or
             @($prepared.lib_dirs).Count -ne 1 -or [string]$prepared.lib_dirs[0] -ne (Split-Path -Parent $selectedExe))) {
-            throw 'Prepared experimental Intel configuration must be Qwen3.6 text with only its selected app-local runtime.'
+            throw 'Prepared experimental Intel configuration must match its text model/profile and selected app-local runtime.'
         }
         if (Test-Path -LiteralPath $configPath -PathType Leaf) { [IO.File]::Replace($candidateConfig, $configPath, ($configPath + '.bak')) }
         else { [IO.File]::Move($candidateConfig, $configPath) }
@@ -2410,7 +2547,7 @@ function Invoke-TinyStrataInstaller {
     }
     if (-not $health) { throw "API startup timed out. See logs in $runtimeRoot." }
     if ($selectedBackend -eq 'sycl' -and ($health.backend -ne 'sycl' -or $health.intel_profile -ne $IntelProfile -or
-        $health.experimental -ne $true -or $health.model -ne 'qwen3.6-35b-a3b')) { throw 'Selected port did not identify the experimental Intel Qwen3.6 API; it was left unchanged.' }
+        $health.experimental -ne $true -or $health.model -ne $selectedFamily.Model)) { throw 'Selected port did not identify the selected experimental Intel model/profile; it was left unchanged.' }
     if (-not (Test-TinyStrataInferenceReady -Health $health -Configuration $cfg) -and -not $DoNotDownload) {
         Write-Host ("Installing the pinned {0} model artifacts through the API..." -f $selectedFamily.Name)
         $null = Invoke-TinyStrataApi -BaseUrl $baseUrl -Path '/v1/model/download' -Method POST -Headers $headers
@@ -2481,8 +2618,9 @@ try {
         }
     }
     $tinyStrataIntelForward = @{}
-    if ($Backend -eq 'sycl') { $tinyStrataIntelForward = @{ IntelRuntimeDirectory=$IntelRuntimeDirectory; IntelProfile=$IntelProfile } }
-    elseif ($IntelRuntimeDirectory) { throw '-IntelRuntimeDirectory requires explicit -Backend sycl.' }
+    if ($Backend -eq 'sycl' -or ($IntelRuntimeDirectory -and $Backend -eq 'auto') -or $PSBoundParameters.ContainsKey('IntelProfile')) { $tinyStrataIntelForward = @{ IntelRuntimeDirectory=$IntelRuntimeDirectory; IntelProfile=$IntelProfile; IntelProfileExplicit=$PSBoundParameters.ContainsKey('IntelProfile') } }
+    elseif ($IntelRuntimeDirectory) { throw '-IntelRuntimeDirectory requires an Intel backend selection.' }
+    if ($SelectBackend) { $tinyStrataIntelForward.SelectBackend = $true }
     Invoke-TinyStrataInstaller -SourceDirectory $SourceDir -WorkingDirectory $WorkDir -ApiPort $Port -DoNotStart $NoStart.IsPresent -DoNotDownload ($WithUI.IsPresent -or $SkipModelDownload.IsPresent) -InspectOnly $CheckOnly.IsPresent -BuildAgain $Rebuild.IsPresent -RefreshSource $Update.IsPresent -Family $ModelFamily -Backend $Backend -HipDirectory $HipDirectory -HipArchitectures $HipArchitectures -IncludeUI $WithUI.IsPresent -UiPort $UiPort -Revision $SourceRevision -FamilyExplicit $PSBoundParameters.ContainsKey('ModelFamily') -UiPortExplicit $PSBoundParameters.ContainsKey('UiPort') @tinyStrataIntelForward
 } finally {
     $ErrorActionPreference = $tinyStrataOldErrorAction

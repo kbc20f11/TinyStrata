@@ -11,7 +11,7 @@ namespace strata::intel::quant {
 inline float half(uint16_t value) { return float(sycl::bit_cast<sycl::half>(value)); }
 template<int Type> inline float value(const uint8_t* row, size_t col) {
     static_assert(Type == 0 || Type == 1 || Type == 30 || Type == 8 || Type == 10 || Type == 11 ||
-                  Type == 14 || Type == 21 || Type == 22 || Type == 23, "Unsupported Intel GGUF block type");
+                  Type == 14 || Type == 18 || Type == 21 || Type == 22 || Type == 23, "Unsupported Intel GGUF block type");
     if constexpr (Type == 0) return reinterpret_cast<const float*>(row)[col];
     if constexpr (Type == 1) return half(reinterpret_cast<const uint16_t*>(row)[col]);
     if constexpr (Type == 30) return sycl::bit_cast<float>(uint32_t(reinterpret_cast<const uint16_t*>(row)[col]) << 16);
@@ -41,6 +41,19 @@ template<int Type> inline float value(const uint8_t* row, size_t col) {
         const int bits = (b.qs[(i / 128) * 32 + i % 32] >> (2 * ((i % 128) / 32))) & 3;
         const int correction = (b.hmask[i % 32] & (1 << (i / 32))) ? 0 : 4;
         return half(b.d) * ((low | high << 4) - 32) * (bits - correction);
+    }
+    if constexpr (Type == 18) {
+        const auto& b = reinterpret_cast<const block_iq3_xxs*>(row)[col / 256];
+        const int i = col % 256, group = i / 32, octet = (i % 32) / 8, lane = i % 8;
+        // IQ3_XXS metadata begins at byte66, only two-byte aligned. Assemble
+        // the word from bytes rather than aliasing it as an aligned uint32_t.
+        const uint8_t* meta = b.qs + 64 + group * 4;
+        const uint32_t aux = uint32_t(meta[0]) | (uint32_t(meta[1]) << 8) |
+            (uint32_t(meta[2]) << 16) | (uint32_t(meta[3]) << 24);
+        const int code = b.qs[group * 8 + octet * 2 + lane / 4];
+        const int grid = (iq3xxs_grid[code] >> (8 * (lane % 4))) & 255;
+        const float sign = (ksigns_iq2xs[(aux >> (7 * octet)) & 127] & (1 << lane)) ? -1.f : 1.f;
+        return half(b.d) * (.5f + float(aux >> 28)) * .5f * grid * sign;
     }
     if constexpr (Type == 22) {
         const auto& b = reinterpret_cast<const block_iq2_s*>(row)[col / 256];

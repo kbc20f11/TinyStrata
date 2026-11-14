@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <stdexcept>
 #include <vector>
 #include <fstream>
@@ -19,7 +20,8 @@ namespace {
 template<class T> struct Buffer {
     sycl::queue& q;
     T* data;
-    Buffer(sycl::queue& queue, size_t count) : q(queue), data(sycl::malloc_shared<T>(count, queue)) {
+    size_t size;
+    Buffer(sycl::queue& queue, size_t count) : q(queue), data(sycl::malloc_shared<T>(count, queue)), size(count) {
         if (!data) throw std::runtime_error("USM test allocation failed");
     }
     ~Buffer() { sycl::free(data, q); }
@@ -37,6 +39,16 @@ void compare(const char* name, const float* actual, const std::vector<double>& e
         maximum = std::max(maximum, difference);
     }
     std::printf("%s values=%zu max_abs_error=%.9g result=passed\n", name, expected.size(), maximum);
+}
+constexpr float output_canary = 123456.f;
+void prepare_output(Buffer<float>& output, size_t active) {
+    if (active > output.size) throw std::runtime_error("Numerical output exceeds its allocation");
+    std::fill_n(output.data, active, NAN);
+    std::fill(output.data + active, output.data + output.size, output_canary);
+}
+void check_output_tail(const Buffer<float>& output, size_t active) {
+    for (size_t i = active; i < output.size; ++i)
+        if (output.data[i] != output_canary) throw std::runtime_error("Kernel overwrote inactive numerical output");
 }
 void norm_test(sycl::queue& q) {
     constexpr int width = 2048, rows = 3;
@@ -190,6 +202,76 @@ void q8_attention_batch_test(sycl::queue& q) {
             heads,positions.data,context,nullptr,tokens).wait_and_throw();
         compare(("q8_attention_batch_fp64_"+std::to_string(tokens)).c_str(),output.data,expected,2e-5);
     }
+}
+void q8_attention_long_reuse_test(sycl::queue& q) {
+    constexpr int context=32768,heads=16,kv=2,width=256,capacity=4,splits=(context+255)/256;
+    const size_t cells=size_t(kv)*context*width;
+    Buffer<int8_t> keys(q,cells),values(q,cells);
+    Buffer<sycl::half> ks(q,cells/32),vs(q,cells/32);
+    Buffer<float> query(q,capacity*heads*width),gate(q,capacity*heads*width);
+    Buffer<float> old_y(q,capacity*heads*width+64),new_y(q,old_y.size);
+    Buffer<float> old_scores(q,capacity*heads*context+64),new_scores(q,old_scores.size);
+    Buffer<float> old_partial(q,capacity*heads*splits*width+64),new_partial(q,old_partial.size);
+    Buffer<int32_t> positions(q,capacity);
+    for(size_t i=0;i<cells;++i){keys[i]=int8_t(int((i*17+3)%255)-127);values[i]=int8_t(int((i*29+11)%255)-127);}
+    for(size_t i=0;i<cells/32;++i){ks[i]=sycl::half(float(i%11+1)/1024);vs[i]=sycl::half(float(i%7+1)/256);}
+    for(size_t i=0;i<query.size;++i){query[i]=float(std::sin(i*.13));gate[i]=float(std::cos(i*.07));}
+    const strata::intel::Q8Kv cache{keys.data,values.data,ks.data,vs.data,context,kv};
+    for(int visible:{16384,16416,16512})for(int tokens:{1,2,3,4}) {
+        for(int t=0;t<capacity;++t)positions[t]=t<tokens?visible-tokens+t:-1;
+        const size_t active=size_t(tokens)*heads*width;
+        prepare_output(old_y,active);prepare_output(new_y,active);
+        for(auto* buffer:{&old_scores,&new_scores,&old_partial,&new_partial})std::fill_n(buffer->data,buffer->size,output_canary);
+        // An omitted/zero hint is the exact old path, also used by recorded
+        // graphs. The positive hint is supplied from CPU-known positions.
+        strata::intel::decode_attention_q8(q,query.data,gate.data,cache,old_scores.data,old_partial.data,
+            old_y.data,heads,positions.data,visible,nullptr,tokens).wait_and_throw();
+        strata::intel::decode_attention_q8(q,query.data,gate.data,cache,new_scores.data,new_partial.data,
+            new_y.data,heads,positions.data,visible,nullptr,tokens,visible).wait_and_throw();
+        for(const auto pair:{std::pair{&old_y,&new_y},std::pair{&old_scores,&new_scores},std::pair{&old_partial,&new_partial}})
+            if(std::memcmp(pair.first->data,pair.second->data,pair.first->size*sizeof(float)))
+                throw std::runtime_error("Long Q8 reuse differs from the original output/scores/partial bits");
+        check_output_tail(old_y,active);check_output_tail(new_y,active);
+        for(size_t row=0;row<size_t(capacity)*heads;++row)for(int cell=0;cell<context;++cell)
+            if((row>=size_t(tokens)*heads || cell>positions[row/heads]) && new_scores[row*context+cell]!=output_canary)
+                throw std::runtime_error("Long Q8 reuse wrote a future/inactive score");
+        for(size_t row=0;row<size_t(capacity)*heads;++row)for(int split=0;split<splits;++split)
+            if(row>=size_t(tokens)*heads || split>=(visible+255)/256)for(int col=0;col<width;++col)
+                if(new_partial[(row*splits+split)*width+col]!=output_canary)
+                    throw std::runtime_error("Long Q8 reuse wrote an inactive partial");
+        for(size_t i=size_t(capacity)*heads*context;i<new_scores.size;++i)
+            if(new_scores[i]!=output_canary)throw std::runtime_error("Long Q8 scores tail changed");
+        for(size_t i=size_t(capacity)*heads*splits*width;i<new_partial.size;++i)
+            if(new_partial[i]!=output_canary)throw std::runtime_error("Long Q8 partial tail changed");
+        if(tokens>=3) {
+            std::vector<double> expected(active,0.);
+            for(int token=0;token<tokens;++token)for(int head=0;head<heads;++head) {
+                const size_t row=size_t(token)*heads+head;const int kh=head/(heads/kv),end=positions[token];
+                std::vector<double> probabilities(size_t(end)+1,0.);
+                for(int cell=0;cell<=end;++cell)for(int col=0;col<width;++col) {
+                    const size_t i=(size_t(kh)*context+cell)*width+col;
+                    probabilities[cell]+=double(query[row*width+col])*double(keys[i])*float(ks[i/32])/16.;
+                }
+                const double maximum=*std::max_element(probabilities.begin(),probabilities.end());double total=0;
+                for(auto& probability:probabilities)total+=probability=std::exp(probability-maximum);
+                for(int col=0;col<width;++col) {
+                    double sum=0;
+                    for(int cell=0;cell<=end;++cell) {
+                        const size_t i=(size_t(kh)*context+cell)*width+col;
+                        sum+=probabilities[cell]/total*double(values[i])*float(vs[i/32]);
+                    }
+                    expected[row*width+col]=sum/(1.+std::exp(-double(gate[row*width+col])));
+                }
+            }
+            compare(("q8_long_reuse_fp64_"+std::to_string(visible)+"_T"+std::to_string(tokens)).c_str(),new_y.data,expected,2e-5);
+        }
+        std::printf("q8_long_reuse_bit_and_all_inactive_canaries visible=%d tokens=%d passed\n",visible,tokens);
+    }
+    bool refused=false;
+    try{strata::intel::decode_attention_q8(q,query.data,gate.data,cache,new_scores.data,new_partial.data,
+        new_y.data,heads,positions.data,16384,nullptr,4,16385);}
+    catch(const std::invalid_argument&){refused=true;}
+    if(!refused)throw std::runtime_error("Q8 reuse accepted actual visibility beyond its extent");
 }
 #ifdef TINYSTRATA_INTEL_INT8_XMX
 void splitk_capacity_test(sycl::queue& q) {
@@ -424,6 +506,112 @@ template<class T> T read(std::ifstream& file) {
 void read_bytes(std::ifstream& file, void* destination, size_t bytes) {
     if (!file.read(static_cast<char*>(destination), std::streamsize(bytes))) throw std::runtime_error("Truncated quantization fixture data");
 }
+// Actual IQ3_XXS rows are supplied by gguf's independent NumPy decoder. Rotate
+// those unchanged compressed rows across eleven experts so every request still
+// selects all eight distinct experts, with varied/clustered/common route plans.
+void type18_routing_test(sycl::queue& q, const uint8_t* raw, size_t bytes, int rows, int width,
+    const std::vector<float>& expected_weights, const std::string& label, strata::intel::DecodeDp4a& dp4a
+#ifdef TINYSTRATA_INTEL_INT8_XMX
+    , strata::intel::DecodeDp4a& int8_xmx
+#endif
+#ifdef TINYSTRATA_INTEL_MKL
+    , strata::intel::PrefillGemm& gemm
+#endif
+    ) {
+    constexpr int tokens = 8, picks = 8, experts = 11;
+    const int padded = (rows + 15) / 16 * 16;
+    const size_t stride = bytes / rows, packed_bytes = strata::intel::quant_interleaved_bytes(padded, width, 98);
+    if (bytes != size_t(rows) * (width / 256) * 98) throw std::runtime_error("Invalid Type18 fixture stride");
+    Buffer<uint8_t> expert_raw(q, experts * bytes), expanded(q, size_t(experts) * padded * stride), packed(q, experts * packed_bytes);
+    std::fill_n(expanded.data, expanded.size, uint8_t(0));
+    for (int e = 0; e < experts; ++e) for (int row = 0; row < rows; ++row) {
+        const auto source = raw + size_t((row + e) % rows) * stride;
+        std::copy_n(source, stride, expert_raw.data + (size_t(e) * rows + row) * stride);
+        std::copy_n(source, stride, expanded.data + (size_t(e) * padded + row) * stride);
+    }
+    strata::intel::interleave_quant(expanded.data, packed.data, experts * padded, width, 98);
+    for (size_t byte = 0; byte < expanded.size; ++byte)
+        if (expanded[byte] != packed[strata::intel::quant_interleaved_offset(byte, width, 98)])
+            throw std::runtime_error("Type18 routed interleave changed an original byte");
+    for (int row = 0; row < experts * padded; ++row) for (int block = 0; block < width / 256; ++block)
+        for (int byte = 98; byte < 100; ++byte) {
+            const size_t physical = ((((size_t(row / 16) * (width / 256) + block) * 25 + byte / 4) * 16 + row % 16) * 4 + byte % 4);
+            if (packed[physical] != 0) throw std::runtime_error("Type18 interleave padding is not zero");
+        }
+    Buffer<int32_t> ids(q, tokens * picks), counts(q, experts), slots(q, experts * tokens),
+        owners(q, tokens * picks + experts), offsets(q, tokens * picks + experts), tiles(q, 1);
+    Buffer<float> input(q, size_t(tokens) * picks * width), output(q, size_t(tokens) * picks * padded + 64);
+    Buffer<int8_t> codes(q, input.size); Buffer<float> scales(q, input.size / 32);
+    for (size_t i = 0; i < input.size; ++i) input[i] = float(std::sin(double(i) * .127) + double(int(i % 19) - 9) * .013);
+    for (int route = 0; route < 3; ++route) for (int count = 1; count <= tokens; ++count) {
+        for (int t = 0; t < count; ++t) for (int p = 0; p < picks; ++p)
+            ids[t * picks + p] = route == 0 ? (t + 2 * p) % experts : route == 1 ? (p + t / 4) % experts : (p + (t & 1) * 3) % experts;
+        strata::intel::ExpertPlan plan{counts.data, slots.data, owners.data, offsets.data, tiles.data, experts, count, picks};
+        for (bool separate : {false, true}) {
+            const int inputs = separate ? count * picks : count;
+            strata::intel::quantize_decode_input(q, input.data, codes.data, scales.data, width, inputs).wait_and_throw();
+            const size_t active = size_t(count) * picks * rows, packed_active = size_t(count) * picks * padded;
+            std::vector<double> full(active, 0), q8(active, 0), half(active, 0), packed_q8(packed_active, 0), packed_half(packed_active, 0);
+            for (int slot = 0; slot < count * picks; ++slot) for (int row = 0; row < rows; ++row) {
+                const int source = separate ? slot : slot / picks, weight_row = (row + ids[slot]) % rows;
+                const size_t destination = size_t(slot) * rows + row;
+                for (int column = 0; column < width; ++column) {
+                    const float w = expected_weights[size_t(weight_row) * width + column], x = input[size_t(source) * width + column];
+                    const float qx = float(codes[size_t(source) * width + column]) * scales[size_t(source) * (width / 32) + column / 32];
+                    full[destination] += double(w) * x;
+                    q8[destination] += double(w) * qx;
+                    half[destination] += double(float(sycl::half(w))) * float(sycl::half(x));
+                }
+                packed_q8[size_t(slot) * padded + row] = q8[destination];
+                packed_half[size_t(slot) * padded + row] = half[destination];
+            }
+            const auto name = label + "_route_" + std::to_string(route) + "_T" + std::to_string(count) + (separate ? "_down" : "_gate");
+            const auto check = [&](const std::string& suffix, const std::vector<double>& reference) {
+                compare((name + suffix).c_str(), output.data, reference, 5e-5);
+                check_output_tail(output, reference.size());
+            };
+            prepare_output(output, active);
+            strata::intel::selected_matvec(q, 18, expert_raw.data, ids.data, picks, input.data, output.data, rows, width, separate, count).wait_and_throw();
+            check("_scalar_fp64", full);
+            prepare_output(output, active);
+            dp4a.selected(18, expert_raw.data, ids.data, picks, input.data, output.data, rows, width, separate, count).wait_and_throw();
+            check("_selected_q8_fp64", q8);
+            for (int tile : {2, 4}) {
+                plan.tile_width = tile; strata::intel::plan_experts(q, ids.data, plan);
+                prepare_output(output, active);
+                dp4a.grouped(18, expert_raw.data, plan, input.data, output.data, rows, width, separate).wait_and_throw();
+                check("_grouped_q8_fp64_tile" + std::to_string(tile), q8);
+            }
+#ifdef TINYSTRATA_INTEL_INT8_XMX
+            for (int tile : {1, 4}) {
+                plan.tile_width = tile; strata::intel::plan_experts(q, ids.data, plan);
+                prepare_output(output, active);
+                int8_xmx.grouped(18, expert_raw.data, plan, input.data, output.data, rows, width, separate).wait_and_throw();
+                check("_original_xmx_q8_fp64_tile" + std::to_string(tile), q8);
+                prepare_output(output, packed_active);
+                int8_xmx.grouped(18, packed.data, plan, input.data, output.data, padded, width, separate, true).wait_and_throw();
+                check("_packed_xmx_q8_fp64_tile" + std::to_string(tile), packed_q8);
+            }
+#endif
+            plan.tile_width = 8; strata::intel::plan_experts(q, ids.data, plan);
+            prepare_output(output, active);
+            strata::intel::selected_matmul_xmx(q, 18, expert_raw.data, plan, input.data, output.data, rows, width, separate).wait_and_throw();
+            check("_half_xmx_fp64", half);
+#ifdef TINYSTRATA_INTEL_MKL
+            prepare_output(output, active);
+            gemm.selected(18, expert_raw.data, bytes, plan, input.data, output.data, rows, width, separate).wait_and_throw();
+            check("_original_mkl_half_fp64", half);
+            prepare_output(output, packed_active);
+            gemm.selected(18, packed.data, packed_bytes, plan, input.data, output.data, padded, width, separate, true).wait_and_throw();
+            check("_restore_mkl_half_fp64", packed_half);
+#endif
+        }
+    }
+    if (!dp4a.valid()) throw std::runtime_error("Type18 routing rejected finite inputs");
+#ifdef TINYSTRATA_INTEL_INT8_XMX
+    if (!int8_xmx.valid()) throw std::runtime_error("Type18 XMX routing rejected finite inputs");
+#endif
+}
 void quant_reference(sycl::queue& q, const char* path) {
     strata::intel::DecodeDp4a dp4a(q);
 #ifdef TINYSTRATA_INTEL_INT8_XMX
@@ -453,6 +641,18 @@ void quant_reference(sycl::queue& q, const char* path) {
         const std::string label = "gguf_type_" + std::to_string(type) + "_case_" + std::to_string(index);
         compare((label + "_numpy_weights").c_str(), decoded.data,
                 std::vector<double>(expected_weights.begin(), expected_weights.end()), 2e-6);
+        if (type == 18) {
+            if (std::memcmp(decoded.data, expected_weights.data(), expected_weights.size() * sizeof(float)))
+                throw std::runtime_error("IQ3_XXS dequantization is not bit-exact to gguf NumPy");
+            type18_routing_test(q, raw.data, size_t(bytes), rows, width, expected_weights, label, dp4a
+#ifdef TINYSTRATA_INTEL_INT8_XMX
+                , int8_xmx
+#endif
+#ifdef TINYSTRATA_INTEL_MKL
+                , gemm
+#endif
+            );
+        }
         strata::intel::quantized_matvec(q, type, raw.data, x.data, result.data, rows, width).wait_and_throw();
         compare((label + "_numpy_fp64_dot").c_str(), result.data, expected_dot, 5e-5);
         if (strata::intel::DecodeDp4a::supports(type) && width % 64 == 0) {
@@ -478,7 +678,7 @@ void quant_reference(sycl::queue& q, const char* path) {
         compare((label + "_batch_numpy_fp64_dot").c_str(), batch_y.data, batch_reference, 5e-5);
         if (strata::intel::DecodeDp4a::supports(type) && width % 64 == 0) {
             Buffer<int8_t> codes(q, 8 * width); Buffer<float> scales(q, 8 * width / 32);
-            for (int count : {1, 2, 3, 4, 5, 7, 8}) {
+            for (int count : {1, 2, 3, 4, 5, 6, 7, 8}) {
                 strata::intel::quantize_decode_input(q, batch_x.data, codes.data, scales.data, width, count).wait_and_throw();
                 std::vector<double> reference(size_t(count) * rows, 0);
                 for (int t = 0; t < count; ++t) for (int r = 0; r < rows; ++r) for (int c = 0; c < width; ++c)
@@ -549,7 +749,7 @@ void quant_reference(sycl::queue& q, const char* path) {
         Buffer<int32_t> ids(q, tokens * picks);
         Buffer<int32_t> counts(q, experts), slots(q, experts * tokens), owners(q, tokens * picks + experts), offsets(q, tokens * picks + experts), tiles(q, 1);
         strata::intel::ExpertPlan plan{counts.data, slots.data, owners.data, offsets.data, tiles.data, experts, tokens, picks};
-        Buffer<float> expert_x(q, size_t(tokens) * picks * width), expert_y(q, size_t(tokens) * picks * rows);
+        Buffer<float> expert_x(q, size_t(tokens) * picks * width), expert_y(q, size_t(tokens) * picks * rows + 64);
         const size_t stride = size_t(bytes) / rows;
         for (int e = 0; e < experts; ++e) for (int r = 0; r < rows; ++r)
             std::copy_n(raw.data + size_t((r + e) % rows) * stride, stride, expert_raw.data + (size_t(e) * rows + r) * stride);
@@ -587,7 +787,12 @@ void quant_reference(sycl::queue& q, const char* path) {
                 dp4a.selected(type, expert_raw.data, ids.data, picks, separate ? expert_x.data : batch_x.data,
                     expert_y.data, rows, width, separate).wait_and_throw();
                 compare((label + (separate ? "_dp4a_down_fp64" : "_dp4a_gate_fp64")).c_str(), expert_y.data, q8_reference, 5e-5);
-                for (int count : {1, 2, 3, 4, 5, 7, 8, 17, 129}) {
+                // The measured IQ packed-gather ranges are 2..8 and 32..128.
+                // Their adjacent 31/129 controls retain the previous path.
+                const std::vector<int> counts_to_test = (type == 21 || type == 22) ?
+                    std::vector<int>{1, 2, 3, 4, 5, 6, 7, 8, 17, 31, 32, 64, 84, 128, 129} :
+                    std::vector<int>{1, 2, 3, 4, 5, 6, 7, 8, 17, 129};
+                for (int count : counts_to_test) {
                     strata::intel::quantize_decode_input(q, separate ? expert_x.data : batch_x.data, codes.data, scales.data,
                         width, separate ? picks * count : count).wait_and_throw();
                     std::vector<double> reference(size_t(count) * picks * rows, 0);
@@ -606,20 +811,24 @@ void quant_reference(sycl::queue& q, const char* path) {
                     for (int tile : {2, 4}) {
                         plan.tile_width = tile;
                         strata::intel::plan_experts(q, ids.data, plan);
+                        prepare_output(expert_y, reference.size());
                         dp4a.grouped(type, expert_raw.data, plan, separate ? expert_x.data : batch_x.data,
                             expert_y.data, rows, width, separate).wait_and_throw();
                         compare((label + (separate ? "_dp4a_grouped_down_" : "_dp4a_grouped_gate_") + std::to_string(count) + "_tile_" + std::to_string(tile)).c_str(), expert_y.data, reference, 5e-5);
+                        check_output_tail(expert_y, reference.size());
 #ifdef TINYSTRATA_INTEL_INT8_XMX
                         if (tile == 4 && (type == 14 || type == 21 || type == 22)) {
+                            prepare_output(expert_y, reference.size());
                             int8_xmx.grouped(type, expert_raw.data, plan, separate ? expert_x.data : batch_x.data,
                                 expert_y.data, rows, width, separate).wait_and_throw();
                             compare((label + (separate ? "_int8_xmx_down_" : "_int8_xmx_gate_") + std::to_string(count)).c_str(), expert_y.data, reference, 5e-5);
+                            check_output_tail(expert_y, reference.size());
                             const int padded_rows = (rows + 15) / 16 * 16;
                             const int block_bytes = type == 14 ? 210 : type == 21 ? 110 : 82;
                             const size_t row_bytes = size_t(bytes) / rows;
                             Buffer<uint8_t> expanded(q, size_t(experts) * padded_rows * row_bytes);
                             Buffer<uint8_t> interleaved(q, strata::intel::quant_interleaved_bytes(experts * padded_rows, width, block_bytes));
-                            Buffer<float> packed_y(q, size_t(count) * picks * padded_rows);
+                            Buffer<float> packed_y(q, size_t(count) * picks * padded_rows + 64);
                             for (int expert = 0; expert < experts; ++expert) for (int row = 0; row < padded_rows; ++row)
                                 std::copy_n(expert_raw.data + (size_t(expert) * rows + row % rows) * row_bytes,
                                     row_bytes, expanded.data + (size_t(expert) * padded_rows + row) * row_bytes);
@@ -633,9 +842,11 @@ void quant_reference(sycl::queue& q, const char* path) {
                             for (int packed_tile : {1, 4}) {
                                 plan.tile_width = packed_tile;
                                 strata::intel::plan_experts(q, ids.data, plan);
+                                prepare_output(packed_y, packed_reference.size());
                                 int8_xmx.grouped(type, interleaved.data, plan, separate ? expert_x.data : batch_x.data,
                                     packed_y.data, padded_rows, width, separate, true).wait_and_throw();
                                 compare((label + (separate ? "_interleaved_down_" : "_interleaved_gate_") + std::to_string(count) + "_tile_" + std::to_string(packed_tile)).c_str(), packed_y.data, packed_reference, 5e-5);
+                                check_output_tail(packed_y, packed_reference.size());
                             }
                         }
 #endif
@@ -704,6 +915,7 @@ int main(int argc, char** argv) {
         activation_test(queue);
         q8_kv_test(queue);
         q8_attention_batch_test(queue);
+        q8_attention_long_reuse_test(queue);
 #ifdef TINYSTRATA_INTEL_INT8_XMX
         splitk_capacity_test(queue);
         selected_vocabulary_capacity_test(queue);

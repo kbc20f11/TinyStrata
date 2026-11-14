@@ -351,7 +351,8 @@ class Engine {
                 if (kv_int8_) {
                     sycl::event stages[3];
                     remember("decode_attention_join", decode_attention_q8(q_, query_, query_gate_, state.q8, scores_,
-                        attention_partial_, attention_, heads_, position_input_, extent, profiling_ ? stages : nullptr, tokens));
+                        attention_partial_, attention_, heads_, position_input_, extent, profiling_ ? stages : nullptr, tokens,
+                        recording_ || verify_graph_enabled_ ? 0 : position + tokens));
                     if (profiling_) {
                         remember("decode_attention_qk", stages[0]); remember("decode_attention_softmax", stages[1]);
                         remember("decode_attention_pv", stages[2]);
@@ -648,7 +649,7 @@ class Engine {
         }
     }
 public:
-    Engine(const std::string& path, int context, unsigned device_index, WeightMemory memory = WeightMemory::Host, int chunk = 128, bool use_graph = true, bool profiling = false, bool prefill_xmx = false, bool prefill_npu = false, bool prefill_mkl = false, bool decode_dp4a = false, int mtp_depth = 0, bool verify_xmx = false, bool kv_int8 = false, bool prefill_int8_xmx = false, bool vocab_xmx = false, bool verify_mkl_attention = false, bool expert_layout = false, bool device_state = false, bool verify_graph = false, bool dense_layout = false, bool dense_split_k = false, int draft_vocab_limit = 0) :
+    Engine(const std::string& path, int context, unsigned device_index, WeightMemory memory = WeightMemory::Host, int chunk = 128, bool use_graph = true, bool profiling = false, bool prefill_xmx = false, bool prefill_npu = false, bool prefill_mkl = false, bool decode_dp4a = false, int mtp_depth = 0, bool verify_xmx = false, bool kv_int8 = false, bool prefill_int8_xmx = false, bool vocab_xmx = false, bool verify_mkl_attention = false, bool expert_layout = false, bool device_state = false, bool verify_graph = false, bool dense_layout = false, bool dense_split_k = false, int draft_vocab_limit = 0, bool experimental_tiel = false) :
         q_(select_device(device_index), [](sycl::exception_list errors) { for (const auto& error : errors) std::rethrow_exception(error); },
            profiling ? sycl::property_list{sycl::property::queue::in_order{}, sycl::property::queue::enable_profiling{}}
                      : sycl::property_list{sycl::property::queue::in_order{}}), profiling_(profiling), prefill_xmx_(prefill_xmx), context_(context), chunk_(chunk) {
@@ -694,7 +695,7 @@ public:
             ExecutionRequest loading;
             if (draft_vocab_limit && (!mtp_depth || !vocab_xmx || draft_vocab_limit < 64 || draft_vocab_limit > 4096))
                 throw std::runtime_error("--draft-vocab requires MTP, --vocab-xmx and a limit in 64..4096");
-            weights_ = WeightStore::load(q_, path, memory, vocab_xmx, expert_layout, dense_layout, dense_split_k);
+            weights_ = WeightStore::load(q_, path, memory, vocab_xmx, expert_layout, dense_layout, dense_split_k, experimental_tiel);
             if (expert_layout) std::fprintf(stderr, "Intel expert_layout=interleaved16 Q8_activations=1 single_weight_store=1\n");
             if (vocab_xmx) std::fprintf(stderr, "Intel vocabulary=interleaved_Q6_K XMX unchanged_quantization=1 single_weight_store=1\n");
             const auto& g = weights_->geometry();
@@ -1153,13 +1154,44 @@ int main(int argc, char** argv) {
     try {
         strata::paths::Utf8Arguments arguments(argc, argv);
         argc = arguments.argc(); argv = arguments.argv();
+        // Parse this isolated probe before ordinary early-return options, so
+        // --device N selects the same device on either side of --device-info.
+        if (std::any_of(argv + 1, argv + argc, [](const char* arg) { return std::string(arg) == "--device-info"; })) {
+            unsigned selected = 0;
+            for (int i = 1; i < argc; ++i) {
+                const std::string option(argv[i]);
+                if (option == "--device-info") continue;
+                if (option != "--device" || i + 1 >= argc)
+                    throw std::runtime_error("--device-info accepts only an optional --device N");
+                selected = unsigned(strata::intel::number(argv[++i], 1024));
+            }
+            // Device enumeration/properties only: no queue, model, USM or
+            // memory-budget query is created by this command.
+            const auto info = strata::intel::inspect_device(strata::intel::select_device(selected));
+            const auto quoted = [](const std::string& value) {
+                constexpr char hex[] = "0123456789abcdef";
+                std::string out = "\"";
+                for (unsigned char c : value) {
+                    if (c == '"' || c == '\\') { out += '\\'; out += char(c); }
+                    else if (c < 32) { out += "\\u00"; out += hex[c >> 4]; out += hex[c & 15]; }
+                    else out += char(c);
+                }
+                return out + '"';
+            };
+            std::printf("{\"schema\":1,\"backend\":\"sycl\",\"device_index\":%u,\"vendor_id\":%u,\"device_id\":%u,\"integrated\":%s,"
+                        "\"architecture\":%s,\"adapter_luid\":%s,\"adapter_node_mask\":%u,\"name\":%s,\"driver\":%s}\n",
+                selected, info.vendor_id, info.device_id, info.integrated ? "true" : "false", quoted(info.architecture).c_str(),
+                quoted(info.adapter_luid).c_str(), info.adapter_node_mask, quoted(info.name).c_str(), quoted(info.driver).c_str());
+            return 0;
+        }
         std::string path, token_list, token_file, dump_path;
         int count = 32, context = 4096, device = 0, chunk = 128, mtp_depth = 0, draft_vocab = 0;
-        bool serve = false, use_graph = true, profiling = false, prefill_xmx = false, prefill_npu = false, prefill_mkl = false, decode_dp4a = false, verify_xmx = false, kv_int8 = false, prefill_int8_xmx = false, vocab_xmx = false, verify_mkl_attention = false, stochastic_mtp = false, expert_layout = false, device_state = false, verify_graph = false, dense_layout = false, dense_split_k = false;
+        bool serve = false, use_graph = true, profiling = false, prefill_xmx = false, prefill_npu = false, prefill_mkl = false, decode_dp4a = false, verify_xmx = false, kv_int8 = false, prefill_int8_xmx = false, vocab_xmx = false, verify_mkl_attention = false, stochastic_mtp = false, expert_layout = false, device_state = false, verify_graph = false, dense_layout = false, dense_split_k = false, experimental_tiel = false;
         strata::intel::WeightMemory memory = strata::intel::WeightMemory::Host;
         for (int i = 1; i < argc; ++i) {
             const std::string option(argv[i]);
             if (option == "--serve") { serve = true; continue; }
+            if (option == "--experimental-tiel") { experimental_tiel = true; continue; }
             if (option == "--decode-dp4a") { decode_dp4a = true; continue; }
             if (option == "--verify-xmx") { verify_xmx = true; continue; }
             if (option == "--prefill-int8-xmx") { prefill_int8_xmx = true; continue; }
@@ -1177,11 +1209,39 @@ int main(int argc, char** argv) {
             if (option == "--profile") { profiling = true; continue; }
             if (option == "--no-graph") { use_graph = false; continue; }
             if (option == "--help") {
-                std::puts("tinystrata-intel --model MODEL [--serve | --tokens IDS | --tokens-file FILE] [--n N] [--max-context N] [--device N] [--chunk 1..1024] [--mtp 0..7] [--kv-type fp32|int8] [--draft-vocab 0|64..4096] [--dump-full-logits FILE]\nExperimental text driver. KV defaults to FP32; MTP and draft vocabulary selection default to 0 (off); images are unsupported. A nonzero draft vocabulary requires --serve --mtp-stochastic --mtp --vocab-xmx.");
+                std::puts("tinystrata-intel --model MODEL [--serve | --tokens IDS | --tokens-file FILE] [--n N] [--max-context N] [--device N] [--chunk 1..1024] [--mtp 0..7] [--kv-type fp32|int8] [--draft-vocab 0|64..4096] [--dump-full-logits FILE] [--experimental-tiel]\ntinystrata-intel --device-info [--device N]\nExperimental text driver. KV defaults to FP32; MTP and draft vocabulary selection default to 0 (off); images are unsupported. A nonzero draft vocabulary requires --serve --mtp-stochastic --mtp --vocab-xmx. --experimental-tiel is private validation admission for the pinned Ornith IQ3_XXS artifact, not published model support.");
                 return 0;
             }
             if (option == "--capabilities") {
-                std::puts("{\"backend\":\"sycl\",\"experimental\":true,\"model_families\":[],\"kv_types\":[\"fp32\",\"int8\"],\"images\":false,\"mtp\":true,\"experimental_mtp_max_depth\":7,\"serve\":true}");
+#ifdef TINYSTRATA_INTEL_MKL
+                constexpr const char* mkl = "true";
+#else
+                constexpr const char* mkl = "false";
+#endif
+#ifdef TINYSTRATA_INTEL_INT8_XMX
+                constexpr const char* int8_xmx = "true";
+                constexpr const char* xmx_types = "[14,18,21,22]";
+#else
+                constexpr const char* int8_xmx = "false";
+                constexpr const char* xmx_types = "[]";
+#endif
+#if defined(TINYSTRATA_INTEL_MKL) && defined(TINYSTRATA_INTEL_INT8_XMX)
+                constexpr const char* profiles = "{\"b390-qwen36\":1,\"b390-tiel-coder\":1}";
+                constexpr const char* models = "[\"qwen3.6-35b-a3b\",\"tiel-coder-35b-a3b\"]";
+#else
+                constexpr const char* profiles = "{}";
+                constexpr const char* models = "[\"qwen3.6-35b-a3b\"]";
+#endif
+#ifdef TINYSTRATA_INTEL_AOT_TARGET
+                constexpr const char* aot_target = TINYSTRATA_INTEL_AOT_TARGET;
+#else
+                constexpr const char* aot_target = "";
+#endif
+                std::printf("{\"backend\":\"sycl\",\"experimental\":true,\"model_families\":[],\"kv_types\":[\"fp32\",\"int8\"],\"images\":false,\"mtp\":true,\"experimental_mtp_max_depth\":7,\"serve\":true,"
+                            "\"capabilities_schema\":1,\"experimental_models\":%s,\"experimental_profiles\":%s,"
+                            "\"build\":{\"mkl\":%s,\"int8_xmx\":%s,\"aot_target\":\"%s\"},"
+                            "\"weight_types\":{\"scalar\":[0,1,8,10,11,14,18,21,22,23,30],\"dp4a\":[8,10,11,14,18,21,22,23],\"int8_xmx\":%s}}\n",
+                            models, profiles, mkl, int8_xmx, aot_target, xmx_types);
                 return 0;
             }
             if (i + 1 >= argc) throw std::runtime_error("Missing argument for " + option);
@@ -1217,7 +1277,7 @@ int main(int argc, char** argv) {
         if (serve) {
             if (!token_list.empty() || !token_file.empty() || !dump_path.empty()) throw std::runtime_error("Token CLI options cannot accompany --serve");
             std::optional<strata::intel::ExecutionRequest> loading(std::in_place);
-            strata::intel::Engine engine(path, context, unsigned(device), memory, chunk, use_graph, profiling, prefill_xmx, prefill_npu, prefill_mkl, decode_dp4a, mtp_depth, verify_xmx, kv_int8, prefill_int8_xmx, vocab_xmx, verify_mkl_attention, expert_layout, device_state, verify_graph, dense_layout, dense_split_k, draft_vocab);
+            strata::intel::Engine engine(path, context, unsigned(device), memory, chunk, use_graph, profiling, prefill_xmx, prefill_npu, prefill_mkl, decode_dp4a, mtp_depth, verify_xmx, kv_int8, prefill_int8_xmx, vocab_xmx, verify_mkl_attention, expert_layout, device_state, verify_graph, dense_layout, dense_split_k, draft_vocab, experimental_tiel);
             loading.reset();
             return strata::intel::serve(engine, stochastic_mtp);
         }
@@ -1230,7 +1290,7 @@ int main(int argc, char** argv) {
         auto tokens = strata::intel::parse_tokens(token_list);
         if (tokens.size() + size_t(count) > size_t(context)) throw std::runtime_error("Prompt and requested output exceed --context");
         strata::intel::ExecutionRequest active_request;
-        strata::intel::Engine engine(path, context, unsigned(device), memory, chunk, use_graph, profiling, prefill_xmx, prefill_npu, prefill_mkl, decode_dp4a, mtp_depth, verify_xmx, kv_int8, prefill_int8_xmx, vocab_xmx, verify_mkl_attention, expert_layout, device_state, verify_graph, dense_layout, dense_split_k, draft_vocab);
+        strata::intel::Engine engine(path, context, unsigned(device), memory, chunk, use_graph, profiling, prefill_xmx, prefill_npu, prefill_mkl, decode_dp4a, mtp_depth, verify_xmx, kv_int8, prefill_int8_xmx, vocab_xmx, verify_mkl_attention, expert_layout, device_state, verify_graph, dense_layout, dense_split_k, draft_vocab, experimental_tiel);
         const float* logits = nullptr;
         const auto start = std::chrono::steady_clock::now();
         for (size_t index = 0; index < tokens.size();) {
