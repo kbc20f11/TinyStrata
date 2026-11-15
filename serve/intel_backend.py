@@ -27,6 +27,7 @@ _VALUES = {"--model", "--max-context", "--kv-type", "--chunk", "--mtp",
 _OPTIMIZATIONS = ("--prefill-mkl", "--decode-dp4a", "--verify-xmx", "--prefill-int8-xmx",
                   "--vocab-xmx", "--expert-xmx-layout", "--device-state",
                   "--dense-xmx-layout", "--dense-split-k")
+_CLOVER_OPTIMIZATIONS = tuple(flag for flag in _OPTIMIZATIONS if flag != "--verify-xmx")
 _SWITCHES = {*_OPTIMIZATIONS, "--mtp-stochastic", "--verify-graph", "--no-graph", "--profile", "--host-profile", "--experimental-tiel", "--experimental-clover", "--no-prefill-mkl"}
 
 
@@ -115,6 +116,8 @@ def _chunk(cfg, values):
     model = canonical_model(cfg)
     value = values.get("--chunk", "auto")
     if value in ("auto", "0"):
+        if model == CLOVER_MODEL and _profile(cfg) == MODEL_PROFILES[model]:
+            return 1024
         if model in TARGET_ONLY_MODELS:
             return 512
         return 1024 if _profile(cfg) in MODEL_PROFILES.values() else 128
@@ -146,6 +149,11 @@ def _profile_arguments(cfg):
                 args.append("--mtp-stochastic")
             if "--draft-vocab" not in values:
                 _put(args, "--draft-vocab", 2048)
+    if model == CLOVER_MODEL and selected == MODEL_PROFILES[model]:
+        for flag in _CLOVER_OPTIMIZATIONS:
+            if flag not in switches:
+                args.append(flag)
+        values, switches = _options({"args": args})
     if canonical_model(cfg) == TIEL_MODEL and "--experimental-tiel" not in switches:
         args.append("--experimental-tiel")
     if model in TARGET_ONLY_MODELS and selected == MODEL_PROFILES[model] and not {"--prefill-mkl", "--no-prefill-mkl"}.intersection(switches):
@@ -223,6 +231,7 @@ def validate_config(cfg: dict, *, allow_uninstalled: bool = False) -> None:
             allowed.add("--no-prefill-mkl")
         if model == CLOVER_MODEL:
             allowed.add("--experimental-clover")
+            allowed.update(_CLOVER_OPTIMIZATIONS)
             if values.get("--clover-mode") != "causal" or values.get("--clover-draft") != "0" or values.get("--draft-vocab") != "0":
                 raise ValueError("Intel Clover supports causal D0 only")
         elif any(flag in values for flag in ("--clover-mode", "--clover-draft", "--draft-vocab")):
@@ -243,6 +252,8 @@ def validate_config(cfg: dict, *, allow_uninstalled: bool = False) -> None:
     optimizations = switches.intersection({*_OPTIMIZATIONS, "--mtp-stochastic", "--verify-graph"})
     if model in QWEN_ENGINE_MODELS and profile not in MODEL_PROFILES.values() and (optimizations or values.get("--draft-vocab", "0") != "0"):
         raise ValueError("Intel optimized flags require the explicitly requested model-specific B390 profile")
+    if model == CLOVER_MODEL and profile != MODEL_PROFILES[model] and optimizations - {"--prefill-mkl"}:
+        raise ValueError("Intel Clover optimized flags require its B390 profile")
     if "--mtp-stochastic" in switches and not mtp:
         raise ValueError("Intel --mtp-stochastic requires --mtp >= 1")
     if "--verify-graph" in switches and (not mtp or kv != "int8"):

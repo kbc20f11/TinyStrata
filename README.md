@@ -6,6 +6,8 @@
 
 **NVIDIA Ampere and newer GPUs (CUDA) and AMD RDNA 4 GPUs (HIP/ROCm) are supported.**
 
+The experimental **Intel Arc B390 / 32 GB shared-RAM text route** includes Qwen3.6, Tiel Coder, Gemma 4, LFM2.5 and causal Clover D0. Native text checks, four-run measurements, runtime publication, normal API/UI for all five models, tool/state/lifecycle checks for the three new families, the actual Desktop restart and background download/update checks have completed. Intel images, Gemma's assistant, NPU and Clover D3 remain outside this text milestone. See the [model matrix and delivery validation status](https://github.com/kbc20f11/TinyStrata/issues/19).
+
 **AMD display limitation:** With AMD integrated graphics and a separate Radeon inference GPU, connect the monitor to the Radeon card **before starting Windows**. Motherboard/integrated-GPU display output is temporarily unsupported: another user reported whole-PC restarts and we reproduced them on our validation machine. Moving the cable after boot did not prevent recurrence. The cause remains unknown; see [issue #10](https://github.com/kbc20f11/TinyStrata/issues/10).
 
 ## Why we are building TinyStrata
@@ -32,7 +34,7 @@ TinyStrata automatically selects inference and memory settings for your hardware
 
 **LFM2.5-24B-A2B Q4_K_M** uses the official [LiquidAI GGUF](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF). Its single language-model download is **14.53 GB**.
 
-**Clover-35B-A3B-Preview IQ3_XXS** defaults to [AtomicChat’s GGUF](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf) with **IQ3_XXS gate/up and IQ3_S down** Expert projections. The **15.515 GB** language model retains Clover’s own tokenizer and learned bidirectional GDN parameters. TinyStrata extends its context capacity to **256K**. [Official Clover specifies 128K](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview/blob/main/config.json); general answer quality beyond 128K has not been established. Official Clover is text-only; TinyStrata adds image input by reusing the Qwen3.6 projector (**0.899 GB**, **16.414 GB** in total, reused if already downloaded for Qwen). Select it with `run-api.bat --model-family clover`; a new standalone profile uses port **18083**, with settings in `config-clover.json`.
+**Clover-35B-A3B-Preview IQ3_XXS** defaults to [AtomicChat’s GGUF](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf) with **IQ3_XXS gate/up and IQ3_S down** Expert projections. The **15.515 GB** language model retains Clover’s own tokenizer and learned bidirectional GDN parameters. TinyStrata extends its context capacity to **256K**. [Official Clover specifies 128K](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview/blob/main/config.json); general answer quality beyond 128K has not been established. Official Clover is text-only; TinyStrata adds image input by reusing the Qwen3.6 projector (**0.899 GB**, **16.414 GB** in total, reused if already downloaded for Qwen). Select it with `run-api.bat --model-family clover`; a new standalone profile uses port **18083**, with settings in `config-clover.json`. Intel uses its trained128K causal D0 text route; the256K extension and projector described here apply to CUDA/HIP.
 
 Managed Clover profiles default to causal decoding without drafts, D0, with INT8 KV (`--clover-mode causal --clover-draft 0 --kv-type int8`) and MT1 (`STRATA_IQ_MT_MIN=1`). Exact self-speculation D3 remains optional (`--clover-mode self-spec --clover-draft 3 --clover-accept exact`); compare it with causal decoding on your hardware before enabling it. The image encoder stays on the GPU by default; `--vision cpu` and `--vision no` select CPU encoding or disable it. Vision supports causal or exact self-speculative decoding; diffusion and threshold acceptance require `--vision no`. LowConfidence block diffusion and approximate threshold acceptance remain experimental opt-ins; see the [decoding options](benchmark/README.md#english).
 
@@ -42,9 +44,9 @@ Clover also offers optional repetition lookup: `--clover-lookup N` proposes at m
 
 Gemma automatically groups long text around fresh images when its current Expert/staging layout supports weight reuse. Low-residency layouts retain the original image path. [Upstream changes, 8/12/16 GiB measurements and recovery tests](benchmark/results/upstream-refresh-20261111.md).
 
-The Qwen, Gemma and LFM engines use an automatic VRAM Expert cache, CPU Expert computation from system RAM, prompt weight streaming and CUDA Graphs. They share the same API and support live model switching, with settings saved separately for each model. Selected Experts are not omitted. They also support automatic physical KV growth without changing the maximum context capacity.
+The CUDA/HIP Qwen, Gemma and LFM engines use an automatic VRAM Expert cache, CPU Expert computation from system RAM, prompt weight streaming and CUDA Graphs. They share the same API and support live model switching, with settings saved separately for each model. Selected Experts are not omitted. They also support automatic physical KV growth without changing the maximum context capacity. The following feature/VRAM tables describe CUDA/HIP; [Intel uses its own text contracts and memory-aware fixed allocation](https://github.com/kbc20f11/TinyStrata/issues/19).
 
-**GPT-OSS support is retired.** It is no longer an active download, launch or benchmark target. [Historical measurements](benchmark/results/gptoss-adoption-20261110.md) are retained; see the [status and reintroduction requirements](docs/gpt-oss-reintroduction.md).
+**GPT-OSS support is retired.** It is no longer an active download, launch or benchmark target. [Historical measurements](benchmark/results/gptoss-adoption-20261110.md) are retained; see the status and reintroduction requirements.
 
 | Feature | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) | [Tiel Coder](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP) |
 | --- | --- | --- | --- | --- | --- |
@@ -84,14 +86,24 @@ Start Gemma with `run-api.bat --model-family gemma4` (default port 18082), or LF
 
 </details>
 
-Intel B390 experimental text benchmark, **earlier c36 runtime, retained as a historical control** (`standard: false`, four starts, two passes, seed1234, context32768/chunk1024, INT8 KV/MTP3; images N/A). The [current memory-aware-context runtime](docs/intel-windows.md) has separate normal full-answer checks:
+Current Intel B390 text measurements (`standard: false`, seed1234, four fresh starts/model, context32768, INT8 KV, target-only MTP0). Gemma/LFM use chunk512 and native source `4ad31e7`; Clover retains its unchanged `f14cf6e` package and chunk1024 cohort. The mixed current-artifact set contains 96 text measurements. Separate installed normal API/UI for all five models, new-family tool/state/lifecycle, advertised thinking-OFF, Desktop and background checks passed. The [evidence JSON](benchmark/results/intel-models-text-20261115.json) retains per-model source/executable hashes, prior private failures and the exact scope of the old-runtime update supplement.
+
+| Model | Generation tok/s | 4K prefill tok/s | 16K prefill tok/s |
+|---|---:|---:|---:|
+| Gemma 4 | 13.16 | 395.16 | 352.99 |
+| LFM2.5 | 23.12 | 189.30 | 177.11 |
+| Clover D0 | 18.69 | 201.83 | 190.73 |
+
+These measurements do not establish 30–40 tok/s generation; broader model/backend performance goals remain open in [Issue #11](https://github.com/kbc20f11/TinyStrata/issues/11). Gemma/LFM also completed short/4K/16K corrected-document and code answers on the new binaries, separately from this capped canonical text benchmark. Images and the full fixed-v1 protocol are not covered. [Conditions and remaining gates](https://github.com/kbc20f11/TinyStrata/issues/19).
+
+**Historical Qwen/Tiel c36 control:** four starts, two passes, seed1234, context32768/chunk1024, INT8 KV/MTP3, images N/A. These rates are not new measurements of the retained `f14cf6e` Qwen-family executable:
 
 | Model | Generation tok/s | 4K prefill tok/s | 16K prefill tok/s |
 |---|---:|---:|---:|
 | Qwen3.6 | 32.88 | 307.12 | 274.02 |
 | Tiel Coder | 25.77 | 237.61 | 217.97 |
 
-Tiel remains below 30 tok/s; its generation change from the historical 2026-11-14 result is small, with 4K/16K prefill essentially unchanged. The [review measurements](benchmark/results/intel-review-20261115.json) preserve that earlier comparison separately; different measurement occasions do not isolate an individual optimization's gain. [Conditions and limitations / 条件と制約](docs/intel-windows.md).
+Tiel was below 30 tok/s in that historical canonical cohort; its generation change from the historical 2026-11-14 result was small, with 4K/16K prefill essentially unchanged. The [review measurements](benchmark/results/intel-review-20261115.json) preserve that earlier comparison separately; different measurement occasions do not isolate an individual optimization's gain. [Conditions and limitations](https://github.com/kbc20f11/TinyStrata/issues/19).
 
 ## Installation
 
@@ -105,7 +117,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubu
 
 Use the same command for installation and updates. Open **TinyStrata → Models**, download a model, then select it in chat; UI setup itself does not download a model.
 
-On a validated Intel Arc B390-only Windows PC with 32 GB shared RAM, the installer selects the experimental Intel runtime and downloads its hash-pinned PTL-H package. Other Intel GPUs use a separately pinned generic SPIR-V runtime and must pass actual device capability and separate RAM/VRAM admission checks; their hardware/performance validation remains separate from the B390 measurements. An Intel SDK is not required. This currently supports **Qwen3.6 and Tiel Coder text**; images, Gemma, LFM and Clover remain unsupported on Intel. The separate Intel shortcut normally opens UI port **3005**, with API port **18085**, preserving existing CUDA/HIP settings, keys and history. A local installer also accepts explicit `-Backend sycl`. See [Intel installation, measurements and limitations](docs/intel-windows.md).
+On an Intel Arc B390-only Windows PC with 32 GB shared RAM, the installer selects the experimental Intel runtime and its hash-pinned PTL-H packages. With the new model catalog, one UI installation prepares the three engine families and separate Qwen/Tiel/Gemma/LFM/Clover configurations; it does not download GGUFs during UI setup. Use **Models** to download a model, or supply an existing pinned GGUF through the [local launch options](https://github.com/kbc20f11/TinyStrata/issues/19). Other Intel GPUs select generic SPIR-V runtimes with baseline capability and RAM/VRAM checks; they have no B390 performance or hardware-validation claim. No Intel SDK is required. The separate Intel shortcut normally uses UI **3005** and API **18085**, preserving existing CUDA/HIP settings, keys and history. A local installer accepts `-Backend sycl -WithUI`. Intel images and unsupported model/mode combinations are rejected before unloading the current model. Public archives, ordinary online update/repeat, normal API/UI for all five models, new-family tool/state/lifecycle, advertised thinking OFF and the actual Desktop restart passed. Separate production download cancel/resume and same-source c36-to-current update checks also passed in a private environment with the main installation preserved. See [the delivery status](https://github.com/kbc20f11/TinyStrata/issues/19).
 
 **API only** ([installer](install.ps1)): the same API without the UI.
 
@@ -307,6 +319,8 @@ INT8 KV; four independent API starts per profile in interleaved order. Short gen
 
 ## How memory is shared — Qwen3.6
 
+This section describes the CUDA/HIP layout. Intel UMA uses the [single-weight-store GPU policy and fixed memory-aware allocation](https://github.com/kbc20f11/TinyStrata/issues/19).
+
 A MoE model contains many **Experts**: smaller neural networks selected for each token. TinyStrata keeps as many Experts as it can in GPU memory (VRAM). During generation, it can compute selected uncached Experts on the CPU using system RAM. When processing larger input batches, it can instead stream Expert weights from RAM through temporary GPU buffers. Model-selected Experts are kept in the computation.
 
 The downloaded model files total about **15.0 GB**: **14.1 GB** for the language model (including MTP weights) and **0.9 GB** for the vision projector (`mmproj-F16.gguf`). The language model does not all have to fit in VRAM. GPU memory also needs room for the vision encoder and image-processing buffers, the conversation's **KV cache**, the model's other weights and temporary computation buffers:
@@ -325,7 +339,7 @@ The KV cache stays in VRAM; system RAM holds Expert data for this offload mechan
 
 ## Automatic settings — Qwen3.6
 
-The following CUDA/HIP settings choose KV/Attention and context capacity automatically. You do not need to select an 8 GB, 12 GB or 16 GB recipe. Intel context `auto` selects the largest capacity that fits KV and workspace after loading weights, in 2,048-token steps, using remaining physical RAM, commit and WDDM budgets. Model limits are 262,144 for Qwen/Tiel/Gemma and 131,072 for LFM/Clover. Shared GPU memory is the same RAM pool and is counted once, with 4 GiB of OS headroom. Explicit settings are preserved; an oversized request fails rather than silently shrinking. See the [Intel guide](docs/intel-windows.md).
+The following CUDA/HIP settings choose KV/Attention and context capacity automatically. You do not need to select an 8 GB, 12 GB or 16 GB recipe. Intel context `auto` selects the largest capacity that fits KV and workspace after loading weights, in 2,048-token steps, using remaining physical RAM, commit and WDDM budgets. Model limits are 262,144 for Qwen/Tiel/Gemma and 131,072 for LFM/Clover. Shared GPU memory is the same RAM pool and is counted once, with 4 GiB of OS headroom. Explicit settings are preserved; an oversized request fails rather than silently shrinking. See the [Intel guide](https://github.com/kbc20f11/TinyStrata/issues/19).
 
 For Qwen3.6 and LFM2.5, an RTX 3060 selects INT8. Supported RTX 40/50-series and AMD RDNA 4 environments select native FP8 automatically; the engine checks the compiled kernels and GPU capabilities as well as the hardware generation. If native FP8 is unavailable, automatic mode uses INT8. Gemma uses INT8 by default on both NVIDIA and AMD. This chooses a supported path without running a speed or quality benchmark at startup.
 

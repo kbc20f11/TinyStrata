@@ -1,5 +1,6 @@
 #pragma once
 #include "strata/intel/memory_policy.hpp"
+#include "strata/intel/gemma_prefix.hpp"
 #include <cstdint>
 #include <cmath>
 #include <cstdio>
@@ -57,7 +58,7 @@ inline void q8_cache(Footprint& p,uint64_t cells,bool shared=false,uint64_t copi
 struct GemmaSpec {
     uint64_t chunk=512,width=2816,vocabulary=262144,heads=16,full_dim=512,swa_dim=256;
     uint64_t dense_ff=2112,experts=128,picks=8,expert_ff=704,window=1024;
-    bool mkl=true;
+    bool mkl=true,pv_split=false;
 };
 inline Footprint gemma(uint64_t c,const GemmaSpec& s={}){
     Footprint p;const auto n=s.chunk;
@@ -78,11 +79,16 @@ inline Footprint gemma(uint64_t c,const GemmaSpec& s={}){
     p.allocation(tiles,4,false,2);p.allocation(1,4);
     p.own();
     const auto expansion=std::max(mul(mul(sliding,8),s.swa_dim),mul(mul(c,2),s.full_dim));
-    attention(p,c,n,s.heads,s.full_dim,expansion,s.mkl);if(s.mkl)gemm(p,1,n);
+    attention(p,c,n,s.heads,s.full_dim,expansion,s.mkl);
+    if(s.pv_split)p.allocation(mul(mul(s.heads,add(c,255)/256),s.full_dim),4);
+    if(s.mkl)gemm(p,1,n);
+    // One bounded ordinary-host turn snapshot; full-attention KV remains in
+    // its original arena. This is RAM/commit admission, never WDDM residency.
+    p.host(gemma_prefix::snapshot_bytes(sliding,8,s.swa_dim,25));
     p.host(16ull<<20); // bounded sampler/history/metadata work; not another OS floor
     return p;
 }
-struct LfmSpec {uint64_t chunk=512,width=2048,vocabulary=128000,heads=32,kv_heads=8,dim=64,dense_ff=11776,experts=64,picks=4,expert_ff=1536;bool mkl=true;};
+struct LfmSpec {uint64_t chunk=512,width=2048,vocabulary=128000,heads=32,kv_heads=8,dim=64,dense_ff=11776,experts=64,picks=4,expert_ff=1536;bool mkl=true,q4_dp4a=false;};
 inline Footprint lfm(uint64_t c,const LfmSpec& s={}){
     Footprint p;const auto n=s.chunk,cells=mul(mul(c,s.kv_heads),s.dim);
     q8_cache(p,cells,false,10);p.allocation(mul(2,s.width),4,false,60); // live and rollback convolution,30 layers
@@ -97,6 +103,11 @@ inline Footprint lfm(uint64_t c,const LfmSpec& s={}){
     p.allocation(mul(n,s.experts),4);const auto tiles=add(add(mul(n,s.picks),3)/4,s.experts);
     p.allocation(tiles,4,false,2);p.allocation(1,4);p.own();
     attention(p,c,n,s.heads,s.dim,cells,s.mkl);if(s.mkl)gemm(p,1,n);
+    if(s.q4_dp4a){p.allocation(512*8192,1);p.allocation(512*8192/32,4);p.allocation(1,4,true);
+        p.allocation(2048,4);p.allocation(512,4);p.allocation(16,1);p.allocation(256,4);p.allocation(128,1);}
+    // One independent ordinary-host turn snapshot, plus exact bounded IDs.
+    // Device rollback state above is separate; this never charges WDDM.
+    p.host(add(mul(add(mul(30*2,s.width),s.width),4),mul(c,4)));
     p.host(16ull<<20);return p;
 }
 struct QwenSpec {

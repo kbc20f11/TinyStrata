@@ -29,7 +29,7 @@ class IntelBackendPolicy(unittest.TestCase):
                 args = intel.engine_args(cfg)
                 self.assertEqual(value(args, "--mtp"), "0")
                 self.assertEqual(value(args, "--kv-type"), "int8")
-                self.assertEqual(value(args, "--chunk"), "512")
+                self.assertEqual(value(args, "--chunk"), "1024" if model == intel.CLOVER_MODEL and profile != "generic" else "512")
                 self.assertEqual(value(args, "--max-context"), "auto")
                 self.assertNotIn("--mtp-stochastic", args)
                 self.assertNotIn("--verify-xmx", args)
@@ -44,6 +44,8 @@ class IntelBackendPolicy(unittest.TestCase):
     def test_new_model_unsupported_settings_reject_without_mutation(self):
         for model in intel.TARGET_ONLY_MODELS:
             for extra in (("--mtp", "1"), ("--kv-type", "fp32"), ("--verify-graph",), ("--decode-dp4a",)):
+                if model == intel.CLOVER_MODEL and extra == ("--decode-dp4a",):
+                    continue
                 cfg = configuration(*extra, arch=intel.MODEL_ARCHES[model], model_name=model,
                                     intel_profile=intel.MODEL_PROFILES[model])
                 before = deepcopy(cfg)
@@ -55,6 +57,26 @@ class IntelBackendPolicy(unittest.TestCase):
                 intel.configure_backend(configuration("--chunk", "513", arch=intel.MODEL_ARCHES[model], model_name=model))
         with self.assertRaisesRegex(ValueError, "always uses thinking"):
             intel.configure_backend(configuration(arch="lfm2moe", model_name=intel.LFM_MODEL, enable_thinking=False))
+
+    def test_clover_measured_profile_preserves_explicit_context_chunk_and_sampler(self):
+        original = configuration("--chunk", "384", "--max-context", "65536",
+                                 arch="clover_moe", model_name=intel.CLOVER_MODEL,
+                                 intel_profile="b390-clover", sampling={"temperature": .37})
+        before = deepcopy(original)
+        cfg = intel.configure_backend(original)
+        args = intel.engine_args(cfg)
+        self.assertEqual(value(args, "--chunk"), "384")
+        self.assertEqual(value(args, "--max-context"), "65536")
+        self.assertEqual(value(args, "--mtp"), "0")
+        self.assertEqual(value(args, "--draft-vocab"), "0")
+        self.assertEqual(set(intel._CLOVER_OPTIMIZATIONS) - set(args), set())
+        self.assertNotIn("--verify-xmx", args)
+        self.assertEqual(original, before)
+        self.assertEqual(cfg["sampling"], before["sampling"])
+        generic = configuration("--decode-dp4a", arch="clover_moe", model_name=intel.CLOVER_MODEL,
+                                intel_profile="generic")
+        with self.assertRaisesRegex(ValueError, "B390"):
+            intel.configure_backend(generic)
 
     def test_policy_helpers_do_not_launch_processes_or_load_runtime_dlls(self):
         with patch("subprocess.Popen", side_effect=AssertionError("No native process allowed")), \

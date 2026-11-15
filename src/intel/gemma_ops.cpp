@@ -110,11 +110,11 @@ sycl::event gemma_route(sycl::queue& q,const float* logits,const float* escale,i
 }
 
 struct GemmaAttention::Impl {
-    sycl::queue& q;int context,tokens,heads,dim;size_t cache_elements;bool mkl;
-    float *scores=nullptr,*keys=nullptr,*values=nullptr,*temporary=nullptr;
+    sycl::queue& q;int context,tokens,heads,dim;size_t cache_elements;bool mkl,split_pv;
+    float *scores=nullptr,*keys=nullptr,*values=nullptr,*temporary=nullptr,*partials=nullptr;
     std::vector<void*> allocations;
     template<class T>T* allocate(size_t count){auto* p=sycl::malloc_device<T>(count,q);if(!p)throw std::runtime_error("Gemma attention allocation failed");allocations.push_back(p);return p;}
-    Impl(sycl::queue& queue,int c,int t,int h,int d,size_t elements,bool use_mkl):q(queue),context(c),tokens(t),heads(h),dim(d),cache_elements(elements),mkl(use_mkl){
+    Impl(sycl::queue& queue,int c,int t,int h,int d,size_t elements,bool use_mkl,bool split):q(queue),context(c),tokens(t),heads(h),dim(d),cache_elements(elements),mkl(use_mkl),split_pv(split){
         ordered(q);if(c<1||t<1||t>1024||h<1||d<1||elements<1)throw std::invalid_argument("Invalid Gemma attention scratch");
 #ifndef TINYSTRATA_INTEL_MKL
         if(mkl)throw std::runtime_error("Gemma prefill oneMKL requires TINYSTRATA_INTEL_MKL");
@@ -122,6 +122,7 @@ struct GemmaAttention::Impl {
         try{
             scores=allocate<float>(size_t(c)*std::max(t,8*h));
             if(mkl){keys=allocate<float>(elements);values=allocate<float>(elements);temporary=allocate<float>(size_t(t)*d);}
+            if(split_pv)partials=allocate<float>(size_t(h)*((c+255)/256)*d);
         }catch(...){for(auto* p:allocations)sycl::free(p,q);throw;}
     }
     ~Impl(){try{q.wait_and_throw();}catch(...){}for(auto* p:allocations)try{sycl::free(p,q);}catch(...){} }
@@ -136,7 +137,7 @@ struct GemmaAttention::Impl {
         });
     }
 };
-GemmaAttention::GemmaAttention(sycl::queue& q,int c,int t,int h,int d,size_t e,bool m):impl_(std::make_unique<Impl>(q,c,t,h,d,e,m)){}
+GemmaAttention::GemmaAttention(sycl::queue& q,int c,int t,int h,int d,size_t e,bool m,bool split):impl_(std::make_unique<Impl>(q,c,t,h,d,e,m,split)){}
 GemmaAttention::~GemmaAttention()=default;
 sycl::event GemmaAttention::run(const float* query,GemmaKv c,float* output,int heads,int position,int tokens,float scale){
     auto& p=*impl_;auto& q=p.q;cache_shape(c);
@@ -187,6 +188,33 @@ sycl::event GemmaAttention::run(const float* query,GemmaKv c,float* output,int h
             sum=sycl::reduce_over_group(it.get_group(),sum,sycl::plus<float>());
             for(int col=int(lane);col<span;col+=128)scores[row*span+col]=first+col>=low&&first+col<=end?sycl::exp(scores[row*span+col]-maximum)/sum:0.f;
         });
+        if(p.split_pv&&tokens==1&&span>=1024){
+            // Preserve QK, exact causal/window masking, and normalized
+            // probabilities. Only partition the FP32 PV reduction; no key,
+            // selected expert, or KV quantization is changed.
+            const int splits=(span+255)/256;float* partial=p.partials;
+            const auto split_product=[&]<bool Ring>(){
+                return q.parallel_for(sycl::range<1>(size_t(heads)*splits*c.dim),[=](sycl::id<1> id){
+                    const size_t col=id[0]%c.dim,split=(id[0]/c.dim)%splits,head=id[0]/c.dim/splits,kv=head/(heads/c.heads);
+                    float sum=0;const int end=sycl::min(span,int(split*256+256));
+                    for(int cell=int(split*256);cell<end;++cell){
+                        const int logical=first+cell;
+                        const size_t physical=Ring?size_t(logical%c.capacity):size_t(logical);
+                        const size_t src=(kv*c.capacity+physical)*c.dim+col;
+                        sum=sycl::fma(scores[head*span+cell],float(c.value[src])*float(c.value_scale[src/32]),sum);
+                    }
+                    partial[id]=sum;
+                });
+            };
+            if(c.window)split_product.template operator()<true>();
+            else split_product.template operator()<false>();
+            last=q.parallel_for(sycl::range<1>(size_t(heads)*c.dim),[=](sycl::id<1> id){
+                const size_t col=id[0]%c.dim,head=id[0]/c.dim;float sum=0;
+                for(int split=0;split<splits;++split)sum+=partial[(head*splits+split)*c.dim+col];
+                out[id]=sum;
+            });
+            continue;
+        }
         last=q.parallel_for(sycl::range<1>(size_t(n)*heads*c.dim),[=](sycl::id<1> id){
             const size_t col=id[0]%c.dim,head=(id[0]/c.dim)%heads,token=id[0]/c.dim/heads,kv=head/(heads/c.heads);float sum=0;
             for(int cell=0;cell<span;++cell){const size_t src=(kv*c.capacity+(first+cell)%c.capacity)*c.dim+col;sum=sycl::fma(scores[(token*heads+head)*span+cell],float(c.value[src])*float(c.value_scale[src/32]),sum);}

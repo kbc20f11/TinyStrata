@@ -462,7 +462,7 @@ class IntelTargetOnlyBenchmark(unittest.TestCase):
             with self.subTest(model=model), patch.object(bench.subprocess, 'Popen', side_effect=AssertionError('No native')):
                 cfg = bench.intel_text_config(source, model, ROOT / 'unused-plan', 18019, CASES)
                 params = bench.intel_text_parameters(cfg); args = engine_args(cfg)
-                self.assertEqual((params['mtp'], params['kv'], params['context_tokens'], params['chunk_tokens']), (0, 'int8', 32768, 512))
+                self.assertEqual((params['mtp'], params['kv'], params['context_tokens'], params['chunk_tokens']), (0, 'int8', 32768, 1024 if model == 'clover' else 512))
                 self.assertEqual(config.value_of(cfg, 'chunk'), 'auto')
                 self.assertEqual(params['draft_vocab'], 0)
                 self.assertFalse(params['assistant'])
@@ -471,7 +471,10 @@ class IntelTargetOnlyBenchmark(unittest.TestCase):
                     self.assertNotIn(key, cfg)
                 self.assertNotIn('--draft-model', args)
                 self.assertNotIn('--mtp-stochastic', args)
-                self.assertNotIn('--decode-dp4a', args)
+                if model == 'clover':
+                    self.assertIn('--decode-dp4a', args)
+                else:
+                    self.assertNotIn('--decode-dp4a', args)
                 if model == 'clover':
                     for flag, value in (('--clover-mode', 'causal'), ('--clover-draft', '0'), ('--draft-vocab', '0')):
                         self.assertEqual(args[args.index(flag) + 1], value)
@@ -539,7 +542,7 @@ class IntelTargetOnlyBenchmark(unittest.TestCase):
             if model == 'lfm': info['mandatory_thinking'] = 1
             bench.validate_intel_text_engine(info, health, cfg)
             for change in ({'mtp': 3}, {'mtp': False}, {'kv': 'fp32'}, {'family': 'qwen35moe'},
-                           {'single_weight_store': None}, {'model': 'another-model'}, {'chunk': 1024}):
+                           {'single_weight_store': None}, {'model': 'another-model'}, {'chunk': 512 if model == 'clover' else 1024}):
                 with self.subTest(model=model, change=change), self.assertRaises(ValueError):
                     bench.validate_intel_text_engine({**info, **change}, health, cfg)
             if model == 'clover':
@@ -587,7 +590,7 @@ class IntelTargetOnlyBenchmark(unittest.TestCase):
                 self.assertEqual(len(list(output.glob(model + '-*/config.json'))), 4)
                 self.assertEqual(report['models'][model]['sampling'], bench.model_sampling(model, CASES))
                 params = report['models'][model]['native_profile_parameters']
-                self.assertEqual((params['mtp'], params['chunk_tokens']), (0, 512))
+                self.assertEqual((params['mtp'], params['chunk_tokens']), (0, 1024 if model == 'clover' else 512))
                 self.assertEqual(report['protocol_differences']['chunk_tokens'], params['chunk_tokens'])
                 self.assertNotIn('MTP3', report['protocol_differences']['native_profile'])
                 self.assertIn('MTP0', (output / 'report.md').read_text(encoding='utf-8'))

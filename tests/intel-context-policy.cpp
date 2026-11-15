@@ -33,6 +33,16 @@ int main(){try{
         check(p.device-old.device==2*expansion*4+512*512*4+gemm);
         check(old.device==old.owned_device+c*512*4);
     }
+    // Independent explicit sizes of the single Gemma PV partial array. It is
+    // auxiliary device storage, never engine-owned arrays or a second KV copy.
+    for(const auto pair:{std::pair<uint64_t,uint64_t>{8192,1ull<<20},{32768,4ull<<20},{131072,16ull<<20},{262144,32ull<<20}}){
+        const auto control=cp::gemma(pair.first);cp::GemmaSpec split;split.pv_split=true;
+        const auto candidate=cp::gemma(pair.first,split);
+        check(candidate.device-control.device==pair.second);
+        check(candidate.host_visible==control.host_visible&&candidate.host_only==control.host_only);
+        check(candidate.owned_device==control.owned_device&&candidate.owned_host_visible==control.owned_host_visible);
+        check(candidate.cache==control.cache&&candidate.uma_total()-control.uma_total()==pair.second);
+    }
     for(uint64_t c:{1,32767,32768,65537,131072}){
         const auto p=cp::lfm(c);const uint64_t cache=10ull*c*8*64*2*34/32;
         const uint64_t floats=30*4*2048+512ull*(8*2048+3*32*64+3*8*64+3*11776+4*2048+64+4)+2*2048;

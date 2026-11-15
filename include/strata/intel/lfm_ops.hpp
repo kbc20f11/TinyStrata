@@ -3,6 +3,16 @@
 #include <cstdint>
 
 namespace strata::intel {
+// Experimental FP32 Q4_K decode only. No activation quantization, scratch,
+// altered expert routing, or changes to the existing multi-token/MKL paths.
+constexpr bool lfm_q4_fp32_eligible(int type, int tokens, bool enabled) {
+    return enabled && type == 12 && tokens == 1;
+}
+sycl::event lfm_q4_fp32_matvec(sycl::queue&, const uint8_t* weights,
+                              const float* input, float* output, int rows, int width);
+sycl::event lfm_q4_fp32_selected(sycl::queue&, const uint8_t* weights, const int32_t* ids,
+                                const float* input, float* output, int rows, int width,
+                                bool separate_inputs);
 // LFM's projection is [B,C,x], not Qwen's gated delta network. State stores
 // the two preceding B*x values per channel, oldest first. No activation is
 // applied to C or to the three-tap convolution.

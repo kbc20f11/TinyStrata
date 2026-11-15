@@ -2563,6 +2563,12 @@ function Invoke-TinyStrataInstaller {
         if (-not (Test-TinyStrataIntelRuntimeCurrent -Configuration $cfg -WorkRoot $workRoot -Artifact $currentArtifact)) {
             throw 'The running Intel API uses an older or invalid runtime package. Stop this installation''s API and UI, then rerun the installer to update it.'
         }
+        if ($IncludeUI) {
+            . (Join-Path $sourceRoot 'cmake\install-intel-ui-runtimes.ps1')
+            Assert-TinyStrataIntelUiRuntimesCurrent -SourceRoot $sourceRoot -WorkRoot $workRoot `
+                -CatalogPath (Join-Path $sourceRoot 'cmake\intel-runtime-catalog.json') `
+                -SelectedModel $selectedFamily.Model -AotTarget $intelRuntimeSelection.AotTarget
+        }
     }
     if ($server -and $DoNotStart) {
         if ($IncludeUI) { Initialize-TinyStrataOptionalUI -SourceRoot $sourceRoot -WorkRoot $workRoot -ApiPort $ApiPort -UiPort $UiPort -Family $selectedFamily.Name -ConfigureOnly @uiSelection }

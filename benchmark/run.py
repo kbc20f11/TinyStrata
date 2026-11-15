@@ -73,6 +73,7 @@ ENGINE_KEYS = ('model', 'family', 'version', 'kv', 'kv_grow', 'mtp', 'clover_dra
                'hip_vmm_family', 'hip_vmm_verified', 'hip_vmm_driver_min_kib', 'hip_vmm_quantum_kib',
                'hip_runtime_version', 'hip_compiled_version', 'hip_vmm_reason')
 ENGINE_KEYS += ('backend', 'experimental', 'intel_profile', 'memory_model', 'single_weight_store', 'model_family', 'mandatory_thinking',
+                'lfm_q4_fp32_blocks', 'lfm_q4_dp4a', 'lfm_prefill_q4_dp4a', 'gemma_pv_split', 'gemma_q6_head_fp32', 'gemma_q4_dp4a', 'clover_fused_t1_hint',
                 'device_vendor', 'device_id', 'device_integrated', 'device_architecture',
                 'adapter_luid', 'adapter_node_mask')
 CLOVER_INFO_FLOATS = ('clover_threshold', 'clover_last_threshold', 'clover_preview_ms',

@@ -154,6 +154,73 @@ try {
         Check (-not(Test-Path -LiteralPath (Join-Path $case.Work '.tinystrata-installing.json'))) 'Full installer releases its real transaction guard'
         Check (@(Get-ChildItem -LiteralPath (Join-Path $case.Work 'runtime\.tinystrata') -Filter '*.prepare-*').Count -eq 1) 'Full installer cleans its own candidates and leaves the pre-existing fixture candidate untouched'
     }
+    # Real running-selected branch with a mixed catalog: selected Qwen stays
+    # current while one dedicated peer is stale/missing. No process or network
+    # boundary is allowed to hide the refusal, including ordinary WithUI reuse.
+    function Get-TinyStrataSavedProcess {param($StatePath,$ConfigPath,$SourcePath,$ApiPort)return [pscustomobject]@{Id=123;HasExited=$false}}
+    function Get-NetTCPConnection {param($LocalPort,$State,$ErrorAction)return @()}
+    function Test-TinyStrataPortOwner {param($ApiPort,$RootProcessId)return $true}
+    function Test-TinyStrataInferenceReady {param($Health,$Configuration)return $true}
+    function Start-Process {throw 'Running-current CPU fixtures must never start another process'}
+    function Invoke-TinyStrataApi {param($BaseUrl,$Path,$Method,$Headers)
+        $script:apiCalls++
+        return [pscustomobject]@{status='ok';backend='sycl';experimental=$true;intel_profile='b390-qwen36';model='qwen3.6-35b-a3b';loaded=$false}
+    }
+    foreach($scenario in @('all-current','ordinary-current','missing-gemma','stale-gemma','stale-lfm','ordinary-stale',
+        'corrupt-gemma','custom-gemma','generic-gemma','unpublished-gemma','API-only-stale')){
+        $case=Prepare-Case ('running-peer-'+$scenario) $catalog
+        $script:configureFail='';$script:failModel='';$script:receiveFail=''
+        Prepare-Extras $case;Publish-TinyStrataIntelConfigurations $case.Configurations
+        $selected=$case.Cache[($script:qwenArtifact.manifest_sha256+':'+$script:qwenArtifact.executable_sha256)]
+        $cfg=[ordered]@{backend='sycl';model_name='qwen3.6-35b-a3b';arch='qwen35moe';intel_profile='b390-qwen36';
+            vision_mode='no';exe=$selected.Exe;lib_dirs=$selected.DllDirectories;api_key='retained-no-print';args=@('--model','fixture.gguf','--max-context','auto')}
+        [IO.File]::WriteAllText($case.Path,($cfg|ConvertTo-Json -Depth 10))
+        $gemmaPath=Join-Path $case.Work 'runtime\.tinystrata\config-gemma4-sycl.json'
+        $current=Get-Content -LiteralPath $case.Catalog -Raw|ConvertFrom-Json
+        if($scenario -in @('stale-gemma','ordinary-stale','API-only-stale')){
+            @($current.artifacts|Where-Object {$_.model -eq 'gemma-4-26b-a4b-it'})[0].manifest_sha256='a'*64
+        }elseif($scenario -eq 'stale-lfm'){
+            @($current.artifacts|Where-Object {$_.model -eq 'lfm2.5-24b-a2b'})[0].manifest_sha256='b'*64
+        }elseif($scenario -eq 'missing-gemma'){[IO.File]::Delete($gemmaPath)}
+        elseif($scenario -eq 'corrupt-gemma'){
+            $peer=Get-TinyStrataConfig $gemmaPath;[IO.File]::WriteAllText((Join-Path (Split-Path -Parent $peer.exe) 'sycl9.dll'),'corrupt peer payload')
+        }elseif($scenario -eq 'custom-gemma'){
+            $peer=Get-TinyStrataConfig $gemmaPath;$peer.exe=Join-Path $case.Work 'custom\tinystrata-intel.exe';$peer.lib_dirs=@((Split-Path -Parent $peer.exe))
+            [IO.File]::WriteAllText($gemmaPath,($peer|ConvertTo-Json -Depth 12))
+            @($current.artifacts|Where-Object {$_.model -eq 'gemma-4-26b-a4b-it'})[0].manifest_sha256='c'*64
+        }elseif($scenario -eq 'generic-gemma'){
+            $peer=Get-TinyStrataConfig $gemmaPath;$peer.intel_profile='generic';[IO.File]::WriteAllText($gemmaPath,($peer|ConvertTo-Json -Depth 12))
+            $generic=@($current.artifacts|Where-Object {$_.model -eq 'gemma-4-26b-a4b-it'})[0]|Select-Object *
+            $generic.id='fixture-generic-gemma';$generic.profile='generic';$generic.aot_target='';$current.artifacts+=@($generic)
+        }elseif($scenario -eq 'unpublished-gemma'){
+            $current.artifacts=@($current.artifacts|Where-Object {$_.model -ne 'gemma-4-26b-a4b-it'});[IO.File]::Delete($gemmaPath)
+        }
+        [IO.File]::WriteAllText($case.Catalog,($current|ConvertTo-Json -Depth 12))
+        $source=Join-Path $fixture ('running-peer-source-'+$scenario);[IO.Directory]::CreateDirectory((Join-Path $source 'cmake'))|Out-Null
+        foreach($helper in @('install-intel-runtime.ps1','intel-runtime-package.ps1','install-intel-ui-runtimes.ps1')){
+            [IO.File]::Copy((Join-Path $repository ('cmake\'+$helper)),(Join-Path $source ('cmake\'+$helper)))
+        }
+        [IO.File]::Copy($case.Catalog,(Join-Path $source 'cmake\intel-runtime-catalog.json'))
+        $protected=@{};foreach($file in @(Get-ChildItem -LiteralPath (Join-Path $case.Work 'runtime') -Recurse -File)){$protected[$file.FullName]=(Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash}
+        $generationCount=@(Get-ChildItem -LiteralPath (Join-Path $case.Work 'native') -Directory).Count
+        $script:networkBoundaries=0;$script:downloads=@();$script:probes=@();$script:uiCalls=0;$script:apiCalls=0
+        $withUI=$scenario -ne 'API-only-stale';$ordinary=$scenario -like 'ordinary-*'
+        $arguments=@{SourceDirectory=$source;WorkingDirectory=$case.Work;Backend='sycl';Family='qwen36';FamilyExplicit=$true;
+            IncludeUI=$withUI;DoNotStart=(-not $ordinary);DoNotDownload=$true}
+        $mustReject=$scenario -in @('missing-gemma','stale-gemma','stale-lfm','ordinary-stale','corrupt-gemma')
+        $failed=$false
+        try{Invoke-TinyStrataInstaller @arguments}catch{
+            if(-not $mustReject){throw};$failed=$true
+            Check ($_.Exception.Message -match 'published Intel UI runtime.*Stop this installation.*API and UI.*rerun') 'Stale/missing peer is refused with the explicit stop/rerun instruction'
+        }
+        Check ($failed -eq $mustReject) ('Running-selected mixed-catalog peer result: '+$scenario)
+        Check ($script:networkBoundaries -eq 0 -and $script:downloads.Count -eq 0 -and $script:probes.Count -eq 0) 'Running peers are read-only checked, never downloaded/imported/probed hot'
+        Check ($script:uiCalls -eq [int]($withUI -and -not $mustReject)) 'Peer refusal occurs before any UI preparation/settings boundary'
+        Check ($script:apiCalls -eq [int]($ordinary -and -not $mustReject)) 'Ordinary current reuse reaches only the existing-API health boundary'
+        Check (@(Get-ChildItem -LiteralPath (Join-Path $case.Work 'native') -Directory).Count -eq $generationCount) 'Running peer checks create no generation'
+        foreach($path in $protected.Keys){Check ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -eq $protected[$path]) 'Running peer checks preserve every config/key/UI/history/candidate byte'}
+        Check (-not(Test-Path -LiteralPath (Join-Path $case.Work '.tinystrata-installing.json'))) 'Running peer checks do not acquire or leave an update guard'
+    }
     # Real file replacement failure after the first publish must restore both
     # original configs and their prior .bak, including paths with literal [].
     $root=Join-Path $fixture 'publish [literal]';$records=New-Object 'System.Collections.Generic.List[object]';$before=@{}

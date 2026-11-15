@@ -155,12 +155,18 @@ try {
     $choice=Get-TinyStrataIntelRuntimeSelection -Model 'tiel-coder-35b-a3b' -RequestedProfile generic -Controllers @([pscustomobject]@{PNPDeviceID='PCI\VEN_8086&DEV_B082'})
     Assert-Intel ($choice.Profile -eq 'generic') 'explicit generic remains selectable on B390'
     Assert-Intel ((Get-TinyStrataModelFamily qwen36 -Backend sycl).ConfigFile -eq 'config-sycl.json') 'explicit Intel has a dedicated config'
+    # Published repository catalogs may now include all five families. Test
+    # absence explicitly instead of depending on the release's current state.
+    $absentFamilyCatalog=Get-Content -LiteralPath (Join-Path $repository 'cmake\intel-runtime-catalog.json') -Raw|ConvertFrom-Json
+    $absentFamilyCatalog.artifacts=@($absentFamilyCatalog.artifacts|Where-Object {$_.model -in @('qwen3.6-35b-a3b','tiel-coder-35b-a3b')})
+    $absentFamilyCatalogPath=Join-Path $fixtureRoot 'absent-family-catalog.json'
+    Write-IntelFixture $fixtureRoot 'absent-family-catalog.json' ($absentFamilyCatalog|ConvertTo-Json -Depth 12)
     foreach ($entry in @(@('gemma4','b390-gemma4','config-gemma4-sycl.json'),@('lfm2','b390-lfm25','config-lfm2-sycl.json'),@('clover','b390-clover','config-clover-sycl.json'))) {
         $family=Get-TinyStrataModelFamily $entry[0] -Backend sycl
         Assert-Intel ($family.IntelProfile -eq $entry[1] -and $family.ConfigFile -eq $entry[2] -and $family.NativeFile -eq 'tinystrata-intel.exe') 'new text family has its own profile/config and staged engine basename'
         $choice=Get-TinyStrataIntelRuntimeSelection -Model $family.Model -Controllers @([pscustomobject]@{PNPDeviceID='PCI\VEN_8086&DEV_B082'})
         Assert-Intel ($choice.Profile -eq $entry[1]) 'new B390 model selects only its dedicated candidate profile'
-        Assert-IntelRejected { Get-TinyStrataIntelRuntimeArtifact -CatalogPath (Join-Path $repository 'cmake\intel-runtime-catalog.json') -Profile $entry[1] -Model $family.Model } 'absent new-family catalog asset never borrows a Qwen/Tiel runtime'
+        Assert-IntelRejected { Get-TinyStrataIntelRuntimeArtifact -CatalogPath $absentFamilyCatalogPath -Profile $entry[1] -Model $family.Model } 'absent new-family catalog asset never borrows a Qwen/Tiel runtime'
     }
     Assert-IntelRejected { Get-TinyStrataModelFamily 'unknown' -Backend sycl } 'unknown family rejected before preparation'
     Assert-IntelRejected {Assert-TinyStrataIntelManagedDeviceSelection @{gpu=1;args=@('--model','fixture.gguf')}} 'custom nonzero GPU cannot be certified with the device0 probe'

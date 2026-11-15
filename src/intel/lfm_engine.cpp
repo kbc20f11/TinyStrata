@@ -3,6 +3,9 @@
 #include "strata/intel/lfm_model.hpp"
 #include "strata/intel/context_policy.hpp"
 #include "strata/intel/lfm_ops.hpp"
+#include "strata/intel/lfm_q4_policy.hpp"
+#include "strata/intel/lfm_turn_checkpoint.hpp"
+#include "strata/intel/decode_dp4a.hpp"
 #include "strata/intel/gemma_ops.hpp" // Generic head RMS/RoPE and causal Q8 attention; scale supplied explicitly.
 #include "strata/intel/weight_store.hpp"
 #include "strata/intel/qwen_ops.hpp"
@@ -17,6 +20,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <limits>
 #include <random>
@@ -30,6 +34,9 @@ class LfmEngine {
     LfmGeometry geometry_;
     std::unique_ptr<WeightStore> weights_;
     std::unique_ptr<GemmaAttention> attention_;
+    std::unique_ptr<DecodeDp4a> q4_dp4a_;
+    std::unique_ptr<lfm_turn::Snapshot> turn_;
+    bool q4_dp4a_enabled_=false,prefill_q4_dp4a_enabled_=false;
 #ifdef TINYSTRATA_INTEL_MKL
     std::unique_ptr<PrefillGemm> gemm_;
 #endif
@@ -39,6 +46,7 @@ class LfmEngine {
     context_policy::Footprint actual_allocations_;
     int context_,chunk_,position_=0;
     bool logits_valid_=false;
+    bool q4_fp32_blocks_=false;
     float *residual_,*norm_,*bcx_,*mixed_,*qraw_,*kraw_,*v_,*query_,*key_,*attended_,*attention_out_;
     float *gate_,*up_,*hidden_,*expert_down_,*ffn_out_,*router_,*selected_weights_,*last_hidden_,*backup_hidden_,*logits_;
     int32_t *ids_,*input_ids_,*quant_error_,*counts_,*slots_,*owners_,*offsets_,*tiles_;
@@ -60,12 +68,23 @@ class LfmEngine {
 #ifdef TINYSTRATA_INTEL_MKL
         if(gemm_&&tokens>=16&&t.info.type!=0){gemm_->dense(int(t.info.type),t.data,input,output,rows,width,tokens);return;}
 #endif
+        if(lfm_q4_fp32_eligible(int(t.info.type),tokens,q4_fp32_blocks_)){
+            lfm_q4_fp32_matvec(q_,t.data,input,output,rows,width);return;
+        }
+        if(q4_dp4a_enabled_&&tokens==1&&t.info.type==12){q4_dp4a_->dense(12,t.data,input,output,rows,width);return;}
         quantized_matmul(q_,int(t.info.type),t.data,input,output,rows,width,tokens);
     }
     void expert_matrix(const ResidentTensor& t,ExpertPlan plan,const float* input,float* output,int rows,int width,bool separate,int tokens){
+        if(prefill_q4_dp4a_enabled_&&lfm_q4_prefill_dp4a_shape(int(t.info.type),tokens)){
+            q4_dp4a_->grouped(12,t.data,plan,input,output,rows,width,separate);return;
+        }
 #ifdef TINYSTRATA_INTEL_MKL
         if(gemm_&&tokens>=16){gemm_->selected(int(t.info.type),t.data,t.bytes/geometry_.experts,plan,input,output,rows,width,separate);return;}
 #endif
+        if(lfm_q4_fp32_eligible(int(t.info.type),tokens,q4_fp32_blocks_)){
+            lfm_q4_fp32_selected(q_,t.data,ids_,input,output,rows,width,separate);return;
+        }
+        if(q4_dp4a_enabled_&&tokens==1&&t.info.type==12){q4_dp4a_->selected(12,t.data,ids_,geometry_.picks,input,output,rows,width,separate);return;}
         if(tokens>=16)selected_matmul(q_,int(t.info.type),t.data,plan,input,output,rows,width,separate);
         else selected_matvec(q_,int(t.info.type),t.data,ids_,geometry_.picks,input,output,rows,width,separate,tokens);
     }
@@ -84,7 +103,7 @@ class LfmEngine {
     }
     void check_logits(){for(int i=0;i<geometry_.vocabulary;++i)if(!std::isfinite(logits_[i]))throw std::runtime_error("Non-finite LFM logits");}
     void release()noexcept{
-        try{q_.wait_and_throw();}catch(...){}attention_.reset();
+        try{q_.wait_and_throw();}catch(...){}attention_.reset();q4_dp4a_.reset();
 #ifdef TINYSTRATA_INTEL_MKL
         gemm_.reset();
 #endif
@@ -94,6 +113,23 @@ public:
     LfmEngine(const std::string& path,unsigned device,int context,int chunk,WeightMemory memory,bool mkl)
         :q_(select_device(device),[](sycl::exception_list errors){for(const auto& e:errors)std::rethrow_exception(e);},sycl::property::queue::in_order{}),
          device_(inspect_device(q_.get_device())),context_(context),chunk_(chunk){
+        const char* q4_blocks=std::getenv("STRATA_INTEL_LFM_Q4_FP32_BLOCKS");
+        bool measured_runtime=false;
+#ifdef TINYSTRATA_INTEL_AOT_TARGET
+        measured_runtime=std::string(TINYSTRATA_INTEL_AOT_TARGET)=="intel_gpu_ptl_h";
+#endif
+        const bool measured_device=device_.vendor_id==0x8086&&device_.device_id==0xB082&&device_.integrated&&device_.ptl_h_aot;
+        if(q4_blocks&&std::string(q4_blocks)!="0"&&std::string(q4_blocks)!="1")
+            throw std::runtime_error("STRATA_INTEL_LFM_Q4_FP32_BLOCKS requires0 or1");
+        q4_fp32_blocks_=q4_blocks?std::string(q4_blocks)=="1":measured_runtime&&measured_device;
+        q4_dp4a_enabled_=lfm_q4_candidate_flag(std::getenv("STRATA_INTEL_LFM_Q4_DP4A"),"STRATA_INTEL_LFM_Q4_DP4A");
+        const char* prefill_q4=std::getenv("STRATA_INTEL_LFM_PREFILL_Q4_DP4A");
+        prefill_q4_dp4a_enabled_=prefill_q4
+            ?lfm_q4_candidate_flag(prefill_q4,"STRATA_INTEL_LFM_PREFILL_Q4_DP4A")
+            :measured_runtime&&measured_device;
+        lfm_q4_validate_modes(q4_fp32_blocks_,q4_dp4a_enabled_);
+        const bool q4_auxiliary=q4_dp4a_enabled_||prefill_q4_dp4a_enabled_;
+        if(q4_auxiliary&&!device_.capabilities.esimd)throw std::runtime_error("LFM Q4 DP4A candidate requires Intel ESIMD");
         if(context<0||context>context_policy::lfm_limit||chunk<1||chunk>512)throw std::runtime_error("LFM context must be auto or1..131072; chunk1..512 required");
 #ifdef TINYSTRATA_INTEL_AOT_TARGET
         if(std::string(TINYSTRATA_INTEL_AOT_TARGET)=="intel_gpu_ptl_h"&&!device_.ptl_h_aot)
@@ -103,7 +139,7 @@ public:
             ExecutionRequest loading;
             weights_=WeightStore::load_validated(q_,path,memory,[&](const strata::GgufModel& model){geometry_=LfmGeometry::validate(model);});
             const auto& g=geometry_;context_policy::LfmSpec context_shape;
-            context_shape.chunk=chunk_;context_shape.mkl=mkl;
+            context_shape.chunk=chunk_;context_shape.mkl=mkl;context_shape.q4_dp4a=q4_auxiliary;
             const auto remaining=memory_budget(device_);
             const auto chosen=context_policy::select(context,g.model_context,remaining,device_.max_allocation,
                 [&](uint64_t tokens){return context_policy::lfm(tokens,context_shape);});
@@ -124,11 +160,13 @@ public:
             selected_weights_=allocate<float>(n*g.picks);ids_=allocate<int32_t>(n*g.picks);
             input_ids_=allocate<int32_t>(n,true);quant_error_=allocate<int32_t>(1,true);logits_=allocate<float>(g.vocabulary,true);
             last_hidden_=allocate<float>(width);backup_hidden_=allocate<float>(width);
+            turn_=std::make_unique<lfm_turn::Snapshot>(size_t(context));
+            actual_allocations_.host(turn_->bytes());
             // The bounded oneMKL selected-expert scheduler reads these small
             // counts on the host; the expert slots/activations stay on device.
             counts_=allocate<int32_t>(g.experts,true);slots_=allocate<int32_t>(n*g.experts);
             const size_t max_tiles=(n*g.picks+3)/4+g.experts;owners_=allocate<int32_t>(max_tiles);offsets_=allocate<int32_t>(max_tiles);tiles_=allocate<int32_t>(1);
-            if(actual_allocations_.device!=chosen.bytes.owned_device||actual_allocations_.host_visible!=chosen.bytes.owned_host_visible||actual_allocations_.largest>chosen.bytes.largest)
+            if(actual_allocations_.device!=chosen.bytes.owned_device||actual_allocations_.host_visible!=chosen.bytes.owned_host_visible||actual_allocations_.largest>chosen.bytes.largest||actual_allocations_.host_only!=lfm_turn::host_bytes(context))
                 throw std::logic_error("LFM context planner differs from actual engine allocations");
             attention_=std::make_unique<GemmaAttention>(q_,context,chunk,g.heads,g.dim,cache_elements,mkl);
 #ifdef TINYSTRATA_INTEL_MKL
@@ -136,7 +174,10 @@ public:
 #else
             if(mkl)throw std::runtime_error("LFM oneMKL requires an MKL build");
 #endif
+            if(q4_auxiliary)q4_dp4a_=std::make_unique<DecodeDp4a>(q_,false,false);
             q_.wait_and_throw();
+            std::printf("INFO lfm_q4_dp4a=%d lfm_prefill_q4_dp4a=%d\n",int(q4_dp4a_enabled_),int(prefill_q4_dp4a_enabled_));std::fflush(stdout);
+            std::printf("INFO lfm_turn_checkpoint=1 lfm_turn_checkpoint_host_bytes=%llu\n",(unsigned long long)turn_->bytes());std::fflush(stdout);
             std::fprintf(stderr,"Intel LFM2.5 layers40 conv30 attention10 width2048 head64 picks4of64 KV=int8 MTP0 mandatory_thinking=1 single_weight_store=1 cache_bytes=%llu\n",(unsigned long long)g.cache_bytes(context));
             context_policy::report(chosen,g.model_context,remaining,device_.max_allocation);
         }catch(...){release();throw;}
@@ -144,8 +185,33 @@ public:
     ~LfmEngine(){release();}
     const DeviceInfo& device_info()const{return device_;}
     int context()const{return context_;}int chunk()const{return chunk_;}int consumed()const{return position_;}int vocabulary()const{return geometry_.vocabulary;}
+    bool q4_fp32_blocks()const{return q4_fp32_blocks_;}
     bool terminal(int token)const{return std::find(geometry_.terminal_tokens.begin(),geometry_.terminal_tokens.end(),token)!=geometry_.terminal_tokens.end();}
-    void reset(){for(auto& s:states_)if(s.convolution)q_.memset(s.convolution,0,size_t(2*geometry_.width)*sizeof(float));q_.wait_and_throw();position_=0;logits_valid_=false;}
+    void reset(){for(auto& s:states_)if(s.convolution)q_.memset(s.convolution,0,size_t(2*geometry_.width)*sizeof(float));q_.wait_and_throw();position_=0;logits_valid_=false;turn_->invalidate();}
+    std::span<const int> turn_prefix()const{return turn_->prefix();}
+    bool save_turn(const std::vector<int>& live,const std::atomic<bool>* cancelled=nullptr){
+        return turn_->save(live,size_t(position_),[&](std::span<float> host){
+            size_t at=0;
+            for(const auto& s:states_)if(s.convolution){
+                q_.memcpy(host.data()+at,s.convolution,size_t(2*geometry_.width)*sizeof(float));at+=size_t(2*geometry_.width);
+            }
+            q_.memcpy(host.data()+at,last_hidden_,size_t(geometry_.width)*sizeof(float));at+=size_t(geometry_.width);
+            if(at!=host.size())throw std::logic_error("LFM turn snapshot geometry mismatch");
+            q_.wait_and_throw();
+        },cancelled);
+    }
+    void restore_turn(const std::vector<int>& live,const std::vector<int>& prompt){
+        const size_t position=turn_->restore(live,prompt,[&](std::span<const float> host){
+            size_t at=0;
+            for(auto& s:states_)if(s.convolution){
+                q_.memcpy(s.convolution,host.data()+at,size_t(2*geometry_.width)*sizeof(float));at+=size_t(2*geometry_.width);
+            }
+            q_.memcpy(last_hidden_,host.data()+at,size_t(geometry_.width)*sizeof(float));at+=size_t(geometry_.width);
+            if(at!=host.size())throw std::logic_error("LFM turn restore geometry mismatch");
+            q_.wait_and_throw();
+        });
+        position_=int(position);logits_valid_=false;
+    }
     const float* logits(){if(!position_)throw std::runtime_error("No committed LFM prompt");if(!logits_valid_){output_head();q_.wait_and_throw();check_logits();logits_valid_=true;}return logits_;}
     const float* step_many(const int* tokens,int count,bool final=true,const std::atomic<bool>* cancelled=nullptr){
         if(count<1||count>chunk_||position_+count>context_)throw std::runtime_error("LFM step exceeds context/chunk");
@@ -193,6 +259,7 @@ public:
         }
         if(complete){q_.memcpy(last_hidden_,residual_+size_t(count-1)*width,size_t(width)*sizeof(float));if(final)output_head();}
         q_.wait_and_throw();if(*quant_error_)throw std::runtime_error("Nonfinite/overflow LFM INT8 KV input");
+        if(q4_dp4a_&&!q4_dp4a_->valid())throw std::runtime_error("Nonfinite/overflow LFM Q4 DP4A activation input");
         if(!complete||(cancelled&&cancelled->load())){checkpoint(true);q_.wait_and_throw();return nullptr;}
         if(final)check_logits();position_+=count;logits_valid_=final;return final?logits_:residual_;
     }
@@ -203,37 +270,42 @@ std::vector<int> parse_tokens(std::string text){std::replace(text.begin(),text.e
     if(!in.eof()||ids.empty())throw std::runtime_error("Expected nonempty token list");return ids;}
 int integer(const std::string& text,int maximum){if(text.empty()||text.find_first_not_of("0123456789")!=std::string::npos)throw std::runtime_error("Expected nonnegative integer");
     const auto n=std::stoull(text);if(n>uint64_t(maximum))throw std::runtime_error("Integer exceeds supported range");return int(n);}
-void option(sampling_policy::Sampling& s,const std::string& text){const auto at=text.find('=');const auto k=text.substr(0,at),v=text.substr(at+1);
+void option(sampling_policy::Sampling& s,lfm_turn::Options& turn,const std::string& text){const auto at=text.find('=');const auto k=text.substr(0,at),v=text.substr(at+1);
+    if(turn.parse(k,v))return;
     if(k=="seed"){if(v.empty()||v.find_first_not_of("0123456789")!=std::string::npos)throw std::runtime_error("Invalid seed");s.seed=std::stoull(v);return;}
     size_t used=0;const float n=std::stof(v,&used);if(used!=v.size()||!std::isfinite(n))throw std::runtime_error("Invalid sampling field");
     if(k=="temperature"&&n>=0)s.temperature=n;else if(k=="top_p"&&n>0&&n<=1)s.top_p=n;else if(k=="min_p"&&n>=0&&n<=1)s.min_p=n;
     else if(k=="top_k")s.top_k=integer(v,64);else if(k=="penalty_repeat"&&n>0)s.repeat=n;
     else if(k=="penalty_freq"&&n>=0)s.frequency=n;else if(k=="penalty_present"&&n>=0)s.presence=n;
     else if(k=="penalty_last_n"&&n>=-1&&n<=32768&&n==std::floor(n))s.last_n=int(n);
-    else if((k=="ckpt"||k=="turn_at")&&n>=0&&n==std::floor(n)){} // exact current-prefix reuse only in this milestone
     else if((k=="mtp_auto"||k=="lookup_draft")&&n==0){}
     else throw std::runtime_error("Unsupported LFM request option: "+text);}
 int serve(LfmEngine& e){const auto& d=e.device_info();
-    std::printf("INFO backend=sycl experimental=1 model=lfm2.5-24b-a2b family=lfm2moe kv=int8 mtp=0 vision=0 mandatory_thinking=1 memory_model=%s single_weight_store=1 device_vendor=%u device_id=%u device_integrated=%d device_architecture=%s adapter_luid=%s adapter_node_mask=%u kv_used_tokens=0\nREADY %d stop\n",
-        d.integrated?"uma":"discrete",d.vendor_id,d.device_id,int(d.integrated),d.architecture.c_str(),d.adapter_luid.empty()?"unknown":d.adapter_luid.c_str(),d.adapter_node_mask,e.context());std::fflush(stdout);
+    std::printf("INFO backend=sycl experimental=1 model=lfm2.5-24b-a2b family=lfm2moe kv=int8 mtp=0 vision=0 mandatory_thinking=1 lfm_q4_fp32_blocks=%d memory_model=%s single_weight_store=1 device_vendor=%u device_id=%u device_integrated=%d device_architecture=%s adapter_luid=%s adapter_node_mask=%u kv_used_tokens=0\nREADY %d stop\n",
+        int(e.q4_fp32_blocks()),d.integrated?"uma":"discrete",d.vendor_id,d.device_id,int(d.integrated),d.architecture.c_str(),d.adapter_luid.empty()?"unknown":d.adapter_luid.c_str(),d.adapter_node_mask,e.context());std::fflush(stdout);
     strata::common::CommandInbox inbox;std::string line;std::vector<int> live;int reported=0;
     const auto report=[&]{if(reported!=e.consumed()){reported=e.consumed();std::printf("INFO kv_used_tokens=%d\n",reported);std::fflush(stdout);}};
     while(inbox.next(line)){if(line=="QUIT")return 0;if(line.empty())continue;
-        std::vector<int> prompt;int count=0;sampling_policy::Sampling sampling;sampling.temperature=.1f;sampling.top_k=50;sampling.repeat=1.05f;sampling.last_n=64;
+        std::vector<int> prompt;int count=0;lfm_turn::Options turn;sampling_policy::Sampling sampling;sampling.temperature=.1f;sampling.top_k=50;sampling.repeat=1.05f;sampling.last_n=64;
         try{if(line.rfind("GEN ",0)!=0)throw std::runtime_error("LFM supports text GEN only");std::istringstream in(line.substr(4));std::string field,ids;
             if(!(in>>field))throw std::runtime_error("Missing output count");count=integer(field,e.context());
-            while(in>>field){if(ids.empty()&&field.find('=')!=std::string::npos)option(sampling,field);else{if(!ids.empty())ids+=' ';ids+=field;}}
+            while(in>>field){if(ids.empty()&&field.find('=')!=std::string::npos)option(sampling,turn,field);else{if(!ids.empty())ids+=' ';ids+=field;}}
             prompt=parse_tokens(ids);if(!count||prompt.size()+size_t(count)>size_t(e.context()))throw std::runtime_error("LFM request exceeds context");
+            turn.validate(prompt.size(),size_t(e.context()));
             for(int id:prompt)if(id>=e.vocabulary())throw std::runtime_error("LFM token outside vocabulary");
         }catch(const std::exception& error){std::printf("ERR %s\n",error.what());std::fflush(stdout);continue;}
         ExecutionRequest active;const auto start=std::chrono::steady_clock::now();
         if(live.size()!=size_t(e.consumed()))throw std::runtime_error("LFM committed history/position mismatch");
-        if(live.size()>prompt.size()||!std::equal(live.begin(),live.end(),prompt.begin())){e.reset();live.clear();}
+        const auto reuse=lfm_turn::choose(live,prompt,e.turn_prefix(),turn.checkpoint);
+        if(reuse.source==lfm_turn::Source::saved_turn){e.restore_turn(live,prompt);live.resize(reuse.tokens);}
+        else if(reuse.source==lfm_turn::Source::reset){e.reset();live.clear();}
         report();const size_t reused=live.size();std::printf("RESUME %zu\n",reused);std::fflush(stdout);
         const float* logits=nullptr;
-        for(size_t index=reused;index<prompt.size()&&!inbox.cancelled().load();){const int n=int(std::min(size_t(e.chunk()),prompt.size()-index));
+        if(turn.checkpoint&&turn.turn_at&&reused==turn.turn_at&&!inbox.cancelled().load())e.save_turn(live,&inbox.cancelled());
+        for(size_t index=reused;index<prompt.size()&&!inbox.cancelled().load();){const int n=int(lfm_turn::chunk_end(index,prompt.size(),size_t(e.chunk()),turn)-index);
             logits=e.step_many(prompt.data()+index,n,index+n==prompt.size(),&inbox.cancelled());if(!logits)break;
             live.insert(live.end(),prompt.begin()+index,prompt.begin()+index+n);index+=n;report();
+            if(turn.checkpoint&&turn.turn_at&&index==turn.turn_at&&!inbox.cancelled().load())e.save_turn(live,&inbox.cancelled());
             const double elapsed=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
             std::printf("PP %zu %zu %.3f\n",index,prompt.size(),elapsed);std::fflush(stdout);}
         const auto decode_start=std::chrono::steady_clock::now();const double prefill=std::chrono::duration<double,std::milli>(decode_start-start).count();
@@ -284,10 +356,10 @@ int main(int argc,char** argv){try{
                 "\"experimental_model_contracts\":{\"lfm2.5-24b-a2b\":{\"version\":1,\"architecture\":\"lfm2moe\",\"kv_types\":[\"int8\"],\"mtp\":false,\"experimental_mtp_max_depth\":0,\"images\":false,\"thinking\":\"mandatory\",\"mode\":\"target_only\",\"context_max\":131072}},"
                 "\"kv_types\":[\"int8\"],\"images\":false,\"mtp\":false,\"experimental_mtp_max_depth\":0,\"serve\":true,\"capabilities_schema\":1,\"context_auto\":true,\"max_context\":131072,\"mandatory_thinking\":true,"
                 "\"build\":{\"mkl\":%s,\"int8_xmx\":%s,\"aot_target\":\"%s\"},"
-                "\"weight_types\":{\"scalar\":[0,12,14],\"dp4a\":[],\"int8_xmx\":[]}}\n",profiles,mkl,xmx,aot);
+                "\"weight_types\":{\"scalar\":[0,12,14],\"dp4a\":[12],\"int8_xmx\":[]}}\n",profiles,mkl,xmx,aot);
             return 0;
         }
-        if(arg=="--help"){std::puts("tinystrata-intel-lfm2 --model PINNED.gguf [--serve | --tokens IDS | --tokens-file FILE] [--dump-full-logits FILE] [--max-context auto|N] [--chunk N] [--kv-type int8] [--mtp 0] [--prefill-mkl | --no-prefill-mkl] [--device N] [--weight-memory host|shared|device]\nExperimental LFM2.5 target-only causal text. INT8 KV baseline; mandatory thinking; no MTP/images. Exact live-prefix reuse; edited/regenerated histories replay cleanly.");return 0;}
+        if(arg=="--help"){std::puts("tinystrata-intel-lfm2 --model PINNED.gguf [--serve | --tokens IDS | --tokens-file FILE] [--dump-full-logits FILE] [--max-context auto|N] [--chunk N] [--kv-type int8] [--mtp 0] [--prefill-mkl | --no-prefill-mkl] [--device N] [--weight-memory host|shared|device]\nExperimental LFM2.5 target-only causal text. INT8 KV baseline; mandatory thinking; no MTP/images. Exact resident prefix and bounded turn checkpoint reuse; GEN ckpt=0 forces clean replay.");return 0;}
         if(arg=="--serve"){server=true;continue;}if(arg=="--prefill-mkl"){mkl=true;continue;}if(arg=="--no-prefill-mkl"){mkl=false;continue;}
         if(i+1>=argc)throw std::runtime_error("Missing value for "+arg);const std::string value=argv[++i];
         if(arg=="--model")model=value;else if(arg=="--tokens")tokens=value;else if(arg=="--tokens-file")file=value;

@@ -2,13 +2,9 @@
 # Installer preparation only. The caller owns the installation guard and cleanup.
 # No work runs when these definitions are loaded; models are never downloaded.
 
-function Prepare-TinyStrataIntelUiRuntimes {
-    param([string]$SourceRoot, [string]$WorkRoot, [string]$Python, [string]$CatalogPath,
-          [string]$CacheRoot, [string]$SelectedModel, [string]$GuardToken,
-          [AllowEmptyString()][string]$AotTarget, [bool]$Offline,
-          [hashtable]$RuntimeCache,
-          [System.Collections.Generic.List[object]]$Configurations,
-          [System.Collections.Generic.List[string]]$Generations)
+function Get-TinyStrataIntelUiRuntimeCandidates {
+    param([string]$SourceRoot, [string]$WorkRoot, [string]$CatalogPath,
+          [string]$SelectedModel, [AllowEmptyString()][string]$AotTarget, [bool]$Offline)
     if ($Offline) {
         Write-Host 'Offline Intel stage selected: other model runtimes are left unchanged; no additional runtime download.'
         return
@@ -52,6 +48,35 @@ function Prepare-TinyStrataIntelUiRuntimes {
             }
         }
         Assert-TinyStrataIntelManagedDeviceSelection -Configuration $cfg
+        [pscustomobject]@{Family=$family;Path=$path;Configuration=$cfg;Profile=$profile;AotTarget=$target;Artifact=$artifact}
+    }
+}
+
+function Assert-TinyStrataIntelUiRuntimesCurrent {
+    param([string]$SourceRoot, [string]$WorkRoot, [string]$CatalogPath,
+          [string]$SelectedModel, [AllowEmptyString()][string]$AotTarget)
+    # Running services must not keep an older managed peer merely because the
+    # selected model shares an unchanged package. Never replace it hot or stop
+    # an app here; the ordinary stopped transaction owns adoption/rollback.
+    foreach ($entry in @(Get-TinyStrataIntelUiRuntimeCandidates -SourceRoot $SourceRoot -WorkRoot $WorkRoot `
+        -CatalogPath $CatalogPath -SelectedModel $SelectedModel -AotTarget $AotTarget -Offline $false)) {
+        if (-not (Test-TinyStrataIntelRuntimeCurrent -Configuration $entry.Configuration -WorkRoot $WorkRoot -Artifact $entry.Artifact)) {
+            throw "A published Intel UI runtime is missing, older or invalid for $($entry.Family.Model). Stop this installation's API and UI, then rerun the installer to update it. The running services were left unchanged."
+        }
+    }
+}
+
+function Prepare-TinyStrataIntelUiRuntimes {
+    param([string]$SourceRoot, [string]$WorkRoot, [string]$Python, [string]$CatalogPath,
+          [string]$CacheRoot, [string]$SelectedModel, [string]$GuardToken,
+          [AllowEmptyString()][string]$AotTarget, [bool]$Offline,
+          [hashtable]$RuntimeCache,
+          [System.Collections.Generic.List[object]]$Configurations,
+          [System.Collections.Generic.List[string]]$Generations)
+    foreach ($entry in @(Get-TinyStrataIntelUiRuntimeCandidates -SourceRoot $SourceRoot -WorkRoot $WorkRoot `
+        -CatalogPath $CatalogPath -SelectedModel $SelectedModel -AotTarget $AotTarget -Offline $Offline)) {
+        $family=$entry.Family;$path=$entry.Path;$cfg=$entry.Configuration
+        $profile=$entry.Profile;$target=$entry.AotTarget;$artifact=$entry.Artifact
         $key = $artifact.manifest_sha256.ToLowerInvariant() + ':' + $artifact.executable_sha256.ToLowerInvariant()
         $runtime = $RuntimeCache[$key]
         if (-not $runtime -and (Test-TinyStrataIntelRuntimeCurrent -Configuration $cfg -WorkRoot $WorkRoot -Artifact $artifact)) {

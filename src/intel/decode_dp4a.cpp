@@ -53,6 +53,7 @@ template<int Type> constexpr size_t row_bytes(size_t width) {
     if constexpr (Type == 8) return width / 32 * 34;
     if constexpr (Type == 10) return width / 256 * 84;
     if constexpr (Type == 11) return width / 256 * 110;
+    if constexpr (Type == 12) return width / 256 * 144;
     if constexpr (Type == 14) return width / 256 * 210;
     if constexpr (Type == 18) return width / 256 * 98;
     if constexpr (Type == 21) return width / 256 * 110;
@@ -189,11 +190,25 @@ template<int Type, int Tile, bool Grouped = false> sycl::event product(sycl::que
             }
         } else if (ids) input_rows[0] = int(separate ? pick : pick / picks);
         U columns(0, 4);
-        if constexpr (Type == 10 || Type == 11) {
+        if constexpr (Type == 10 || Type == 11 || Type == 12) {
             for (size_t base = 0; base < size_t(width); base += 64) {
-                const uint8_t* block = w + (base / 256) * (Type == 10 ? 84 : 110);
+                const uint8_t* block = w + (base / 256) * (Type == 10 ? 84 : Type == 11 ? 110 : 144);
                 U col = columns + uint32_t(base % 256);
-                if constexpr (Type == 10) {
+                if constexpr (Type == 12) {
+                    // GGML Q4_K: one affine scale/min pair per32 values.
+                    // Keep all original packed weights and compensate the
+                    // minimum with the dot of Q8 activations and byte ones.
+                    const U group = col >> 5;
+                    const U a = bytes(block, 4 + group);
+                    const U b = bytes(block, 8 + group);
+                    const U previous = bytes(block, group);
+                    U scale = a & 63u, minimum = b & 63u;
+                    scale.merge((b & 15u) | ((previous >> 6) << 4), group >= 4);
+                    minimum.merge((b >> 4) | ((a >> 6) << 4), group >= 4);
+                    const U packed = (words(block, 16 + (col >> 6) * 32 + (col & 31)) >> (((col >> 5) & 1) * 4)) & 0x0f0f0f0fu;
+                    accumulate_affine<Tile>(sum, packed, F(scale) * half_scalar(block),
+                        F(minimum) * half_scalar(block + 2), x, dx, base, width, tile_tokens, input_rows);
+                } else if constexpr (Type == 10) {
                     U packed = (words(block, 16 + (col >> 7) * 32 + (col & 31)) >> (((col & 127) >> 5) * 2)) & 0x03030303u;
                     U scales = bytes(block, col >> 4);
                     F dw = F(scales & 15) * half_scalar(block + 80);
@@ -390,7 +405,7 @@ sycl::event DecodeDp4a::selected(int type, const uint8_t* weights, const int32_t
     p.quantization = quantize_decode_input(p.q, input, p.input, p.scales, width, separate ? picks * tokens : tokens, p.error);
 #define PRODUCT(T,Tile) product<T,Tile>(p.q, weights, p.input, p.scales, ids, picks, tokens, output, rows, width, separate, p.iq2, p.iq3, p.iq4, p.iq3xxs, p.iq_signs)
 #define RUN(T) ((!ids && tokens > 4) ? PRODUCT(T,8) : (!ids && tokens > 1) ? PRODUCT(T,4) : PRODUCT(T,1))
-    switch (type) { case 8: return RUN(8); case 10: return RUN(10); case 11: return RUN(11); case 14: return RUN(14); case 18: return RUN(18); case 21: return RUN(21); case 22: return RUN(22); case 23: return RUN(23);
+    switch (type) { case 8: return RUN(8); case 10: return RUN(10); case 11: return RUN(11); case 12: return RUN(12); case 14: return RUN(14); case 18: return RUN(18); case 21: return RUN(21); case 22: return RUN(22); case 23: return RUN(23);
         default: throw std::invalid_argument("Unsupported DP4A weight type"); }
 #undef RUN
 #undef PRODUCT
@@ -414,7 +429,7 @@ sycl::event DecodeDp4a::grouped(int type, const uint8_t* weights, ExpertPlan pla
 #endif
 #define GROUP_PRODUCT(T,Tile) product<T,Tile,true>(p.q, weights, p.input, p.scales, nullptr, plan.picks, plan.tokens, output, rows, width, separate, p.iq2, p.iq3, p.iq4, p.iq3xxs, p.iq_signs, plan)
 #define RUN(T) (plan.tile_width == 2 ? GROUP_PRODUCT(T,2) : GROUP_PRODUCT(T,4))
-    switch (type) { case 8: return RUN(8); case 10: return RUN(10); case 11: return RUN(11); case 14: return RUN(14); case 18: return RUN(18); case 21: return RUN(21); case 22: return RUN(22); case 23: return RUN(23);
+    switch (type) { case 8: return RUN(8); case 10: return RUN(10); case 11: return RUN(11); case 12: return RUN(12); case 14: return RUN(14); case 18: return RUN(18); case 21: return RUN(21); case 22: return RUN(22); case 23: return RUN(23);
         default: throw std::invalid_argument("Unsupported grouped DP4A weight type"); }
 #undef RUN
 #undef GROUP_PRODUCT
