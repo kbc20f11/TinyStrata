@@ -753,7 +753,12 @@ public:
             weights_ = WeightStore::load(q_, path, memory, vocab_xmx, expert_layout, dense_layout, dense_split_k, experimental_tiel, experimental_clover);
             clover_ = weights_->geometry().family == strata::ModelFamily::CloverMoe;
             if (expert_layout) std::fprintf(stderr, "Intel expert_layout=interleaved16 Q8_activations=1 single_weight_store=1\n");
-            if (vocab_xmx) std::fprintf(stderr, "Intel vocabulary=interleaved_Q6_K XMX unchanged_quantization=1 single_weight_store=1\n");
+            if (vocab_xmx) {
+                if (weights_->tensors().at("output.weight").layout == WeightLayout::Q6Interleaved16)
+                    std::fprintf(stderr, "Intel vocabulary=interleaved_Q6_K XMX unchanged_quantization=1 single_weight_store=1\n");
+                else
+                    std::fprintf(stderr, "Intel vocabulary=original_GGUF requested_vocab_xmx=1 q6_interleaving=0 unchanged_quantization=1 single_weight_store=1\n");
+            }
             const auto& g = weights_->geometry();
             if (draft_vocab_limit_ > int(g.n_vocab)) throw std::runtime_error("Draft vocabulary limit exceeds the real vocabulary");
             if (mtp_depth && g.n_mtp_layers < 1) throw std::runtime_error("MTP requested but this GGUF has no draft block");
