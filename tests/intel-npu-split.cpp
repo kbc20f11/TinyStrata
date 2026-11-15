@@ -21,12 +21,16 @@ int main(int argc, char** argv) {
         strata::paths::Utf8Arguments arguments(argc, argv); argc=arguments.argc(); argv=arguments.argv();
         const bool sweep=argc==3 && std::strcmp(argv[2],"--sweep")==0;
         const bool probe=argc==3 && std::strcmp(argv[2],"--probe")==0;
-        if (argc != 2 && !sweep && !probe) throw std::runtime_error("Usage: intel_npu_split_test projection-fixture.bin [--sweep|--probe]");
+        const bool unprofiled=argc==3 && std::strcmp(argv[2],"--focus-unprofiled")==0;
+        const bool focus=argc==3 && (std::strcmp(argv[2],"--focus")==0 || unprofiled);
+        if (argc != 2 && !sweep && !probe && !focus) throw std::runtime_error("Usage: intel_npu_split_test projection-fixture.bin [--sweep|--probe|--focus]");
         std::ifstream f(strata::paths::native_path(argv[1]),std::ios::binary);
         int rows=0,width=0;
         f.read(reinterpret_cast<char*>(&rows),4); f.read(reinterpret_cast<char*>(&width),4);
         if (!f || width!=2048 || (rows!=4096 && rows!=8192)) throw std::runtime_error("Invalid fixture");
-        sycl::queue q(strata::intel::select_device(0), sycl::property_list{sycl::property::queue::in_order{},sycl::property::queue::enable_profiling{}});
+        const auto properties=unprofiled?sycl::property_list{sycl::property::queue::in_order{}}:
+            sycl::property_list{sycl::property::queue::in_order{},sycl::property::queue::enable_profiling{}};
+        sycl::queue q(strata::intel::select_device(0),properties);
         const size_t bytes=size_t(rows)*(width/256)*210, count=1024ull*rows;
         auto w=sycl::malloc_host<uint8_t>(bytes,q);
         auto x=sycl::malloc_shared<float>(1024ull*width,q);
@@ -40,9 +44,9 @@ int main(int argc, char** argv) {
         for (size_t i=0;i<1024ull*width;++i) x[i]=std::sin(float(i%1987)*.013f)*.3f;
         strata::intel::PrefillGemm gpu(q,1,1024);
         strata::intel::NpuProjection npu(q);
-        const auto tokens_to_test=probe?std::vector<int>{128}:sweep?std::vector<int>{128,256,512,1024}:std::vector<int>{128,257,1024};
-        const auto rows_to_test=probe?std::vector<int>{rows/16,rows/8}:sweep?std::vector<int>{rows/16,rows/8,rows/4,rows/2}:std::vector<int>{1024};
-        for (bool interleaved : (probe?std::vector<bool>{false}:std::vector<bool>{false,true})) for (int tokens : tokens_to_test) for(int npu_rows:rows_to_test) for(bool reuse:((sweep||probe)?std::vector<bool>{false,true}:std::vector<bool>{true})) {
+        const auto tokens_to_test=probe?std::vector<int>{128}:focus?std::vector<int>{256,512,1024}:sweep?std::vector<int>{128,256,512,1024}:std::vector<int>{128,257,1024};
+        const auto rows_to_test=probe?std::vector<int>{rows/16,rows/8}:focus?std::vector<int>{rows==8192?1024:256,rows/2}:sweep?std::vector<int>{rows/16,rows/8,rows/4,rows/2}:std::vector<int>{1024};
+        for (bool interleaved : (probe?std::vector<bool>{false}:focus?std::vector<bool>{true}:std::vector<bool>{false,true})) for (int tokens : tokens_to_test) for(int npu_rows:rows_to_test) for(bool reuse:((sweep||probe)?std::vector<bool>{false,true}:std::vector<bool>{true})) {
             auto dense=[&](){ return interleaved?gpu.dense_interleaved_q6(packed,x,a,rows,width,tokens):gpu.dense(14,w,x,a,rows,width,tokens); };
             for (size_t i=size_t(tokens)*rows;i<size_t(tokens)*rows+32;++i) a[i]=b[i]=12345.f;
             dense().wait_and_throw();
@@ -56,12 +60,12 @@ int main(int argc, char** argv) {
                     for (bool overlap : {false,true}) {
                         sycl::event end; started=Clock::now();
                         strata::intel::NpuSplitOptions options;
-                        options.parallel=overlap;options.remote=remote;options.interleaved=interleaved;options.reuse_tensors=reuse;options.profile_stages=true;
+                        options.parallel=overlap;options.remote=remote;options.interleaved=interleaved;options.reuse_tensors=reuse;options.profile_stages=!unprofiled;
                         if (!npu.run_split(gpu,14,interleaved?packed:w,x,b,rows,width,tokens,npu_rows,options,end)) throw std::runtime_error("Split rejected fixture");
                         end.wait_and_throw();
                         if(r>=3) (overlap?parallel:serial).push_back(milliseconds(started));
                         const auto timing=npu.last_split_timing();
-                        if(!timing.valid || timing.npu_rows!=npu_rows || timing.gpu_remainder_ms<0 || timing.input_convert_gpu_ms<0)throw std::runtime_error("Missing completed stage profile");
+                        if(!timing.valid || timing.npu_rows!=npu_rows || (!unprofiled && (timing.gpu_remainder_ms<0 || timing.input_convert_gpu_ms<0)))throw std::runtime_error("Missing completed stage profile");
                         if(r>=3 && overlap)stages.push_back(timing);
                         if(r==0) for(size_t i=0;i<size_t(tokens)*rows;++i) {
                             const double error=std::abs(double(b[i])-a[i]);
@@ -101,10 +105,10 @@ int main(int argc, char** argv) {
                 const auto stage_median=[&](double strata::intel::NpuSplitTiming::* member){std::vector<double> values;for(const auto& t:stages)values.push_back(t.*member);return median(values);};
                 using T=strata::intel::NpuSplitTiming;
                 const auto memory=npu.memory_usage();const auto coverage=npu.split_counters();
-                std::printf("{\"rows\":%d,\"tokens\":%d,\"npu_rows\":%d,\"remote\":%s,\"interleaved\":%s,\"reuse_tensors\":%s,\"profiling_fences\":true,\"gpu_ms\":%.6f,\"serial_ms\":%.6f,\"parallel_ms\":%.6f,\"max_abs\":%.8g,\"finite\":true,\"canary\":true,\"fp64\":true,",
-                    rows,tokens,npu_rows,remote?"true":"false",interleaved?"true":"false",reuse?"true":"false",median(full),median(serial),median(parallel),maxerr);
-                std::printf("\"stages_ms\":{\"compile\":%.6f,\"prior_gpu_drain\":%.6f,\"weight_submit\":%.6f,\"input_submit\":%.6f,\"prepare_wait\":%.6f,\"bind\":%.6f,\"npu_submit\":%.6f,\"npu_wait\":%.6f,\"npu_host_span\":%.6f,\"gpu_submit\":%.6f,\"input_kernel\":%.6f,\"weight_kernel\":%.6f,\"gpu_remainder\":%.6f,\"gpu_compute_event\":%.6f,\"gpu_gather\":%.6f,\"npu_merge\":%.6f},",
-                    stage_median(&T::compile_ms),stage_median(&T::prior_gpu_drain_ms),stage_median(&T::weight_prepare_ms),stage_median(&T::input_prepare_ms),stage_median(&T::prepare_wait_ms),stage_median(&T::tensor_bind_ms),stage_median(&T::npu_submit_ms),stage_median(&T::npu_wait_ms),stage_median(&T::npu_host_span_ms),stage_median(&T::gpu_submit_ms),stage_median(&T::input_convert_gpu_ms),stage_median(&T::weight_decode_gpu_ms),stage_median(&T::gpu_remainder_ms),stage_median(&T::gpu_compute_event_ms),stage_median(&T::gpu_gather_ms),stage_median(&T::npu_merge_ms));
+                std::printf("{\"rows\":%d,\"tokens\":%d,\"npu_rows\":%d,\"remote\":%s,\"interleaved\":%s,\"reuse_tensors\":%s,\"profiling_fences\":%s,\"gpu_ms\":%.6f,\"serial_ms\":%.6f,\"parallel_ms\":%.6f,\"max_abs\":%.8g,\"finite\":true,\"canary\":true,\"fp64\":true,",
+                    rows,tokens,npu_rows,remote?"true":"false",interleaved?"true":"false",reuse?"true":"false",unprofiled?"false":"true",median(full),median(serial),median(parallel),maxerr);
+                std::printf("\"gpu_gather_eliminated\":true,\"stages_ms\":{\"compile\":%.6f,\"prior_gpu_drain\":%.6f,\"weight_submit\":%.6f,\"input_submit\":%.6f,\"prepare_wait\":%.6f,\"bind\":%.6f,\"npu_submit\":%.6f,\"npu_wait\":%.6f,\"npu_host_span\":%.6f,\"gpu_submit\":%.6f,\"input_kernel\":%.6f,\"weight_kernel\":%.6f,\"gpu_remainder\":%.6f,\"gpu_compute_event\":%.6f,\"gpu_gather\":%.6f,\"npu_merge\":%.6f,\"gpu_status_query\":%.6f},",
+                    stage_median(&T::compile_ms),stage_median(&T::prior_gpu_drain_ms),stage_median(&T::weight_prepare_ms),stage_median(&T::input_prepare_ms),stage_median(&T::prepare_wait_ms),stage_median(&T::tensor_bind_ms),stage_median(&T::npu_submit_ms),stage_median(&T::npu_wait_ms),stage_median(&T::npu_host_span_ms),stage_median(&T::gpu_submit_ms),stage_median(&T::input_convert_gpu_ms),stage_median(&T::weight_decode_gpu_ms),stage_median(&T::gpu_remainder_ms),stage_median(&T::gpu_compute_event_ms),stage_median(&T::gpu_gather_ms),stage_median(&T::npu_merge_ms),stage_median(&T::gpu_status_query_ms));
                 std::printf("\"cache_bytes\":%zu,\"host_usm_bytes\":%zu,\"device_usm_bytes\":%zu,\"opaque_reservation_bytes\":%zu,\"graph_count\":%zu,\"tensor_bindings\":%zu,\"eligible\":%zu,\"served\":%zu,\"cache_capacity_skips\":%zu,\"shape_capacity_skips\":%zu}\n",memory.fp16_cache_used_bytes,memory.host_usm_bytes,memory.device_usm_bytes,memory.opaque_runtime_reservation_bytes,memory.compiled_graphs,memory.tensor_bindings,coverage.eligible,coverage.served,coverage.cache_capacity_skips,coverage.graph_capacity_skips);
                 std::fflush(stdout);
             }

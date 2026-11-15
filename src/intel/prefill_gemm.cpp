@@ -51,9 +51,10 @@ struct PrefillGemm::Impl {
 };
 PrefillGemm::PrefillGemm(sycl::queue& q, int context, int max_tokens) : impl_(std::make_unique<Impl>(q, context, max_tokens)) {}
 PrefillGemm::~PrefillGemm() = default;
-sycl::event PrefillGemm::dense(int type, const uint8_t* weights, const float* input, float* output, int rows, int width, int tokens) {
+sycl::event PrefillGemm::dense(int type, const uint8_t* weights, const float* input, float* output, int rows, int width, int tokens, int output_stride) {
     auto& p = *impl_;
-    if(rows<1||width<1||tokens<1||size_t(tokens)*width>p.input_elements||size_t(width)>p.weight_elements)
+    if(rows<1||width<1||tokens<1||size_t(tokens)*width>p.input_elements||size_t(width)>p.weight_elements ||
+       (output_stride != 0 && output_stride < rows))
         throw std::invalid_argument("Intel dense GEMM exceeds bounded scratch");
     int block=0,bytes=0;
     if(!strata::block_geometry(uint32_t(type),block,bytes)||width%block)throw std::invalid_argument("Invalid dense GEMM weight format");
@@ -64,14 +65,15 @@ sycl::event PrefillGemm::dense(int type, const uint8_t* weights, const float* in
     for(int first=0;first<rows;first+=tile){
         const int count=std::min(tile,rows-first);
         auto w=dequantize_half(p.q,type,weights+size_t(first)*row_bytes,p.weights,size_t(count)*width);
-        last=p.gemm(output+first,count,width,tokens,{w,x},false,rows);
+        last=p.gemm(output+first,count,width,tokens,{w,x},false,output_stride ? output_stride : rows);
     }
     return last;
 }
-sycl::event PrefillGemm::dense_interleaved_q6(const uint8_t* weights, const float* input, float* output, int rows, int width, int tokens) {
+sycl::event PrefillGemm::dense_interleaved_q6(const uint8_t* weights, const float* input, float* output, int rows, int width, int tokens, int output_stride) {
     auto& p = *impl_;
     p.validate(rows, width, tokens, false);
     if (rows % 16 || width % 256) throw std::invalid_argument("Interleaved dense GEMM needs complete tiles");
+    if (output_stride != 0 && output_stride < rows) throw std::invalid_argument("Invalid dense GEMM output stride");
     sycl::half* decoded = p.weights;
     auto w = p.q.parallel_for(sycl::range<1>(size_t(rows) * width), [=](sycl::id<1> id) {
         // Enumerate adjacent output rows for coalesced reads and writes. The
@@ -89,7 +91,7 @@ sycl::event PrefillGemm::dense_interleaved_q6(const uint8_t* weights, const floa
         decoded[col * rows + row] = sycl::half(delta * float(scale) * float((low | (high << 4)) - 32));
     });
     auto x = convert_half(p.q, input, p.input, size_t(tokens) * width);
-    return p.gemm(output, rows, width, tokens, {w,x}, true);
+    return p.gemm(output, rows, width, tokens, {w,x}, true, output_stride);
 }
 sycl::event PrefillGemm::selected(int type, const uint8_t* weights, size_t expert_bytes, ExpertPlan plan,
     const float* input, float* output, int rows, int width, bool separate_inputs, bool interleaved) {

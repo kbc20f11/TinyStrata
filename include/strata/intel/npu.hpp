@@ -15,6 +15,7 @@ struct NpuSplitTiming {
     double compile_ms = 0, weight_prepare_ms = 0, input_prepare_ms = 0;
     double prepare_wait_ms = 0, tensor_bind_ms = 0, npu_submit_ms = 0;
     double gpu_submit_ms = 0, npu_wait_ms = 0, npu_host_span_ms = 0, host_ms = 0;
+    double gpu_status_query_ms = 0;
     // Profiling-only prior-work fence perturbs scheduling; not a speedup claim.
     double prior_gpu_drain_ms = -1, weight_decode_gpu_ms = -1, input_convert_gpu_ms = -1;
     // GPU timestamps include conversion/dequantization in the remainder span.

@@ -31,10 +31,9 @@ struct NpuProjection::Impl {
     NpuSplitTiming timing;
     NpuSplitCounters counters;
     sycl::event timing_weight, timing_input;
-    sycl::event timing_gpu_begin, timing_gpu_compute, timing_gpu_gather, timing_merge;
+    sycl::event timing_gpu_begin, timing_gpu_compute, timing_merge;
     size_t calls = 0;
     double wall_ms = 0;
-    float* split_gpu_output = nullptr;
     static constexpr size_t split_cache_elements = 64 * 1024 * 1024;
     size_t split_cache_used = 0, split_calls = 0, split_hits = 0;
     double split_compile_ms = 0, split_prepare_ms = 0, split_wait_ms = 0;
@@ -70,7 +69,6 @@ struct NpuProjection::Impl {
         for(const auto& entry:split_cache) {
             try {sycl::free(entry.second,q);} catch(const std::exception& error){std::fprintf(stderr,"NPU slice release: %s\n",error.what());}
         }
-        if (split_gpu_output) sycl::free(split_gpu_output, q);
         for (void* buffer : {static_cast<void*>(output), static_cast<void*>(input), static_cast<void*>(weights)}) {
             try { sycl::free(buffer, q); } catch (const std::exception& error) { std::fprintf(stderr, "NPU scratch release: %s\n", error.what()); }
         }
@@ -149,10 +147,6 @@ bool NpuProjection::run_split(PrefillGemm& gpu, int type, const uint8_t* weights
     ++p.counters.eligible;
     const auto graph_key=std::make_tuple(npu_rows,width,tokens);
     if (!p.graphs.count(graph_key) && p.graphs.size()>=p.graph_limit) {++p.counters.graph_capacity_skips;return false;}
-    if (!p.split_gpu_output) {
-        p.split_gpu_output=sycl::malloc_device<float>(p.activation_elements,p.q);
-        if(!p.split_gpu_output) throw std::runtime_error("NPU split scratch allocation failed");
-    }
     const auto key = std::make_tuple(weights, type + (interleaved ? 1000 : 0), npu_rows, width);
     const size_t elements = size_t(npu_rows) * width;
     auto found = p.split_cache.find(key);
@@ -270,19 +264,18 @@ bool NpuProjection::run_split(PrefillGemm& gpu, int type, const uint8_t* weights
         p.timing.npu_submit_ms=elapsed(started);
         if(p.timing.profiled) p.timing_gpu_begin=p.q.ext_oneapi_submit_barrier();
         started=std::chrono::steady_clock::now();
-        auto gpu_compute=interleaved?gpu.dense_interleaved_q6(weights + size_t(npu_rows) * stride, input, p.split_gpu_output, gpu_rows, width, tokens):
-            gpu.dense(type, weights + size_t(npu_rows) * stride, input, p.split_gpu_output, gpu_rows, width, tokens);
+        auto gpu_compute=interleaved?gpu.dense_interleaved_q6(weights + size_t(npu_rows) * stride, input, output+npu_rows, gpu_rows, width, tokens,rows):
+            gpu.dense(type, weights + size_t(npu_rows) * stride, input, output+npu_rows, gpu_rows, width, tokens,rows);
         p.timing.gpu_submit_ms=elapsed(started);p.timing_gpu_compute=gpu_compute;
-        const float* gpu_result = p.split_gpu_output;
-        auto gpu_end = p.q.submit([&](sycl::handler& handler){handler.depends_on(gpu_compute);handler.parallel_for(sycl::range<1>(size_t(tokens) * gpu_rows), [=](sycl::id<1> id) {
-            const size_t token = id[0] / gpu_rows, row = id[0] % gpu_rows;
-            output[token * rows + npu_rows + row] = gpu_result[id[0]];
-        });});
-        p.timing_gpu_gather=gpu_end;
+        // GEMM writes the final strided remainder directly: no 32MiB staging
+        // allocation or gather kernel. Prefix rows remain exclusively NPU's.
         // Nonblocking observation; profiling no longer forces GPU completion
         // before NPUwait, which previously hid most actual host waiting.
-        if (parallel && gpu_end.get_info<sycl::info::event::command_execution_status>()==sycl::info::event_command_status::complete) {
-            if (!graph.request.wait_for(std::chrono::milliseconds(0))) ++p.split_gpu_done_npu_pending;
+        if (parallel && p.timing.profiled) {
+            started=std::chrono::steady_clock::now();
+            if(gpu_compute.get_info<sycl::info::event::command_execution_status>()==sycl::info::event_command_status::complete &&
+               !graph.request.wait_for(std::chrono::milliseconds(0))) ++p.split_gpu_done_npu_pending;
+            p.timing.gpu_status_query_ms=elapsed(started);
         }
         started = std::chrono::steady_clock::now();
         if (parallel) graph.request.wait();
@@ -293,11 +286,11 @@ bool NpuProjection::run_split(PrefillGemm& gpu, int type, const uint8_t* weights
     p.timing.npu_wait_ms=parallel?elapsed(started):0;
     p.timing.npu_host_span_ms=elapsed(npu_begin);p.split_wait_ms+=p.timing.npu_wait_ms;
     const float* npu_result = p.output;
-    completion = p.q.submit([&](sycl::handler& handler){handler.depends_on(p.timing_gpu_gather);handler.parallel_for(sycl::range<1>(size_t(tokens) * npu_rows), [=](sycl::id<1> id) {
+    completion = p.q.submit([&](sycl::handler& handler){handler.depends_on(p.timing_gpu_compute);handler.parallel_for(sycl::range<1>(size_t(tokens) * npu_rows), [=](sycl::id<1> id) {
         const size_t token = id[0] / npu_rows, row = id[0] % npu_rows;
         output[token * rows + row] = npu_result[id[0]];
     });});
-    p.timing_merge=completion;p.timing.valid=true;p.timing.host_ms=elapsed(call_start);
+    p.timing_merge=completion;p.timing.valid=true;p.timing.gpu_gather_ms=0;p.timing.host_ms=elapsed(call_start);
     ++p.split_calls;
     ++p.counters.served;if(p.timing.cache_hit)++p.counters.cache_hits;
     return true;
@@ -311,7 +304,7 @@ NpuSplitTiming NpuProjection::last_split_timing() const {
     result.gpu_compute_event_ms=double(end(p.timing_gpu_compute)-begin(p.timing_gpu_compute))*1e-6;
     result.weight_decode_gpu_ms=result.cache_hit?0:double(end(p.timing_weight)-begin(p.timing_weight))*1e-6;
     result.input_convert_gpu_ms=double(end(p.timing_input)-begin(p.timing_input))*1e-6;
-    result.gpu_gather_ms=double(end(p.timing_gpu_gather)-begin(p.timing_gpu_gather))*1e-6;
+    result.gpu_gather_ms=0; // Eliminated operation, not an unavailable timer.
     result.npu_merge_ms=double(end(p.timing_merge)-begin(p.timing_merge))*1e-6;
     return result;
 }
@@ -320,7 +313,7 @@ NpuSplitCounters NpuProjection::split_counters() const {return impl_->counters;}
 NpuMemoryUsage NpuProjection::memory_usage() const {
     const auto& p=*impl_;NpuMemoryUsage result;
     result.host_usm_bytes=p.weight_elements*sizeof(sycl::half)+p.activation_elements*(sizeof(sycl::half)+sizeof(float));
-    if(p.split_gpu_output){result.fp16_cache_capacity_bytes=p.split_cache_elements*sizeof(sycl::half);result.host_usm_bytes+=p.split_cache_used*sizeof(sycl::half);result.device_usm_bytes=p.activation_elements*sizeof(float);}
+    if(p.counters.eligible){result.fp16_cache_capacity_bytes=p.split_cache_elements*sizeof(sycl::half);result.host_usm_bytes+=p.split_cache_used*sizeof(sycl::half);}
     result.fp16_cache_used_bytes=p.split_cache_used*sizeof(sycl::half);result.compiled_graphs=p.graphs.size();
     for(const auto& item:p.graphs) result.tensor_bindings+=2+item.second.host_weights.size()+item.second.remote_weights.size()+(item.second.remote_input?2:0);
     return result;
