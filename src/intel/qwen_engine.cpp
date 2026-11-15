@@ -8,6 +8,7 @@
 #include "strata/intel/q8_xmx.hpp"
 #include "strata/intel/kv_q8.hpp"
 #include "strata/intel/execution_request.hpp"
+#include "strata/intel/turn_checkpoint.hpp"
 #ifdef TINYSTRATA_INTEL_MKL
 #include "strata/intel/prefill_gemm.hpp"
 #endif
@@ -21,6 +22,9 @@
 #include "strata/intel/speculative_distribution.hpp"
 #include "strata/intel/sampling_policy.hpp"
 #include "strata/intel/draft_vocabulary.hpp"
+#include "strata/intel/gpu_sampling_candidate.hpp"
+#include "strata/intel/gpu_support_policy.hpp"
+#include <cstdlib>
 #include <functional>
 #include <algorithm>
 #include <atomic>
@@ -59,6 +63,12 @@ class Engine {
     std::vector<int32_t> draft_vocab_host_;
     uint64_t draft_vocab_updates_ = 0;
     double draft_vocab_prepare_ms_ = 0;
+    std::unique_ptr<GpuSamplingCandidate> gpu_sampling_candidate_;
+    bool gpu_support_sampling_ = false;
+    GpuSamplingCandidate& gpu_sampling_candidate() {
+        if (!gpu_sampling_candidate_) gpu_sampling_candidate_ = std::make_unique<GpuSamplingCandidate>(q_, vocabulary());
+        return *gpu_sampling_candidate_;
+    }
     uint64_t mtp_windows_ = 0, mtp_offered_ = 0, mtp_accepted_ = 0;
     double mtp_draft_ms_ = 0, mtp_verify_ms_ = 0, mtp_commit_ms_ = 0;
     bool verifying_ = false;
@@ -112,6 +122,16 @@ class Engine {
     int position_ = 0;
     int terminal_token_ = -1;
     bool logits_valid_ = false;
+    // One independent host snapshot; never alias speculative/cancellation
+    // scratch. KV rows remain resident and are guarded by both exact prefixes.
+    struct TurnSnapshot {
+        std::vector<uint8_t> bytes;
+        std::vector<int> tokens;
+        int position = 0;
+        void invalidate() { position = 0; tokens.clear(); }
+    } turn_snapshot_;
+    bool turn_checkpoint_enabled_ = false;
+    size_t turn_checkpoint_bytes_ = 0;
     void free_allocations() noexcept {
         for (void* allocation : allocations_) {
             try { sycl::free(allocation, q_); }
@@ -154,6 +174,21 @@ class Engine {
         const auto& t = tensor(name);
         const int width = int(t.info.shape[0]);
         const int rows = t.info.shape.size() < 2 ? 1 : int(t.info.shape[1]);
+#ifdef TINYSTRATA_INTEL_NPU
+        const char* split_mode = std::getenv("STRATA_REVIEW_NPU_SPLIT");
+#ifdef TINYSTRATA_INTEL_MKL
+        if (npu_ && gemm_ && split_mode && *split_mode && tokens >= 128 &&
+            (name.find("attn_qkv.weight") != std::string::npos || name.find("attn_gate.weight") != std::string::npos)) {
+            sycl::event completion;
+            if (npu_->run_split(*gemm_, int(t.info.type), t.data, input, output, rows, width, tokens,
+                               1024, std::string(split_mode) != "serial", std::string(split_mode) == "remote", completion,
+                               t.layout == WeightLayout::Q6Interleaved16)) {
+                remember("npu_split_join", completion);
+                return;
+            }
+        }
+#endif
+#endif
         if (t.layout == WeightLayout::Q6Interleaved16) {
             if (!dp4a_) throw std::runtime_error("Interleaved vocabulary requires the Q8 input engine");
             if (tokens <= verify_capacity) {
@@ -181,7 +216,7 @@ class Engine {
             return;
         }
 #ifdef TINYSTRATA_INTEL_NPU
-        if (npu_ && tokens >= 128 && t.info.type != 0) {
+        if (npu_ && !split_mode && tokens >= 128 && t.info.type != 0) {
             remember("npu_output_copy", npu_->run(int(t.info.type), t.data, input, output, rows, width, tokens));
             return;
         }
@@ -360,7 +395,7 @@ class Engine {
                 } else for (int token = 0; token < tokens; ++token) attention_row(state, token, recording_ ? recording_extent_ : position + token + 1);
             } else {
 #ifdef TINYSTRATA_INTEL_MKL
-            if (gemm_ && tokens >= 1024) remember("mkl_attention_gate", gemm_->attention(query_, query_gate_, visible_keys, visible_values,
+            if (gemm_ && tokens >= 1008) remember("mkl_attention_gate", gemm_->attention(query_, query_gate_, visible_keys, visible_values,
                 attention_, heads, kv_heads, context, position, tokens));
             else
 #endif
@@ -653,6 +688,21 @@ public:
         q_(select_device(device_index), [](sycl::exception_list errors) { for (const auto& error : errors) std::rethrow_exception(error); },
            profiling ? sycl::property_list{sycl::property::queue::in_order{}, sycl::property::queue::enable_profiling{}}
                      : sycl::property_list{sycl::property::queue::in_order{}}), profiling_(profiling), prefill_xmx_(prefill_xmx), context_(context), chunk_(chunk) {
+        const auto selected_device = inspect_device(q_.get_device());
+        if (const char* limitation = baseline_limitation(selected_device.capabilities)) throw std::runtime_error(limitation);
+#ifdef TINYSTRATA_INTEL_AOT_TARGET
+        if (std::string(TINYSTRATA_INTEL_AOT_TARGET) == "intel_gpu_ptl_h" && !selected_device.ptl_h_aot)
+            throw std::runtime_error("This PTL-H AOT runtime needs Panther Lake; select the generic SPIR-V runtime for this Intel GPU");
+#endif
+        if (!supports_xmx(selected_device.capabilities)) {
+            if (prefill_xmx || verify_xmx || prefill_int8_xmx || vocab_xmx || expert_layout || dense_layout)
+                std::fprintf(stderr, "Intel matrix/ESIMD capability unavailable; using original-layout GPU kernels\n");
+            prefill_xmx = prefill_xmx_ = verify_xmx = prefill_int8_xmx = vocab_xmx = false;
+            expert_layout = dense_layout = dense_split_k = false;
+            draft_vocab_limit = 0;
+        }
+        if (!selected_device.capabilities.esimd) decode_dp4a = false;
+        if (!selected_device.integrated) device_state = true;
         graph_enabled_ = use_graph;
         kv_int8_ = kv_int8;
         verify_xmx_ = verify_xmx;
@@ -664,6 +714,8 @@ public:
         prefill_int8_xmx_ = prefill_int8_xmx;
         mtp_depth_ = mtp_depth;
         draft_vocab_limit_ = draft_vocab_limit;
+        const char* turn_setting = std::getenv("TINYSTRATA_INTEL_TURN_CHECKPOINT");
+        turn_checkpoint_enabled_ = turn_checkpoint::enabled(turn_setting);
         graph_extent_ = std::min(context_, 128);
         if (chunk < 1 || chunk > max_chunk) throw std::runtime_error("Intel chunk must be in 1..1024");
         if (mtp_depth < 0 || mtp_depth >= verify_capacity || (mtp_depth && chunk < std::max(4, mtp_depth + 1)))
@@ -707,6 +759,13 @@ public:
                 g.full_attention_interval != 4 || g.n_layers != 40 || g.n_vocab <= 0 || g.n_vocab > 1000000 ||
                 context < 1 || context > 32768)
                 throw std::runtime_error("Initial Intel Qwen engine does not support this geometry/context");
+            const bool measured_support_default = selected_device.vendor_id == 0x8086 && selected_device.device_id == 0xB082 &&
+                selected_device.integrated && selected_device.ptl_h_aot && g.n_vocab == 248320;
+            gpu_support_sampling_ = gpu_support_policy::enabled(measured_support_default,
+                mtp_depth_ > 0 && draft_vocab_limit_ > 0, std::getenv("TINYSTRATA_INTEL_GPU_SUPPORT"));
+            if (gpu_support_sampling_) std::fprintf(stderr,
+                "Intel draft_support_selection=gpu_histogram limit=%d scratch_bytes=%zu target_sampling=cpu\n",
+                draft_vocab_limit_, GpuSamplingCandidate::storage_bytes(size_t(g.n_vocab)));
             n_ = int(g.n_embd); hk_ = int(g.ssm_k_heads); hv_ = int(g.ssm_v_heads);
             heads_ = int(g.n_head); kv_heads_ = int(g.n_head_kv); experts_ = int(g.n_expert); picks_ = int(g.n_expert_used);
             ff_ = int(g.n_ff); shared_ff_ = int(g.n_ff_shexp);
@@ -721,12 +780,32 @@ public:
             const uint64_t cache_cell_bytes = kv_int8_ ? 256 * 2 + 8 * 2 * sizeof(sycl::half) : 256 * 2 * sizeof(float);
             const uint64_t cache_bytes = (attention_layers + (mtp_depth ? 1 : 0)) * uint64_t(kv_heads_) * context * cache_cell_bytes;
             const uint64_t state_bytes = recurrent_layers * (uint64_t(hv_) * 128 * 128 + uint64_t(2 * hk_ + hv_) * 128 * 3) * sizeof(float);
-            const uint64_t scratch_reserve = uint64_t(chunk_) * 384 * 1024 + (64ull + (prefill_npu ? 96ull : 0ull) + (prefill_mkl ? 96ull : 0ull) + (mtp_depth ? 96ull : 0ull) + (verify_graph ? 128ull : 0ull)) * 1024 * 1024 + (prefill_mkl ? uint64_t(chunk_) * context * sizeof(float) : 0)
+            turn_checkpoint_bytes_ = turn_checkpoint_enabled_ ? size_t(state_bytes + uint64_t(n_) * sizeof(float) * (mtp_depth_ ? 2 : 1)) : 0;
+            const uint64_t scratch_reserve = uint64_t(chunk_) * 384 * 1024 + (64ull + (prefill_npu ? 96ull : 0ull) + (std::getenv("STRATA_REVIEW_NPU_SPLIT") ? 256ull : 0ull) + (prefill_mkl ? 96ull : 0ull) + (mtp_depth ? 96ull : 0ull) + (verify_graph ? 128ull : 0ull)) * 1024 * 1024 + (prefill_mkl ? uint64_t(chunk_) * context * sizeof(float) : 0)
                 + (dense_split_k ? 1024ull * 1024 : 0) + uint64_t(draft_vocab_limit_) * sizeof(int32_t)
+                + (gpu_support_sampling_ ? GpuSamplingCandidate::storage_bytes(size_t(g.n_vocab)) : 0)
                 + (kv_int8_ ? uint64_t(kv_heads_) * context * 256 * 2 * sizeof(float)
                     + uint64_t(std::min(chunk_, verify_capacity)) * heads_ * (context + ((context + 255) / 256) * 256) * sizeof(float) : 0);
-            if (cache_bytes + 2 * state_bytes + scratch_reserve > allocation_budget(memory_budget(inspect_device(q_.get_device()))))
-                throw std::runtime_error("Intel recurrent/KV/scratch buffers exceed the remaining memory budget");
+            const uint64_t host_snapshot_bytes = turn_checkpoint_bytes_ +
+                (turn_checkpoint_enabled_ ? uint64_t(context_) * sizeof(int) : 0);
+            const auto remaining_memory = memory_budget(selected_device);
+            if (selected_device.integrated) {
+                // Keep the existing UMA sum and reserve exactly unchanged.
+                if (cache_bytes + 2 * state_bytes + scratch_reserve + host_snapshot_bytes > allocation_budget(remaining_memory))
+                    throw std::runtime_error("Intel recurrent/KV/scratch buffers exceed the remaining memory budget");
+            } else {
+                const uint64_t host_visible_bytes = uint64_t(g.n_vocab) * sizeof(float) + uint64_t(experts_) * sizeof(int32_t) +
+                    uint64_t(chunk_) * sizeof(int32_t) * 2 + (kv_int8_ ? sizeof(int32_t) : 0) + (decode_dp4a ? sizeof(int32_t) : 0) +
+                    (mtp_depth_ ? (uint64_t(draft_vocab_limit_ ? draft_vocab_limit_ : int(g.n_vocab)) + uint64_t(verify_capacity) * g.n_vocab) * sizeof(float) +
+                        uint64_t(draft_vocab_limit_) * sizeof(int32_t) : 0) +
+                    (gpu_support_sampling_ ? GpuSamplingCandidate::storage_bytes(size_t(g.n_vocab)) : 0);
+                // Bounded host sampler/history/metadata work in addition to
+                // exact visible allocations and the optional turn snapshot.
+                constexpr uint64_t host_work_reserve = 16ull * 1024 * 1024;
+                if (!execution_allocation_fits(remaining_memory, cache_bytes + 2 * state_bytes + scratch_reserve,
+                        host_visible_bytes, host_snapshot_bytes + host_work_reserve))
+                    throw std::runtime_error("Intel discrete state/control/snapshot exceeds separate VRAM or host RAM/commit/non-local budgets");
+            }
             x_ = alloc<float>(size_t(chunk_) * (n_)); h_ = alloc<float>(size_t(chunk_) * (n_)); mixer_ = alloc<float>(size_t(chunk_) * (n_));
             qkv_ = alloc<float>(size_t(chunk_) * (std::max((2 * hk_ + hv_) * 128, heads_ * 512)));
             z_ = alloc<float>(size_t(chunk_) * (hv_ * 128)); alpha_ = alloc<float>(size_t(chunk_) * (hv_)); beta_ = alloc<float>(size_t(chunk_) * (hv_));
@@ -785,7 +864,11 @@ public:
             }
             q_.wait_and_throw();
 #ifdef TINYSTRATA_INTEL_NPU
-            if (prefill_npu) npu_ = std::make_unique<NpuProjection>(q_);
+            if (prefill_npu || std::getenv("STRATA_REVIEW_NPU_SPLIT")) {
+                if (inspect_device(q_.get_device()).device_id != 0xB082)
+                    throw std::runtime_error("NPU assistance is validated only with Arc B390");
+                npu_ = std::make_unique<NpuProjection>(q_);
+            }
 #endif
 #ifdef TINYSTRATA_INTEL_MKL
             if (prefill_mkl) gemm_ = std::make_unique<PrefillGemm>(q_, context_, chunk_);
@@ -855,10 +938,16 @@ public:
     void prepare_draft_vocabulary(const float* target, const std::vector<int>& history) {
         if (!draft_vocab_limit_) return;
         const auto start = std::chrono::steady_clock::now();
-        auto ids = make_draft_vocabulary(target, vocabulary(), draft_vocab_limit_, history);
+        auto ids = gpu_support_sampling_ ? gpu_sampling_candidate().support(target, draft_vocab_limit_, history)
+            : make_draft_vocabulary(target, vocabulary(), draft_vocab_limit_, history);
+        const auto support_rank_done = host_profile::now();
+        host_profile::add(host_profile::SupportCpu, start, support_rank_done);
         q_.wait_and_throw();
+        const auto support_wait_done = host_profile::now();
+        host_profile::add(host_profile::SupportWait, support_rank_done, support_wait_done);
         std::copy(ids.begin(), ids.end(), draft_vocab_ids_);
         draft_vocab_host_ = std::move(ids);
+        host_profile::add(host_profile::SupportCopy, support_wait_done, host_profile::now());
         ++draft_vocab_updates_;
         draft_vocab_prepare_ms_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     }
@@ -937,6 +1026,7 @@ public:
         return result;
     }
     void print_spec_stats() const {
+        if (gpu_sampling_candidate_) gpu_sampling_candidate_->print();
         if (mtp_depth_) std::fprintf(stderr, "mtp_windows=%llu mtp_offered=%llu mtp_accepted=%llu mtp_draft_ms=%.3f mtp_verify_ms=%.3f mtp_commit_ms=%.3f\n",
             static_cast<unsigned long long>(mtp_windows_), static_cast<unsigned long long>(mtp_offered_), static_cast<unsigned long long>(mtp_accepted_), mtp_draft_ms_, mtp_verify_ms_, mtp_commit_ms_);
         if (draft_vocab_limit_) std::fprintf(stderr, "draft_vocab_limit=%d draft_vocab_updates=%llu draft_vocab_prepare_ms=%.3f target_full_vocabulary=1\n",
@@ -956,7 +1046,74 @@ public:
         }
         return logits_;
     }
+    bool turn_checkpoint_enabled() const { return turn_checkpoint_enabled_; }
+    const std::vector<int>& turn_prefix() const { return turn_snapshot_.tokens; }
+    size_t turn_position() const { return size_t(turn_snapshot_.position); }
+    int consumed_tokens() const { return position_; }
+    size_t turn_checkpoint_bytes() const { return turn_checkpoint_bytes_; }
+    bool save_turn(const std::vector<int>& live) {
+        if (!turn_checkpoint_enabled_ || live.empty() || live.size() != size_t(position_) || live.size() > size_t(context_))
+            return false;
+        // repair_mtp fills deferred MTP KV rows before they become part of the
+        // snapshot's preserved prefix. It also preserves the raw last hidden.
+        if (mtp_depth_) repair_mtp();
+        q_.wait_and_throw();
+        turn_snapshot_.invalidate();
+        try {
+            turn_snapshot_.bytes.resize(turn_checkpoint_bytes_);
+            turn_snapshot_.tokens.reserve(size_t(context_));
+            turn_snapshot_.tokens.assign(live.begin(), live.end());
+        } catch (const std::bad_alloc&) {
+            turn_snapshot_.invalidate();
+            std::fprintf(stderr, "Intel turn_checkpoint skipped: insufficient host memory\n");
+            return false;
+        }
+        size_t at = 0;
+        const auto copy = [&](const float* source, size_t bytes) {
+            if (bytes > turn_snapshot_.bytes.size() - at) throw std::runtime_error("Intel turn checkpoint exceeds its bound");
+            q_.memcpy(turn_snapshot_.bytes.data() + at, source, bytes);
+            at += bytes;
+        };
+        for (const auto& layer : layers_) if (layer.recurrent) {
+            copy(layer.recurrent, size_t(hv_) * 128 * 128 * sizeof(float));
+            copy(layer.convolution, size_t(2 * hk_ + hv_) * 128 * 3 * sizeof(float));
+        }
+        copy(x_ + size_t(last_hidden_row_) * n_, size_t(n_) * sizeof(float));
+        if (mtp_depth_) copy(mtp_last_norm_, size_t(n_) * sizeof(float));
+        if (at != turn_snapshot_.bytes.size()) throw std::runtime_error("Intel turn checkpoint size differs");
+        q_.wait_and_throw();
+        // Publish validity only after all independent copies have completed.
+        turn_snapshot_.position = position_;
+        return true;
+    }
+    void restore_turn(const std::vector<int>& live, const std::vector<int>& prompt) {
+        const auto reuse = turn_checkpoint::choose(live, prompt, turn_snapshot_.tokens,
+                                                    turn_position(), turn_checkpoint_enabled_);
+        if (reuse.source != turn_checkpoint::Source::saved_turn || turn_snapshot_.bytes.size() != turn_checkpoint_bytes_)
+            throw std::runtime_error("Intel turn checkpoint prefix is no longer resident");
+        q_.wait_and_throw();
+        size_t at = 0;
+        const auto copy = [&](float* target, size_t bytes) {
+            if (bytes > turn_snapshot_.bytes.size() - at) throw std::runtime_error("Intel turn restore exceeds its bound");
+            q_.memcpy(target, turn_snapshot_.bytes.data() + at, bytes);
+            at += bytes;
+        };
+        for (auto& layer : layers_) if (layer.recurrent) {
+            copy(layer.recurrent, size_t(hv_) * 128 * 128 * sizeof(float));
+            copy(layer.convolution, size_t(2 * hk_ + hv_) * 128 * 3 * sizeof(float));
+        }
+        copy(x_, size_t(n_) * sizeof(float));
+        if (mtp_depth_) copy(mtp_last_norm_, size_t(n_) * sizeof(float));
+        if (at != turn_snapshot_.bytes.size()) throw std::runtime_error("Intel turn restore size differs");
+        q_.wait_and_throw();
+        position_ = turn_snapshot_.position;
+        position_input_[0] = position_;
+        mtp_pending_.clear();
+        last_hidden_row_ = 0;
+        logits_valid_ = false;
+    }
     void reset() {
+        turn_snapshot_.invalidate();
         for (const auto& layer : layers_) {
             if (layer.recurrent) q_.memset(layer.recurrent, 0, size_t(hv_) * 128 * 128 * sizeof(float));
             if (layer.convolution) q_.memset(layer.convolution, 0, size_t(2 * hk_ + hv_) * 128 * 3 * sizeof(float));
@@ -1017,20 +1174,23 @@ void sampling_option(Sampling& s, const std::string& field) {
     } else if ((key == "mtp_auto" || key == "lookup_draft") && value == 0) {
         // Explicitly disabled. Nonzero speculation remains unsupported.
     } else if (key == "ckpt" || key == "turn_at") {
-        // A hint for turn-state reuse. Edits replay from a clean recurrent
-        // state; no on-disk session/snapshot capability is advertised.
+        // Turn reuse hints. Only exact prefixes can restore the bounded,
+        // independent in-memory snapshot; no on-disk session is advertised.
         if (value < 0 || value != std::floor(value)) throw std::runtime_error("Invalid turn-cache hint");
     } else throw std::runtime_error("Unsupported Intel request option: " + field);
 }
 int serve(Engine& engine, bool stochastic_mtp = false) {
     const auto device = engine.device_info();
-    std::printf("INFO backend=sycl experimental=1 kv=%s mtp=%d vision=0 memory_model=uma single_weight_store=1 device_vendor=%u device_id=%u device_integrated=%d device_architecture=%s adapter_luid=%s adapter_node_mask=%u\nREADY %d stop\n",
-        engine.kv_type(), engine.mtp_depth(), device.vendor_id, device.device_id, int(device.integrated),
+    std::printf("INFO backend=sycl experimental=1 kv=%s mtp=%d vision=0 memory_model=%s single_weight_store=1 device_vendor=%u device_id=%u device_integrated=%d device_architecture=%s adapter_luid=%s adapter_node_mask=%u\nREADY %d stop\n",
+        engine.kv_type(), engine.mtp_depth(), device.integrated ? "uma" : "discrete", device.vendor_id, device.device_id, int(device.integrated),
         device.architecture.c_str(), device.adapter_luid.empty() ? "unknown" : device.adapter_luid.c_str(),
         device.adapter_node_mask, engine.context());
     std::fflush(stdout);
     strata::common::CommandInbox inbox;
     std::vector<int> live;
+    if (engine.turn_checkpoint_enabled())
+        std::fprintf(stderr, "Intel turn_checkpoint=enabled snapshot_bytes=%zu max_prefix_tokens=%d separate_mtp_rollback=1\n",
+                     engine.turn_checkpoint_bytes(), engine.context());
     std::string line;
     while (inbox.next(line)) {
         if (line == "QUIT") return 0;
@@ -1038,6 +1198,8 @@ int serve(Engine& engine, bool stochastic_mtp = false) {
         std::vector<int> prompt;
         Sampling sampling;
         int max_new = 0;
+        size_t turn_at = 0;
+        bool checkpoint_requested = true;
         try {
             if (line.rfind("GEN ", 0) != 0) throw std::runtime_error("Intel supports text GEN requests only");
             std::istringstream fields(line.substr(4));
@@ -1045,32 +1207,53 @@ int serve(Engine& engine, bool stochastic_mtp = false) {
             if (!(fields >> field)) throw std::runtime_error("Missing output count");
             max_new = number(field.c_str(), engine.context());
             while (fields >> field) {
-                if (field.find('=') != std::string::npos && ids.empty()) sampling_option(sampling, field);
+                if (field.find('=') != std::string::npos && ids.empty()) {
+                    sampling_option(sampling, field);
+                    if (engine.turn_checkpoint_enabled() && field.rfind("turn_at=", 0) == 0) {
+                        const float value = real_option(field.substr(8));
+                        if (value > engine.context()) throw std::runtime_error("Turn-cache boundary exceeds context");
+                        turn_at = size_t(value);
+                    } else if (engine.turn_checkpoint_enabled() && field.rfind("ckpt=", 0) == 0)
+                        checkpoint_requested = real_option(field.substr(5)) != 0;
+                }
                 else { if (!ids.empty()) ids += ' '; ids += field; }
             }
             prompt = parse_tokens(ids);
             if (!max_new || prompt.size() + size_t(max_new) > size_t(engine.context())) throw std::runtime_error("Request exceeds Intel context capacity");
             for (int token : prompt) if (token >= engine.vocabulary()) throw std::runtime_error("Token ID outside vocabulary");
+            if (engine.turn_checkpoint_enabled() && turn_at > prompt.size()) throw std::runtime_error("Turn-cache boundary exceeds prompt");
         } catch (const std::exception& error) {
             std::printf("ERR %s\n", error.what());
             std::fflush(stdout);
             continue; // Invalid requests leave the resident conversation intact.
         }
         const auto start = std::chrono::steady_clock::now();
+        host_profile::reset();
         const auto speculation_start = engine.speculation_counts();
         ExecutionRequest active_request;
-        const bool reuse = live.size() <= prompt.size() && std::equal(live.begin(), live.end(), prompt.begin());
-        if (!reuse) { engine.reset(); live.clear(); }
+        if (engine.consumed_tokens() != int(live.size())) throw std::runtime_error("Intel consumed history differs from model position");
+        const auto reuse = turn_checkpoint::choose(live, prompt, engine.turn_prefix(), engine.turn_position(),
+                                                   engine.turn_checkpoint_enabled() && checkpoint_requested);
+        const bool restored_turn = reuse.source == turn_checkpoint::Source::saved_turn;
+        if (restored_turn) {
+            engine.restore_turn(live, prompt);
+            live.assign(engine.turn_prefix().begin(), engine.turn_prefix().end());
+        } else if (reuse.source == turn_checkpoint::Source::reset) { engine.reset(); live.clear(); }
         const size_t reused = live.size();
         std::printf("RESUME %zu\n", reused);
         std::fflush(stdout);
         const float* logits = nullptr;
         for (size_t index = reused; index < prompt.size() && !inbox.cancelled().load();) {
-            const int count = int(std::min(size_t(engine.chunk()), prompt.size() - index));
+            size_t end = std::min(index + size_t(engine.chunk()), prompt.size());
+            if (engine.turn_checkpoint_enabled() && checkpoint_requested && index < turn_at && turn_at < end)
+                end = turn_at;
+            const int count = int(end - index);
             logits = engine.step_many(prompt.data() + index, count, index + count == prompt.size(), &inbox.cancelled());
             if (!logits) break;
             live.insert(live.end(), prompt.begin() + index, prompt.begin() + index + count);
             index += count;
+            if (engine.turn_checkpoint_enabled() && checkpoint_requested && turn_at && index == turn_at && !inbox.cancelled().load())
+                engine.save_turn(live);
             const double elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
             std::printf("PP %zu %zu %.3f\n", index, prompt.size(), elapsed);
             std::fflush(stdout);
@@ -1106,7 +1289,10 @@ int serve(Engine& engine, bool stochastic_mtp = false) {
                     const auto& ids = engine.draft_vocabulary();
                     auto distribution = sampling_distribution(row, ids.empty() ? engine.vocabulary() : int(ids.size()), sampling,
                         draft_history, ids.empty() ? nullptr : ids.data());
-                    const int token = distribution.draw(draft_random);
+                    const int token = [&] {
+                        host_profile::Scope draw(host_profile::DraftDraw);
+                        return distribution.draw(draft_random);
+                    }();
                     draft_tokens.push_back(token); draft_history.push_back(token);
                     draft_distributions.push_back(std::move(distribution));
                     return token;
@@ -1115,9 +1301,12 @@ int serve(Engine& engine, bool stochastic_mtp = false) {
                 auto next = engine.speculate(ready.back(), max_new - produced, [&](const float* row) {
                     last_target_logits = row;
                     const auto target = sampling_distribution(row, engine.vocabulary(), sampling, history);
-                    const int token = rejection_sampling && selected_row < draft_distributions.size()
-                        ? speculative_distribution::verify(target, draft_distributions[selected_row], draft_tokens[selected_row], random)
-                        : sampling.temperature <= 0 ? target.tokens[0] : target.draw(random);
+                    const int token = [&] {
+                        host_profile::Scope draw(host_profile::TargetDrawVerify);
+                        return rejection_sampling && selected_row < draft_distributions.size()
+                            ? speculative_distribution::verify(target, draft_distributions[selected_row], draft_tokens[selected_row], random)
+                            : sampling.temperature <= 0 ? target.tokens[0] : target.draw(random);
+                    }();
                     ++selected_row;
                     history.push_back(token); return token;
                 }, &inbox.cancelled(), propose);
@@ -1139,10 +1328,11 @@ int serve(Engine& engine, bool stochastic_mtp = false) {
         }
         const double decode_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - decode_start).count();
         engine.print_spec_stats();
+        host_profile::print();
         const auto speculation_end = engine.speculation_counts();
-        std::printf("DONE %d %zu %.3f %.3f %s %llu %llu %zu 0 0 0 0 0.0 %zu 0\n", produced, prompt.size(), prompt_ms, decode_ms, finish,
+        std::printf("DONE %d %zu %.3f %.3f %s %llu %llu %zu %d 0 0 0 0.0 %zu 0\n", produced, prompt.size(), prompt_ms, decode_ms, finish,
             static_cast<unsigned long long>(speculation_end.first - speculation_start.first),
-            static_cast<unsigned long long>(speculation_end.second - speculation_start.second), reused, fresh);
+            static_cast<unsigned long long>(speculation_end.second - speculation_start.second), reused, int(restored_turn), fresh);
         std::fflush(stdout);
     }
     return 0;
@@ -1179,9 +1369,13 @@ int main(int argc, char** argv) {
                 return out + '"';
             };
             std::printf("{\"schema\":1,\"backend\":\"sycl\",\"device_index\":%u,\"vendor_id\":%u,\"device_id\":%u,\"integrated\":%s,"
-                        "\"architecture\":%s,\"adapter_luid\":%s,\"adapter_node_mask\":%u,\"name\":%s,\"driver\":%s}\n",
+                        "\"architecture\":%s,\"adapter_luid\":%s,\"adapter_node_mask\":%u,\"name\":%s,\"driver\":%s,"
+                        "\"capabilities\":{\"baseline\":%s,\"esimd\":%s,\"matrix\":%s,\"local_memory\":%llu,\"max_work_group\":%llu}}\n",
                 selected, info.vendor_id, info.device_id, info.integrated ? "true" : "false", quoted(info.architecture).c_str(),
-                quoted(info.adapter_luid).c_str(), info.adapter_node_mask, quoted(info.name).c_str(), quoted(info.driver).c_str());
+                quoted(info.adapter_luid).c_str(), info.adapter_node_mask, quoted(info.name).c_str(), quoted(info.driver).c_str(),
+                baseline_limitation(info.capabilities) ? "false" : "true", info.capabilities.esimd ? "true" : "false",
+                info.capabilities.matrix ? "true" : "false", (unsigned long long)info.capabilities.local_memory,
+                (unsigned long long)info.capabilities.max_work_group);
             return 0;
         }
         std::string path, token_list, token_file, dump_path;
@@ -1207,9 +1401,10 @@ int main(int argc, char** argv) {
             if (option == "--prefill-npu") { prefill_npu = true; continue; }
             if (option == "--prefill-xmx") { prefill_xmx = true; continue; }
             if (option == "--profile") { profiling = true; continue; }
+            if (option == "--host-profile") { strata::intel::host_profile::enabled = true; continue; }
             if (option == "--no-graph") { use_graph = false; continue; }
             if (option == "--help") {
-                std::puts("tinystrata-intel --model MODEL [--serve | --tokens IDS | --tokens-file FILE] [--n N] [--max-context N] [--device N] [--chunk 1..1024] [--mtp 0..7] [--kv-type fp32|int8] [--draft-vocab 0|64..4096] [--dump-full-logits FILE] [--experimental-tiel]\ntinystrata-intel --device-info [--device N]\nExperimental text driver. KV defaults to FP32; MTP and draft vocabulary selection default to 0 (off); images are unsupported. A nonzero draft vocabulary requires --serve --mtp-stochastic --mtp --vocab-xmx. --experimental-tiel is private validation admission for the pinned Ornith IQ3_XXS artifact, not published model support.");
+                std::puts("tinystrata-intel --model MODEL [--serve | --tokens IDS | --tokens-file FILE] [--n N] [--max-context N] [--device N] [--chunk 1..1024] [--mtp 0..7] [--kv-type fp32|int8] [--draft-vocab 0|64..4096] [--dump-full-logits FILE] [--experimental-tiel] [--host-profile]\ntinystrata-intel --device-info [--device N]\nExperimental text driver. KV defaults to FP32; MTP and draft vocabulary selection default to 0 (off); images are unsupported. A nonzero draft vocabulary requires --serve --mtp-stochastic --mtp --vocab-xmx. --host-profile enables host phase wall timers without changing decode graphs. --experimental-tiel selects the separately pinned Ornith IQ3_XXS artifact.");
                 return 0;
             }
             if (option == "--capabilities") {

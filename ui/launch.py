@@ -317,9 +317,9 @@ class Launcher:
             if self.family not in INTEL_PROFILES:
                 raise ValueError("Experimental Intel supports validated Qwen3.6/Tiel text only")
             expected = INTEL_PROFILES[self.family][0]
-            if self.intel_profile is not None and self.intel_profile != expected:
+            if self.intel_profile is not None and self.intel_profile not in ("generic", expected):
                 raise ValueError("The explicit Intel profile does not match the selected model family")
-            self.intel_profile = expected
+            self.intel_profile = self.intel_profile or ("generic" if settings.get("intel_profile") == "generic" else expected)
         if self.family not in PROFILES:
             raise ValueError("Unknown saved model family; specify --model-family qwen36, gemma4, lfm2, clover or tiel")
         if self.api_port == self.port:
@@ -448,7 +448,7 @@ class Launcher:
             expected_model = health["model"]
             self.family = MODELS[expected_model]
             if self.backend == "sycl":
-                self.intel_profile = INTEL_PROFILES[self.family][0]
+                self.intel_profile = health["intel_profile"]
             self.log(f"Reusing the API and selected model {expected_model}; no process was restarted")
             # An unloaded API is intentional for lazy mode or an installation
             # without downloaded weights. The UI leaves loading to the API's
@@ -476,7 +476,7 @@ class Launcher:
                 # servers are ready to use while health.loaded remains false.
                 self.family = MODELS[expected_model]
                 if self.backend == "sycl":
-                    self.intel_profile = INTEL_PROFILES[self.family][0]
+                    self.intel_profile = health["intel_profile"]
                 return
             except (OSError, ValueError, http.client.HTTPException):
                 pass
@@ -491,8 +491,8 @@ class Launcher:
         if self.backend == "sycl":
             family = MODELS.get(health.get("model"))
             return (health.get("backend") == "sycl" and health.get("experimental") is True and
-                    family in INTEL_PROFILES and health.get("intel_profile") == INTEL_PROFILES[family][0] and
-                    (not self._intel_selection_explicit or family == self.family))
+                    family in INTEL_PROFILES and health.get("intel_profile") in ("generic", INTEL_PROFILES[family][0]) and
+                    (not self._intel_selection_explicit or (family == self.family and health.get("intel_profile") == self.intel_profile)))
         return True
 
     def existing_ui(self):
@@ -646,7 +646,7 @@ def main():
     parser.add_argument("--model-family", choices=(*PROFILES, *FAMILY_ALIASES), help="model for a new API (default: saved selection or qwen36)")
     parser.add_argument("--backend", choices=("auto", "cuda", "hip", "sycl"),
                         help="explicit sycl uses experimental Qwen3.6/Tiel text, separate Intel config files and ui-sycl history/settings (API 18085/UI 3005); default selection is unchanged")
-    parser.add_argument("--intel-profile", choices=tuple(profile[0] for profile in INTEL_PROFILES.values()), help="requested Intel tuning profile; must match --model-family and requires --backend sycl; does not certify hardware")
+    parser.add_argument("--intel-profile", choices=("generic", *(profile[0] for profile in INTEL_PROFILES.values())), help="requested Intel tuning profile; must match --model-family and requires --backend sycl; does not certify hardware")
     parser.add_argument("--no-browser", action="store_true", help="do not open the browser")
     parser.add_argument("--no-api-start", action="store_true", help="require an existing healthy API; never start it or force model loading")
     parser.add_argument("--configure-only", action="store_true", help="save selections without starting services or opening the browser")

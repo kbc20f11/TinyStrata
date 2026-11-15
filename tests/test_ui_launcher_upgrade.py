@@ -19,6 +19,19 @@ from ui import launch
 
 
 class LauncherUpgradeTests(unittest.TestCase):
+    def test_generic_intel_profile_survives_settings_and_matching_api_reuse(self):
+        args = argparse.Namespace(api_port=9, port=19191, model_family="tiel", backend="sycl", intel_profile="generic")
+        item = launch.Launcher(args, self.source, self.work)
+        item.save_settings()
+        restarted = launch.Launcher(argparse.Namespace(api_port=9, port=19191, model_family=None, backend="sycl", intel_profile=None), self.source, self.work)
+        self.assertEqual(restarted.intel_profile, "generic")
+        health = {"status": "ok", "service": "tinystrata", "model": "tiel-coder-35b-a3b", "backend": "sycl", "experimental": True, "intel_profile": "generic"}
+        with mock.patch.object(launch, "port_occupied", return_value=True), mock.patch.object(launch, "request_json", return_value=health), mock.patch.object(item, "spawn") as spawn:
+            item.ensure_api()
+        spawn.assert_not_called()
+        self.assertEqual(item.intel_profile, "generic")
+        self.assertFalse(item.selected_api_identity({**health, "intel_profile": "b390-tiel-coder"}))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="tinystrata-ui-upgrade-")
         self.addCleanup(self.temp.cleanup)

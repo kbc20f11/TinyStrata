@@ -6,7 +6,7 @@ $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repository 'install.ps1'), [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw 'Installer parse failed.' }
 foreach ($name in @('Test-TinyStrataSource', 'Assert-TinyStrataSourceDestination', 'Get-TinyStrataSourceFingerprint',
-                    'Test-TinyStrataSourceRevision', 'Write-TinyStrataNativeBuildStamp', 'Test-TinyStrataNativeBuildStamp',
+                    'Test-TinyStrataSourceRevision', 'Get-TinyStrataNativeFlagFingerprint', 'Write-TinyStrataNativeBuildStamp', 'Test-TinyStrataNativeBuildStamp',
                     'Initialize-TinyStrataSource', 'Restore-TinyStrataSource')) {
     $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     if (-not $definition) { throw "Missing source helper: $name" }
@@ -88,7 +88,8 @@ try {
         }
     } finally { [Threading.Thread]::CurrentThread.CurrentCulture = $originalCulture }
     Assert-Source (-not (Test-TinyStrataNativeBuildStamp -Directory $native -Fingerprint $fingerprint -Backend cuda)) 'unstamped legacy binaries are not automatically trusted'
-    Write-TinyStrataNativeBuildStamp -Directory $native -SourceRoot $source -Backend cuda
+    $fixtureInputs = [ordered]@{schema=1;complete=$true;backend='cuda';toolkit_root=$fixtureRoot;architectures='86';flag_environment=(Get-TinyStrataNativeFlagFingerprint);inputs=@([ordered]@{path=$script:fixtureArchive;sha256=(Get-FileHash -LiteralPath $script:fixtureArchive -Algorithm SHA256).Hash.ToLowerInvariant()})}
+    Write-TinyStrataNativeBuildStamp -Directory $native -SourceRoot $source -Backend cuda -BuildInputs $fixtureInputs
     Assert-Source (Test-TinyStrataNativeBuildStamp -Directory $native -Fingerprint $fingerprint -Backend cuda) 'matching source and native byte proof can reuse one generation'
     Write-SourceFixture $source 'ui\web\app.js' 'UI-only update'
     Assert-Source ((Get-TinyStrataSourceFingerprint -Directory $source -NativeOnly) -eq $fingerprint) 'UI-only source changes do not force a native rebuild'

@@ -29,6 +29,16 @@ def report(*, mkl=True, xmx=True):
 
 
 class CompatibilityPolicy(unittest.TestCase):
+    def test_generic_tiel_needs_declared_model_and_scalar_type18_without_xmx(self):
+        current = report(mkl=False, xmx=False)
+        current["build"]["aot_target"] = ""
+        current["experimental_models"].append(intel.TIEL_MODEL)
+        intel.validate_capabilities(current, model=intel.TIEL_MODEL, profile="generic")
+        current["weight_types"]["scalar"].remove(18)
+        current["weight_types"]["dp4a"].remove(18)
+        with self.assertRaisesRegex(intel.IntelCapabilityError, "type18"):
+            intel.validate_capabilities(current, model=intel.TIEL_MODEL, profile="generic")
+
     def test_pure_checks_never_probe_or_modify_the_input(self):
         original = report()
         before = deepcopy(original)

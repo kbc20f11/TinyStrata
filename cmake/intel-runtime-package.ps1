@@ -17,16 +17,19 @@ function Get-TinyStrataIntelRuntimeCatalog {
 }
 
 function Get-TinyStrataIntelRuntimeArtifact {
-    param([string]$CatalogPath, [string]$Profile = 'b390-qwen36')
+    param([string]$CatalogPath, [string]$Profile = 'b390-qwen36', [string]$Model,
+          [AllowEmptyString()][string]$AotTarget = 'intel_gpu_ptl_h')
     $catalog = Get-TinyStrataIntelRuntimeCatalog $CatalogPath
     if ($catalog.availability -ne 'published') { throw 'The experimental Intel runtime package has not been published. Use a verified -IntelRuntimeDirectory offline stage; no SDK was installed.' }
-    $model = switch($Profile) { 'b390-qwen36' {'qwen3.6-35b-a3b'} 'b390-tiel-coder' {'tiel-coder-35b-a3b'} default {throw 'Unknown experimental Intel runtime profile.'} }
-    $matchingArtifacts = @($catalog.artifacts | Where-Object { $_.profile -eq $Profile })
+    $expectedModel = switch($Profile) { 'b390-qwen36' {'qwen3.6-35b-a3b'} 'b390-tiel-coder' {'tiel-coder-35b-a3b'} 'generic' {$Model} default {throw 'Unknown experimental Intel runtime profile.'} }
+    if ($expectedModel -notin @('qwen3.6-35b-a3b','tiel-coder-35b-a3b') -or ($Model -and $Model -ne $expectedModel) -or
+        ($Profile -eq 'generic' -and $AotTarget -ne '') -or ($Profile -ne 'generic' -and $AotTarget -ne 'intel_gpu_ptl_h')) { throw 'Intel runtime model/profile/target selection is inconsistent.' }
+    $matchingArtifacts = @($catalog.artifacts | Where-Object { $_.profile -eq $Profile -and $_.model -eq $expectedModel -and [string]$_.aot_target -eq $AotTarget })
     if ($matchingArtifacts.Count -ne 1) { throw 'No unique published Intel runtime exists for the requested profile.' }
     $artifact = $matchingArtifacts[0]
     $uri = $null
-    if ($artifact.id -notmatch '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$' -or $artifact.model -ne $model -or
-        $artifact.aot_target -ne 'intel_gpu_ptl_h' -or $artifact.experimental -ne $true -or
+    if ($artifact.id -notmatch '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$' -or $artifact.model -ne $expectedModel -or
+        [string]$artifact.aot_target -ne $AotTarget -or $artifact.experimental -ne $true -or
         [string]$artifact.sha256 -notmatch '^[a-fA-F0-9]{64}$' -or [string]$artifact.manifest_sha256 -notmatch '^[a-fA-F0-9]{64}$' -or
         [string]$artifact.executable_sha256 -notmatch '^[a-fA-F0-9]{64}$' -or [long]$artifact.bytes -lt 1 -or [long]$artifact.bytes -gt 4294967296 -or
         -not [Uri]::TryCreate([string]$artifact.url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or
@@ -39,7 +42,14 @@ function Assert-TinyStrataIntelDevice {
     param($Report, [string]$CatalogPath, [string]$Profile = 'b390-qwen36', [string]$AotTarget)
     $catalog = Get-TinyStrataIntelRuntimeCatalog $CatalogPath
     if ($Report.schema -ne 1 -or $Report.backend -ne 'sycl' -or $Report.device_index -ne 0 -or
-        $Report.vendor_id -ne 32902 -or $Report.integrated -ne $true -or $Report.architecture -ne 'panther_lake_xe3') { throw 'The selected native device is not a validated experimental Intel integrated GPU.' }
+        $Report.vendor_id -ne 32902) { throw 'The selected native device is not an Intel SYCL GPU.' }
+    if ($Profile -eq 'generic') {
+        if ($AotTarget -ne '' -or $Report.integrated -isnot [bool] -or
+            $Report.capabilities.baseline -isnot [bool] -or $Report.capabilities.baseline -ne $true -or $Report.capabilities.max_work_group -lt 256 -or
+            $Report.capabilities.local_memory -lt 41984) { throw 'Generic Intel runtime requires SPIR-V and a native-confirmed compatible GPU baseline.' }
+        return $Report
+    }
+    if ($Report.integrated -ne $true -or $Report.architecture -ne 'panther_lake_xe3') { throw 'The selected native device is not a validated B390 AOT GPU.' }
     $matching = @($catalog.supported_devices | Where-Object { $_.profile -eq $Profile -and @($_.device_ids) -contains $Report.device_id })
     if ($matching.Count -ne 1 -or ($AotTarget -and $matching[0].aot_target -ne $AotTarget)) { throw 'The selected Intel device ID/profile is not validated for this runtime target; no generic fallback was selected.' }
     return $Report
@@ -106,8 +116,9 @@ function Expand-TinyStrataIntelRuntimeArchive {
 }
 
 function Receive-TinyStrataIntelRuntime {
-    param([string]$CatalogPath, [string]$CacheRoot, [string]$Profile = 'b390-qwen36')
-    $artifact = Get-TinyStrataIntelRuntimeArtifact -CatalogPath $CatalogPath -Profile $Profile
+    param([string]$CatalogPath, [string]$CacheRoot, [string]$Profile = 'b390-qwen36', [string]$Model,
+          [AllowEmptyString()][string]$AotTarget = 'intel_gpu_ptl_h')
+    $artifact = Get-TinyStrataIntelRuntimeArtifact -CatalogPath $CatalogPath -Profile $Profile -Model $Model -AotTarget $AotTarget
     # Keep extraction paths within Windows PowerShell5/.NET Framework limits.
     # Cache filenames still retain/verify the full SHA; folder prefixes are not
     # trusted as identity and two profiles share the same payload cache.

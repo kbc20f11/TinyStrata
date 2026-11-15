@@ -105,7 +105,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubu
 
 Use the same command for installation and updates. Open **TinyStrata → Models**, download a model, then select it in chat; UI setup itself does not download a model.
 
-On a validated Intel Arc B390-only Windows PC with 32 GB shared RAM, the installer selects the experimental Intel runtime and downloads its hash-pinned package. An Intel SDK is not required. This currently supports **Qwen3.6 and Tiel Coder text**; images, Gemma, LFM and Clover remain unsupported on Intel. The separate Intel shortcut normally opens UI port **3005**, with API port **18085**, preserving existing CUDA/HIP settings, keys and history. A local installer also accepts explicit `-Backend sycl`. See [Intel installation, measurements and limitations](docs/intel-windows.md).
+On a validated Intel Arc B390-only Windows PC with 32 GB shared RAM, the installer selects the experimental Intel runtime and downloads its hash-pinned PTL-H package. Other Intel GPUs use a separately pinned generic SPIR-V runtime and must pass actual device capability and separate RAM/VRAM admission checks; their hardware/performance validation remains separate from the B390 measurements. An Intel SDK is not required. This currently supports **Qwen3.6 and Tiel Coder text**; images, Gemma, LFM and Clover remain unsupported on Intel. The separate Intel shortcut normally opens UI port **3005**, with API port **18085**, preserving existing CUDA/HIP settings, keys and history. A local installer also accepts explicit `-Backend sycl`. See [Intel installation, measurements and limitations](docs/intel-windows.md).
 
 **API only** ([installer](install.ps1)): the same API without the UI.
 

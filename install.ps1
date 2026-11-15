@@ -25,7 +25,7 @@ param(
     [switch]$SelectBackend,
     # Optional offline override; otherwise use the pinned published runtime catalog.
     [string]$IntelRuntimeDirectory,
-    [ValidateSet('b390-qwen36','b390-tiel-coder')][string]$IntelProfile = 'b390-qwen36',
+    [ValidateSet('generic','b390-qwen36','b390-tiel-coder')][string]$IntelProfile = 'b390-qwen36',
     [string]$HipDirectory,
     # An omitted value is empty under irm | iex and selects GPU auto-detection.
     [ValidatePattern('^(gfx[0-9a-f]+(;gfx[0-9a-f]+)*)?$')][string]$HipArchitectures,
@@ -98,7 +98,7 @@ function Assert-TinyStrataSourceDestination {
 }
 
 function Get-TinyStrataSourceFingerprint {
-    param([string]$Directory, [switch]$NativeOnly)
+    param([string]$Directory, [switch]$NativeOnly, [ValidateSet('cuda','hip')][string]$Backend = 'cuda')
     $root = [IO.Path]::GetFullPath($Directory).TrimEnd('\')
     $files = New-Object 'System.Collections.Generic.List[string]'
     $pending = New-Object 'System.Collections.Generic.Stack[string]'
@@ -111,12 +111,20 @@ function Get-TinyStrataSourceFingerprint {
         $directoryItem = Get-Item -LiteralPath $directoryPath -Force -ErrorAction Stop
         if ($directoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Cannot fingerprint linked source paths.' }
         foreach ($item in Get-ChildItem -LiteralPath $directoryPath -Force -ErrorAction Stop) {
+            # These are isolated by the CMake SYCL branch's early return. Do
+            # not exclude unknown directories/headers: actual build dependencies
+            # below also bind any future cross-backend include of these files.
+            $relative = $item.FullName.Substring($root.Length + 1).Replace('\', '/')
+            if ($NativeOnly -and ($relative -in @('src/intel','include/strata/intel') -or
+                $relative -in @('cmake/sycl_backend.cmake','cmake/build-intel.ps1','cmake/install-intel-runtime.ps1',
+                    'cmake/intel-runtime-package.ps1','cmake/intel-runtime-catalog.json','cmake/stage-intel-runtime.ps1','cmake/stage-intel-runtime.md'))) { continue }
             if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Cannot fingerprint linked source paths.' }
             if ($item.PSIsContainer) { $pending.Push($item.FullName) }
             elseif ($item.FullName -ne (Join-Path $root '.tinystrata-source.json')) { $files.Add($item.FullName) }
         }
     }
     $text = New-Object Text.StringBuilder
+    if ($NativeOnly) { $null = $text.Append("tinystrata-native-v2`nbackend=").Append($Backend).Append("`n") }
     # Culture/host collation differs between Windows PowerShell and pwsh.
     $files.Sort([StringComparer]::Ordinal)
     foreach ($path in $files) {
@@ -129,10 +137,26 @@ function Get-TinyStrataSourceFingerprint {
         $tokens = $null; $errors = $null
         $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'install.ps1'), [ref]$tokens, [ref]$errors)
         if ($errors.Count) { throw 'Cannot fingerprint invalid native build policy.' }
-        foreach ($name in @('Invoke-TinyStrataPortableBuild', 'Get-TinyStrataBuildArchitectures')) {
-            $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
-            if (-not $definition) { throw "Native build policy is missing: $name" }
-            $null = $text.Append($name).Append([char]0).Append($definition.Extent.Text.Replace("`r`n", "`n")).Append("`n")
+        $definitions = @{}
+        foreach ($definition in $ast.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst]}, $true)) { $definitions[$definition.Name] = $definition }
+        $policy = New-Object 'System.Collections.Generic.Stack[string]'
+        foreach ($name in @('Invoke-TinyStrataPortableBuild','Get-TinyStrataBuildArchitectures','Get-TinyStrataSourceFingerprint')) { $policy.Push($name) }
+        $visited = @{}
+        while ($policy.Count) {
+            $name = $policy.Pop()
+            if ($visited.ContainsKey($name)) { continue }
+            if (-not $definitions.ContainsKey($name)) { throw "Native build policy is missing: $name" }
+            $visited[$name] = $true
+            foreach ($command in $definitions[$name].FindAll({param($node) $node -is [System.Management.Automation.Language.CommandAst]}, $true)) {
+                $callee = $command.GetCommandName()
+                if ($callee -and $definitions.ContainsKey($callee)) { $policy.Push($callee) }
+            }
+        }
+        $policyNames = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($name in $visited.Keys) { $policyNames.Add($name) }
+        $policyNames.Sort([StringComparer]::Ordinal)
+        foreach ($name in $policyNames) {
+            $null = $text.Append($name).Append([char]0).Append($definitions[$name].Extent.Text.Replace("`r`n", "`n")).Append("`n")
         }
     }
     $sha = [Security.Cryptography.SHA256]::Create()
@@ -150,24 +174,176 @@ function Test-TinyStrataSourceRevision {
     } catch { return $false }
 }
 
-function Write-TinyStrataNativeBuildStamp {
-    param([string]$Directory, [string]$SourceRoot, [ValidateSet('cuda', 'hip')][string]$Backend)
-    $files = [ordered]@{}
-    foreach ($name in @('tinystrata.exe', 'tinystrata-lfm2.exe', 'tinystrata-gemma4.exe', 'tinystrata-vision.exe') + $(if ($Backend -eq 'cuda') { @('strata_kq.dll') } else { @() })) {
-        $files[$name] = (Get-FileHash -LiteralPath (Join-Path $Directory $name) -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+function Get-TinyStrataNativeFlagFingerprint {
+    $text = New-Object Text.StringBuilder
+    foreach ($name in @('CFLAGS','CXXFLAGS','CUDAFLAGS','HIPFLAGS','LDFLAGS','CL','_CL_','LINK',
+        'NVCC_PREPEND_FLAGS','NVCC_APPEND_FLAGS','NVCC_CCBIN','CC','CXX','CUDACXX','HIPCXX','CUDAHOSTCXX','HIPHOSTCXX',
+        'CUDAARCHS','HIPARCHS','CMAKE_TOOLCHAIN_FILE','CMAKE_PREFIX_PATH','CMAKE_GENERATOR_TOOLSET','CMAKE_GENERATOR_PLATFORM')) {
+        $null = $text.Append($name).Append([char]0).Append([Environment]::GetEnvironmentVariable($name,'Process')).Append("`n")
     }
-    $stamp = [ordered]@{ schema = 1; backend = $Backend; source_fingerprint = (Get-TinyStrataSourceFingerprint -Directory $SourceRoot -NativeOnly); files = $files }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text.ToString())))).Replace('-','').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+}
+
+function Get-TinyStrataNativeBuildInputs {
+    param([string]$Directory, [string]$SourceRoot, $Tools, [string]$Backend, [string]$ToolkitRoot, [string]$Architectures)
+    # Capture the actual Ninja dependency graph after a successful build, not
+    # an optimistic hand-maintained SDK/header list. Unknown/missing evidence
+    # produces a non-reusable generation, never a trusted legacy stamp.
+    try {
+        $root = [IO.Path]::GetFullPath($Directory)
+        $paths = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        foreach ($path in @((Join-Path $root 'CMakeCache.txt'),(Join-Path $root 'build.ninja'),$Tools.CMake,$Tools.Ninja,$Tools.DevCmd)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'Missing native toolchain/build record.' }
+            $null = $paths.Add((Resolve-Path -LiteralPath $path).Path)
+        }
+        $cache = Get-Content -LiteralPath (Join-Path $root 'CMakeCache.txt')
+        $compilers = @{}
+        foreach ($line in $cache) {
+            if ($line -match '^CMAKE_(C|CXX|CUDA|HIP)_COMPILER:[^=]*=(.+)$') {
+                $compilers[$Matches[1]] = $Matches[2]; $null = $paths.Add([IO.Path]::GetFullPath($Matches[2]))
+            } elseif ($line -match '^CMAKE_(LINKER|RC_COMPILER|MT|AR):[^=]*=(.+)$' -and (Test-Path -LiteralPath $Matches[2] -PathType Leaf)) {
+                $null = $paths.Add([IO.Path]::GetFullPath($Matches[2]))
+            }
+        }
+        if (-not $compilers.CXX -or -not $compilers[$Backend.ToUpperInvariant()]) { throw 'Unresolved native compiler identity.' }
+        foreach ($relative in @('version.json','version.txt','bin\ptxas.exe','bin\nvlink.exe','nvvm\bin\cicc.exe')) {
+            $path = Join-Path $ToolkitRoot $relative
+            if (Test-Path -LiteralPath $path -PathType Leaf) { $null = $paths.Add([IO.Path]::GetFullPath($path)) }
+        }
+        if ($Tools.VisualStudio) {
+            $versionPolicy = Join-Path $Tools.VisualStudio 'VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt'
+            if (-not (Test-Path -LiteralPath $versionPolicy -PathType Leaf)) { throw 'Unresolved MSVC default toolchain version.' }
+            $null = $paths.Add([IO.Path]::GetFullPath($versionPolicy))
+        }
+        $dependencies = @(& $Tools.Ninja -C $root -t deps 2>$null)
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate native header dependencies.' }
+        $dependencyCount = 0
+        foreach ($line in $dependencies) {
+            if ($line -match '^    (.+)$') {
+                $path = $Matches[1]
+                if (-not [IO.Path]::IsPathRooted($path)) { $path = Join-Path $root $path }
+                if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'Incomplete native header dependency.' }
+                $null = $paths.Add([IO.Path]::GetFullPath($path)); $dependencyCount++
+            }
+        }
+        if (-not $dependencyCount) { throw 'Empty native header dependency proof.' }
+        $commands = @(& $Tools.Ninja -C $root -t commands 2>$null)
+        if ($LASTEXITCODE -ne 0 -or -not $commands.Count) { throw 'Cannot enumerate native link inputs.' }
+        $libraryDirs = @($root,(Join-Path $ToolkitRoot 'lib\x64'),(Join-Path $ToolkitRoot 'lib')) + @($env:LIB -split ';' | Where-Object { $_ })
+        # MSVC emits these auto-link dependencies in COFF directives, so they
+        # need not appear in Ninja's link command. Bind both release CRT modes
+        # (portable /MT and clang/MSVC /MD) from the selected developer shell.
+        $crt = @{}
+        foreach ($name in @('libcmt.lib','libcpmt.lib','libvcruntime.lib','libucrt.lib','libconcrt.lib',
+            'msvcrt.lib','msvcprt.lib','vcruntime.lib','ucrt.lib','concrt.lib','oldnames.lib',
+            'legacy_stdio_definitions.lib','legacy_stdio_wide_specifiers.lib')) {
+            foreach ($parent in $libraryDirs) {
+                $path = Join-Path $parent $name
+                if (Test-Path -LiteralPath $path -PathType Leaf) { $null = $paths.Add([IO.Path]::GetFullPath($path)); $crt[$name]=$true; break }
+            }
+        }
+        if (-not $crt['oldnames.lib'] -or (-not $crt['libcmt.lib'] -and -not $crt['msvcrt.lib']) -or
+            (-not $crt['libcpmt.lib'] -and -not $crt['msvcprt.lib'])) { throw 'Unresolved implicit Windows CRT libraries.' }
+        # Device bitcode and compiler resource libraries are implicit inputs,
+        # not Ninja depfile entries. Keep their exact installed bytes bound.
+        $bitcodeRoots = if ($Backend -eq 'cuda') { @('nvvm\libdevice') } else { @('lib\llvm\amdgcn\bitcode','amdgcn\bitcode') }
+        $bitcodeCount = 0
+        foreach ($relative in $bitcodeRoots) {
+            $path = Join-Path $ToolkitRoot $relative
+            if (Test-Path -LiteralPath $path -PathType Container) {
+                foreach ($file in Get-ChildItem -LiteralPath $path -Recurse -File -Filter '*.bc') { $null=$paths.Add($file.FullName); $bitcodeCount++ }
+            }
+        }
+        if (-not $bitcodeCount) { throw 'Unresolved implicit GPU device bitcode.' }
+        foreach ($relative in @('lib\llvm\lib\clang','lib\clang','nvvm\bin')) {
+            $path = Join-Path $ToolkitRoot $relative
+            if (Test-Path -LiteralPath $path -PathType Container) {
+                foreach ($file in Get-ChildItem -LiteralPath $path -Recurse -File | Where-Object { $_.Extension -in @('.lib','.bc','.dll') }) { $null=$paths.Add($file.FullName) }
+            }
+        }
+        $pendingCommands = New-Object 'System.Collections.Generic.Stack[string]'
+        foreach ($line in $commands) { $pendingCommands.Push($line) }
+        $responseFiles = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        while ($pendingCommands.Count) {
+            $line = $pendingCommands.Pop()
+            if ($line -match '(?:^|\s)-l[^\s]') { throw 'Unresolved native library switch.' }
+            foreach ($match in [regex]::Matches($line, '@(?:"([^"]+)"|([^\s"]+))')) {
+                $name = if ($match.Groups[1].Success) { $match.Groups[1].Value } else { $match.Groups[2].Value }
+                $path = if ([IO.Path]::IsPathRooted($name)) { $name } else { Join-Path $root $name }
+                if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -gt 1048576) { throw 'Missing or oversized native response file.' }
+                $path = [IO.Path]::GetFullPath($path); $null = $paths.Add($path)
+                if ($responseFiles.Add($path)) { $pendingCommands.Push([IO.File]::ReadAllText($path)) }
+            }
+            foreach ($match in [regex]::Matches($line, '"([^"\r\n]+\.lib)"|(?<!\S)([^\s"]+\.lib)(?=\s|$)', 'IgnoreCase')) {
+                $name = if ($match.Groups[1].Success) { $match.Groups[1].Value } else { $match.Groups[2].Value }
+                $beforeLibrary = $line.Substring(0,$match.Index)
+                # link/lib outputs are not input dependencies. Handle switches
+                # outside quotes too: /implib:"an output.lib".
+                if ($name -match '^(?:/|-)(?:out|implib):' -or
+                    $beforeLibrary -match '(?:^|\s)(?:(?:/|-)(?:out|implib):|-o)\s*$') { continue }
+                $name = $name -replace '^(?:/|-)(?:DEFAULTLIB|WHOLEARCHIVE):',''
+                $resolved = $null
+                foreach ($parent in $libraryDirs) {
+                    $path = if ([IO.Path]::IsPathRooted($name)) { $name } else { Join-Path $parent $name }
+                    if (Test-Path -LiteralPath $path -PathType Leaf) { $resolved = [IO.Path]::GetFullPath($path); break }
+                }
+                if (-not $resolved) { throw 'Unresolved native import/static library.' }
+                $null = $paths.Add($resolved)
+            }
+        }
+        $sorted = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($path in $paths) { $sorted.Add($path) }; $sorted.Sort([StringComparer]::Ordinal)
+        $inputs = @($sorted | ForEach-Object { [ordered]@{path=$_;sha256=(Get-FileHash -LiteralPath $_ -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()} })
+        $selectedTools = [ordered]@{version=[string]$Tools.Version;cmake=(Resolve-Path -LiteralPath $Tools.CMake).Path;ninja=(Resolve-Path -LiteralPath $Tools.Ninja).Path;developer_shell=(Resolve-Path -LiteralPath $Tools.DevCmd).Path}
+        return [ordered]@{schema=1;complete=$true;backend=$Backend;toolkit_root=[IO.Path]::GetFullPath($ToolkitRoot);architectures=$Architectures;flag_environment=(Get-TinyStrataNativeFlagFingerprint);tools=$selectedTools;inputs=$inputs}
+    } catch {
+        Write-Host 'Native dependency evidence is incomplete; this generation will rebuild on a future update.'
+        return [ordered]@{schema=1;complete=$false;backend=$Backend;reason=$_.Exception.Message}
+    }
+}
+
+function Write-TinyStrataNativeBuildStamp {
+    param([string]$Directory, [string]$SourceRoot, [ValidateSet('cuda', 'hip')][string]$Backend, $BuildInputs)
+    if (-not $BuildInputs) {
+        try { $BuildInputs = (Get-Content -LiteralPath (Join-Path $Directory '.tinystrata-native-build.json') -Raw | ConvertFrom-Json).build_inputs } catch { $BuildInputs = $null }
+    }
+    $files = [ordered]@{}
+    foreach ($file in @(Get-ChildItem -LiteralPath $Directory -File | Where-Object { $_.Extension -in @('.exe','.dll') })) {
+        $files[$file.Name] = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+    }
+    $stamp = [ordered]@{ schema = 2; backend = $Backend; source_fingerprint = (Get-TinyStrataSourceFingerprint -Directory $SourceRoot -NativeOnly -Backend $Backend); files = $files; build_inputs=$BuildInputs }
     $path = Join-Path $Directory '.tinystrata-native-build.json'
-    [IO.File]::WriteAllText($path, ($stamp | ConvertTo-Json -Depth 4), (New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText($path, ($stamp | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding($false)))
 }
 
 function Test-TinyStrataNativeBuildStamp {
-    param([string]$Directory, [string]$Fingerprint, [ValidateSet('cuda', 'hip')][string]$Backend)
+    param([string]$Directory, [string]$Fingerprint, [ValidateSet('cuda', 'hip')][string]$Backend, [string]$Architectures, [string]$ToolkitRoot, $Tools, [switch]$RequireSelectedTools)
     try {
         $stamp = Get-Content -LiteralPath (Join-Path $Directory '.tinystrata-native-build.json') -Raw -ErrorAction Stop | ConvertFrom-Json
-        if ($stamp.schema -ne 1 -or $stamp.backend -ne $Backend -or $stamp.source_fingerprint -ne $Fingerprint) { return $false }
+        if ($stamp.schema -ne 2 -or $stamp.backend -ne $Backend -or $stamp.source_fingerprint -ne $Fingerprint) { return $false }
+        $inputs = $stamp.build_inputs
+        if ($inputs.schema -ne 1 -or $inputs.complete -isnot [bool] -or $inputs.complete -ne $true -or $inputs.backend -ne $Backend -or
+            $inputs.flag_environment -ne (Get-TinyStrataNativeFlagFingerprint) -or -not $inputs.inputs -or -not @($inputs.inputs).Count -or
+            ($Architectures -and $inputs.architectures -ne $Architectures) -or
+            ($ToolkitRoot -and -not [string]::Equals([IO.Path]::GetFullPath($ToolkitRoot),$inputs.toolkit_root,[StringComparison]::OrdinalIgnoreCase))) { return $false }
+        if ($RequireSelectedTools -and -not $Tools) { return $false }
+        if ($Tools -and (-not $inputs.tools -or [string]$inputs.tools.version -ne [string]$Tools.Version -or
+            -not [string]::Equals($inputs.tools.cmake,(Resolve-Path -LiteralPath $Tools.CMake).Path,[StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals($inputs.tools.ninja,(Resolve-Path -LiteralPath $Tools.Ninja).Path,[StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals($inputs.tools.developer_shell,(Resolve-Path -LiteralPath $Tools.DevCmd).Path,[StringComparison]::OrdinalIgnoreCase))) { return $false }
+        foreach ($input in $inputs.inputs) {
+            if (-not [IO.Path]::IsPathRooted($input.path) -or $input.sha256 -notmatch '^[a-f0-9]{64}$' -or
+                (Get-FileHash -LiteralPath $input.path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() -ne $input.sha256) { return $false }
+        }
         foreach ($name in @('tinystrata.exe', 'tinystrata-lfm2.exe', 'tinystrata-gemma4.exe', 'tinystrata-vision.exe') + $(if ($Backend -eq 'cuda') { @('strata_kq.dll') } else { @() })) {
             if ($stamp.files.$name -ne (Get-FileHash -LiteralPath (Join-Path $Directory $name) -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()) { return $false }
+        }
+        $actualFiles = @(Get-ChildItem -LiteralPath $Directory -File | Where-Object { $_.Extension -in @('.exe','.dll') })
+        if ($actualFiles.Count -ne @($stamp.files.PSObject.Properties).Count) { return $false }
+        foreach ($file in $actualFiles) {
+            if ($stamp.files.($file.Name) -ne (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()) { return $false }
         }
         return $true
     } catch { return $false }
@@ -413,6 +589,21 @@ function Test-TinyStrataInteractiveConsole {
         [Environment]::GetCommandLineArgs() -notcontains '-NonInteractive' -and $Host.Name -eq 'ConsoleHost')
 }
 
+function Get-TinyStrataIntelRuntimeSelection {
+    param([string]$Model, [string]$RequestedProfile, [object[]]$Controllers)
+    if ($Model -notin @('qwen3.6-35b-a3b','tiel-coder-35b-a3b')) { throw 'Unsupported Intel model identity.' }
+    if ($null -eq $Controllers) { $Controllers = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue) }
+    $intel = @($Controllers | Where-Object { $_.PNPDeviceID -match '(?i)VEN_8086' })
+    # WMI chooses a candidate package only. The installed binary must later
+    # certify the actual selected SYCL device and its baseline capabilities.
+    $knownB390 = $intel.Count -eq 1 -and $intel[0].PNPDeviceID -match '(?i)VEN_8086&DEV_B082(?:&|$)'
+    $fast = if ($Model -eq 'tiel-coder-35b-a3b') { 'b390-tiel-coder' } else { 'b390-qwen36' }
+    if ($RequestedProfile -and $RequestedProfile -notin @('generic',$fast)) { throw 'Intel profile does not match the selected model.' }
+    if ($RequestedProfile -and $RequestedProfile -ne 'generic' -and -not $knownB390) { throw 'B390 AOT tuning requires the known B390 device; select generic for another Intel GPU.' }
+    if ($knownB390 -and $RequestedProfile -ne 'generic') { return [pscustomobject]@{Profile=$fast;AotTarget='intel_gpu_ptl_h'} }
+    return [pscustomobject]@{Profile='generic';AotTarget=''}
+}
+
 function Select-TinyStrataBackend {
     param([string]$Requested = 'auto', [bool]$Interactive = $false)
     if (-not $Interactive) { return $Requested }
@@ -420,7 +611,7 @@ function Select-TinyStrataBackend {
     if (-not (Test-TinyStrataInteractiveConsole)) {
         throw '-SelectBackend requires an interactive console. Use -Backend sycl (experimental Intel), cuda, hip or auto in unattended installs.'
     }
-    Write-Host 'Backend: [Enter/0] automatic (NVIDIA/AMD priority; Intel-only experimental candidate), [1] CUDA, [2] HIP, [3] Intel SYCL experimental Qwen3.6/Tiel text (validated B390 only).'
+    Write-Host 'Backend: [Enter/0] automatic (NVIDIA/AMD priority; Intel-only experimental candidate), [1] CUDA, [2] HIP, [3] Intel SYCL experimental Qwen3.6/Tiel text (B390 AOT or capability-checked generic GPU).'
     $choice = Read-Host 'Backend'
     switch ($choice.Trim()) { '' { return 'auto' } '0' { return 'auto' } '1' { return 'cuda' } '2' { return 'hip' } '3' { return 'sycl' } default { throw 'Unknown backend selection; no installation was prepared.' } }
 }
@@ -736,6 +927,8 @@ function Invoke-TinyStrataPortableBuild {
         if ($LASTEXITCODE -ne 0) { throw 'TinyStrata CMake configuration failed.' }
         $buildArguments = @('--build', $buildRoot, '--config', 'Release', '--parallel', [string]$Parallel)
         if ($Clean) { $buildArguments += '--clean-first' }
+        # Preserve Ninja's response files for the exact dependency/flag receipt.
+        $buildArguments += @('--','-d','keeprsp')
         & $tools.CMake @buildArguments | Out-Host
         if ($LASTEXITCODE -ne 0) { throw 'TinyStrata native compilation failed.' }
         $exe = Join-Path $buildRoot 'tinystrata.exe'
@@ -754,7 +947,9 @@ function Invoke-TinyStrataPortableBuild {
             if (-not (Test-TinyStrataEngineBackend -ExecutablePath $engine -Backend $Backend)) { throw "The engine was not built with $Backend support: $engine" }
         }
         if ($Backend -eq 'hip') { $kq = $null } # HIP MMQ is linked statically, not strata_kq.dll.
-        return [pscustomobject]@{ Exe = $exe; LfmExe = $lfmExe; GemmaExe = $gemmaExe; VisionExe = $visionExe; QuantizedKernels = $kq; CudaDirectory = $cudaRoot; HipDirectory = $hipRoot; Backend = $Backend; Architectures = $(if ($Backend -eq 'hip') { $hipArchs } else { $Architectures }) }
+        $inputProof = Get-TinyStrataNativeBuildInputs -Directory $buildRoot -SourceRoot $sourceRoot -Tools $tools -Backend $Backend `
+            -ToolkitRoot $(if ($Backend -eq 'hip') { $hipRoot } else { $cudaRoot }) -Architectures $(if ($Backend -eq 'hip') { $hipArchs } else { $Architectures })
+        return [pscustomobject]@{ Exe = $exe; LfmExe = $lfmExe; GemmaExe = $gemmaExe; VisionExe = $visionExe; QuantizedKernels = $kq; CudaDirectory = $cudaRoot; HipDirectory = $hipRoot; Backend = $Backend; Architectures = $(if ($Backend -eq 'hip') { $hipArchs } else { $Architectures }); BuildInputs=$inputProof }
     }
     finally {
         foreach ($entry in @(Get-ChildItem Env:)) {
@@ -2173,7 +2368,8 @@ from serve.intel_capabilities import capability_environment, probe_capabilities,
 try:
     cfg = {"backend": "sycl", "cwd": sys.argv[1], "exe": sys.argv[2], "lib_dirs": sys.argv[7:]}
     observed = probe_capabilities(cfg, expected_sha256=sys.argv[4])
-    required = {path: [18] for path in ("scalar", "dp4a", "int8_xmx")} if sys.argv[6] == "tiel-coder-35b-a3b" else None
+    paths = ("scalar",) if sys.argv[3] == "generic" else ("scalar", "dp4a", "int8_xmx")
+    required = {path: [18] for path in paths} if sys.argv[6] == "tiel-coder-35b-a3b" else None
     validate_capabilities(observed.report, model=sys.argv[6], profile=sys.argv[3], allow_legacy=sys.argv[5] == "true", required_types=required)
     device = None
     if not observed.legacy:
@@ -2234,7 +2430,7 @@ function Invoke-TinyStrataInstaller {
     $runtimeRoot = Join-Path $workRoot 'runtime'
     if ($SelectBackend) { $Backend = Select-TinyStrataBackend -Requested $Backend -Interactive $true }
     if ($IntelRuntimeDirectory -and $Backend -notin @('auto','sycl')) { throw '-IntelRuntimeDirectory requires an Intel backend selection.' }
-    if ($IntelProfile -notin @('b390-qwen36','b390-tiel-coder')) { throw 'Unknown experimental Intel profile.' }
+    if ($IntelProfile -notin @('generic','b390-qwen36','b390-tiel-coder')) { throw 'Unknown experimental Intel profile.' }
     $portAutomatic = $ApiPort -eq 0
     $selectedFamily = if ($Backend -eq 'sycl') { Get-TinyStrataModelFamily -Name $Family -Backend sycl } else { Get-TinyStrataModelFamily -Name $Family }
     $configPath = Join-Path (Join-Path $runtimeRoot '.tinystrata') $selectedFamily.ConfigFile
@@ -2258,8 +2454,8 @@ function Invoke-TinyStrataInstaller {
         $familyHint = if ($familyExplicitHere) { $Family } elseif ($settings -and $settings.model_family -in @('qwen36','tiel','tiel-coder')) { $settings.model_family } else { 'qwen36' }
         $selectedFamily = Get-TinyStrataModelFamily -Name $familyHint -Backend sycl
         $profileExplicitHere = if ($PSBoundParameters.ContainsKey('IntelProfileExplicit')) { $IntelProfileExplicit } else { $PSBoundParameters.ContainsKey('IntelProfile') }
-        if ($profileExplicitHere -and $IntelProfile -ne $selectedFamily.IntelProfile) { throw 'The explicitly selected Intel profile does not match the selected model family.' }
-        $IntelProfile = $selectedFamily.IntelProfile
+        $intelRuntimeSelection = Get-TinyStrataIntelRuntimeSelection -Model $selectedFamily.Model -RequestedProfile $(if ($profileExplicitHere) {$IntelProfile} else {''})
+        $IntelProfile = $intelRuntimeSelection.Profile
         $configPath = Join-Path (Join-Path $runtimeRoot '.tinystrata') $selectedFamily.ConfigFile
         $statePath = Join-Path $runtimeRoot $selectedFamily.StateFile
         $cfg = Get-TinyStrataConfig -Path $configPath
@@ -2356,7 +2552,8 @@ function Invoke-TinyStrataInstaller {
         }
         $cacheRoot = Join-Path $workRoot 'downloads'
         if (-not $sourceReady -or $RefreshSource) { $sourceChange = Initialize-TinyStrataSource -SourceRoot $sourceRoot -CacheRoot $cacheRoot -Refresh:$RefreshSource -Revision $Revision }
-        $nativeFingerprint = if ($selectedBackend -ne 'sycl') { Get-TinyStrataSourceFingerprint -Directory $sourceRoot -NativeOnly } else { $null }
+        $nativeFingerprint = if ($selectedBackend -ne 'sycl') { Get-TinyStrataSourceFingerprint -Directory $sourceRoot -NativeOnly -Backend $selectedBackend } else { $null }
+        $nativeBuildInputs = $null
         $python = Initialize-TinyStrataPython -WorkRoot $workRoot -SourceRoot $sourceRoot -CacheRoot $cacheRoot -Transaction $pythonTransaction
         if ($selectedBackend -eq 'hip') {
             $hipRoot = Ensure-TinyStrataHipToolkit -DestinationDirectory (Join-Path $workRoot 'rocm-venv') -Python $python -Directory $HipDirectory -Architectures $HipArchitectures
@@ -2371,13 +2568,13 @@ function Invoke-TinyStrataInstaller {
             . $intelHelper
             . $packageHelper
             $receivedIntel = $null
-            if (-not $IntelRuntimeDirectory -and ($BuildAgain -or $RefreshSource -or -not $cfg -or $cfg.backend -ne 'sycl' -or -not $cfg.exe)) {
-                $receivedIntel = Receive-TinyStrataIntelRuntime -CatalogPath $catalogPath -CacheRoot $cacheRoot -Profile $IntelProfile
+            if (-not $IntelRuntimeDirectory -and ($BuildAgain -or $RefreshSource -or -not $cfg -or $cfg.backend -ne 'sycl' -or -not $cfg.exe -or $cfg.intel_profile -ne $IntelProfile)) {
+                $receivedIntel = Receive-TinyStrataIntelRuntime -CatalogPath $catalogPath -CacheRoot $cacheRoot -Profile $IntelProfile -Model $selectedFamily.Model -AotTarget $intelRuntimeSelection.AotTarget
                 $IntelRuntimeDirectory = $receivedIntel.StageDirectory
             }
             if ($IntelRuntimeDirectory) {
                 $stage = Get-TinyStrataIntelStagePlan -StageDirectory $IntelRuntimeDirectory
-                if ($stage.Manifest.MklEnabled -ne $true) { throw 'The b390-qwen36 profile requires an app-local MKL-enabled Intel stage.' }
+                if ($IntelProfile -ne 'generic' -and $stage.Manifest.MklEnabled -ne $true) { throw 'The B390 profile requires an app-local MKL-enabled Intel stage.' }
                 $generation = Join-Path (Join-Path $workRoot 'native') ('sycl-' + [Guid]::NewGuid().ToString('N'))
                 $imported = Install-TinyStrataIntelRuntime -StageDirectory $stage.Root -Destination $generation
                 $exe = $imported.Exe
@@ -2391,7 +2588,7 @@ function Invoke-TinyStrataInstaller {
                     (Split-Path -Leaf $savedGeneration) -notmatch '^sycl-[a-f0-9]{32}$' -or
                     (Split-Path -Leaf $exe) -ne 'tinystrata-intel.exe') { throw 'Saved Intel runtime is not an installed immutable sycl generation; specify -IntelRuntimeDirectory.' }
                 $stage = Get-TinyStrataIntelStagePlan -StageDirectory $savedGeneration
-                if ($stage.Manifest.MklEnabled -ne $true -or [string]$stage.Manifest.ImportedFromManifestSha256 -notmatch '^[a-fA-F0-9]{64}$') { throw 'Saved Intel runtime import evidence is missing; specify -IntelRuntimeDirectory.' }
+                if (($IntelProfile -ne 'generic' -and $stage.Manifest.MklEnabled -ne $true) -or [string]$stage.Manifest.ImportedFromManifestSha256 -notmatch '^[a-fA-F0-9]{64}$') { throw 'Saved Intel runtime import evidence is missing; specify -IntelRuntimeDirectory.' }
                 $dllDirs = @($savedGeneration)
             }
             $exeEvidence = @($stage.Files | Where-Object { $_.RelativePath -eq 'tinystrata-intel.exe' })
@@ -2416,6 +2613,15 @@ function Invoke-TinyStrataInstaller {
         }
         $search += $runtimeRoot
         $exe = $null
+        $requestedArchitectures = if ($selectedBackend -eq 'hip') { $hipArchs } else { Get-TinyStrataBuildArchitectures }
+        $reuseTools = $null
+        try { $reuseTools = Find-TinyStrataBuildTools } catch { } # unknown selected toolchain cannot certify reuse
+        $requestedToolkit = if ($selectedBackend -eq 'hip') { $hipRoot } else { '' }
+        if ($selectedBackend -eq 'cuda') {
+            foreach ($root in $cudaRoots) {
+                if (Test-TinyStrataCudaToolkit -Directory $root) { $requestedToolkit = [IO.Path]::GetFullPath($root); break }
+            }
+        }
         if (-not $BuildAgain) {
             $candidates = @()
             if ($cfg -and $cfg.exe) {
@@ -2427,12 +2633,19 @@ function Invoke-TinyStrataInstaller {
             foreach ($folder in @('bin', 'build', 'build\Release')) { $candidates += Join-Path $sourceRoot ($folder + '\tinystrata.exe') }
             foreach ($candidate in $candidates) {
                 if ((Test-Path -LiteralPath $candidate -PathType Leaf) -and
-                    (Test-TinyStrataNativeBuildStamp -Directory (Split-Path -Parent $candidate) -Fingerprint $nativeFingerprint -Backend $selectedBackend) -and
+                    (Test-TinyStrataNativeBuildStamp -Directory (Split-Path -Parent $candidate) -Fingerprint $nativeFingerprint -Backend $selectedBackend -Architectures $requestedArchitectures -ToolkitRoot $requestedToolkit -Tools $reuseTools -RequireSelectedTools) -and
                     ($selectedBackend -eq 'hip' -or (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $candidate) 'strata_kq.dll') -PathType Leaf)) -and
                     (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $candidate) 'tinystrata-lfm2.exe') -PathType Leaf) -and
                     (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $candidate) 'tinystrata-gemma4.exe') -PathType Leaf) -and
                     (Test-TinyStrataEngineBackend -ExecutablePath $candidate -SearchDirectories $search -Backend $selectedBackend) -and
-                    (Test-TinyStrataVisionBackend -ExecutablePath (Join-Path (Split-Path -Parent $candidate) 'tinystrata-vision.exe') -SearchDirectories $search -Backend $selectedBackend)) { $exe = $candidate; break }
+                    (Test-TinyStrataVisionBackend -ExecutablePath (Join-Path (Split-Path -Parent $candidate) 'tinystrata-vision.exe') -SearchDirectories $search -Backend $selectedBackend)) {
+                    $exe = $candidate
+                    $nativeStampPath = Join-Path (Split-Path -Parent $candidate) '.tinystrata-native-build.json'
+                    if (Test-Path -LiteralPath $nativeStampPath -PathType Leaf) {
+                        $nativeBuildInputs = (Get-Content -LiteralPath $nativeStampPath -Raw | ConvertFrom-Json).build_inputs
+                    }
+                    break
+                }
             }
         }
         if (-not $exe) {
@@ -2443,10 +2656,11 @@ function Invoke-TinyStrataInstaller {
                 $build = Invoke-TinyStrataPortableBuild -SourceDirectory $sourceRoot -BuildDirectory $generation -Backend hip -HipDirectory $hipRoot -HipArchitectures $hipArchs
             } else {
                 $cuda = Ensure-TinyStrataCudaToolkit -DestinationDirectory (Join-Path $workRoot 'cuda-13.2') -CacheDirectory $cacheRoot -SearchDirectories $cudaRoots
-                $build = Invoke-TinyStrataPortableBuild -SourceDirectory $sourceRoot -BuildDirectory $generation -CudaDirectory $cuda
+                $build = Invoke-TinyStrataPortableBuild -SourceDirectory $sourceRoot -BuildDirectory $generation -CudaDirectory $cuda -Architectures $requestedArchitectures
                 $search += Join-Path $cuda 'bin'; $search += Join-Path $cuda 'bin\x64'
             }
             $exe = $build.Exe
+            $nativeBuildInputs = $build.BuildInputs
         } elseif ($selectedBackend -eq 'hip') {
             # Prepare a new immutable runtime generation. Other saved profiles
             # and failed updates keep their previous core/math combination.
@@ -2456,7 +2670,7 @@ function Invoke-TinyStrataInstaller {
         $search += Split-Path -Parent $exe
         $search += $runtimeRoot
         $dllDirs = @(Initialize-TinyStrataRuntime -RuntimeRoot $runtimeRoot -CacheRoot $cacheRoot -SearchDirectories $search -HipRuntimeDirectories $hipRuntimeDirs -HipSdkRoot $hipRoot -EngineDirectory (Split-Path -Parent $exe) -Backend $selectedBackend)
-        if ($generation) { Write-TinyStrataNativeBuildStamp -Directory $generation -SourceRoot $sourceRoot -Backend $selectedBackend }
+        if ($generation) { Write-TinyStrataNativeBuildStamp -Directory $generation -SourceRoot $sourceRoot -Backend $selectedBackend -BuildInputs $nativeBuildInputs }
         if ($cfg -and $cfg.lib_dirs -and $cfg.backend -eq $selectedBackend) {
             # Keep HIP math libraries from the selected SDK ahead of a saved
             # SDK's directories; its matching core runtime is now app-local.

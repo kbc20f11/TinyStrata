@@ -32,7 +32,8 @@ void run_probe(sycl::queue& q, const DeviceInfo& device, const std::string& kind
     const auto budget = memory_budget(device);
     // Diagnostics must not induce paging just to get a successful allocation.
     if (!budget.wddm_known) throw std::runtime_error("Cannot uniquely identify the selected GPU's WDDM budget");
-    if (!allocation_fits(budget, bytes, device.max_allocation))
+    const auto pool = kind == "host" ? MemoryPool::Host : kind == "shared" ? MemoryPool::Shared : MemoryPool::Device;
+    if (!allocation_fits(budget, bytes, device.max_allocation, pool))
         throw std::runtime_error("Probe exceeds the allocation limit or available RAM/commit/WDDM budget with 4 GiB headroom");
     const auto d = q.get_device();
     if ((kind == "host" && !d.has(sycl::aspect::usm_host_allocations)) ||

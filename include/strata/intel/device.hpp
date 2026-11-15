@@ -1,5 +1,6 @@
 #pragma once
 #include "strata/intel/memory_policy.hpp"
+#include "strata/intel/device_policy.hpp"
 #include <sycl/sycl.hpp>
 #include <cstdint>
 #include <string>
@@ -18,6 +19,8 @@ struct DeviceInfo {
     // is unavailable; a PCI device ID alone cannot identify an adapter.
     std::string adapter_luid;
     uint32_t adapter_node_mask = 0;
+    DeviceCapabilities capabilities;
+    bool ptl_h_aot = false;
 };
 // Select an explicitly enumerated Intel Level Zero GPU, never a CPU fallback.
 sycl::device select_device(unsigned index);

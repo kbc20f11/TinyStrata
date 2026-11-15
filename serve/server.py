@@ -7535,7 +7535,7 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
     if cfg.get("backend") == "sycl":
         svc.downloads = FixedModelDownloader(directory, on_ready=activate,
                     existing_paths=(existing,) if existing is not None else (),
-                    _manifest=manifest_for_arch("qwen35moe", "qwen3.6-35b-a3b"))
+                    _manifest=manifest_for_arch("qwen35moe", cfg.get("model_name")))
     elif cfg.get("arch") == "gemma4":
         projector = (cfg.get("vision") or {}).get("mmproj") or cfg.get("vision_mmproj")
         assistant = cfg.get("draft_model")

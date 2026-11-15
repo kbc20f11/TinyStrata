@@ -64,6 +64,7 @@ class ModelProfiles:
     def __init__(self, config_path: str | Path, cfg: dict):
         current_path = Path(config_path).expanduser().resolve()
         self._intel = cfg.get("backend") == "sycl"
+        self._generic_intel = self._intel and cfg.get("intel_profile", "generic") == "generic"
         if self._intel:
             from serve.intel_backend import validate_config
             validate_config(cfg, allow_uninstalled=True)
@@ -197,7 +198,9 @@ class ModelProfiles:
             result["enable_thinking"] = True
         if self._intel:
             from serve.intel_backend import configure_backend, MODEL_PROFILES, TIEL_MODEL
-            result.update(intel_profile=MODEL_PROFILES[name], vision_mode="no",
+            if self._generic_intel and "--mtp" in args:
+                args[args.index("--mtp") + 1] = "0"
+            result.update(intel_profile="generic" if self._generic_intel else MODEL_PROFILES[name], vision_mode="no",
                           sampling=deepcopy(tinyconfig.TIEL_SAMPLING if name == TIEL_MODEL else tinyconfig.DEFAULT_SAMPLING))
             if self._engine is not None:
                 result["exe"] = str(self._engine)
@@ -239,6 +242,8 @@ class ModelProfiles:
             source = deepcopy(cfg)
             source.update(deepcopy(self._hardware))
             source["model_name"] = profile.id
+            if self._generic_intel:
+                source["intel_profile"] = "generic"
             result = configure_backend(source)
             if "--model" not in result.get("args", []):
                 result = model_setup.configure_download(result, profile.path)

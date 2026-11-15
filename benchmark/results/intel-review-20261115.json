@@ -1,0 +1,3093 @@
+{
+  "schema": "tinystrata-intel-review-measurements-v1",
+  "date": "2026-11-15",
+  "timezone": "Asia/Tokyo",
+  "draft": true,
+  "complete": false,
+  "issue": "https://github.com/kbc20f11/TinyStrata/issues/11",
+  "scope": "Implementation review and required optimization candidates. Optional prompt/history lookup was excluded. No final shipping or new canonical completion is inferred from these screens.",
+  "source": {
+    "base_commit": "4ed2c8741a83078e78d01281e792456b55c4e026",
+    "frozen_review_executable_sha256": "9e10bad5892730cbb4d6144f0f1609813dd51acd4fa2a702667e7c0f0ea54d8c",
+    "state": "Private review worktree: frozen9e10 screens and separate257d post-default validation. Final shipping builds and packages remain independently pending.",
+    "first_control_sha256_missing_in_original_receipt": true,
+    "post_default_validation_executable_sha256": "257d334fd7c060e3b12f4eb51bdde188a45aead864c4570473c2f0acc8b293b0",
+    "tiel_support_default_gate_change": {
+      "state": "source gate adopted; final shipping fresh-build validation pending",
+      "scope": "B390 GPU draft-support default now covers Qwen and Tiel; target sampler stays CPU by default.",
+      "measured_native_sha256": "257d334fd7c060e3b12f4eb51bdde188a45aead864c4570473c2f0acc8b293b0",
+      "gate_change_was_after_this_validation_artifact": true,
+      "kernel_arithmetic_changed": false,
+      "required_next_gate": "pending.final_shipping_native and pending.new_canonical_four_start_text_benchmark"
+    }
+  },
+  "private_evidence_roots": {
+    "review": "intel-review-20261115",
+    "prior": "intel-20261114"
+  },
+  "hardware": {
+    "cpu": "Intel Core Ultra X7 358H",
+    "gpu": "Intel Arc B390",
+    "pci_vendor_id": 32902,
+    "pci_device_id": 45186,
+    "memory": "32 GiB shared physical RAM; UMA/process/OS usage overlaps and is not additive VRAM",
+    "other_gpu_hardware_validated": false
+  },
+  "invariants": {
+    "models": {
+      "qwen": {
+        "file": "Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf",
+        "size": 14069266720,
+        "sha256": "36f9ec0e4c775f6efd3a61c1ea76f0875128469c3d012e3d9e2495a90e7a7150"
+      },
+      "tiel": {
+        "file": "Tiel-Coder-35B-A3B-MTP-UD-IQ3_XXS.gguf",
+        "size": 13600579424,
+        "sha256": "a4d8ffc7f030466c67db289543871a8f9e6d5340241b300c09fbaf16642273ca"
+      }
+    },
+    "gguf_weights_requantized": false,
+    "selected_routed_experts": 8,
+    "target_vocabulary": "full",
+    "single_compressed_weight_arena": true,
+    "second_full_model_copy": false,
+    "weight_identity_provenance": "Prior full model SHA256 verification; normal screens retain a read-only file lock and unchanged file/stat identity rather than rehashing14GB on each request.",
+    "normal_conditions": {
+      "context_tokens": 32768,
+      "chunk_tokens": 1024,
+      "seed": 2026,
+      "actual_kv": "int8",
+      "mtp_depth": 3,
+      "draft_vocabulary": 2048,
+      "thinking": true,
+      "max_output_tokens": 4096,
+      "qwen_sampler": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 1.5,
+        "frequency_penalty": 0.0,
+        "repetition_penalty": 1.0,
+        "penalty_last_n": 64
+      },
+      "tiel_sampler": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 0.0,
+        "frequency_penalty": 0.0,
+        "repetition_penalty": 1.0
+      }
+    },
+    "quality": "Completed answer/EOS, thinking closure and six independently specified reservation facts. Does not establish unrestricted workload equivalence."
+  },
+  "rate_definitions": {
+    "normal_decode_steps_tok_s": "(output_tokens -1) *1000/decode_ms; first output is seeded from prefill. Output/proposal counts and all decode_ms are retained.",
+    "normal_prefill_tok_s": "fresh prompt tokens *1000/prefill_ms; checkpoint fresh-token work is distinct from reused prompt length.",
+    "historical_canonical": "Canonical aggregate uses emitted tokens divided by recorded native time. Its sampler, seed1234, fixed output caps and four starts are a separate protocol.",
+    "interpretation": [
+      "Single matched development screens do not provide confidence intervals or isolate every simultaneous change.",
+      "FP32 order/proposal changes alter stochastic history and answer length; increased tok/s is not a proportional end-to-end latency gain.",
+      "Qwen long control emits636 IDs; attention emits1477; NPU emits3101. Preserve actual wall time and final-answer correctness.",
+      "Model loading is outside throughput. Standalone kernel timing is not a full-model speed result."
+    ]
+  },
+  "normal_qwen_matched_screens": {
+    "evidence": {
+      "root": "review",
+      "path": "screen-summary.json",
+      "sha256": "3527a6c147c787a3f544c112b50bed7c1f873dae9e042ba399097b30447264cc"
+    },
+    "frozen_executable_sha256": "9e10bad5892730cbb4d6144f0f1609813dd51acd4fa2a702667e7c0f0ea54d8c",
+    "records": [
+      {
+        "mode": "attention",
+        "model": "qwen",
+        "passed": true,
+        "executable_sha256": "9e10bad5892730cbb4d6144f0f1609813dd51acd4fa2a702667e7c0f0ea54d8c",
+        "started": "2026-11-15T07:50:30",
+        "finished": "2026-11-15T07:53:20",
+        "cases": [
+          {
+            "case": "short",
+            "passed": true,
+            "prompt_tokens": 84,
+            "output_tokens": 1268,
+            "prefill_ms": 775.836,
+            "decode_ms": 36894.781,
+            "prefill_tok_s": 108.2703045488995,
+            "decode_steps_tok_s": 34.34090041081962,
+            "first_token_seconds": 0.7970000000000255,
+            "wall_seconds": 37.6880000000001,
+            "finish": "stop",
+            "thinking_closed": true,
+            "json_correct": true,
+            "draft_offered": 1131,
+            "draft_accepted": 890
+          },
+          {
+            "case": "long",
+            "passed": true,
+            "prompt_tokens": 16384,
+            "output_tokens": 1477,
+            "prefill_ms": 59887.246,
+            "decode_ms": 54036.463,
+            "prefill_tok_s": 273.58078880434743,
+            "decode_steps_tok_s": 27.314889207311737,
+            "first_token_seconds": 59.90700000000015,
+            "wall_seconds": 113.9380000000001,
+            "finish": "stop",
+            "thinking_closed": true,
+            "json_correct": true,
+            "draft_offered": 1431,
+            "draft_accepted": 999
+          }
+        ],
+        "candidate_overrides": {
+          "TINYSTRATA_INTEL_FUSED_Q8_ATTN": "1"
+        },
+        "evidence": {
+          "root": "review",
+          "path": "ab-qwen-attention/result.json"
+        }
+      },
+      {
+        "mode": "attention-both",
+        "model": "qwen",
+        "passed": true,
+        "executable_sha256": "9e10bad5892730cbb4d6144f0f1609813dd51acd4fa2a702667e7c0f0ea54d8c",
+        "started": "2026-11-15T08:02:18",
+        "finished": "2026-11-15T08:05:06",
+        "cases": [
+          {
+            "case": "short",
+            "passed": true,
+            "prompt_tokens": 84,
+            "output_tokens": 1268,
+            "prefill_ms": 767.704,
+            "decode_ms": 36537.721,
+            "prefill_tok_s": 109.41717120140055,
+            "decode_steps_tok_s": 34.6764922749287,
+            "first_token_seconds": 0.7970000000000255,
+            "wall_seconds": 37.34299999999985,
+            "finish": "stop",
+            "thinking_closed": true,
+            "json_correct": true,
+            "draft_offered": 1131,
+            "draft_accepted": 890
+          },
+          {
+            "case": "long",
+            "passed": true,
+            "prompt_tokens": 16384,
+            "output_tokens": 1477,
+            "prefill_ms": 59277.009,
+            "decode_ms": 54056.865,
+            "prefill_tok_s": 276.39721160694864,
+            "decode_steps_tok_s": 27.304580093573684,
+            "first_token_seconds": 59.3130000000001,
+            "wall_seconds": 113.375,
+            "finish": "stop",
+            "thinking_closed": true,
+            "json_correct": true,
+            "draft_offered": 1431,
+            "draft_accepted": 999
+          }
+        ],
+        "candidate_overrides": {
+          "TINYSTRATA_INTEL_FUSED_Q8_ATTN": "1",
+          "TINYSTRATA_INTEL_GPU_SUPPORT": "1",
+          "TINYSTRATA_INTEL_GPU_TARGET": "1"
+        },
+        "evidence": {
+          "root": "review",
+          "path": "ab-qwen-attention-both/result.json"
+        }
+      },
+      {
+        "mode": "attention-support",
+        "model": "qwen",
+        "passed": true,
+        "executable_sha256": "9e10bad5892730cbb4d6144f0f1609813dd51acd4fa2a702667e7c0f0ea54d8c",
+        "started": "2026-11-15T08:05:59",
+        "finished": "2026-11-15T08:08:48",
+        "cases": [
+          {
+            "case": "short",
+            "passed": true,
+            "prompt_tokens": 84,
+            "output_tokens": 1268,
+            "prefill_ms": 791.092,
+            "decode_ms": 35476.376,
+            "prefill_tok_s": 106.18234035990757,
+            "decode_steps_tok_s": 35.713907192775274,
+            "first_token_seconds": 0.8130000000001019,
+            "wall_seconds": 36.297000000000025,
+            "finish": "stop",
+            "thinking_closed": true,
+            "json_correct": true,
+            "draft_offered": 1131,
+            "draft_accepted": 890
+          },
+          {
+            "case": "long",
+            "passed": true,
+            "prompt_tokens": 16384,
+            "output_tokens": 1477,
+            "prefill_ms": 59769.099,
+            "decode_ms": 52901.448,
+            "prefill_tok_s": 274.1215824585209,
+            "decode_steps_tok_s": 27.90093760760575,
+            "first_token_seconds": 59.797000000000025,
+            "wall_seconds": 112.70299999999997,
+            "finish": "stop",
+            "thinking_closed": true,
+            "json_correct": true,
+            "draft_offered": 1431,
+            "draft_accepted": 999
+          }
+        ],
+        "candidate_overrides": {
+          "TINYSTRATA_INTEL_FUSED_Q8_ATTN": "1",
+          "TINYSTRATA_INTEL_GPU_SUPPORT": "1"
+        },
+        "evidence": {
+          "root": "review",
+          "path": "ab-qwen-attention-support/result.json"
+        }
+      },
+      {
+        "mode": "baseline",
+        "model": "qwen",
+        "passed": true,
+        "executable_sha256": null,
+        "started": "2026-11-15T07:46:48",
+        "finished": "2026-11-15T07:49:09",
+        "cases": [
+          {
+            "case": "short",
+            "passed": true,
+            "prompt_tokens": 84,
+            "output_tokens": 1268,
+            "prefill_ms": 777.098,
+            "decode_ms": 37143.221,
+            "prefill_tok_s": 108.09447457077486,
+            "decode_steps_tok_s": 34.11120430293323,
+            "first_token_seconds": 0.7970000000000255,
+            "wall_seconds": 37.9369999999999,
+            "finish": "stop",
+            "thinking_closed": true,
+            "json_correct": true,
+            "draft_offered": 1131,
+            "draft_accepted": 890
+          },
+          {
+            "case": "long",
+            "passed": true,
+            "prompt_tokens": 16384,
+            "output_tokens": 636,
+            "prefill_ms": 59733.085,
+            "decode_ms": 24061.493,
+            "prefill_tok_s": 274.2868545965774,
+            "decode_steps_tok_s": 26.390714823888942,
+            "first_token_seconds": 59.75,
+            "wall_seconds": 83.8130000000001,
+            "finish": "stop",
+            "thinking_closed": true,
+            "json_correct": true,
+            "draft_offered": 549,
+            "draft_accepted": 452
+          }
+        ],
+        "candidate_overrides": {},
+        "evidence": {
+          "root": "review",
+          "path": "ab-qwen-baseline/result.json"
+        },
+        "executable_identity_note": "The first control result predates per-run executable hashing. Its same-path frozen file subsequently hashes to the cohort digest; the missing original digest is retained as null."
+      },
+      {
+        "mode": "baseline",
+        "model": "qwen",
+        "passed": true,
+        "executable_sha256": "9e10bad5892730cbb4d6144f0f1609813dd51acd4fa2a702667e7c0f0ea54d8c",
+        "started": "2026-11-15T08:15:40",
+        "finished": "2026-11-15T08:17:12",
+        "cases": [
+          {
+            "case": "4k",
+            "passed": true,
+            "prompt_tokens": 4096,
+            "output_tokens": 1740,
+            "prefill_ms": 13945.374,
+            "decode_ms": 58613.463,
+            "prefill_tok_s": 293.7174721882683,
+            "decode_steps_tok_s": 29.668951653649945,
+            "first_token_seconds": 13.969000000000051,
+            "wall_seconds": 72.57800000000043,
+            "finish": "stop",
+            "thinking_closed": true,
+            "json_correct": true,
+            "draft_offered": 1662,
+            "draft_accepted": 1185
+          }
+        ],
+        "candidate_overrides": {},
+        "evidence": {
+          "root": "review",
+          "path": "ab-qwen-baseline-4k/result.json"
+        }
+      },
+      {
+        "mode": "host-support",
+        "model": "qwen",
+        "passed": true,
+        "executable_sha256": "9e10bad5892730cbb4d6144f0f1609813dd51acd4fa2a702667e7c0f0ea54d8c",
+        "started": "2026-11-15T07:58:37",
+        "finished": "2026-11-15T08:00:54",
+        "cases": [
+          {
+            "case": "short",
+            "passed": true,
+            "prompt_tokens": 84,
+            "output_tokens": 1268,
+            "prefill_ms": 773.985,
+            "decode_ms": 35742.363,
+            "prefill_tok_s": 108.52923506269501,
+            "decode_steps_tok_s": 35.4481319547899,
+            "first_token_seconds": 0.7970000000000255,
+            "wall_seconds": 36.547000000000025,
+            "finish": "stop",
+            "thinking_closed": true,
+            "json_correct": true,
+            "draft_offered": 1131,
+            "draft_accepted": 890
+          },
+          {
+            "case": "long",
+            "passed": true,
+            "prompt_tokens": 16384,
+            "output_tokens": 636,
+            "prefill_ms": 59316.118,
+            "decode_ms": 23264.671,
+            "prefill_tok_s": 276.21497414918485,
+            "decode_steps_tok_s": 27.294604767890338,
+            "first_token_seconds": 59.34299999999985,
+            "wall_seconds": 82.60899999999992,
+            "finish": "stop",
+            "thinking_closed": true,
+            "json_correct": true,
+            "draft_offered": 549,
+            "draft_accepted": 452
+          }
+        ],
+        "candidate_overrides": {
+          "TINYSTRATA_INTEL_GPU_SUPPORT": "1"
+        },
+        "evidence": {
+          "root": "review",
+          "path": "ab-qwen-host-support/result.json"
+        }
+      },
+      {
+        "mode": "host-target",
+        "model": "qwen",
+        "passed": true,
+        "executable_sha256": "9e10bad5892730cbb4d6144f0f1609813dd51acd4fa2a702667e7c0f0ea54d8c",
+        "started": "2026-11-15T07:54:18",
+        "finished": "2026-11-15T07:56:39",
+        "cases": [
+          {
+            "case": "short",
+            "passed": true,
+            "prompt_tokens": 84,
+            "output_tokens": 1268,
+            "prefill_ms": 767.165,
+            "decode_ms": 37649.031,
+            "prefill_tok_s": 109.49404626123454,
+            "decode_steps_tok_s": 33.6529245599973,
+            "first_token_seconds": 0.7809999999999491,
+            "wall_seconds": 38.4369999999999,
+            "finish": "stop",
+            "thinking_closed": true,
+            "json_correct": true,
+            "draft_offered": 1131,
+            "draft_accepted": 890
+          },
+          {
+            "case": "long",
+            "passed": true,
+            "prompt_tokens": 16384,
+            "output_tokens": 636,
+            "prefill_ms": 59561.245,
+            "decode_ms": 24520.203,
+            "prefill_tok_s": 275.07819891944837,
+            "decode_steps_tok_s": 25.89701235344585,
+            "first_token_seconds": 59.577999999999975,
+            "wall_seconds": 84.09299999999985,
+            "finish": "stop",
+            "thinking_closed": true,
+            "json_correct": true,
+            "draft_offered": 549,
+            "draft_accepted": 452
+          }
+        ],
+        "candidate_overrides": {
+          "TINYSTRATA_INTEL_GPU_TARGET": "1"
+        },
+        "evidence": {
+          "root": "review",
+          "path": "ab-qwen-host-target/result.json"
+        }
+      },
+      {
+        "mode": "npu",
+        "model": "qwen",
+        "passed": true,
+        "executable_sha256": "9e10bad5892730cbb4d6144f0f1609813dd51acd4fa2a702667e7c0f0ea54d8c",
+        "started": "2026-11-15T08:09:40",
+        "finished": "2026-11-15T08:14:58",
+        "cases": [
+          {
+            "case": "short",
+            "passed": true,
+            "prompt_tokens": 84,
+            "output_tokens": 1268,
+            "prefill_ms": 788.889,
+            "decode_ms": 36642.683,
+            "prefill_tok_s": 106.47885824241433,
+            "decode_steps_tok_s": 34.577162376455895,
+            "first_token_seconds": 0.8119999999998981,
+            "wall_seconds": 37.46799999999985,
+            "finish": "stop",
+            "thinking_closed": true,
+            "json_correct": true,
+            "draft_offered": 1131,
+            "draft_accepted": 890
+          },
+          {
+            "case": "4k",
+            "passed": true,
+            "prompt_tokens": 4096,
+            "output_tokens": 1489,
+            "prefill_ms": 14541.799,
+            "decode_ms": 49514.503,
+            "prefill_tok_s": 281.6707891506408,
+            "decode_steps_tok_s": 30.051801186411993,
+            "first_token_seconds": 14.561999999999898,
+            "wall_seconds": 64.09400000000005,
+            "finish": "stop",
+            "thinking_closed": true,
+            "json_correct": true,
+            "draft_offered": 1389,
+            "draft_accepted": 1025
+          },
+          {
+            "case": "long",
+            "passed": true,
+            "prompt_tokens": 16384,
+            "output_tokens": 3101,
+            "prefill_ms": 61612.961,
+            "decode_ms": 134801.433,
+            "prefill_tok_s": 265.91807525692525,
+            "decode_steps_tok_s": 22.99678817212574,
+            "first_token_seconds": 61.63999999999987,
+            "wall_seconds": 196.4369999999999,
+            "finish": "stop",
+            "thinking_closed": true,
+            "json_correct": true,
+            "draft_offered": 3033,
+            "draft_accepted": 2089
+          }
+        ],
+        "candidate_overrides": {
+          "STRATA_REVIEW_NPU_SPLIT": "parallel"
+        },
+        "evidence": {
+          "root": "review",
+          "path": "ab-qwen-npu/result.json"
+        }
+      }
+    ],
+    "selection_summary": {
+      "target_sampler": "Numerically validated but normal-screen target-only regression; keep control as default.",
+      "draft_support": "Normal-screen positive observation, retained as bounded evidence; final default/shipping verification is separate.",
+      "attention": "Register v2 is the selected long-context candidate; full-answer quality passed in the listed Qwen screens.",
+      "npu": "Concurrent projection split tested and rejected as default after actual4K/16K full-answer prefill regressions."
+    }
+  },
+  "gpu_sampler_policy_fixture": {
+    "evidence": {
+      "root": "review",
+      "path": "gpu-sampler-test/result.json",
+      "sha256": "ea4764dc0a71d5da19bda8e0edc67cbd22952db271fd7b19c13d7ab654da6706"
+    },
+    "passed": true,
+    "checks": 108,
+    "full_vocabulary": 248320,
+    "max_support": 2048,
+    "rng_exact": true,
+    "probability_bits_exact": true,
+    "exit_code": 0,
+    "scope": "108 model-free GPU probability/support/RNG/rejection-policy checks; not model throughput.",
+    "coverage": [
+      "vocabulary1/15/17/1023/4097/248320",
+      "support up to2048",
+      "128 RNG draws and exact rejection/residual draws",
+      "greedy/top-k0/top-p1/min-p/positive-negative penalties",
+      "ties/signed-zero/nonfinite boundaries"
+    ],
+    "additional_scratch_bytes": 3274760
+  },
+  "attention": {
+    "geometry": {
+      "head_dimension": 256,
+      "query_heads": 16,
+      "kv_heads": 2,
+      "gqa_ratio": 8
+    },
+    "control": "Existing Q8 four-stage path including narrow actual16K T3/T4 query-token reuse.",
+    "v1_local_tile": {
+      "evidence": {
+        "root": "review",
+        "path": "attention-state/runs/20261115-073511-d11a9237-run/result.json",
+        "sha256": "6f52a99e29d550ee59bf2fe1ca3af3545ad1c07174ff61a2f92cad968f80bbe2"
+      },
+      "passed": true,
+      "exit_code": 0,
+      "model_loaded": false,
+      "executable_sha256": "a4d6302d65ab2cc1cf5405eed387e2d89927f9d9282d5c1ed1bb51e8fba84720",
+      "fixture_source_sha256": {
+        "micro.cpp": "ed2b06449d74aa3be72611052514c30a0cba330ee7748f7ce5c4c00deaebd1a2",
+        "build.cmd": "180844998ab0b31ac4bec66f7b26e43219da982d7ceda564c2fdd8eaa0c1c8f9"
+      },
+      "numeric_cases": 84,
+      "all_numeric_tolerance": true,
+      "store_error_policy": true,
+      "max_abs_vs_independent_fp64": 2.82022809994e-07,
+      "timing_shapes": 12,
+      "paired_repeats_per_shape": 40,
+      "saved_paired_samples": 480,
+      "timings": [
+        {
+          "timing": true,
+          "context": 1031,
+          "extent": 1031,
+          "tokens": 1,
+          "repeats_each": 40,
+          "current_wall_ms": 0.21595,
+          "candidate_wall_ms": 0.6458,
+          "current_gpu_sum_ms": 0.121355,
+          "candidate_gpu_sum_ms": 0.594062,
+          "current_gpu_span_ms": 0.1623955,
+          "candidate_gpu_span_ms": 0.594479,
+          "numeric_tolerance": true,
+          "canary": true
+        },
+        {
+          "timing": true,
+          "context": 1031,
+          "extent": 1031,
+          "tokens": 3,
+          "repeats_each": 40,
+          "current_wall_ms": 0.2629,
+          "candidate_wall_ms": 0.64945,
+          "current_gpu_sum_ms": 0.202291,
+          "candidate_gpu_sum_ms": 0.593646,
+          "current_gpu_span_ms": 0.203385,
+          "candidate_gpu_span_ms": 0.5940625,
+          "numeric_tolerance": true,
+          "canary": true
+        },
+        {
+          "timing": true,
+          "context": 1031,
+          "extent": 1031,
+          "tokens": 4,
+          "repeats_each": 40,
+          "current_wall_ms": 0.2971,
+          "candidate_wall_ms": 0.64865,
+          "current_gpu_sum_ms": 0.2342185,
+          "candidate_gpu_sum_ms": 0.592083,
+          "current_gpu_span_ms": 0.235364,
+          "candidate_gpu_span_ms": 0.5925,
+          "numeric_tolerance": true,
+          "canary": true
+        },
+        {
+          "timing": true,
+          "context": 1031,
+          "extent": 1031,
+          "tokens": 8,
+          "repeats_each": 40,
+          "current_wall_ms": 0.52105,
+          "candidate_wall_ms": 0.66425,
+          "current_gpu_sum_ms": 0.4504165,
+          "candidate_gpu_sum_ms": 0.6031775,
+          "current_gpu_span_ms": 0.4516145,
+          "candidate_gpu_span_ms": 0.603542,
+          "numeric_tolerance": true,
+          "canary": true
+        },
+        {
+          "timing": true,
+          "context": 32768,
+          "extent": 16384,
+          "tokens": 1,
+          "repeats_each": 40,
+          "current_wall_ms": 0.978,
+          "candidate_wall_ms": 1.88025,
+          "current_gpu_sum_ms": 0.8968225,
+          "candidate_gpu_sum_ms": 1.8147395,
+          "current_gpu_span_ms": 0.8979165,
+          "candidate_gpu_span_ms": 1.815104,
+          "numeric_tolerance": true,
+          "canary": true
+        },
+        {
+          "timing": true,
+          "context": 32768,
+          "extent": 16384,
+          "tokens": 3,
+          "repeats_each": 40,
+          "current_wall_ms": 2.5329,
+          "candidate_wall_ms": 3.62395,
+          "current_gpu_sum_ms": 2.3898445,
+          "candidate_gpu_sum_ms": 3.5488545,
+          "current_gpu_span_ms": 2.39099,
+          "candidate_gpu_span_ms": 3.549219,
+          "numeric_tolerance": true,
+          "canary": true
+        },
+        {
+          "timing": true,
+          "context": 32768,
+          "extent": 16384,
+          "tokens": 4,
+          "repeats_each": 40,
+          "current_wall_ms": 3.0739,
+          "candidate_wall_ms": 4.7485,
+          "current_gpu_sum_ms": 2.9068215,
+          "candidate_gpu_sum_ms": 4.6765105,
+          "current_gpu_span_ms": 2.907916,
+          "candidate_gpu_span_ms": 4.6778645,
+          "numeric_tolerance": true,
+          "canary": true
+        },
+        {
+          "timing": true,
+          "context": 32768,
+          "extent": 16384,
+          "tokens": 8,
+          "repeats_each": 40,
+          "current_wall_ms": 6.6954,
+          "candidate_wall_ms": 9.3526,
+          "current_gpu_sum_ms": 6.568125,
+          "candidate_gpu_sum_ms": 9.2757805,
+          "current_gpu_span_ms": 6.5707295,
+          "candidate_gpu_span_ms": 9.27651,
+          "numeric_tolerance": true,
+          "canary": true
+        },
+        {
+          "timing": true,
+          "context": 32768,
+          "extent": 16512,
+          "tokens": 1,
+          "repeats_each": 40,
+          "current_wall_ms": 1.006,
+          "candidate_wall_ms": 1.8725,
+          "current_gpu_sum_ms": 0.8964055,
+          "candidate_gpu_sum_ms": 1.7709895,
+          "current_gpu_span_ms": 0.897604,
+          "candidate_gpu_span_ms": 1.771406,
+          "numeric_tolerance": true,
+          "canary": true
+        },
+        {
+          "timing": true,
+          "context": 32768,
+          "extent": 16512,
+          "tokens": 3,
+          "repeats_each": 40,
+          "current_wall_ms": 2.59725,
+          "candidate_wall_ms": 3.71665,
+          "current_gpu_sum_ms": 2.4125515,
+          "candidate_gpu_sum_ms": 3.586614,
+          "current_gpu_span_ms": 2.41375,
+          "candidate_gpu_span_ms": 3.587031,
+          "numeric_tolerance": true,
+          "canary": true
+        },
+        {
+          "timing": true,
+          "context": 32768,
+          "extent": 16512,
+          "tokens": 4,
+          "repeats_each": 40,
+          "current_wall_ms": 3.2814,
+          "candidate_wall_ms": 4.7939,
+          "current_gpu_sum_ms": 2.944218,
+          "candidate_gpu_sum_ms": 4.6830205,
+          "current_gpu_span_ms": 2.9453645,
+          "candidate_gpu_span_ms": 4.6835415,
+          "numeric_tolerance": true,
+          "canary": true
+        },
+        {
+          "timing": true,
+          "context": 32768,
+          "extent": 16512,
+          "tokens": 8,
+          "repeats_each": 40,
+          "current_wall_ms": 6.73665,
+          "candidate_wall_ms": 9.141,
+          "current_gpu_sum_ms": 6.551406,
+          "candidate_gpu_sum_ms": 9.0252605,
+          "current_gpu_span_ms": 6.553177,
+          "candidate_gpu_span_ms": 9.026302,
+          "numeric_tolerance": true,
+          "canary": true
+        }
+      ],
+      "wall_regression_shapes": 12,
+      "gpu_event_sum_regression_shapes": 12,
+      "interpretation": "Synchronized attention-only wall/event timings. Not model tok/s, complete-answer quality or a universal speed estimate.",
+      "decision": "Rejected: all12 wall and GPU-event shapes regressed."
+    },
+    "v2_register": {
+      "evidence": {
+        "root": "review",
+        "path": "attention-state/register-v2/runs/20261115-074136-163509cf-run/result.json",
+        "sha256": "71e1b78a2a5f1ee9caa88816d4d0c79cd459c473393f109f40b1e77471924ad7"
+      },
+      "passed": true,
+      "exit_code": 0,
+      "model_loaded": false,
+      "executable_sha256": "6e981f2c479070a156b1c444ead477ad7c49f0d47aefd448731d3eeb1c078bfd",
+      "fixture_source_sha256": {
+        "micro.cpp": "a7d7d073d3aa9a34e5656c6d88675fc08af15033f8c88f289f6abdcf5bf975cb",
+        "build.cmd": "180844998ab0b31ac4bec66f7b26e43219da982d7ceda564c2fdd8eaa0c1c8f9",
+        "register_attention.hpp": "951cfb2a387dd7c89dae2ba69d046c2b949787388053341ac60134c3e2458e91"
+      },
+      "numeric_cases": 84,
+      "all_numeric_tolerance": true,
+      "store_error_policy": true,
+      "max_abs_vs_independent_fp64": 2.82022809994e-07,
+      "timing_shapes": 12,
+      "paired_repeats_per_shape": 40,
+      "saved_paired_samples": 480,
+      "timings": [
+        {
+          "timing": true,
+          "context": 1031,
+          "extent": 1031,
+          "tokens": 1,
+          "repeats_each": 40,
+          "current_wall_ms": 0.215,
+          "candidate_wall_ms": 0.6691,
+          "current_gpu_sum_ms": 0.1201045,
+          "candidate_gpu_sum_ms": 0.616614,
+          "current_gpu_span_ms": 0.1610415,
+          "candidate_gpu_span_ms": 0.617031,
+          "numeric_tolerance": true,
+          "canary": true
+        },
+        {
+          "timing": true,
+          "context": 1031,
+          "extent": 1031,
+          "tokens": 3,
+          "repeats_each": 40,
+          "current_wall_ms": 0.2648,
+          "candidate_wall_ms": 0.67355,
+          "current_gpu_sum_ms": 0.2015095,
+          "candidate_gpu_sum_ms": 0.6163025,
+          "current_gpu_span_ms": 0.202708,
+          "candidate_gpu_span_ms": 0.616615,
+          "numeric_tolerance": true,
+          "canary": true
+        },
+        {
+          "timing": true,
+          "context": 1031,
+          "extent": 1031,
+          "tokens": 4,
+          "repeats_each": 40,
+          "current_wall_ms": 0.29945,
+          "candidate_wall_ms": 0.68395,
+          "current_gpu_sum_ms": 0.2359375,
+          "candidate_gpu_sum_ms": 0.626406,
+          "current_gpu_span_ms": 0.237083,
+          "candidate_gpu_span_ms": 0.6267705,
+          "numeric_tolerance": true,
+          "canary": true
+        },
+        {
+          "timing": true,
+          "context": 1031,
+          "extent": 1031,
+          "tokens": 8,
+          "repeats_each": 40,
+          "current_wall_ms": 0.5197,
+          "candidate_wall_ms": 0.67905,
+          "current_gpu_sum_ms": 0.446875,
+          "candidate_gpu_sum_ms": 0.617969,
+          "current_gpu_span_ms": 0.448125,
+          "candidate_gpu_span_ms": 0.618333,
+          "numeric_tolerance": true,
+          "canary": true
+        },
+        {
+          "timing": true,
+          "context": 32768,
+          "extent": 16384,
+          "tokens": 1,
+          "repeats_each": 40,
+          "current_wall_ms": 0.9931,
+          "candidate_wall_ms": 0.77765,
+          "current_gpu_sum_ms": 0.8993745,
+          "candidate_gpu_sum_ms": 0.7001045,
+          "current_gpu_span_ms": 0.900521,
+          "candidate_gpu_span_ms": 0.700521,
+          "numeric_tolerance": true,
+          "canary": true
+        },
+        {
+          "timing": true,
+          "context": 32768,
+          "extent": 16384,
+          "tokens": 3,
+          "repeats_each": 40,
+          "current_wall_ms": 2.5624,
+          "candidate_wall_ms": 1.0013,
+          "current_gpu_sum_ms": 2.4075515,
+          "candidate_gpu_sum_ms": 0.8663025,
+          "current_gpu_span_ms": 2.40875,
+          "candidate_gpu_span_ms": 0.867396,
+          "numeric_tolerance": true,
+          "canary": true
+        },
+        {
+          "timing": true,
+          "context": 32768,
+          "extent": 16384,
+          "tokens": 4,
+          "repeats_each": 40,
+          "current_wall_ms": 3.10015,
+          "candidate_wall_ms": 1.6836,
+          "current_gpu_sum_ms": 2.923646,
+          "candidate_gpu_sum_ms": 1.588177,
+          "current_gpu_span_ms": 2.9260935,
+          "candidate_gpu_span_ms": 1.588594,
+          "numeric_tolerance": true,
+          "canary": true
+        },
+        {
+          "timing": true,
+          "context": 32768,
+          "extent": 16384,
+          "tokens": 8,
+          "repeats_each": 40,
+          "current_wall_ms": 7.7742,
+          "candidate_wall_ms": 2.7667,
+          "current_gpu_sum_ms": 7.648854,
+          "candidate_gpu_sum_ms": 2.673802,
+          "current_gpu_span_ms": 7.6503645,
+          "candidate_gpu_span_ms": 2.6742185,
+          "numeric_tolerance": true,
+          "canary": true
+        },
+        {
+          "timing": true,
+          "context": 32768,
+          "extent": 16512,
+          "tokens": 1,
+          "repeats_each": 40,
+          "current_wall_ms": 0.9795,
+          "candidate_wall_ms": 0.75375,
+          "current_gpu_sum_ms": 0.9000005,
+          "candidate_gpu_sum_ms": 0.687343,
+          "current_gpu_span_ms": 0.901042,
+          "candidate_gpu_span_ms": 0.687708,
+          "numeric_tolerance": true,
+          "canary": true
+        },
+        {
+          "timing": true,
+          "context": 32768,
+          "extent": 16512,
+          "tokens": 3,
+          "repeats_each": 40,
+          "current_wall_ms": 2.5099,
+          "candidate_wall_ms": 1.17255,
+          "current_gpu_sum_ms": 2.3735425,
+          "candidate_gpu_sum_ms": 1.070937,
+          "current_gpu_span_ms": 2.3745835,
+          "candidate_gpu_span_ms": 1.071302,
+          "numeric_tolerance": true,
+          "canary": true
+        },
+        {
+          "timing": true,
+          "context": 32768,
+          "extent": 16512,
+          "tokens": 4,
+          "repeats_each": 40,
+          "current_wall_ms": 3.04795,
+          "candidate_wall_ms": 1.65115,
+          "current_gpu_sum_ms": 2.893334,
+          "candidate_gpu_sum_ms": 1.575417,
+          "current_gpu_span_ms": 2.894375,
+          "candidate_gpu_span_ms": 1.5757815,
+          "numeric_tolerance": true,
+          "canary": true
+        },
+        {
+          "timing": true,
+          "context": 32768,
+          "extent": 16512,
+          "tokens": 8,
+          "repeats_each": 40,
+          "current_wall_ms": 6.5705,
+          "candidate_wall_ms": 2.4078,
+          "current_gpu_sum_ms": 6.454271,
+          "candidate_gpu_sum_ms": 2.3277085,
+          "current_gpu_span_ms": 6.4553645,
+          "candidate_gpu_span_ms": 2.328073,
+          "numeric_tolerance": true,
+          "canary": true
+        }
+      ],
+      "wall_regression_shapes": 4,
+      "gpu_event_sum_regression_shapes": 4,
+      "interpretation": "Synchronized attention-only wall/event timings. Not model tok/s, complete-answer quality or a universal speed estimate.",
+      "decision": "Long-context candidate: all8 measured long shapes improve; all4 short1031-key shapes regress and are excluded.",
+      "admission": "actual_visible>=16384; actual PTL-H/SG32/GRF256 device policy for default; explicit0/1 preserves control/experiment; graphzero-hint and old profiling retain control.",
+      "public_regression": {
+        "target": "intel_fused_q8_attention_test",
+        "source": "tests/intel-fused-q8-attention.cpp",
+        "state": "Passed on the post-default validation build",
+        "native_executable_sha256": "257d334fd7c060e3b12f4eb51bdde188a45aead864c4570473c2f0acc8b293b0",
+        "evidence": {
+          "root": "review",
+          "path": "validation-fused-attention.json",
+          "sha256": "f3fff5e8a82d21616779d16ed7ec7c7a768a3cf4162cf781ce0e77741d3563e7"
+        },
+        "stdout": {
+          "root": "review",
+          "path": "validation-fused-attention.stdout.log",
+          "sha256": "f93e9bb5b849bffc9e342f507552b1a8e95c977b4c9e1b4da8d98b8159e7153f"
+        },
+        "numeric_cases": 84,
+        "actual_device_default_dispatch_checked": true
+      }
+    }
+  },
+  "prefill_whole_prefix_expansion": {
+    "evidence": {
+      "root": "review",
+      "path": "prefill-expansion-gpu/result.json",
+      "sha256": "28d87a7b0a5dcd55af4d036e9ed17d201819c3d73a770adbcef3a054db6602e9"
+    },
+    "passed": true,
+    "scope": "isolated existing expansion micro; not full-model gain",
+    "context": 32768,
+    "dimension": 256,
+    "kv_heads": 2,
+    "chunk": 1024,
+    "layers": 10,
+    "dispatches": 160,
+    "gpu_ms": 81.320415,
+    "synchronized_wall_ms": 81.9348,
+    "allocated_bytes": 490733572,
+    "all_visible_keys_checked": true,
+    "tail_canary_unchanged": true,
+    "prior_full_prefill_reference_ms": 59600.0,
+    "micro_gpu_over_reference_percent": 0.136443649,
+    "micro_wall_over_reference_percent": 0.137474497,
+    "models_loaded": false,
+    "decision": "Defer a large direct-INT8 prefill rewrite on this evidence. The isolated160-dispatch expansion measured81.9348ms wall, about0.1375% of the59.6s reference; this fraction is not an attainable full-model gain.",
+    "limits": "Cache-hot standalone phase only, no model loaded; does not bound allocation/cache interaction in every model invocation."
+  },
+  "concurrent_npu_prefill": {
+    "scope": "B390 Intel AI Boost only. GPU computes every remaining projection row while the NPU request is outstanding; all eight experts remain on the GPU.",
+    "discovery_evidence": {
+      "root": "review",
+      "path": "npu-availability.json",
+      "sha256": "51f89125e190269a97b5aef9199164b8c654f3560b4255e2782541708671c535"
+    },
+    "openvino": "2026.4.1-22982-e213a147257-releases/2026/4",
+    "matrix_checks": {
+      "count": 24,
+      "passed": true,
+      "rows": [
+        4096,
+        8192
+      ],
+      "tokens": [
+        128,
+        257,
+        1024
+      ],
+      "npu_rows": 1024,
+      "layouts": [
+        "original Q6_K210B",
+        "interleaved Q6_K212B"
+      ],
+      "remote_modes": [
+        false,
+        true
+      ],
+      "records": [
+        {
+          "projection": "qkv",
+          "rows": 8192,
+          "tokens": 128,
+          "npu_rows": 1024,
+          "remote": false,
+          "interleaved": false,
+          "gpu_ms": 1.431,
+          "serial_ms": 4.5946,
+          "parallel_ms": 3.6357,
+          "max_abs": 1.1920929e-06,
+          "finite": true,
+          "canary": true,
+          "fp64": true
+        },
+        {
+          "projection": "qkv",
+          "rows": 8192,
+          "tokens": 128,
+          "npu_rows": 1024,
+          "remote": true,
+          "interleaved": false,
+          "gpu_ms": 1.2838,
+          "serial_ms": 2.3334,
+          "parallel_ms": 1.8079,
+          "max_abs": 1.1920929e-06,
+          "finite": true,
+          "canary": true,
+          "fp64": true
+        },
+        {
+          "projection": "qkv",
+          "rows": 8192,
+          "tokens": 257,
+          "npu_rows": 1024,
+          "remote": false,
+          "interleaved": false,
+          "gpu_ms": 1.4876,
+          "serial_ms": 2.5838,
+          "parallel_ms": 2.1352,
+          "max_abs": 1.1920929e-06,
+          "finite": true,
+          "canary": true,
+          "fp64": true
+        },
+        {
+          "projection": "qkv",
+          "rows": 8192,
+          "tokens": 257,
+          "npu_rows": 1024,
+          "remote": true,
+          "interleaved": false,
+          "gpu_ms": 1.3564,
+          "serial_ms": 2.9232,
+          "parallel_ms": 2.168,
+          "max_abs": 1.1920929e-06,
+          "finite": true,
+          "canary": true,
+          "fp64": true
+        },
+        {
+          "projection": "qkv",
+          "rows": 8192,
+          "tokens": 1024,
+          "npu_rows": 1024,
+          "remote": false,
+          "interleaved": false,
+          "gpu_ms": 2.3782,
+          "serial_ms": 5.6974,
+          "parallel_ms": 4.301,
+          "max_abs": 1.3411045e-06,
+          "finite": true,
+          "canary": true,
+          "fp64": true
+        },
+        {
+          "projection": "qkv",
+          "rows": 8192,
+          "tokens": 1024,
+          "npu_rows": 1024,
+          "remote": true,
+          "interleaved": false,
+          "gpu_ms": 2.0002,
+          "serial_ms": 4.2951,
+          "parallel_ms": 3.5025,
+          "max_abs": 1.3411045e-06,
+          "finite": true,
+          "canary": true,
+          "fp64": true
+        },
+        {
+          "projection": "qkv",
+          "rows": 8192,
+          "tokens": 128,
+          "npu_rows": 1024,
+          "remote": false,
+          "interleaved": true,
+          "gpu_ms": 2.2884,
+          "serial_ms": 2.9784,
+          "parallel_ms": 2.4703,
+          "max_abs": 1.1920929e-06,
+          "finite": true,
+          "canary": true,
+          "fp64": true
+        },
+        {
+          "projection": "qkv",
+          "rows": 8192,
+          "tokens": 128,
+          "npu_rows": 1024,
+          "remote": true,
+          "interleaved": true,
+          "gpu_ms": 2.2687,
+          "serial_ms": 3.119,
+          "parallel_ms": 2.6169,
+          "max_abs": 1.1920929e-06,
+          "finite": true,
+          "canary": true,
+          "fp64": true
+        },
+        {
+          "projection": "qkv",
+          "rows": 8192,
+          "tokens": 257,
+          "npu_rows": 1024,
+          "remote": false,
+          "interleaved": true,
+          "gpu_ms": 2.3123,
+          "serial_ms": 3.3955,
+          "parallel_ms": 2.7167,
+          "max_abs": 1.1920929e-06,
+          "finite": true,
+          "canary": true,
+          "fp64": true
+        },
+        {
+          "projection": "qkv",
+          "rows": 8192,
+          "tokens": 257,
+          "npu_rows": 1024,
+          "remote": true,
+          "interleaved": true,
+          "gpu_ms": 2.2438,
+          "serial_ms": 3.6328,
+          "parallel_ms": 2.832,
+          "max_abs": 1.1920929e-06,
+          "finite": true,
+          "canary": true,
+          "fp64": true
+        },
+        {
+          "projection": "qkv",
+          "rows": 8192,
+          "tokens": 1024,
+          "npu_rows": 1024,
+          "remote": false,
+          "interleaved": true,
+          "gpu_ms": 2.8062,
+          "serial_ms": 5.2324,
+          "parallel_ms": 3.8547,
+          "max_abs": 1.3411045e-06,
+          "finite": true,
+          "canary": true,
+          "fp64": true
+        },
+        {
+          "projection": "qkv",
+          "rows": 8192,
+          "tokens": 1024,
+          "npu_rows": 1024,
+          "remote": true,
+          "interleaved": true,
+          "gpu_ms": 2.9149,
+          "serial_ms": 5.1198,
+          "parallel_ms": 4.0983,
+          "max_abs": 1.3411045e-06,
+          "finite": true,
+          "canary": true,
+          "fp64": true
+        },
+        {
+          "projection": "gate",
+          "rows": 4096,
+          "tokens": 128,
+          "npu_rows": 1024,
+          "remote": false,
+          "interleaved": false,
+          "gpu_ms": 0.8208,
+          "serial_ms": 4.6488,
+          "parallel_ms": 3.5903,
+          "max_abs": 1.1324883e-06,
+          "finite": true,
+          "canary": true,
+          "fp64": true
+        },
+        {
+          "projection": "gate",
+          "rows": 4096,
+          "tokens": 128,
+          "npu_rows": 1024,
+          "remote": true,
+          "interleaved": false,
+          "gpu_ms": 0.8245,
+          "serial_ms": 1.5711,
+          "parallel_ms": 0.99,
+          "max_abs": 1.1324883e-06,
+          "finite": true,
+          "canary": true,
+          "fp64": true
+        },
+        {
+          "projection": "gate",
+          "rows": 4096,
+          "tokens": 257,
+          "npu_rows": 1024,
+          "remote": false,
+          "interleaved": false,
+          "gpu_ms": 0.9236,
+          "serial_ms": 1.932,
+          "parallel_ms": 1.2359,
+          "max_abs": 1.1324883e-06,
+          "finite": true,
+          "canary": true,
+          "fp64": true
+        },
+        {
+          "projection": "gate",
+          "rows": 4096,
+          "tokens": 257,
+          "npu_rows": 1024,
+          "remote": true,
+          "interleaved": false,
+          "gpu_ms": 0.8829,
+          "serial_ms": 1.8599,
+          "parallel_ms": 1.5288,
+          "max_abs": 1.1324883e-06,
+          "finite": true,
+          "canary": true,
+          "fp64": true
+        },
+        {
+          "projection": "gate",
+          "rows": 4096,
+          "tokens": 1024,
+          "npu_rows": 1024,
+          "remote": false,
+          "interleaved": false,
+          "gpu_ms": 1.3893,
+          "serial_ms": 3.3463,
+          "parallel_ms": 2.6207,
+          "max_abs": 1.2516975e-06,
+          "finite": true,
+          "canary": true,
+          "fp64": true
+        },
+        {
+          "projection": "gate",
+          "rows": 4096,
+          "tokens": 1024,
+          "npu_rows": 1024,
+          "remote": true,
+          "interleaved": false,
+          "gpu_ms": 1.2853,
+          "serial_ms": 3.2709,
+          "parallel_ms": 2.4882,
+          "max_abs": 1.2516975e-06,
+          "finite": true,
+          "canary": true,
+          "fp64": true
+        },
+        {
+          "projection": "gate",
+          "rows": 4096,
+          "tokens": 128,
+          "npu_rows": 1024,
+          "remote": false,
+          "interleaved": true,
+          "gpu_ms": 1.241,
+          "serial_ms": 1.9366,
+          "parallel_ms": 1.2863,
+          "max_abs": 1.1324883e-06,
+          "finite": true,
+          "canary": true,
+          "fp64": true
+        },
+        {
+          "projection": "gate",
+          "rows": 4096,
+          "tokens": 128,
+          "npu_rows": 1024,
+          "remote": true,
+          "interleaved": true,
+          "gpu_ms": 1.2432,
+          "serial_ms": 2.0617,
+          "parallel_ms": 1.468,
+          "max_abs": 1.1324883e-06,
+          "finite": true,
+          "canary": true,
+          "fp64": true
+        },
+        {
+          "projection": "gate",
+          "rows": 4096,
+          "tokens": 257,
+          "npu_rows": 1024,
+          "remote": false,
+          "interleaved": true,
+          "gpu_ms": 1.3173,
+          "serial_ms": 2.2968,
+          "parallel_ms": 1.456,
+          "max_abs": 1.1324883e-06,
+          "finite": true,
+          "canary": true,
+          "fp64": true
+        },
+        {
+          "projection": "gate",
+          "rows": 4096,
+          "tokens": 257,
+          "npu_rows": 1024,
+          "remote": true,
+          "interleaved": true,
+          "gpu_ms": 1.295,
+          "serial_ms": 2.4611,
+          "parallel_ms": 1.871,
+          "max_abs": 1.1324883e-06,
+          "finite": true,
+          "canary": true,
+          "fp64": true
+        },
+        {
+          "projection": "gate",
+          "rows": 4096,
+          "tokens": 1024,
+          "npu_rows": 1024,
+          "remote": false,
+          "interleaved": true,
+          "gpu_ms": 1.7148,
+          "serial_ms": 3.4444,
+          "parallel_ms": 2.2949,
+          "max_abs": 1.2516975e-06,
+          "finite": true,
+          "canary": true,
+          "fp64": true
+        },
+        {
+          "projection": "gate",
+          "rows": 4096,
+          "tokens": 1024,
+          "npu_rows": 1024,
+          "remote": true,
+          "interleaved": true,
+          "gpu_ms": 1.7291,
+          "serial_ms": 3.5254,
+          "parallel_ms": 2.3485,
+          "max_abs": 1.2516975e-06,
+          "finite": true,
+          "canary": true,
+          "fp64": true
+        }
+      ],
+      "timing_definition": "Each gpu_ms/serial_ms/parallel_ms is synchronized host wall median of5 samples after3 excluded warmups. Fixed per-iteration GPU/serial/parallel order; not a randomized paired causal gain estimate.",
+      "parallel_faster_than_serial_shapes": 24,
+      "parallel_faster_than_gpu_only_shapes": 0,
+      "max_abs_definition": "Largest split-vs-GPU-control output difference. fp64=true separately records independent dot samples across both sides of the row partition, with FP16 output rounding and numerical tolerance.",
+      "evidence": [
+        {
+          "root": "review",
+          "path": "npu-qkv-v3.stdout.log"
+        },
+        {
+          "root": "review",
+          "path": "npu-gate-v3.stdout.log"
+        }
+      ],
+      "statistics": [
+        {
+          "projection": "qkv",
+          "cache_bytes": 8388608,
+          "compile_ms": 652.543,
+          "prepare_ms": 75.896,
+          "wait_ms": 0.11,
+          "gpu_done_npu_request_pending": 0
+        },
+        {
+          "projection": "gate",
+          "cache_bytes": 8388608,
+          "compile_ms": 621.449,
+          "prepare_ms": 78.459,
+          "wait_ms": 11.27,
+          "gpu_done_npu_request_pending": 42
+        }
+      ],
+      "overlap_limit": "GPU completion with an unfinished NPU request is an outstanding-request observation, not aligned hardware compute timestamps.",
+      "precision": "Existing compressed Q6 weights decode to FP16. NPU MatMul output also rounds to FP16 before F32; GPU oneMKL control retains FP32 output accumulation."
+    },
+    "memory": {
+      "partial_weight_cache_limit_bytes": 134217728,
+      "explicit_split_memory_reserve_bytes": 268435456,
+      "second_full_model_copy": false,
+      "cpu_va_import_note": "Full-allocation RemoteTensor owners were added after the first small-shape import prevented a later larger view. Do not infer zero-copy from UMA or CPU_VA alone."
+    },
+    "initial_failure": {
+      "evidence": {
+        "root": "review",
+        "path": "npu-qkv.stderr.log"
+      },
+      "error": "Tensor memory range is out of bounds of the allocated host memory",
+      "state": "Retained initial negative; successful v3 matrix and full-model screens are distinct later runs."
+    },
+    "decision": "Default off/rejected for current workload: Qwen4K prefill293.72→281.67tok/s and16K274.29→265.92tok/s; all final facts still correct, but changed output lengths preclude causal decode-gain claims."
+  },
+  "turn_checkpoint": {
+    "evidence": {
+      "root": "review",
+      "path": "turn-checkpoint-v3-core-summary.json",
+      "sha256": "97d46684e3677e69f0bc3bc7fd58a54d6ec1520cff82785d03af4b7e06161240"
+    },
+    "frozen_executable_sha256": "9e10bad5892730cbb4d6144f0f1609813dd51acd4fa2a702667e7c0f0ea54d8c",
+    "baseline_passed": true,
+    "checkpoint_passed": true,
+    "snapshot_payload_bytes": 65880064,
+    "snapshot_payload_mib": 62.828125,
+    "memory_note": "RSS differences are overlapping UMA/process residency and OS effects, not another GPU memory pool.",
+    "core_matched_prompt_rows": [
+      {
+        "case": "short-seed-save",
+        "exact_prompt_ids_match": true,
+        "baseline": {
+          "prompt_tokens": 84,
+          "output_tokens": 1268,
+          "prefill_tok_s": 107.33370303831046,
+          "accepted_output_tok_s": 34.3345248253519,
+          "first_token_seconds": 0.8119999999998981,
+          "reused_tokens": 0,
+          "fresh_tokens": 84,
+          "native_rss_bytes": 15762108416,
+          "ram_available_bytes": 6214574080,
+          "six_facts_correct": true,
+          "finish": "stop"
+        },
+        "checkpoint": {
+          "prompt_tokens": 84,
+          "output_tokens": 2004,
+          "prefill_tok_s": 98.54320298257427,
+          "accepted_output_tok_s": 31.67395391627883,
+          "first_token_seconds": 0.875,
+          "reused_tokens": 0,
+          "fresh_tokens": 84,
+          "native_rss_bytes": 15828553728,
+          "ram_available_bytes": 6346948608,
+          "six_facts_correct": true,
+          "finish": "stop"
+        },
+        "ttft_baseline_div_checkpoint": 0.9279999999998836,
+        "rss_delta_mib": 63.3671875,
+        "output_ids_equal": false
+      },
+      {
+        "case": "short-real-chat-followup",
+        "exact_prompt_ids_match": true,
+        "baseline": {
+          "prompt_tokens": 180,
+          "output_tokens": 1336,
+          "prefill_tok_s": 132.19974500138076,
+          "accepted_output_tok_s": 32.236777415652654,
+          "first_token_seconds": 1.3909999999996217,
+          "reused_tokens": 0,
+          "fresh_tokens": 180,
+          "native_rss_bytes": 15762919424,
+          "ram_available_bytes": 6278610944,
+          "six_facts_correct": true,
+          "finish": "stop"
+        },
+        "checkpoint": {
+          "prompt_tokens": 180,
+          "output_tokens": 1056,
+          "prefill_tok_s": 116.56047353557922,
+          "accepted_output_tok_s": 33.85513563955801,
+          "first_token_seconds": 0.8900000000003274,
+          "reused_tokens": 79,
+          "fresh_tokens": 101,
+          "native_rss_bytes": 15834853376,
+          "ram_available_bytes": 6311673856,
+          "six_facts_correct": true,
+          "finish": "stop"
+        },
+        "ttft_baseline_div_checkpoint": 1.5629213483136066,
+        "rss_delta_mib": 68.6015625,
+        "output_ids_equal": false
+      },
+      {
+        "case": "short-regenerate-shortened-history",
+        "exact_prompt_ids_match": true,
+        "baseline": {
+          "prompt_tokens": 180,
+          "output_tokens": 1336,
+          "prefill_tok_s": 135.2789451849714,
+          "accepted_output_tok_s": 32.09654255322346,
+          "first_token_seconds": 1.344000000000051,
+          "reused_tokens": 0,
+          "fresh_tokens": 180,
+          "native_rss_bytes": 15762894848,
+          "ram_available_bytes": 6191902720,
+          "six_facts_correct": true,
+          "finish": "stop"
+        },
+        "checkpoint": {
+          "prompt_tokens": 180,
+          "output_tokens": 1056,
+          "prefill_tok_s": 46.54366726863143,
+          "accepted_output_tok_s": 34.10723125999192,
+          "first_token_seconds": 0.125,
+          "reused_tokens": 175,
+          "fresh_tokens": 5,
+          "native_rss_bytes": 15834869760,
+          "ram_available_bytes": 6363107328,
+          "six_facts_correct": true,
+          "finish": "stop"
+        },
+        "ttft_baseline_div_checkpoint": 10.752000000000407,
+        "rss_delta_mib": 68.640625,
+        "output_ids_equal": false
+      },
+      {
+        "case": "long-seed-save",
+        "exact_prompt_ids_match": true,
+        "baseline": {
+          "prompt_tokens": 16384,
+          "output_tokens": 636,
+          "prefill_tok_s": 274.50488008489543,
+          "accepted_output_tok_s": 26.38990540818929,
+          "first_token_seconds": 59.71900000000005,
+          "reused_tokens": 0,
+          "fresh_tokens": 16384,
+          "native_rss_bytes": 15769321472,
+          "ram_available_bytes": 6172663808,
+          "six_facts_correct": true,
+          "finish": "stop"
+        },
+        "checkpoint": {
+          "prompt_tokens": 16384,
+          "output_tokens": 1757,
+          "prefill_tok_s": 226.42079741358464,
+          "accepted_output_tok_s": 23.831244389954072,
+          "first_token_seconds": 72.39000000000033,
+          "reused_tokens": 0,
+          "fresh_tokens": 16384,
+          "native_rss_bytes": 15840399360,
+          "ram_available_bytes": 6608617472,
+          "six_facts_correct": true,
+          "finish": "stop"
+        },
+        "ttft_baseline_div_checkpoint": 0.8249620113275284,
+        "rss_delta_mib": 67.78515625,
+        "output_ids_equal": false
+      },
+      {
+        "case": "long-real-chat-followup",
+        "exact_prompt_ids_match": true,
+        "baseline": {
+          "prompt_tokens": 16466,
+          "output_tokens": 1387,
+          "prefill_tok_s": 268.41435612863364,
+          "accepted_output_tok_s": 24.651565418869403,
+          "first_token_seconds": 61.375,
+          "reused_tokens": 0,
+          "fresh_tokens": 16466,
+          "native_rss_bytes": 15769985024,
+          "ram_available_bytes": 6368473088,
+          "six_facts_correct": true,
+          "finish": "stop"
+        },
+        "checkpoint": {
+          "prompt_tokens": 16466,
+          "output_tokens": 556,
+          "prefill_tok_s": 40.85790325693844,
+          "accepted_output_tok_s": 25.93076737410472,
+          "first_token_seconds": 2.155999999999949,
+          "reused_tokens": 16379,
+          "fresh_tokens": 87,
+          "native_rss_bytes": 15840768000,
+          "ram_available_bytes": 6579060736,
+          "six_facts_correct": true,
+          "finish": "stop"
+        },
+        "ttft_baseline_div_checkpoint": 28.467068645640747,
+        "rss_delta_mib": 67.50390625,
+        "output_ids_equal": false
+      },
+      {
+        "case": "long-regenerate-shortened-history",
+        "exact_prompt_ids_match": true,
+        "baseline": {
+          "prompt_tokens": 16466,
+          "output_tokens": 1387,
+          "prefill_tok_s": 267.59897590817764,
+          "accepted_output_tok_s": 24.839789629563466,
+          "first_token_seconds": 61.5630000000001,
+          "reused_tokens": 0,
+          "fresh_tokens": 16466,
+          "native_rss_bytes": 15770038272,
+          "ram_available_bytes": 6406565888,
+          "six_facts_correct": true,
+          "finish": "stop"
+        },
+        "checkpoint": {
+          "prompt_tokens": 16466,
+          "output_tokens": 556,
+          "prefill_tok_s": 36.202764443092875,
+          "accepted_output_tok_s": 25.771532347452265,
+          "first_token_seconds": 0.1570000000001528,
+          "reused_tokens": 16461,
+          "fresh_tokens": 5,
+          "native_rss_bytes": 15842865152,
+          "ram_available_bytes": 6631976960,
+          "six_facts_correct": true,
+          "finish": "stop"
+        },
+        "ttft_baseline_div_checkpoint": 392.12101910789926,
+        "rss_delta_mib": 69.453125,
+        "output_ids_equal": false
+      }
+    ],
+    "benefit_metric": "Next-turn TTFT and actual reused/fresh tokens; not a decode-rate acceleration.",
+    "first_save_regression": {
+      "retained": true,
+      "baseline_ttft_s": 59.719,
+      "checkpoint_ttft_s": 72.39,
+      "ttft_regression_s": 12.671,
+      "evidence": {
+        "root": "review",
+        "path": "turn-16k-boundary-intervals-v3.json",
+        "sha256": "e981eacd067d2b719a9c8fffb3156540c213fcaa90d3b6173c57e0138e6289bd"
+      },
+      "baseline_tail": {
+        "from": 15360,
+        "to": 16384,
+        "tokens": 1024,
+        "ms": 4546.302000000003,
+        "tok_s": 225.23800662604447
+      },
+      "checkpoint_tail": [
+        {
+          "from": 15360,
+          "to": 16379,
+          "tokens": 1019,
+          "ms": 16414.996,
+          "tok_s": 62.07738338772669
+        },
+        {
+          "from": 16379,
+          "to": 16384,
+          "tokens": 5,
+          "ms": 130.67300000000978,
+          "tok_s": 38.26345151637772
+        }
+      ],
+      "first_tail_interval_excess_ms": 11868.693999999996,
+      "cause": "Boundary at16379 splits the final1024-token prefill into1019+5. The1019 chunk falls below the oneMKL attention1024 selection threshold and uses the slower causal attention path. Its observed interval excess is11.868694s, most of the TTFT regression; this is not evidence that snapshot copying alone costs12s.",
+      "fix_status": "Fixed threshold1008 and revalidated in separate257d build; old9e10 regression retained. See turn_checkpoint.large_tail_cold_fix; not strict same-binary cold A/A."
+    },
+    "state_recovery_gates": {
+      "records": [
+        {
+          "mode": "baseline",
+          "evidence": {
+            "root": "review",
+            "path": "turn-qwen-baseline-auxshort-v3/result.json",
+            "sha256": "b5fe0d981dd2b77ab5d61d6d430bcb25e6a7fd05bc6ca51da2a8c45025456cec"
+          },
+          "passed": true,
+          "checks": 11,
+          "expected_invalid_request_checks": 1,
+          "executable_sha256": "9e10bad5892730cbb4d6144f0f1609813dd51acd4fa2a702667e7c0f0ea54d8c",
+          "exact_reference_prompt_match": {
+            "short": true
+          },
+          "records": [
+            {
+              "case": "short-seed-save",
+              "passed": true,
+              "prompt_tokens": 84,
+              "output_tokens": 1268,
+              "finish": "stop",
+              "reused_tokens": 0,
+              "fresh_tokens": 84,
+              "checkpoint_restored": false
+            },
+            {
+              "case": "short-real-chat-followup",
+              "passed": true,
+              "prompt_tokens": 180,
+              "output_tokens": 1336,
+              "finish": "stop",
+              "reused_tokens": 0,
+              "fresh_tokens": 180,
+              "checkpoint_restored": false
+            },
+            {
+              "case": "short-regenerate-shortened-history",
+              "passed": true,
+              "prompt_tokens": 180,
+              "output_tokens": 1336,
+              "finish": "stop",
+              "reused_tokens": 0,
+              "fresh_tokens": 180,
+              "checkpoint_restored": false
+            },
+            {
+              "case": "short-invalid-preserved",
+              "passed": true,
+              "prompt_tokens": 180,
+              "output_tokens": 1336,
+              "finish": "stop",
+              "reused_tokens": 0,
+              "fresh_tokens": 180,
+              "checkpoint_restored": false
+            },
+            {
+              "case": "short-cancel-after-boundary",
+              "passed": true,
+              "prompt_tokens": 9201,
+              "output_tokens": 0,
+              "finish": "cancel",
+              "reused_tokens": 0,
+              "fresh_tokens": 1024,
+              "checkpoint_restored": false
+            },
+            {
+              "case": "short-cancel-retry",
+              "passed": true,
+              "prompt_tokens": 180,
+              "output_tokens": 1336,
+              "finish": "stop",
+              "reused_tokens": 0,
+              "fresh_tokens": 180,
+              "checkpoint_restored": false
+            },
+            {
+              "case": "short-stale-prefix-edit",
+              "passed": true,
+              "prompt_tokens": 185,
+              "output_tokens": 645,
+              "finish": "stop",
+              "reused_tokens": 0,
+              "fresh_tokens": 185,
+              "checkpoint_restored": false
+            },
+            {
+              "case": "short-reseed",
+              "passed": true,
+              "prompt_tokens": 180,
+              "output_tokens": 1336,
+              "finish": "stop",
+              "reused_tokens": 0,
+              "fresh_tokens": 180,
+              "checkpoint_restored": false
+            },
+            {
+              "case": "short-ckpt0",
+              "passed": true,
+              "prompt_tokens": 180,
+              "output_tokens": 1336,
+              "finish": "stop",
+              "reused_tokens": 0,
+              "fresh_tokens": 180,
+              "checkpoint_restored": false
+            },
+            {
+              "case": "short-exact-reseed",
+              "passed": true,
+              "prompt_tokens": 180,
+              "output_tokens": 1336,
+              "finish": "stop",
+              "reused_tokens": 0,
+              "fresh_tokens": 180,
+              "checkpoint_restored": false
+            },
+            {
+              "case": "short-exact-saved-prefix",
+              "passed": true,
+              "prompt_tokens": 175,
+              "output_tokens": 8,
+              "finish": "length",
+              "reused_tokens": 0,
+              "fresh_tokens": 175,
+              "checkpoint_restored": false
+            }
+          ],
+          "compiler_sdk_dll_count": 0,
+          "all_owned_processes_exit_zero": true,
+          "forced_cleanup": false,
+          "model_identity_unchanged": true,
+          "executable_identity_unchanged": true
+        },
+        {
+          "mode": "checkpoint",
+          "evidence": {
+            "root": "review",
+            "path": "turn-qwen-checkpoint-auxshort-v3/result.json",
+            "sha256": "421bd7663cbdb47ea197725c1cd5df8ed7571758d584d42a445209422c4c0c8e"
+          },
+          "passed": true,
+          "checks": 11,
+          "expected_invalid_request_checks": 1,
+          "executable_sha256": "9e10bad5892730cbb4d6144f0f1609813dd51acd4fa2a702667e7c0f0ea54d8c",
+          "exact_reference_prompt_match": {
+            "short": true
+          },
+          "records": [
+            {
+              "case": "short-seed-save",
+              "passed": true,
+              "prompt_tokens": 84,
+              "output_tokens": 2004,
+              "finish": "stop",
+              "reused_tokens": 0,
+              "fresh_tokens": 84,
+              "checkpoint_restored": false
+            },
+            {
+              "case": "short-real-chat-followup",
+              "passed": true,
+              "prompt_tokens": 180,
+              "output_tokens": 1056,
+              "finish": "stop",
+              "reused_tokens": 79,
+              "fresh_tokens": 101,
+              "checkpoint_restored": true
+            },
+            {
+              "case": "short-regenerate-shortened-history",
+              "passed": true,
+              "prompt_tokens": 180,
+              "output_tokens": 1056,
+              "finish": "stop",
+              "reused_tokens": 175,
+              "fresh_tokens": 5,
+              "checkpoint_restored": true
+            },
+            {
+              "case": "short-invalid-preserved",
+              "passed": true,
+              "prompt_tokens": 180,
+              "output_tokens": 1056,
+              "finish": "stop",
+              "reused_tokens": 175,
+              "fresh_tokens": 5,
+              "checkpoint_restored": true
+            },
+            {
+              "case": "short-cancel-after-boundary",
+              "passed": true,
+              "prompt_tokens": 9201,
+              "output_tokens": 0,
+              "finish": "cancel",
+              "reused_tokens": 175,
+              "fresh_tokens": 1024,
+              "checkpoint_restored": true
+            },
+            {
+              "case": "short-cancel-retry",
+              "passed": true,
+              "prompt_tokens": 180,
+              "output_tokens": 1056,
+              "finish": "stop",
+              "reused_tokens": 175,
+              "fresh_tokens": 5,
+              "checkpoint_restored": true
+            },
+            {
+              "case": "short-stale-prefix-edit",
+              "passed": true,
+              "prompt_tokens": 185,
+              "output_tokens": 645,
+              "finish": "stop",
+              "reused_tokens": 0,
+              "fresh_tokens": 185,
+              "checkpoint_restored": false
+            },
+            {
+              "case": "short-reseed",
+              "passed": true,
+              "prompt_tokens": 180,
+              "output_tokens": 1343,
+              "finish": "stop",
+              "reused_tokens": 0,
+              "fresh_tokens": 180,
+              "checkpoint_restored": false
+            },
+            {
+              "case": "short-ckpt0",
+              "passed": true,
+              "prompt_tokens": 180,
+              "output_tokens": 1336,
+              "finish": "stop",
+              "reused_tokens": 0,
+              "fresh_tokens": 180,
+              "checkpoint_restored": false
+            },
+            {
+              "case": "short-exact-reseed",
+              "passed": true,
+              "prompt_tokens": 180,
+              "output_tokens": 1343,
+              "finish": "stop",
+              "reused_tokens": 0,
+              "fresh_tokens": 180,
+              "checkpoint_restored": false
+            },
+            {
+              "case": "short-exact-saved-prefix",
+              "passed": true,
+              "prompt_tokens": 175,
+              "output_tokens": 8,
+              "finish": "length",
+              "reused_tokens": 175,
+              "fresh_tokens": 0,
+              "checkpoint_restored": true
+            }
+          ],
+          "compiler_sdk_dll_count": 0,
+          "all_owned_processes_exit_zero": true,
+          "forced_cleanup": false,
+          "model_identity_unchanged": true,
+          "executable_identity_unchanged": true
+        }
+      ],
+      "exact_saved_prefix_greedy_output_ids_equal": true,
+      "exact_saved_prefix_note": "Eight-output greedy auxiliary protocol check, distinct from normal-thinking quality/performance screens.",
+      "coverage": [
+        "fresh0 restored logits",
+        "invalid request preserves state",
+        "cancel after committed boundary and retry",
+        "stale prefix edit resets",
+        "reseed",
+        "ckpt0 optout",
+        "exact saved prefix"
+      ]
+    },
+    "interpretation": "All six core prompt-ID pairs match exactly, while normal sampled output IDs differ. Preserve first-save regression and both output lengths rather than advertising only large TTFT ratios.",
+    "large_tail_cold_fix": {
+      "status": "complete_for_validation_build",
+      "evidence": {
+        "root": "review",
+        "path": "turn-checkpoint-v4-tail1008-summary.json",
+        "sha256": "adcac4c29c2574f2cf6d95ca6c4de4336fc2e319605867aa1a198a0ff1c4ae9b"
+      },
+      "raw_evidence": {
+        "root": "review",
+        "path": "turn-qwen-long-validation-tail1008/result.json",
+        "sha256": "bec08c52e2b6bbe74e083e9247d712b12f1090746a123d5a852d5b83ebce3f40"
+      },
+      "summary": {
+        "passed": true,
+        "executed_model": "qwen3.6-35b-a3b",
+        "executable_sha256": "257d334fd7c060e3b12f4eb51bdde188a45aead864c4570473c2f0acc8b293b0",
+        "historical_v3_executable_sha256": "9e10bad5892730cbb4d6144f0f1609813dd51acd4fa2a702667e7c0f0ea54d8c",
+        "build_and_default_flags": {
+          "npu": false,
+          "mkl": true,
+          "int8_xmx": true,
+          "mkl_attention_min_large_tail_tokens": 1008,
+          "fused_attention_default": "PTL-H",
+          "gpu_draft_support_default": "Qwen only",
+          "turn_checkpoint_default": true,
+          "host_profile_default": false
+        },
+        "conditions": {
+          "context_tokens": 32768,
+          "chunk": 1024,
+          "sampling": {
+            "temperature": 1.0,
+            "top_p": 0.95,
+            "top_k": 20,
+            "min_p": 0.0,
+            "presence_penalty": 1.5,
+            "frequency_penalty": 0.0,
+            "repetition_penalty": 1.0
+          },
+          "normal_thinking": true,
+          "seed": 2026,
+          "checkpoint_env": "1 (same as new default)",
+          "source_and_defaults_differ_from_historical_controls": true,
+          "control_interpretation": "Fixed actual prompt token IDs match V3. V4 is not a same-executable isolated A/B; source/default flags and cohort/warmup differ. No isolated generation speedup claim."
+        },
+        "rows": [
+          {
+            "case": "long-seed-save",
+            "prompt_ids_match_v3_reference": true,
+            "new": {
+              "prompt_tokens": 16384,
+              "output_tokens": 1535,
+              "reused_tokens": 0,
+              "fresh_tokens": 16384,
+              "checkpoint_restored": false,
+              "prefill_tok_s": 271.4350119986237,
+              "accepted_output_tok_s": 29.00969926246149,
+              "first_token_seconds": 60.375,
+              "prefill_ms": 60360.673,
+              "decode_ms": 52878.866,
+              "native_rss_bytes": 15845957632,
+              "ram_available_bytes": 6778929152,
+              "six_facts_correct": true,
+              "thinking_closed": true,
+              "finish": "stop"
+            },
+            "historical_v3_checkpoint": {
+              "output_tokens": 1757,
+              "prefill_tok_s": 226.42079741358464,
+              "accepted_output_tok_s": 23.831244389954072,
+              "first_token_seconds": 72.39000000000033,
+              "reused_tokens": 0,
+              "fresh_tokens": 16384
+            },
+            "historical_v3_no_checkpoint": {
+              "output_tokens": 636,
+              "prefill_tok_s": 274.50488008489543,
+              "accepted_output_tok_s": 26.38990540818929,
+              "first_token_seconds": 59.71900000000005,
+              "reused_tokens": 0,
+              "fresh_tokens": 16384
+            }
+          },
+          {
+            "case": "long-real-chat-followup",
+            "prompt_ids_match_v3_reference": true,
+            "new": {
+              "prompt_tokens": 16466,
+              "output_tokens": 1826,
+              "reused_tokens": 16379,
+              "fresh_tokens": 87,
+              "checkpoint_restored": true,
+              "prefill_tok_s": 40.62017197740398,
+              "accepted_output_tok_s": 28.853716621151047,
+              "first_token_seconds": 2.155999999999949,
+              "prefill_ms": 2141.793,
+              "decode_ms": 63250.084,
+              "native_rss_bytes": 15861354496,
+              "ram_available_bytes": 6758858752,
+              "six_facts_correct": true,
+              "thinking_closed": true,
+              "finish": "stop"
+            },
+            "historical_v3_checkpoint": {
+              "output_tokens": 556,
+              "prefill_tok_s": 40.85790325693844,
+              "accepted_output_tok_s": 25.93076737410472,
+              "first_token_seconds": 2.155999999999949,
+              "reused_tokens": 16379,
+              "fresh_tokens": 87
+            },
+            "historical_v3_no_checkpoint": {
+              "output_tokens": 1387,
+              "prefill_tok_s": 268.41435612863364,
+              "accepted_output_tok_s": 24.651565418869403,
+              "first_token_seconds": 61.375,
+              "reused_tokens": 0,
+              "fresh_tokens": 16466
+            }
+          },
+          {
+            "case": "long-regenerate-shortened-history",
+            "prompt_ids_match_v3_reference": true,
+            "new": {
+              "prompt_tokens": 16466,
+              "output_tokens": 1826,
+              "reused_tokens": 16461,
+              "fresh_tokens": 5,
+              "checkpoint_restored": true,
+              "prefill_tok_s": 47.23263964329911,
+              "accepted_output_tok_s": 28.882166316300932,
+              "first_token_seconds": 0.125,
+              "prefill_ms": 105.859,
+              "decode_ms": 63187.781,
+              "native_rss_bytes": 15863468032,
+              "ram_available_bytes": 6935744512,
+              "six_facts_correct": true,
+              "thinking_closed": true,
+              "finish": "stop"
+            },
+            "historical_v3_checkpoint": {
+              "output_tokens": 556,
+              "prefill_tok_s": 36.202764443092875,
+              "accepted_output_tok_s": 25.771532347452265,
+              "first_token_seconds": 0.1570000000001528,
+              "reused_tokens": 16461,
+              "fresh_tokens": 5
+            },
+            "historical_v3_no_checkpoint": {
+              "output_tokens": 1387,
+              "prefill_tok_s": 267.59897590817764,
+              "accepted_output_tok_s": 24.839789629563466,
+              "first_token_seconds": 61.5630000000001,
+              "reused_tokens": 0,
+              "fresh_tokens": 16466
+            }
+          }
+        ],
+        "cold_seed_final_pp_points": [
+          {
+            "done": 15360,
+            "total": 16384,
+            "ms": 55711.704
+          },
+          {
+            "done": 16379,
+            "total": 16384,
+            "ms": 60259.482
+          },
+          {
+            "done": 16384,
+            "total": 16384,
+            "ms": 60360.648
+          }
+        ],
+        "cold_seed_final_intervals": [
+          {
+            "from": 15360,
+            "to": 16379,
+            "ms": 4547.778000000006
+          },
+          {
+            "from": 16379,
+            "to": 16384,
+            "ms": 101.16599999999744
+          }
+        ],
+        "note": "All three completed normally with six expected JSON facts and EOS. No cancellation in this cohort. V3 30-normal-answer and auxiliary state gates are separately retained."
+      },
+      "isolated_attention_micros": [
+        {
+          "evidence": {
+            "root": "review",
+            "path": "attention-prefill-tail-gpu/result.json",
+            "sha256": "734f4ca01baa9469ab69e15228a726f8f20cbfc4bd9fd97d1a2d6fab5f52d162"
+          },
+          "exit_code": 0,
+          "passed": true,
+          "numeric_cases": 6,
+          "summary": {
+            "passed": true,
+            "cases": 6,
+            "scope": "isolated existing FP32 attention paths; not full-model prefill gain",
+            "mkl_capacity_tokens": 1024,
+            "all_causal_keys_retained": true,
+            "models_loaded": false,
+            "gpu_span_note": "marker-end through final-completion includes every oneMKL stage; returned gate event alone is not GEMM time"
+          },
+          "records": [
+            {
+              "context": 67,
+              "position": 0,
+              "tokens": 7,
+              "round": 0,
+              "old_wall_ms": 0.4929,
+              "old_gpu_span_ms": 0.110416,
+              "old_kernel_ms": 0.0375,
+              "mkl_wall_ms": 3.9522,
+              "mkl_gpu_span_ms": 3.881563,
+              "mkl_returned_gate_event_ms": 0.001354
+            },
+            {
+              "context": 67,
+              "position": 0,
+              "tokens": 7,
+              "round": 1,
+              "old_wall_ms": 0.4456,
+              "old_gpu_span_ms": 0.382604,
+              "old_kernel_ms": 0.034479,
+              "mkl_wall_ms": 4.5197,
+              "mkl_gpu_span_ms": 4.456666,
+              "mkl_returned_gate_event_ms": 0.001458
+            },
+            {
+              "case_passed": true,
+              "context": 67,
+              "position": 0,
+              "tokens": 7,
+              "all_active_outputs_compared": 28672,
+              "tail_canaries_intact": true,
+              "fp64_samples_per_path": 24,
+              "max_path_difference": 2.38418579e-07,
+              "max_fp64_error": 7.41127487e-08
+            },
+            {
+              "context": 1031,
+              "position": 257,
+              "tokens": 33,
+              "round": 0,
+              "old_wall_ms": 0.934,
+              "old_gpu_span_ms": 0.857083,
+              "old_kernel_ms": 0.716354,
+              "mkl_wall_ms": 4.0217,
+              "mkl_gpu_span_ms": 3.934271,
+              "mkl_returned_gate_event_ms": 0.001771
+            },
+            {
+              "context": 1031,
+              "position": 257,
+              "tokens": 33,
+              "round": 1,
+              "old_wall_ms": 0.834,
+              "old_gpu_span_ms": 0.768125,
+              "old_kernel_ms": 0.711875,
+              "mkl_wall_ms": 4.3902,
+              "mkl_gpu_span_ms": 4.32,
+              "mkl_returned_gate_event_ms": 0.00177
+            },
+            {
+              "case_passed": true,
+              "context": 1031,
+              "position": 257,
+              "tokens": 33,
+              "all_active_outputs_compared": 135168,
+              "tail_canaries_intact": true,
+              "fp64_samples_per_path": 24,
+              "max_path_difference": 2.88709998e-08,
+              "max_fp64_error": 1.07977329e-08
+            },
+            {
+              "context": 32768,
+              "position": 15360,
+              "tokens": 1000,
+              "round": 0,
+              "old_wall_ms": 1264.1934,
+              "old_gpu_span_ms": 1262.561979,
+              "old_kernel_ms": 1262.495313,
+              "mkl_wall_ms": 95.3009,
+              "mkl_gpu_span_ms": 93.468333,
+              "mkl_returned_gate_event_ms": 0.026979
+            },
+            {
+              "context": 32768,
+              "position": 15360,
+              "tokens": 1000,
+              "round": 1,
+              "old_wall_ms": 1223.0935,
+              "old_gpu_span_ms": 1219.7425,
+              "old_kernel_ms": 1219.690209,
+              "mkl_wall_ms": 100.0719,
+              "mkl_gpu_span_ms": 92.932083,
+              "mkl_returned_gate_event_ms": 0.032708
+            },
+            {
+              "case_passed": true,
+              "context": 32768,
+              "position": 15360,
+              "tokens": 1000,
+              "all_active_outputs_compared": 4096000,
+              "tail_canaries_intact": true,
+              "fp64_samples_per_path": 24,
+              "max_path_difference": 4.61004674e-08,
+              "max_fp64_error": 8.41163246e-09
+            },
+            {
+              "context": 32768,
+              "position": 15360,
+              "tokens": 1008,
+              "round": 0,
+              "old_wall_ms": 1192.0809,
+              "old_gpu_span_ms": 1188.291875,
+              "old_kernel_ms": 1188.188334,
+              "mkl_wall_ms": 97.3304,
+              "mkl_gpu_span_ms": 96.6375,
+              "mkl_returned_gate_event_ms": 0.030729
+            },
+            {
+              "context": 32768,
+              "position": 15360,
+              "tokens": 1008,
+              "round": 1,
+              "old_wall_ms": 1230.2925,
+              "old_gpu_span_ms": 1221.881771,
+              "old_kernel_ms": 1221.807604,
+              "mkl_wall_ms": 95.6576,
+              "mkl_gpu_span_ms": 88.003542,
+              "mkl_returned_gate_event_ms": 0.033854
+            },
+            {
+              "case_passed": true,
+              "context": 32768,
+              "position": 15360,
+              "tokens": 1008,
+              "all_active_outputs_compared": 4128768,
+              "tail_canaries_intact": true,
+              "fp64_samples_per_path": 24,
+              "max_path_difference": 4.61004674e-08,
+              "max_fp64_error": 5.80193971e-09
+            },
+            {
+              "context": 32768,
+              "position": 15360,
+              "tokens": 1019,
+              "round": 0,
+              "old_wall_ms": 1245.2632,
+              "old_gpu_span_ms": 1240.775,
+              "old_kernel_ms": 1240.6825,
+              "mkl_wall_ms": 95.953,
+              "mkl_gpu_span_ms": 89.155521,
+              "mkl_returned_gate_event_ms": 0.031563
+            },
+            {
+              "context": 32768,
+              "position": 15360,
+              "tokens": 1019,
+              "round": 1,
+              "old_wall_ms": 1262.8531,
+              "old_gpu_span_ms": 1258.861563,
+              "old_kernel_ms": 1258.815625,
+              "mkl_wall_ms": 96.3113,
+              "mkl_gpu_span_ms": 88.877396,
+              "mkl_returned_gate_event_ms": 0.035938
+            },
+            {
+              "case_passed": true,
+              "context": 32768,
+              "position": 15360,
+              "tokens": 1019,
+              "all_active_outputs_compared": 4173824,
+              "tail_canaries_intact": true,
+              "fp64_samples_per_path": 24,
+              "max_path_difference": 4.61004674e-08,
+              "max_fp64_error": 4.95424203e-09
+            },
+            {
+              "context": 32768,
+              "position": 15360,
+              "tokens": 1024,
+              "round": 0,
+              "old_wall_ms": 1239.1542,
+              "old_gpu_span_ms": 1236.541771,
+              "old_kernel_ms": 1236.459792,
+              "mkl_wall_ms": 99.2603,
+              "mkl_gpu_span_ms": 95.513229,
+              "mkl_returned_gate_event_ms": 0.027916
+            },
+            {
+              "context": 32768,
+              "position": 15360,
+              "tokens": 1024,
+              "round": 1,
+              "old_wall_ms": 1245.9245,
+              "old_gpu_span_ms": 1244.466146,
+              "old_kernel_ms": 1244.400937,
+              "mkl_wall_ms": 94.9321,
+              "mkl_gpu_span_ms": 92.770104,
+              "mkl_returned_gate_event_ms": 0.034166
+            },
+            {
+              "case_passed": true,
+              "context": 32768,
+              "position": 15360,
+              "tokens": 1024,
+              "all_active_outputs_compared": 4194304,
+              "tail_canaries_intact": true,
+              "fp64_samples_per_path": 24,
+              "max_path_difference": 4.61004674e-08,
+              "max_fp64_error": 1.21227116e-08
+            },
+            {
+              "passed": true,
+              "cases": 6,
+              "scope": "isolated existing FP32 attention paths; not full-model prefill gain",
+              "mkl_capacity_tokens": 1024,
+              "all_causal_keys_retained": true,
+              "models_loaded": false,
+              "gpu_span_note": "marker-end through final-completion includes every oneMKL stage; returned gate event alone is not GEMM time"
+            }
+          ]
+        },
+        {
+          "evidence": {
+            "root": "review",
+            "path": "attention-prefill-nearshort-gpu/result.json",
+            "sha256": "274f589db35eec764f5c5d0747597eba5bb8253a07f930063f68a9ac4db6b555"
+          },
+          "exit_code": 0,
+          "passed": true,
+          "numeric_cases": 4,
+          "summary": {
+            "passed": true,
+            "cases": 4,
+            "mode": "near-full-short",
+            "scope": "isolated existing FP32 attention paths; not full-model prefill gain",
+            "mkl_capacity_tokens": 1024,
+            "all_causal_keys_retained": true,
+            "models_loaded": false,
+            "gpu_span_note": "marker-end through final-completion includes every oneMKL stage; returned gate event alone is not GEMM time"
+          },
+          "records": [
+            {
+              "context": 8192,
+              "position": 0,
+              "tokens": 1008,
+              "round": 0,
+              "old_wall_ms": 20.0574,
+              "old_gpu_span_ms": 19.1875,
+              "old_kernel_ms": 19.1425,
+              "mkl_wall_ms": 5.3746,
+              "mkl_gpu_span_ms": 5.028125,
+              "mkl_returned_gate_event_ms": 0.03948
+            },
+            {
+              "context": 8192,
+              "position": 0,
+              "tokens": 1008,
+              "round": 1,
+              "old_wall_ms": 20.1809,
+              "old_gpu_span_ms": 19.551875,
+              "old_kernel_ms": 19.507084,
+              "mkl_wall_ms": 4.9933,
+              "mkl_gpu_span_ms": 4.823229,
+              "mkl_returned_gate_event_ms": 0.023125
+            },
+            {
+              "case_passed": true,
+              "context": 8192,
+              "position": 0,
+              "tokens": 1008,
+              "all_active_outputs_compared": 4128768,
+              "tail_canaries_intact": true,
+              "fp64_samples_per_path": 24,
+              "max_path_difference": 2.38418579e-07,
+              "max_fp64_error": 4.8875898e-08
+            },
+            {
+              "context": 8192,
+              "position": 0,
+              "tokens": 1019,
+              "round": 0,
+              "old_wall_ms": 20.8707,
+              "old_gpu_span_ms": 19.787396,
+              "old_kernel_ms": 19.741459,
+              "mkl_wall_ms": 5.9756,
+              "mkl_gpu_span_ms": 5.389479,
+              "mkl_returned_gate_event_ms": 0.04
+            },
+            {
+              "context": 8192,
+              "position": 0,
+              "tokens": 1019,
+              "round": 1,
+              "old_wall_ms": 19.96,
+              "old_gpu_span_ms": 19.147292,
+              "old_kernel_ms": 19.1025,
+              "mkl_wall_ms": 5.3027,
+              "mkl_gpu_span_ms": 5.148125,
+              "mkl_returned_gate_event_ms": 0.023438
+            },
+            {
+              "case_passed": true,
+              "context": 8192,
+              "position": 0,
+              "tokens": 1019,
+              "all_active_outputs_compared": 4173824,
+              "tail_canaries_intact": true,
+              "fp64_samples_per_path": 24,
+              "max_path_difference": 2.38418579e-07,
+              "max_fp64_error": 4.8875898e-08
+            },
+            {
+              "context": 8192,
+              "position": 7168,
+              "tokens": 1008,
+              "round": 0,
+              "old_wall_ms": 573.1631,
+              "old_gpu_span_ms": 572.343438,
+              "old_kernel_ms": 572.284896,
+              "mkl_wall_ms": 42.9424,
+              "mkl_gpu_span_ms": 41.422604,
+              "mkl_returned_gate_event_ms": 0.035312
+            },
+            {
+              "context": 8192,
+              "position": 7168,
+              "tokens": 1008,
+              "round": 1,
+              "old_wall_ms": 568.9254,
+              "old_gpu_span_ms": 568.087083,
+              "old_kernel_ms": 568.050312,
+              "mkl_wall_ms": 40.9603,
+              "mkl_gpu_span_ms": 39.251875,
+              "mkl_returned_gate_event_ms": 0.028437
+            },
+            {
+              "case_passed": true,
+              "context": 8192,
+              "position": 7168,
+              "tokens": 1008,
+              "all_active_outputs_compared": 4128768,
+              "tail_canaries_intact": true,
+              "fp64_samples_per_path": 24,
+              "max_path_difference": 3.7602149e-08,
+              "max_fp64_error": 7.25471655e-09
+            },
+            {
+              "context": 8192,
+              "position": 7168,
+              "tokens": 1019,
+              "round": 0,
+              "old_wall_ms": 575.2129,
+              "old_gpu_span_ms": 574.567292,
+              "old_kernel_ms": 574.500938,
+              "mkl_wall_ms": 46.1904,
+              "mkl_gpu_span_ms": 43.440417,
+              "mkl_returned_gate_event_ms": 0.028125
+            },
+            {
+              "context": 8192,
+              "position": 7168,
+              "tokens": 1019,
+              "round": 1,
+              "old_wall_ms": 587.5175,
+              "old_gpu_span_ms": 581.648229,
+              "old_kernel_ms": 581.566771,
+              "mkl_wall_ms": 48.029,
+              "mkl_gpu_span_ms": 42.646979,
+              "mkl_returned_gate_event_ms": 0.0275
+            },
+            {
+              "case_passed": true,
+              "context": 8192,
+              "position": 7168,
+              "tokens": 1019,
+              "all_active_outputs_compared": 4173824,
+              "tail_canaries_intact": true,
+              "fp64_samples_per_path": 24,
+              "max_path_difference": 3.7602149e-08,
+              "max_fp64_error": 5.23462809e-09
+            },
+            {
+              "passed": true,
+              "cases": 4,
+              "mode": "near-full-short",
+              "scope": "isolated existing FP32 attention paths; not full-model prefill gain",
+              "mkl_capacity_tokens": 1024,
+              "all_causal_keys_retained": true,
+              "models_loaded": false,
+              "gpu_span_note": "marker-end through final-completion includes every oneMKL stage; returned gate event alone is not GEMM time"
+            }
+          ]
+        }
+      ],
+      "routing_change": {
+        "mkl_attention_min_tokens": 1008,
+        "previous_min_tokens": 1024,
+        "explicit512_path_unchanged": true,
+        "kernel_inputs_precision_and_all_causal_keys_unchanged": true
+      },
+      "compiler_sdk_dll_count": 0,
+      "app_openvino_runtime_directory_used": false,
+      "openvino_named_modules": [
+        "openvino_intel_npu_compiler_loader.dll"
+      ],
+      "openvino_module_note": "One OpenVINO-named module is a system NPU driver compiler loader, not an app OpenVINO runtime directory; do not report all OpenVINO-named DLLs as zero.",
+      "all_owned_processes_exit_zero": true,
+      "forced_cleanup": false,
+      "model_identity_unchanged": true,
+      "executable_identity_unchanged": true,
+      "comparison_kind": "Cross-build fixed-prompt historical observation; not strict same-binary cold A/A, isolated default-feature gain or a universal decode improvement.",
+      "cold_seed_key_observation": {
+        "prompt_tokens": 16384,
+        "output_tokens": 1535,
+        "prefill_tok_s": 271.4350119986237,
+        "first_token_seconds": 60.375,
+        "accepted_decode_steps_tok_s": 29.00969926246149,
+        "old_v3_checkpoint_1019_interval_ms": 16414.996,
+        "validation_1019_interval_ms": 4547.778000000006
+      },
+      "scope": "All three normal-thinking full answers finish at EOS with six correct facts. Follow-up and regeneration reuse16379/16461 tokens; output counts and different source/default/warmup conditions are retained. No cancellation was performed in this new cohort."
+    }
+  },
+  "historical_canonical_20261114": {
+    "qwen": {
+      "evidence": {
+        "root": "prior",
+        "path": "benchmark-c1024-qwen-20261114-210115/result.json",
+        "sha256": "e3e49d34797bff0fac6bfa870784391d58257367baa532736304f8a1ed4a10a2"
+      },
+      "protocol": "tinystrata-bench-v1-intel-text",
+      "standard": false,
+      "complete": true,
+      "starts": 4,
+      "generation_passes": 2,
+      "seed": 1234,
+      "executable_sha256": "499ff5003556797661fc0339195b4fc8656675766e99c7171b64d509a6f564bd",
+      "aggregate": {
+        "generation": {
+          "tokens": 3072,
+          "milliseconds": 97053.294,
+          "tok_s": 31.652712374708273,
+          "requests": 24
+        },
+        "input_4k": {
+          "tokens": 16384,
+          "milliseconds": 56032.291,
+          "tok_s": 292.4028217943114,
+          "requests": 4
+        },
+        "input_16k": {
+          "tokens": 65536,
+          "milliseconds": 247941.595,
+          "tok_s": 264.32031301565195,
+          "requests": 4
+        },
+        "image": null,
+        "expert_cache": {
+          "startup_engine": [
+            null,
+            null,
+            null,
+            null
+          ],
+          "after_16k_engine": [
+            null,
+            null,
+            null,
+            null
+          ],
+          "applicable": false,
+          "reason": "UMA: independent Expert cache is not reported"
+        },
+        "complete_runs": 4
+      },
+      "comparison_scope": "Historical completed text-variant benchmark. Kept separate from new seed2026 normal completed-answer screens and from pending final shipping measurements."
+    },
+    "tiel": {
+      "evidence": {
+        "root": "prior",
+        "path": "benchmark-c1024-tiel-20261114-210115/result.json",
+        "sha256": "d6bec765626af58cdf1ad73215b87c5f8280d99d1e43d318c448fb30b9e27874"
+      },
+      "protocol": "tinystrata-bench-v1-intel-text",
+      "standard": false,
+      "complete": true,
+      "starts": 4,
+      "generation_passes": 2,
+      "seed": 1234,
+      "executable_sha256": "499ff5003556797661fc0339195b4fc8656675766e99c7171b64d509a6f564bd",
+      "aggregate": {
+        "generation": {
+          "tokens": 3072,
+          "milliseconds": 119759.349,
+          "tok_s": 25.651442043159403,
+          "requests": 24
+        },
+        "input_4k": {
+          "tokens": 16384,
+          "milliseconds": 68820.52100000001,
+          "tok_s": 238.06852610139347,
+          "requests": 4
+        },
+        "input_16k": {
+          "tokens": 65536,
+          "milliseconds": 300462.58999999997,
+          "tok_s": 218.1170041834493,
+          "requests": 4
+        },
+        "image": null,
+        "expert_cache": {
+          "startup_engine": [
+            null,
+            null,
+            null,
+            null
+          ],
+          "after_16k_engine": [
+            null,
+            null,
+            null,
+            null
+          ],
+          "applicable": false,
+          "reason": "UMA: independent Expert cache is not reported"
+        },
+        "complete_runs": 4
+      },
+      "comparison_scope": "Historical completed text-variant benchmark. Kept separate from new seed2026 normal completed-answer screens and from pending final shipping measurements."
+    }
+  },
+  "pending": {
+    "checkpoint_initial_large_tail_fix": {
+      "status": "complete",
+      "result": {
+        "section": "turn_checkpoint.large_tail_cold_fix",
+        "native_executable_sha256": "257d334fd7c060e3b12f4eb51bdde188a45aead864c4570473c2f0acc8b293b0",
+        "evidence": {
+          "root": "review",
+          "path": "turn-checkpoint-v4-tail1008-summary.json",
+          "sha256": "adcac4c29c2574f2cf6d95ca6c4de4336fc2e319605867aa1a198a0ff1c4ae9b"
+        }
+      }
+    },
+    "tiel_normal_candidate_full_answers": {
+      "status": "complete",
+      "result": {
+        "section": "normal_tiel_matched_screens",
+        "source_native_executable_sha256": "257d334fd7c060e3b12f4eb51bdde188a45aead864c4570473c2f0acc8b293b0",
+        "all_six_fact_answers_correct": true,
+        "attention_vs_support_output_ids_equal": {
+          "short": true,
+          "long": true
+        }
+      }
+    },
+    "final_shipping_native": {
+      "status": "pending",
+      "executable_sha256": null,
+      "staged_manifest_sha256": null,
+      "generic_executable_sha256": null,
+      "additional_validation_required": "Fresh build must verify the subsequent B390 Tiel support-default gate change; earlier257d explicit-override screens and GPU fixtures do not certify that newly compiled artifact."
+    },
+    "final_installer_and_runtime_release": {
+      "status": "pending",
+      "release_url": null,
+      "aot_artifact": null,
+      "generic_artifact": null,
+      "actual_installer_result": null
+    },
+    "new_canonical_four_start_text_benchmark": {
+      "status": "pending",
+      "qwen_result": null,
+      "tiel_result": null,
+      "protocol": "tinystrata-bench-v1-intel-text",
+      "standard": false,
+      "starts_per_model": 4,
+      "generation_passes": 2,
+      "seed": 1234
+    },
+    "final_source_default_gpu_regressions": {
+      "status": "complete",
+      "result": {
+        "native_executable_sha256": "257d334fd7c060e3b12f4eb51bdde188a45aead864c4570473c2f0acc8b293b0",
+        "build_directory": "validation-build",
+        "build_and_default_flags": {
+          "npu": false,
+          "mkl": true,
+          "int8_xmx": true,
+          "mkl_attention_min_large_tail_tokens": 1008,
+          "fused_attention_default": "PTL-H",
+          "gpu_draft_support_default": "Qwen only",
+          "turn_checkpoint_default": true,
+          "host_profile_default": false
+        },
+        "scope": "Post-adoption source/default validation on B390. This is not a final shipping manifest/release/installer validation.",
+        "sampler": {
+          "evidence": {
+            "root": "review",
+            "path": "validation-gpu-sampler.json",
+            "sha256": "cc848a96005fd75ff100346dc8fd6c89f101c3dd766a97a7c289d1095324b5a1"
+          },
+          "stdout": {
+            "root": "review",
+            "path": "validation-gpu-sampler.stdout.log",
+            "sha256": "b4bb57c1b5dac6abb32ec3f3e74d630f9ff6baad5f1bdf666d67cac3a9ac70aa"
+          },
+          "exit_code": 0,
+          "checks": 108,
+          "passed": true,
+          "rng_exact": true,
+          "probability_bits_exact": true
+        },
+        "fused_attention": {
+          "evidence": {
+            "root": "review",
+            "path": "validation-fused-attention.json",
+            "sha256": "f3fff5e8a82d21616779d16ed7ec7c7a768a3cf4162cf781ce0e77741d3563e7"
+          },
+          "stdout": {
+            "root": "review",
+            "path": "validation-fused-attention.stdout.log",
+            "sha256": "f93e9bb5b849bffc9e342f507552b1a8e95c977b4c9e1b4da8d98b8159e7153f"
+          },
+          "exit_code": 0,
+          "numeric_cases": 84,
+          "passed": true,
+          "all_numeric_tolerance": true,
+          "all_canaries": true,
+          "max_abs_vs_independent_fp64": 2.82022809994e-07,
+          "checks": [
+            "explicit0 control",
+            "explicit1 experiment admission",
+            "actual-device default dispatch",
+            "zero-hint graph fallback",
+            "independent FP64",
+            "causal positions and output/stat/partial tails",
+            "store nonfinite/scale-overflow policy"
+          ]
+        },
+        "subsequent_tiel_support_default_gate_change": {
+          "state": "source gate adopted; final shipping fresh-build validation pending",
+          "scope": "B390 GPU draft-support default now covers Qwen and Tiel; target sampler stays CPU by default.",
+          "measured_native_sha256": "257d334fd7c060e3b12f4eb51bdde188a45aead864c4570473c2f0acc8b293b0",
+          "gate_change_was_after_this_validation_artifact": true,
+          "kernel_arithmetic_changed": false,
+          "required_next_gate": "pending.final_shipping_native and pending.new_canonical_four_start_text_benchmark"
+        }
+      }
+    }
+  },
+  "root_update_fields": [
+    "pending.final_shipping_native",
+    "pending.final_installer_and_runtime_release",
+    "pending.new_canonical_four_start_text_benchmark",
+    "draft/complete only after the remaining required final gates actually finish"
+  ],
+  "normal_tiel_matched_screens": {
+    "source_native_executable_sha256": "257d334fd7c060e3b12f4eb51bdde188a45aead864c4570473c2f0acc8b293b0",
+    "cohort": "V4 explicit control/treatment overrides; separate from historical9e10 Qwen cohort and formal benchmarks",
+    "model": "tiel-coder-35b-a3b",
+    "context_tokens": 32768,
+    "chunk_tokens": 1024,
+    "actual_kv": "int8",
+    "mtp_depth": 3,
+    "draft_vocabulary": 2048,
+    "seed": 2026,
+    "normal_thinking": true,
+    "sampling": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 20,
+      "min_p": 0.0,
+      "presence_penalty": 0.0,
+      "frequency_penalty": 0.0,
+      "repetition_penalty": 1.0
+    },
+    "selected_routed_experts": 8,
+    "records": [
+      {
+        "mode": "baseline",
+        "evidence": {
+          "root": "review",
+          "path": "ab-tiel-baseline-v4/result.json",
+          "sha256": "1497447b4a2a84384f76327901914145c36fd233bad14d7fc79ba64abd0a02f5"
+        },
+        "passed": true,
+        "executable_sha256": "257d334fd7c060e3b12f4eb51bdde188a45aead864c4570473c2f0acc8b293b0",
+        "model_identity_unchanged": true,
+        "effective_candidate_overrides": {
+          "TINYSTRATA_INTEL_FUSED_Q8_ATTN": "0",
+          "TINYSTRATA_INTEL_GPU_SUPPORT": "0",
+          "TINYSTRATA_INTEL_TURN_CHECKPOINT": "0"
+        },
+        "started": "2026-11-15T09:09:18",
+        "finished": "2026-11-15T09:11:00",
+        "cases": [
+          {
+            "case": "short",
+            "passed": true,
+            "prompt_tokens": 263,
+            "output_tokens": 101,
+            "prefill_ms": 1858.851,
+            "decode_ms": 3050.75,
+            "prefill_tok_s": 141.48525083505885,
+            "decode_steps_tok_s": 32.77882487912808,
+            "first_token_seconds": 1.8910000000005311,
+            "wall_seconds": 4.92200000000048,
+            "finish": "stop",
+            "thinking_closed": true,
+            "json_correct": true,
+            "draft_offered": 93,
+            "draft_accepted": 69,
+            "output_ids_sha256": "de4a88acd2f949d97855cac1acd59f8ac6849c35933e983d38a655137dda7d21"
+          },
+          {
+            "case": "long",
+            "passed": true,
+            "prompt_tokens": 16384,
+            "output_tokens": 140,
+            "prefill_ms": 74329.692,
+            "decode_ms": 5364.976,
+            "prefill_tok_s": 220.4233538328129,
+            "decode_steps_tok_s": 25.90878318933766,
+            "first_token_seconds": 74.34400000000005,
+            "wall_seconds": 79.71900000000005,
+            "finish": "stop",
+            "thinking_closed": true,
+            "json_correct": true,
+            "draft_offered": 123,
+            "draft_accepted": 98,
+            "output_ids_sha256": "36da48d9b140ca49a52184fb494d40500a6ccbc7debf835afbfae638f9029123"
+          }
+        ]
+      },
+      {
+        "mode": "attention",
+        "evidence": {
+          "root": "review",
+          "path": "ab-tiel-attention-v4/result.json",
+          "sha256": "aaf133fc687b821cf35a8239e5f8fae83f06e0fddde87967cec345d480285e8d"
+        },
+        "passed": true,
+        "executable_sha256": "257d334fd7c060e3b12f4eb51bdde188a45aead864c4570473c2f0acc8b293b0",
+        "model_identity_unchanged": true,
+        "effective_candidate_overrides": {
+          "TINYSTRATA_INTEL_FUSED_Q8_ATTN": "1",
+          "TINYSTRATA_INTEL_GPU_SUPPORT": "0",
+          "TINYSTRATA_INTEL_TURN_CHECKPOINT": "0"
+        },
+        "started": "2026-11-15T09:15:29",
+        "finished": "2026-11-15T09:17:11",
+        "cases": [
+          {
+            "case": "short",
+            "passed": true,
+            "prompt_tokens": 263,
+            "output_tokens": 101,
+            "prefill_ms": 1867.472,
+            "decode_ms": 3072.48,
+            "prefill_tok_s": 140.83209815194016,
+            "decode_steps_tok_s": 32.54699786491694,
+            "first_token_seconds": 1.875,
+            "wall_seconds": 4.95299999999952,
+            "finish": "stop",
+            "thinking_closed": true,
+            "json_correct": true,
+            "draft_offered": 93,
+            "draft_accepted": 69,
+            "output_ids_sha256": "de4a88acd2f949d97855cac1acd59f8ac6849c35933e983d38a655137dda7d21"
+          },
+          {
+            "case": "long",
+            "passed": true,
+            "prompt_tokens": 16384,
+            "output_tokens": 149,
+            "prefill_ms": 74826.375,
+            "decode_ms": 5470.187,
+            "prefill_tok_s": 218.96022625711856,
+            "decode_steps_tok_s": 27.055747819955698,
+            "first_token_seconds": 74.84400000000005,
+            "wall_seconds": 80.3119999999999,
+            "finish": "stop",
+            "thinking_closed": true,
+            "json_correct": true,
+            "draft_offered": 144,
+            "draft_accepted": 100,
+            "output_ids_sha256": "9ade94a27830379af99b955ceb3bb63b00da8622aa76439b93cf4995c1e2832c"
+          }
+        ]
+      },
+      {
+        "mode": "attention_support",
+        "evidence": {
+          "root": "review",
+          "path": "ab-tiel-attention-support-v4/result.json",
+          "sha256": "471b4ff4dda64289456af78a948eee7967bb3685cdfa30a02049e10a1bcfa311"
+        },
+        "passed": true,
+        "executable_sha256": "257d334fd7c060e3b12f4eb51bdde188a45aead864c4570473c2f0acc8b293b0",
+        "model_identity_unchanged": true,
+        "effective_candidate_overrides": {
+          "TINYSTRATA_INTEL_FUSED_Q8_ATTN": "1",
+          "TINYSTRATA_INTEL_GPU_SUPPORT": "1",
+          "TINYSTRATA_INTEL_TURN_CHECKPOINT": "0"
+        },
+        "started": "2026-11-15T09:11:35",
+        "finished": "2026-11-15T09:13:15",
+        "cases": [
+          {
+            "case": "short",
+            "passed": true,
+            "prompt_tokens": 263,
+            "output_tokens": 101,
+            "prefill_ms": 1848.12,
+            "decode_ms": 3030.416,
+            "prefill_tok_s": 142.30677661623704,
+            "decode_steps_tok_s": 32.998769805861635,
+            "first_token_seconds": 1.8599999999996726,
+            "wall_seconds": 4.905999999999949,
+            "finish": "stop",
+            "thinking_closed": true,
+            "json_correct": true,
+            "draft_offered": 93,
+            "draft_accepted": 69,
+            "output_ids_sha256": "de4a88acd2f949d97855cac1acd59f8ac6849c35933e983d38a655137dda7d21"
+          },
+          {
+            "case": "long",
+            "passed": true,
+            "prompt_tokens": 16384,
+            "output_tokens": 149,
+            "prefill_ms": 73807.818,
+            "decode_ms": 5406.957,
+            "prefill_tok_s": 221.9819044101805,
+            "decode_steps_tok_s": 27.37214296322312,
+            "first_token_seconds": 73.82800000000043,
+            "wall_seconds": 79.23400000000038,
+            "finish": "stop",
+            "thinking_closed": true,
+            "json_correct": true,
+            "draft_offered": 144,
+            "draft_accepted": 100,
+            "output_ids_sha256": "9ade94a27830379af99b955ceb3bb63b00da8622aa76439b93cf4995c1e2832c"
+          }
+        ]
+      }
+    ],
+    "matched_output_support_component": [
+      {
+        "case": "short",
+        "all_three_prompt_ids_equal": true,
+        "prompt_ids_sha256": "bf1244937db23473e0f3a91a461ee40dd7688ce30833cb35cd4ea766f7e9d1dd",
+        "attention_vs_support_output_ids_equal": true,
+        "output_tokens_each": 101,
+        "output_ids_sha256": "de4a88acd2f949d97855cac1acd59f8ac6849c35933e983d38a655137dda7d21",
+        "baseline_output_ids_equal_to_attention": true,
+        "baseline_output_tokens": 101,
+        "attention_decode_steps_tok_s": 32.54699786491694,
+        "attention_support_decode_steps_tok_s": 32.998769805861635,
+        "support_increment_tok_s": 0.4517719409446954,
+        "support_increment_percent_of_attention_rate": 1.3880602531137578,
+        "attention_decode_ms": 3072.48,
+        "attention_support_decode_ms": 3030.416,
+        "scope": "One same-binary matched-output component screen. Positive observed support increment; no confidence interval or universal speedup claim."
+      },
+      {
+        "case": "long",
+        "all_three_prompt_ids_equal": true,
+        "prompt_ids_sha256": "e8f646e796d5a12d21749ed88891041bda2d2d4c8c39b96302c5305b59f72299",
+        "attention_vs_support_output_ids_equal": true,
+        "output_tokens_each": 149,
+        "output_ids_sha256": "9ade94a27830379af99b955ceb3bb63b00da8622aa76439b93cf4995c1e2832c",
+        "baseline_output_ids_equal_to_attention": false,
+        "baseline_output_tokens": 140,
+        "attention_decode_steps_tok_s": 27.055747819955698,
+        "attention_support_decode_steps_tok_s": 27.37214296322312,
+        "support_increment_tok_s": 0.316395143267421,
+        "support_increment_percent_of_attention_rate": 1.1694193240301243,
+        "attention_decode_ms": 5470.187,
+        "attention_support_decode_ms": 5406.957,
+        "scope": "One same-binary matched-output component screen. Positive observed support increment; no confidence interval or universal speedup claim."
+      }
+    ],
+    "output_ids_hash_encoding": "Compact JSON token ID array encoded as UTF-8; only hashes/equality/counts are published.",
+    "decision": {
+      "fused_attention": "Retain actual-PTL-H long-context default. Both Tiel treatments complete with six correct facts/EOS.",
+      "gpu_draft_support": "Adopt B390 Tiel default in addition to Qwen after positive short/long matched-output component observations.",
+      "gpu_target_sampler": "CPU remains the default.",
+      "post_screen_source_change": "The experimental_tiel exclusion from the B390 support-default gate was removed after these explicit-override measurements. Kernel arithmetic is unchanged; the new default gate requires fresh final shipping-build validation."
+    },
+    "limits": [
+      "All short cases emit101 IDs; long baseline emits140 while both attention variants emit149.",
+      "Baseline-to-attention rate changes are not proportional end-to-end latency gains because output work differs.",
+      "Attention-only versus attention+support has identical output IDs in both cases, supporting the bounded component comparison."
+    ]
+  }
+}

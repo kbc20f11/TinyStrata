@@ -103,7 +103,9 @@ WeightStore::~WeightStore() {
 std::unique_ptr<WeightStore> WeightStore::load(sycl::queue queue, const std::string& gguf, WeightMemory kind, bool interleave_output, bool interleave_experts, bool interleave_dense, bool interleave_split_output, bool allow_experimental_tiel) {
     if (!queue.has_property<sycl::property::queue::in_order>()) throw std::invalid_argument("Weight loading requires an in-order queue");
     const auto device = inspect_device(queue.get_device());
-    if (!device.integrated) throw std::runtime_error("Single-pool Intel weight storage currently requires an integrated GPU");
+    if (const char* limitation = baseline_limitation(device.capabilities)) throw std::runtime_error(limitation);
+    if (!device.integrated && kind == WeightMemory::Shared)
+        throw std::runtime_error("Discrete Intel weights require explicit host streaming or device residency; shared migration is unvalidated");
     const auto paths = strata::gguf_split_paths(gguf);
     // Hold read-only handles across metadata planning and loading. This closes
     // the replace/write window while still releasing every memory mapping
@@ -183,9 +185,16 @@ std::unique_ptr<WeightStore> WeightStore::load(sycl::queue queue, const std::str
     } // No persistent file mapping alongside the weight arena.
     constexpr uint64_t transfer_bytes = 8 * 1024 * 1024;
     const auto memory = memory_budget(device);
-    if (!memory.wddm_known || !allocation_fits(memory, store->bytes_, device.max_allocation) ||
-        allocation_budget(memory) - store->bytes_ < transfer_bytes)
-        throw std::runtime_error("Compressed model exceeds the single-pool RAM/commit/WDDM budget with headroom");
+    const auto pool = kind == WeightMemory::Host ? MemoryPool::Host : kind == WeightMemory::Shared ? MemoryPool::Shared : MemoryPool::Device;
+    const uint64_t arena_budget = allocation_budget(memory, pool);
+    const uint64_t host_budget = allocation_budget(memory, MemoryPool::Host);
+    if (!memory.wddm_known || !allocation_fits(memory, store->bytes_, device.max_allocation, pool) ||
+        arena_budget - store->bytes_ < transfer_bytes || host_budget < transfer_bytes)
+        throw std::runtime_error("Compressed model exceeds its selected RAM/non-local or device VRAM budget with headroom");
+    std::fprintf(stderr, "Intel weight_residency=%s memory_model=%s one_weight_arena=1 host_budget=%llu device_budget=%llu\n",
+        kind == WeightMemory::Host ? (device.integrated ? "uma_host" : "host_streamed") : kind == WeightMemory::Shared ? "uma_shared" : "device_resident",
+        device.integrated ? "uma" : "discrete", (unsigned long long)host_budget,
+        (unsigned long long)allocation_budget(memory, MemoryPool::Device));
     if (store->bytes_ > std::numeric_limits<size_t>::max()) throw std::runtime_error("Tensor arena exceeds address space");
     auto& q = store->queue_;
     if (kind == WeightMemory::Host) store->arena_ = sycl::malloc_host<uint8_t>(size_t(store->bytes_), q);

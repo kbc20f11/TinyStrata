@@ -1,5 +1,6 @@
 #pragma once
 #include "strata/intel/speculative_distribution.hpp"
+#include "strata/intel/host_profile.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -21,7 +22,14 @@ struct Sampling {
 inline speculative_distribution::Distribution sampling_distribution(const float* logits, int count, const Sampling& s,
                                                                      const std::vector<int>& history,
                                                                      const int32_t* token_ids = nullptr) {
+    namespace hp = host_profile;
+    const bool compact = token_ids != nullptr && !hp::force_target;
+    hp::Scope profile_total(compact ? hp::DraftTotal : hp::TargetTotal);
+    auto phase_start = hp::now();
     std::vector<float> values(logits, logits + count);
+    auto phase_end = hp::now();
+    hp::add(compact ? hp::DraftCopy : hp::TargetCopy, phase_start, phase_end);
+    phase_start = phase_end;
     if (s.last_n && (s.repeat != 1 || s.frequency != 0 || s.presence != 0)) {
         std::map<int, int> counts;
         const size_t first = s.last_n < 0 || size_t(s.last_n) >= history.size() ? 0 : history.size() - size_t(s.last_n);
@@ -38,14 +46,24 @@ inline speculative_distribution::Distribution sampling_distribution(const float*
             value -= seen * s.frequency + s.presence;
         }
     }
+    phase_end = hp::now();
+    hp::add(compact ? hp::DraftPenalties : hp::TargetPenalties, phase_start, phase_end);
+    phase_start = phase_end;
     if (s.temperature <= 0) {
         const int row = int(std::max_element(values.begin(), values.end()) - values.begin());
+        hp::add(compact ? hp::DraftRank : hp::TargetRank, phase_start, hp::now());
         return {{token_ids ? token_ids[row] : row}, {1.}};
     }
     const int k = std::min(s.top_k > 0 ? s.top_k : 64, count);
     std::vector<int> indices(size_t(count), 0);
     for (int i = 0; i < count; ++i) indices[size_t(i)] = i;
+    phase_end = hp::now();
+    hp::add(compact ? hp::DraftIndices : hp::TargetIndices, phase_start, phase_end);
+    phase_start = phase_end;
     std::partial_sort(indices.begin(), indices.begin() + k, indices.end(), [&](int a, int b) { return values[a] > values[b]; });
+    phase_end = hp::now();
+    hp::add(compact ? hp::DraftRank : hp::TargetRank, phase_start, phase_end);
+    phase_start = phase_end;
     std::vector<double> probabilities(size_t(k), 0);
     const double maximum = values[indices[0]];
     double total = 0;
@@ -60,12 +78,14 @@ inline speculative_distribution::Distribution sampling_distribution(const float*
     keep = std::max(1, keep);
     indices.resize(size_t(keep)); probabilities.resize(size_t(keep));
     if (token_ids) for (int& id : indices) id = token_ids[id];
+    hp::add(compact ? hp::DraftFilter : hp::TargetFilter, phase_start, hp::now());
     return {std::move(indices), std::move(probabilities)};
 }
 
 inline int sample(const float* logits, int count, const Sampling& s, const std::vector<int>& history,
                   std::mt19937_64& rng, const int32_t* token_ids = nullptr) {
     const auto distribution = sampling_distribution(logits, count, s, history, token_ids);
+    host_profile::Scope draw(token_ids ? host_profile::DraftDraw : host_profile::TargetDrawVerify);
     return s.temperature <= 0 ? distribution.tokens[0] : distribution.draw(rng);
 }
 }

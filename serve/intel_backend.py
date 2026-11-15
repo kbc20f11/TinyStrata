@@ -26,7 +26,7 @@ _VALUES = {"--model", "--max-context", "--kv-type", "--chunk", "--mtp",
 _OPTIMIZATIONS = ("--prefill-mkl", "--decode-dp4a", "--verify-xmx", "--prefill-int8-xmx",
                   "--vocab-xmx", "--expert-xmx-layout", "--device-state",
                   "--dense-xmx-layout", "--dense-split-k")
-_SWITCHES = {*_OPTIMIZATIONS, "--mtp-stochastic", "--verify-graph", "--no-graph", "--profile", "--experimental-tiel"}
+_SWITCHES = {*_OPTIMIZATIONS, "--mtp-stochastic", "--verify-graph", "--no-graph", "--profile", "--host-profile", "--experimental-tiel"}
 
 
 def canonical_model(cfg: dict) -> str:
@@ -57,8 +57,7 @@ def _profile(cfg):
     if profile not in ("generic", B390_PROFILE, TIEL_PROFILE):
         raise ValueError("intel_profile must be generic, b390-qwen36 or b390-tiel-coder (requested profile only)")
     model = canonical_model(cfg)
-    if ((profile == "generic" and model == TIEL_MODEL) or
-            (profile != "generic" and MODEL_PROFILES[model] != profile)):
+    if profile != "generic" and MODEL_PROFILES[model] != profile:
         raise ValueError("Intel profile must match its pinned model: Qwen3.6/b390-qwen36 or Tiel/b390-tiel-coder")
     return profile
 

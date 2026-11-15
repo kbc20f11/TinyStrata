@@ -20,4 +20,11 @@ sycl::event dequantize_q8_kv(sycl::queue& q, Q8Kv cache, float* key, float* valu
 sycl::event decode_attention_q8(sycl::queue& q, const float* query, const float* gate, Q8Kv cache,
     float* scores, float* partial, float* output, int heads, const int32_t* position,
     int extent, sycl::event* stages = nullptr, int tokens = 1, int actual_visible = 0);
+// Fused D256/GQA8: complete causal KV, register FP32 online
+// normalization and bounded split partials. Reuses the normal score/partial
+// allocations; their contents differ from the control. partial_stage receives
+// the fused QK/softmax/PV event, and the returned event is the stable split join.
+sycl::event fused_decode_attention_q8(sycl::queue& q, const float* query, const float* gate, Q8Kv cache,
+    float* stats, float* partial, float* output, int heads, const int32_t* position,
+    int extent, sycl::event* partial_stage = nullptr, int tokens = 1);
 }

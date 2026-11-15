@@ -1,6 +1,15 @@
 # 開発メモ
 
-更新日: 2026-11-14
+更新日: 2026-11-15
+
+## Intelレビュー対応（2026-11-15）
+
+- 初期Tiel downloaderのQwen manifest固定を修正。missing/existing、active cache、activation候補までCPU再現・回帰確認。native fingerprintはbackend別v2と実Ninja依存・toolchain/flags・exe/DLL receiptへ更新。Intel専用変更でCUDA/HIP再buildを誘発しない一方、共有・未知依存の変更は保守的に失効する。
+- GPU後処理は全target分布をCPUに維持し、正確なproposal support順位付けだけを測定済B390・両モデルで既定採用。full-vocab/host RNG/rejectionを変えない。target GPU化は単独・組合せとも利得がなく不採用。追加host計時は明示`--host-profile`だけで有効、通常graph条件は変えない。
+- INT8 D256/GQA8融合はSLM案を12/12悪化として保持し、register案へ変更。数値84条件と通常完答を通過し、実PTL-H・16K以上だけ既定使用。他Intelと短contextは既存経路。Qwen screenの16K出力636→1477等の違いは残し、同一出力速度と混同しない。
+- 独立した1個のturn snapshot（MTP3 payload62.83MiB）でexact live/new両prefixを確認して復元。16K次ターン61.375→2.156秒、再生成61.563→0.157秒、30通常完答・取消再試行・古いprefix拒否を確認。初回1019token分割の遅延はnear-full1008以上を既存oneMKLへ通して修正し、修正版3完答で初回60.375秒/271.44prefill/29.01生成tok/s。明示512は保持。KV/MTP rollbackとsnapshotを混在させない。
+- NPUは実async+GPU残rows並列、RemoteTensor、4K/16K完答まで検証したが、prefill281.67/265.92はGPUのみ293.72/274.29より遅く配布版では無効。旧serial113.87対164.80を並列設計の否定として使わない。NPU支援だけB390限定。任意lookupは対象外。
+- GPU engineはgeneric SYCL/SPIR-Vと実capability fallbackを持ち、UMAとdiscreteのRAM/VRAM/host control予算を分離する。他Intelの実機・速度検証はB390の結果から一般化しない。最終配布・正式benchmark結果は[レビュー測定JSON](../benchmark/results/intel-review-20261115.json)へ集約し、先行screenと区別する。
 
 ## Intel B390 / Windowsの初期移植と電源状態
 

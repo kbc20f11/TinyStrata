@@ -141,10 +141,19 @@ try {
     $installerAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $repository 'install.ps1'), [ref]$tokens, [ref]$parseErrors)
     Assert-Intel ($parseErrors.Count -eq 0) 'installer parses under PowerShell 5.1'
     foreach ($name in @('Invoke-TinyStrataInstaller','Get-TinyStrataBackend','Get-TinyStrataConfig','Get-TinyStrataModelFamily',
-        'Enter-TinyStrataInstallationGuard','Exit-TinyStrataInstallationGuard','Remove-TinyStrataNativeGeneration','Initialize-TinyStrataDesktopShortcut','Assert-TinyStrataIntelCapabilities','Assert-TinyStrataIntelManagedDeviceSelection','Select-TinyStrataBackend','Test-TinyStrataInteractiveConsole','Get-VerifiedDownload')) {
+        'Enter-TinyStrataInstallationGuard','Exit-TinyStrataInstallationGuard','Remove-TinyStrataNativeGeneration','Initialize-TinyStrataDesktopShortcut','Assert-TinyStrataIntelCapabilities','Assert-TinyStrataIntelManagedDeviceSelection','Get-TinyStrataIntelRuntimeSelection','Select-TinyStrataBackend','Test-TinyStrataInteractiveConsole','Get-VerifiedDownload')) {
         $definition = $installerAst.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
         Invoke-Expression $definition.Extent.Text
     }
+    function Get-CimInstance {param($ClassName,$ErrorAction) return [pscustomobject]@{PNPDeviceID='PCI\VEN_8086&DEV_B082'}}
+    foreach($id in @('PCI\VEN_8086&DEV_56A0','PCI\VEN_8086&DEV_7D55')) {
+        $choice=Get-TinyStrataIntelRuntimeSelection -Model 'qwen3.6-35b-a3b' -Controllers @([pscustomobject]@{PNPDeviceID=$id})
+        Assert-Intel ($choice.Profile -eq 'generic' -and $choice.AotTarget -eq '') 'other Intel IDs choose generic SPIR-V rather than the PTL-H binary'
+    }
+    $choice=Get-TinyStrataIntelRuntimeSelection -Model 'tiel-coder-35b-a3b' -Controllers @([pscustomobject]@{PNPDeviceID='PCI\VEN_8086&DEV_B082'})
+    Assert-Intel ($choice.Profile -eq 'b390-tiel-coder' -and $choice.AotTarget -eq 'intel_gpu_ptl_h') 'known B390 retains model-specific AOT fast path'
+    $choice=Get-TinyStrataIntelRuntimeSelection -Model 'tiel-coder-35b-a3b' -RequestedProfile generic -Controllers @([pscustomobject]@{PNPDeviceID='PCI\VEN_8086&DEV_B082'})
+    Assert-Intel ($choice.Profile -eq 'generic') 'explicit generic remains selectable on B390'
     Assert-Intel ((Get-TinyStrataModelFamily qwen36 -Backend sycl).ConfigFile -eq 'config-sycl.json') 'explicit Intel has a dedicated config'
     Assert-IntelRejected { Get-TinyStrataModelFamily gemma4 -Backend sycl } 'unsupported family rejected before preparation'
     Assert-IntelRejected {Assert-TinyStrataIntelManagedDeviceSelection @{gpu=1;args=@('--model','fixture.gguf')}} 'custom nonzero GPU cannot be certified with the device0 probe'
@@ -199,6 +208,20 @@ try {
         executable_sha256=(Get-FileHash -LiteralPath (Join-Path $stage 'tinystrata-intel.exe') -Algorithm SHA256).Hash.ToLowerInvariant()}
     $publicCatalog.artifacts=@($artifact)
     $catalogFile=Join-Path $fixtureRoot 'published-catalog.json'
+    Write-IntelFixture $fixtureRoot 'published-catalog.json' ($publicCatalog | ConvertTo-Json -Depth 8)
+    Assert-IntelRejected {Get-TinyStrataIntelRuntimeArtifact -CatalogPath $catalogFile -Profile generic -Model 'qwen3.6-35b-a3b' -AotTarget ''} 'missing generic package never borrows an AOT payload'
+    $genericArtifact=$artifact|Select-Object *
+    $genericArtifact.id='fixture-generic';$genericArtifact.profile='generic';$genericArtifact.aot_target=''
+    $publicCatalog.artifacts=@($artifact,$genericArtifact)
+    Write-IntelFixture $fixtureRoot 'published-catalog.json' ($publicCatalog | ConvertTo-Json -Depth 8)
+    Assert-Intel ((Get-TinyStrataIntelRuntimeArtifact -CatalogPath $catalogFile -Profile generic -Model 'qwen3.6-35b-a3b' -AotTarget '').id -eq 'fixture-generic') 'generic selection is bound to exact model and generic target'
+    $genericDevice=[pscustomobject]@{schema=1;backend='sycl';device_index=0;vendor_id=32902;device_id=22176;integrated=$false;architecture='alchemist';capabilities=[pscustomobject]@{baseline=$true;max_work_group=256;local_memory=65536}}
+    Assert-Intel ((Assert-TinyStrataIntelDevice $genericDevice $catalogFile generic '').device_id -eq 22176) 'compatible discrete Intel GPU passes native baseline rather than an ID allowlist'
+    $genericDevice.capabilities.baseline=$false
+    Assert-IntelRejected {Assert-TinyStrataIntelDevice $genericDevice $catalogFile generic ''} 'generic fails closed when native reports a missing baseline capability'
+    $genericDevice.capabilities.baseline=$true
+    Assert-IntelRejected {Assert-TinyStrataIntelDevice $genericDevice $catalogFile generic 'intel_gpu_ptl_h'} 'AOT payload cannot certify another GPU through the generic route'
+    $publicCatalog.artifacts=@($artifact)
     Write-IntelFixture $fixtureRoot 'published-catalog.json' ($publicCatalog | ConvertTo-Json -Depth 8)
     $script:fixtureDownloadCount=0
     function Get-TinyStrataOfficialFile {

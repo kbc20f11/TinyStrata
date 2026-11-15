@@ -149,9 +149,9 @@ def validate_capabilities(report: dict, *, model: str = QWEN_MODEL, profile: str
     if profile in _PROFILE_MODELS and model != _PROFILE_MODELS[profile]:
         raise IntelCapabilityError(f"The {profile} profile is specific to {_PROFILE_MODELS[profile]}")
     if model == TIEL_MODEL:
-        if profile != TIEL_PROFILE:
-            raise IntelCapabilityError("Tiel requires its model-specific b390-tiel-coder profile")
-        for path in _PATHS:
+        if profile not in ("generic", TIEL_PROFILE):
+            raise IntelCapabilityError("Tiel requires generic or its model-specific b390-tiel-coder profile")
+        for path in (("scalar",) if profile == "generic" else _PATHS):
             if 18 not in report["weight_types"][path]:
                 raise IntelCapabilityError(f"The Intel {path} path lacks GGUF type18 required by Tiel")
     for path, types in required.items():

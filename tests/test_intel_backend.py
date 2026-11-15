@@ -51,8 +51,12 @@ class IntelBackendPolicy(unittest.TestCase):
         self.assertEqual(prepared["sampling"], cfg["sampling"])
         self.assertEqual(prepared["reasoning_effort"], "medium")
         self.assertEqual(cfg, original)
-        for wrong in (configuration(model_name=intel.TIEL_MODEL),
-                      configuration(model_name=intel.TIEL_MODEL, intel_profile=intel.B390_PROFILE),
+        generic = intel.configure_backend(configuration(model_name=intel.TIEL_MODEL, intel_profile="generic"))
+        generic_args = intel.engine_args(generic)
+        self.assertIn("--experimental-tiel", generic_args)
+        self.assertEqual(value(generic_args, "--mtp"), "0")
+        self.assertNotIn("--verify-xmx", generic_args)
+        for wrong in (configuration(model_name=intel.TIEL_MODEL, intel_profile=intel.B390_PROFILE),
                       configuration(intel_profile=intel.TIEL_PROFILE),
                       configuration("--experimental-tiel", intel_profile=intel.B390_PROFILE)):
             with self.subTest(wrong=wrong), self.assertRaises(ValueError):

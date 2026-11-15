@@ -7,6 +7,7 @@
 #include <psapi.h>
 #include <wrl/client.h>
 #include <cstdio>
+#include <algorithm>
 #include <cstring>
 #include <stdexcept>
 #include <vector>
@@ -77,6 +78,7 @@ DeviceInfo inspect_device(const sycl::device& d) {
     try {
         namespace exp = sycl::ext::oneapi::experimental;
         const auto architecture = d.get_info<exp::info::device::architecture>();
+        out.ptl_h_aot = architecture == exp::architecture::intel_gpu_ptl_h;
         if (architecture == exp::architecture::intel_gpu_ptl_h || architecture == exp::architecture::intel_gpu_ptl_u)
             out.architecture = "panther_lake_xe3";
         else if (architecture == exp::architecture::intel_gpu_bmg_g21 || architecture == exp::architecture::intel_gpu_bmg_g31)
@@ -89,6 +91,19 @@ DeviceInfo inspect_device(const sycl::device& d) {
     }
     out.reported_global_memory = d.get_info<sycl::info::device::global_mem_size>();
     out.max_allocation = d.get_info<sycl::info::device::max_mem_alloc_size>();
+    auto& caps = out.capabilities;
+    caps.host_usm = d.has(sycl::aspect::usm_host_allocations);
+    caps.shared_usm = d.has(sycl::aspect::usm_shared_allocations);
+    caps.device_usm = d.has(sycl::aspect::usm_device_allocations);
+    caps.fp16 = d.has(sycl::aspect::fp16);
+    caps.atomic64 = d.has(sycl::aspect::atomic64);
+    caps.esimd = d.has(sycl::aspect::ext_intel_esimd);
+    caps.matrix = d.has(sycl::aspect::ext_intel_matrix);
+    const auto subgroups = d.get_info<sycl::info::device::sub_group_sizes>();
+    caps.subgroup16 = std::find(subgroups.begin(), subgroups.end(), size_t(16)) != subgroups.end();
+    caps.subgroup32 = std::find(subgroups.begin(), subgroups.end(), size_t(32)) != subgroups.end();
+    caps.max_work_group = d.get_info<sycl::info::device::max_work_group_size>();
+    caps.local_memory = d.get_info<sycl::info::device::local_mem_size>();
     if (out.vendor_id != 0x8086) throw std::runtime_error("The selected GPU is not Intel");
     return out;
 }
@@ -97,6 +112,7 @@ MemoryBudget memory_budget(const DeviceInfo& device) {
     status.dwLength = sizeof(status);
     if (!GlobalMemoryStatusEx(&status)) throw std::runtime_error("GlobalMemoryStatusEx failed");
     MemoryBudget out{status.ullAvailPhys, status.ullAvailPageFile, 0, false};
+    out.integrated = device.integrated;
     ComPtr<IDXGIFactory4> factory;
     if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) return out;
     ComPtr<IDXGIAdapter3> selected;
@@ -108,7 +124,12 @@ MemoryBudget memory_budget(const DeviceInfo& device) {
         if (FAILED(result)) return out;
         DXGI_ADAPTER_DESC1 desc{};
         if (FAILED(adapter->GetDesc1(&desc))) continue;
-        if (desc.VendorId == device.vendor_id && desc.DeviceId == device.device_id) {
+        char luid[18];
+        std::snprintf(luid, sizeof(luid), "%08x:%08x", unsigned(desc.AdapterLuid.HighPart), unsigned(desc.AdapterLuid.LowPart));
+        const bool identity = device.adapter_luid.empty()
+            ? desc.VendorId == device.vendor_id && desc.DeviceId == device.device_id
+            : device.adapter_luid == luid;
+        if (identity) {
             ++matches;
             adapter.As(&selected);
         }
@@ -116,10 +137,20 @@ MemoryBudget memory_budget(const DeviceInfo& device) {
     // A PCI device ID is not a unique adapter identity on multi-card systems.
     // Refuse to borrow another card's budget when the match is ambiguous.
     if (matches != 1 || !selected) return out;
+    UINT node = 0;
+    if (device.adapter_node_mask) {
+        uint32_t mask = device.adapter_node_mask;
+        while (!(mask & 1)) { ++node; mask >>= 1; }
+        if (mask != 1) return out;
+    }
     DXGI_QUERY_VIDEO_MEMORY_INFO video{};
-    if (SUCCEEDED(selected->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &video))) {
+    if (SUCCEEDED(selected->QueryVideoMemoryInfo(node, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &video))) {
         out.wddm_known = true;
         out.wddm_available = video.Budget > video.CurrentUsage ? video.Budget - video.CurrentUsage : 0;
+    }
+    if (SUCCEEDED(selected->QueryVideoMemoryInfo(node, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &video))) {
+        out.wddm_nonlocal_known = true;
+        out.wddm_nonlocal_available = video.Budget > video.CurrentUsage ? video.Budget - video.CurrentUsage : 0;
     }
     return out;
 }
@@ -133,6 +164,11 @@ void print_memory(const char* stage, const DeviceInfo& d) {
         stage, (unsigned long long)m.available_physical, (unsigned long long)m.available_commit,
         int(m.wddm_known), (unsigned long long)m.wddm_available, (unsigned long long)allocation_budget(m),
         (unsigned long long)process.WorkingSetSize, (unsigned long long)process.PrivateUsage);
+    std::fflush(stdout);
+    std::fprintf(stderr, "memory_pools stage=%s model=%s host_budget=%llu device_budget=%llu nonlocal_known=%d nonlocal_available=%llu\n",
+        stage, d.integrated ? "uma" : "discrete", (unsigned long long)allocation_budget(m, MemoryPool::Host),
+        (unsigned long long)allocation_budget(m, MemoryPool::Device), int(m.wddm_nonlocal_known),
+        (unsigned long long)m.wddm_nonlocal_available);
     std::fflush(stdout);
 }
 } // namespace strata::intel

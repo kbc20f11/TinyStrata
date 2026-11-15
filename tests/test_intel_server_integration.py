@@ -1,7 +1,9 @@
 """CPU-only normal-server/profile integration; never start a native engine."""
 from copy import deepcopy
+from dataclasses import replace
 from contextlib import redirect_stderr
 import http.client
+import hashlib
 import io
 import json
 import os
@@ -126,6 +128,16 @@ class IntelServerIntegration(unittest.TestCase):
         self.assertEqual(profiles.context_info(QWEN), {"allocated_tokens": None, "model_limit": 32768, "requested": "auto"})
         for path, data in others.items():
             self.assertEqual(path.read_bytes(), data)
+
+    def test_generic_runtime_keeps_generic_policy_when_selecting_tiel(self):
+        cfg = {**self.cfg, "intel_profile": "generic"}
+        profiles = ModelProfiles(self.path, cfg)
+        tiel = profiles.get(TIEL).config
+        self.assertEqual(tiel["intel_profile"], "generic")
+        self.assertEqual(tiel["args"][tiel["args"].index("--mtp") + 1], "0")
+        native = intel_backend.engine_args(tiel, allow_uninstalled=True)
+        self.assertIn("--experimental-tiel", native)
+        self.assertNotIn("--verify-xmx", native)
 
     def test_tiel_and_other_models_reject_before_job_start_or_unload(self):
         svc = self.service()
@@ -330,6 +342,64 @@ class IntelServerIntegration(unittest.TestCase):
             self.assertEqual(text.call_args.kwargs["_manifest"], FIXED_MODEL)
             control = ModelSwitcher(svc, self.cfg, self.path, server)
             self.assertIs(control._downloader(QWEN), manager)
+
+    def test_initial_qwen_and_tiel_download_select_activate_and_cache_own_artifact(self):
+        from serve import model_download as downloads
+        self.capabilities = capability_report(tiel=True)
+        resolve = downloads.manifest_for_arch
+        class FixtureResponse(io.BytesIO):
+            status = 200
+            def __init__(self, payload):
+                super().__init__(payload)
+                self.headers = {'Content-Length': str(len(payload))}
+        class PreparedBoundary(RuntimeError):
+            pass
+        for model in (QWEN, TIEL):
+            for exists in (False, True):
+                with self.subTest(model=model, existing=exists):
+                    root = self.root / f'{model}-{exists}'
+                    root.mkdir()
+                    artifact = resolve('qwen35moe', model)
+                    payload = model.encode('ascii')
+                    local = root / artifact.filename
+                    if exists:
+                        local.write_bytes(payload)
+                    cfg = deepcopy(self.cfg)
+                    cfg.update(model_name=model, intel_profile=intel_backend.MODEL_PROFILES[model],
+                               download_dir=str(root / 'managed'), model_bootstrap=True)
+                    cfg['args'][cfg['args'].index('--model') + 1] = str(local)
+                    path = root / ('config-sycl.json' if model == QWEN else 'config-tiel-coder-sycl.json')
+                    path.write_text(json.dumps(cfg), encoding='utf-8')
+                    before = path.read_bytes()
+                    svc = self.service(cfg)
+                    svc.engine = server.UnavailableEngine()
+                    def tiny_manifest(arch, selected):
+                        real = resolve(arch, selected)
+                        content = selected.encode('ascii')
+                        return replace(real, size=len(content), sha256=hashlib.sha256(content).hexdigest())
+                    prepared = []
+                    def prepare(latest, config_path, selected_path, **kwargs):
+                        prepared.append((latest['model_name'], selected_path))
+                        raise PreparedBoundary('intentional GGUF/native boundary')
+                    with patch.object(downloads, 'manifest_for_arch', side_effect=tiny_manifest), \
+                         patch.object(downloads.urllib.request, 'urlopen', return_value=FixtureResponse(payload)) as http, \
+                         patch.object(model_setup, 'prepare_installed_model', side_effect=prepare), \
+                         patch('serve.tinyconfig.validate'), \
+                         patch.object(server, 'StrataEngine', side_effect=AssertionError('No native')) as native:
+                        manager = server.configure_model_downloads(svc, cfg, path)
+                        control = ModelSwitcher(svc, cfg, path, server)
+                        svc.models = control
+                        self.assertIs(control._downloader(model), manager)
+                        self.assertEqual(manager.manifest.filename, artifact.filename)
+                        manager._run()  # synchronous real tiny SHA/transfer/activation path
+                        self.assertEqual(prepared, [(model, local if exists else manager.target)])
+                        self.assertEqual(http.call_count, 0 if exists else 1)
+                        self.assertIn('intentional GGUF/native boundary', manager.status()['error'])
+                        native.assert_not_called()
+                        manager.close()
+                    self.assertEqual(path.read_bytes(), before)
+                    if exists:
+                        self.assertEqual(local.read_bytes(), payload)
 
     def test_tiel_profile_uses_own_files_sampler_effort_and_runtime_contract(self):
         self.capabilities = capability_report(tiel=True)

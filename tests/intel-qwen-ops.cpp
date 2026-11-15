@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <vector>
@@ -204,6 +205,13 @@ void q8_attention_batch_test(sycl::queue& q) {
     }
 }
 void q8_attention_long_reuse_test(sycl::queue& q) {
+    // This tests the prior query-token reuse against its exact four-stage
+    // control. Fused GQA8 has a separate FP64/dispatcher regression fixture.
+    struct RestoreFusionEnvironment {
+        std::string value;
+        ~RestoreFusionEnvironment(){_putenv_s("TINYSTRATA_INTEL_FUSED_Q8_ATTN",value.c_str());}
+    } restore{std::getenv("TINYSTRATA_INTEL_FUSED_Q8_ATTN")?std::getenv("TINYSTRATA_INTEL_FUSED_Q8_ATTN"):""};
+    if(_putenv_s("TINYSTRATA_INTEL_FUSED_Q8_ATTN","0"))throw std::runtime_error("Could not select original Q8 reuse control");
     constexpr int context=32768,heads=16,kv=2,width=256,capacity=4,splits=(context+255)/256;
     const size_t cells=size_t(kv)*context*width;
     Buffer<int8_t> keys(q,cells),values(q,cells);

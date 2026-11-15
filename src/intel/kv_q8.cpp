@@ -1,8 +1,45 @@
 #include "strata/intel/kv_q8.hpp"
+#include <sycl/ext/intel/experimental/grf_size_properties.hpp>
+#include <sycl/ext/oneapi/experimental/device_architecture.hpp>
+#include <algorithm>
 #include <cstring>
+#include <cstdlib>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 namespace strata::intel {
 namespace {
+bool fused_default(const sycl::device& device) {
+    // Cache immutable SYCL facts by actual device. This hot path never calls
+    // inspect_device, Level Zero/DXGI identity or Windows memory telemetry.
+    // Thread-local storage avoids a lock on each layer of the single request.
+    thread_local std::vector<std::pair<sycl::device,bool>> cache;
+    for(const auto& entry:cache)if(entry.first==device)return entry.second;
+    bool enabled=false;
+    try {
+        namespace exp=sycl::ext::oneapi::experimental;
+        const auto subgroups=device.get_info<sycl::info::device::sub_group_sizes>();
+        // PTL-H is the measured architecture with GRF256 kernel support. SYCL
+        // exposes the GRF kernel property, not a supported-GRF-size device list;
+        // never infer this support from the executable's AOT compilation flag.
+        enabled=device.is_gpu() && device.get_info<sycl::info::device::vendor_id>()==0x8086 &&
+            device.get_info<exp::info::device::architecture>()==exp::architecture::intel_gpu_ptl_h &&
+            device.has(sycl::aspect::ext_intel_esimd) &&
+            std::find(subgroups.begin(),subgroups.end(),size_t(32))!=subgroups.end() &&
+            device.get_info<sycl::info::device::max_work_group_size>()>=128;
+    } catch(const sycl::exception&) {
+        // Missing architecture/capability metadata keeps the generic baseline.
+    }
+    cache.emplace_back(device,enabled);
+    return enabled;
+}
+bool fused_requested(sycl::queue& queue) {
+    if(const char* requested=std::getenv("TINYSTRATA_INTEL_FUSED_Q8_ATTN")) {
+        if(std::strcmp(requested,"0")==0)return false;
+        if(std::strcmp(requested,"1")==0)return true;
+    }
+    return fused_default(queue.get_device());
+}
 void validate(const sycl::queue& q, Q8Kv c) {
     if (!q.has_property<sycl::property::queue::in_order>() || c.context < 1 || c.heads < 1 ||
         !c.key || !c.value || !c.key_scale || !c.value_scale)
@@ -127,11 +164,106 @@ sycl::event dequantize_q8_kv(sycl::queue& q,Q8Kv c,float* key,float* value,int v
         value[i]=float(c.value[i])*float(c.value_scale[i/32]);
     });
 }
+sycl::event fused_decode_attention_q8(sycl::queue& q,const float* query,const float* gate,Q8Kv c,
+    float* stats,float* partial,float* output,int heads,const int32_t* position,int extent,
+    sycl::event* partial_stage,int tokens) {
+    validate(q,c);
+    if(!q.has_property<sycl::property::queue::in_order>() || heads!=16 || c.heads!=2 ||
+       extent<1 || extent>c.context || c.context<2 || tokens<1 || tokens>8)
+        throw std::invalid_argument("Invalid register Q8 D256/GQA8 geometry");
+    constexpr size_t width=256,lanes=32,block=256;
+    const size_t capacity_splits=(c.context+block-1)/block;
+    const size_t launched_splits=(extent+block-1)/block;
+    auto fused=q.submit([&](sycl::handler& h){
+        const auto properties=sycl::ext::oneapi::experimental::properties{
+            sycl::ext::intel::experimental::grf_size<256>};
+        h.parallel_for(sycl::nd_range<1>(size_t(tokens)*c.heads*launched_splits*lanes,lanes),properties,
+            [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(32)]] {
+            const size_t job=it.get_group_linear_id(),split=job%launched_splits;
+            const size_t kv=(job/launched_splits)%2,token=job/(launched_splits*2);
+            const size_t begin=split*block,end=sycl::min(begin+block,size_t(position[token]+1));
+            if(begin>=end)return;
+            const auto sg=it.get_sub_group();
+            const size_t lane=sg.get_local_linear_id();
+            // Keep the small read-only Q working set in cache. Hoisting all
+            // 64 Q coefficients per lane would double the accumulator pressure.
+            const volatile float* query_stream=query;
+            float accumulator[8][8]={},maximum[8],denominator[8]={};
+#pragma unroll
+            for(int head=0;head<8;++head)maximum[head]=-INFINITY;
+            for(size_t cell=begin;cell<end;++cell) {
+                float key[8],value[8];
+#pragma unroll
+                for(int j=0;j<8;++j) {
+                    const size_t source=(kv*c.context+cell)*width+lane+j*lanes;
+                    key[j]=float(c.key[source])*float(c.key_scale[source/32]);
+                    value[j]=float(c.value[source])*float(c.value_scale[source/32]);
+                }
+#pragma unroll
+                for(int head=0;head<8;++head) {
+                    const size_t row=token*heads+kv*8+head;
+                    float dot=0.f;
+#pragma unroll
+                    for(int j=0;j<8;++j)
+                        dot=sycl::fma(query_stream[row*width+lane+j*lanes],key[j],dot);
+                    const float score=sycl::reduce_over_group(sg,dot,sycl::plus<float>())/16.f;
+                    const float next_maximum=sycl::fmax(maximum[head],score);
+                    const float previous_scale=sycl::exp(maximum[head]-next_maximum);
+                    const float weight=sycl::exp(score-next_maximum);
+                    denominator[head]=sycl::fma(denominator[head],previous_scale,weight);
+#pragma unroll
+                    for(int j=0;j<8;++j)
+                        accumulator[head][j]=sycl::fma(value[j],weight,accumulator[head][j]*previous_scale);
+                    maximum[head]=next_maximum;
+                }
+            }
+#pragma unroll
+            for(int head=0;head<8;++head) {
+                const size_t row=token*heads+kv*8+head;
+                if(lane==0){stats[row*c.context+split*2]=maximum[head];stats[row*c.context+split*2+1]=denominator[head];}
+#pragma unroll
+                for(int j=0;j<8;++j)
+                    partial[(row*capacity_splits+split)*width+lane+j*lanes]=accumulator[head][j];
+            }
+        });
+    });
+    if(partial_stage)*partial_stage=fused;
+    return q.submit([&](sycl::handler& h){
+        sycl::local_accessor<float,1> factors(sycl::range<1>(capacity_splits+1),h);
+        h.parallel_for(sycl::nd_range<1>(size_t(tokens)*heads*128,128),[=](sycl::nd_item<1> it){
+            const size_t row=it.get_group_linear_id(),lane=it.get_local_linear_id();
+            const size_t used=(size_t(position[row/heads]+1)+block-1)/block;
+            if(lane==0) {
+                float maximum=-INFINITY,denominator=0.f;
+                for(size_t split=0;split<used;++split)maximum=sycl::fmax(maximum,stats[row*c.context+split*2]);
+                for(size_t split=0;split<used;++split) {
+                    const float factor=sycl::exp(stats[row*c.context+split*2]-maximum);
+                    factors[split]=factor;
+                    denominator=sycl::fma(stats[row*c.context+split*2+1],factor,denominator);
+                }
+                factors[capacity_splits]=denominator;
+            }
+            it.barrier(sycl::access::fence_space::local_space);
+            for(size_t col=lane;col<width;col+=128) {
+                float numerator=0.f;
+                for(size_t split=0;split<used;++split)
+                    numerator=sycl::fma(partial[(row*capacity_splits+split)*width+col],factors[split],numerator);
+                const size_t index=row*width+col;
+                output[index]=(numerator/factors[capacity_splits])/(1.f+sycl::exp(-gate[index]));
+            }
+        });
+    });
+}
 sycl::event decode_attention_q8(sycl::queue& q,const float* query,const float* gate,Q8Kv c,
     float* scores,float* partial,float* output,int heads,const int32_t* position,int extent,sycl::event* stages,int tokens,int actual_visible){
     validate(q,c);
     if(heads<1||heads%c.heads||extent<1||extent>c.context||tokens<1||tokens>8)throw std::invalid_argument("Invalid Q8 decode attention geometry");
     if(actual_visible<0 || actual_visible>extent)throw std::invalid_argument("Invalid Q8 actual visibility");
+    // The measured PTL-H device defaults to register GQA8 fusion. Explicit0/1
+    // overrides that device policy. Old profiling expects three stage events;
+    // graphs with a zero visibility hint retain the original implementation.
+    if(!stages && heads==16 && c.heads==2 && c.context>=2 && actual_visible>=16384 && fused_requested(q))
+        return fused_decode_attention_q8(q,query,gate,c,scores,partial,output,heads,position,extent,nullptr,tokens);
     if(actual_visible>=16384 && tokens==3)return token_reuse_attention<3>(q,query,gate,c,scores,partial,output,heads,position,extent,stages);
     if(actual_visible>=16384 && tokens==4)return token_reuse_attention<4>(q,query,gate,c,scores,partial,output,heads,position,extent,stages);
     constexpr size_t group=128,subgroup=16,per_group=group/subgroup,block=256;
