@@ -2338,6 +2338,32 @@ function Remove-TinyStrataNativeGeneration {
     Remove-Item -LiteralPath $target -Recurse -Force
 }
 
+function Test-TinyStrataIntelRuntimeCurrent {
+    param($Configuration, [string]$WorkRoot, $Artifact)
+    # A source revision and an installed immutable runtime have separate lives.
+    # Reuse only the current pinned package, not merely a valid older inventory.
+    # The caller resolves Artifact through the validated model/profile catalog.
+    if (-not $Configuration -or $Configuration.backend -ne 'sycl' -or -not $Configuration.exe -or
+        $Configuration.intel_profile -ne $Artifact.profile) { return $false }
+    try {
+        $exe = [IO.Path]::GetFullPath([string]$Configuration.exe)
+        $directory = Split-Path -Parent $exe
+        $native = [IO.Path]::GetFullPath((Join-Path $WorkRoot 'native')).TrimEnd('\')
+        if (-not [string]::Equals((Split-Path -Parent $directory), $native, [StringComparison]::OrdinalIgnoreCase) -or
+            (Split-Path -Leaf $directory) -notmatch '^sycl-[a-f0-9]{32}$' -or
+            (Split-Path -Leaf $exe) -ne 'tinystrata-intel.exe') { return $false }
+        $plan = Get-TinyStrataIntelStagePlan -StageDirectory $directory
+        $entry = @($plan.Files | Where-Object { $_.RelativePath -eq 'tinystrata-intel.exe' })
+        return $entry.Count -eq 1 -and $entry[0].Sha256 -eq $Artifact.executable_sha256 -and
+               $plan.Manifest.ImportedFromManifestSha256 -eq $Artifact.manifest_sha256
+    } catch {
+        # Missing/corrupt saved generations take the existing verified import
+        # transaction. Their files and the saved configuration are not changed
+        # unless the replacement has passed all preparation checks.
+        return $false
+    }
+}
+
 function Assert-TinyStrataIntelManagedDeviceSelection {
     param($Configuration)
     if (-not $Configuration) { return }
@@ -2526,6 +2552,15 @@ function Invoke-TinyStrataInstaller {
     }
     $server = Get-TinyStrataSavedProcess -StatePath $statePath -ConfigPath $configPath -SourcePath $sourceRoot -ApiPort $ApiPort
     if ($server -and $selectedBackend -eq 'sycl' -and $IntelRuntimeDirectory) { throw 'Stop the selected experimental Intel API before importing another runtime generation.' }
+    if ($server -and $selectedBackend -eq 'sycl') {
+        . (Join-Path $sourceRoot 'cmake\install-intel-runtime.ps1')
+        . (Join-Path $sourceRoot 'cmake\intel-runtime-package.ps1')
+        $currentArtifact = Get-TinyStrataIntelRuntimeArtifact -CatalogPath (Join-Path $sourceRoot 'cmake\intel-runtime-catalog.json') `
+            -Profile $IntelProfile -Model $selectedFamily.Model -AotTarget $intelRuntimeSelection.AotTarget
+        if (-not (Test-TinyStrataIntelRuntimeCurrent -Configuration $cfg -WorkRoot $workRoot -Artifact $currentArtifact)) {
+            throw 'The running Intel API uses an older or invalid runtime package. Stop this installation''s API and UI, then rerun the installer to update it.'
+        }
+    }
     if ($server -and $DoNotStart) {
         if ($IncludeUI) { Initialize-TinyStrataOptionalUI -SourceRoot $sourceRoot -WorkRoot $workRoot -ApiPort $ApiPort -UiPort $UiPort -Family $selectedFamily.Name -ConfigureOnly @uiSelection }
         Write-Host "Installation already prepared; existing API left unchanged (PID $($server.Id))."
@@ -2571,9 +2606,12 @@ function Invoke-TinyStrataInstaller {
             . $intelHelper
             . $packageHelper
             $receivedIntel = $null
-            if (-not $IntelRuntimeDirectory -and ($BuildAgain -or $RefreshSource -or -not $cfg -or $cfg.backend -ne 'sycl' -or -not $cfg.exe -or $cfg.intel_profile -ne $IntelProfile)) {
-                $receivedIntel = Receive-TinyStrataIntelRuntime -CatalogPath $catalogPath -CacheRoot $cacheRoot -Profile $IntelProfile -Model $selectedFamily.Model -AotTarget $intelRuntimeSelection.AotTarget
-                $IntelRuntimeDirectory = $receivedIntel.StageDirectory
+            if (-not $IntelRuntimeDirectory) {
+                $currentArtifact = Get-TinyStrataIntelRuntimeArtifact -CatalogPath $catalogPath -Profile $IntelProfile -Model $selectedFamily.Model -AotTarget $intelRuntimeSelection.AotTarget
+                if ($BuildAgain -or -not (Test-TinyStrataIntelRuntimeCurrent -Configuration $cfg -WorkRoot $workRoot -Artifact $currentArtifact)) {
+                    $receivedIntel = Receive-TinyStrataIntelRuntime -CatalogPath $catalogPath -CacheRoot $cacheRoot -Profile $IntelProfile -Model $selectedFamily.Model -AotTarget $intelRuntimeSelection.AotTarget
+                    $IntelRuntimeDirectory = $receivedIntel.StageDirectory
+                }
             }
             if ($IntelRuntimeDirectory) {
                 $stage = Get-TinyStrataIntelStagePlan -StageDirectory $IntelRuntimeDirectory
@@ -2697,7 +2735,16 @@ function Invoke-TinyStrataInstaller {
         try {
             [Environment]::SetEnvironmentVariable('TINYSTRATA_INSTALLER_TRANSACTION', $installationGuard.Token, 'Process')
             & $python @arguments
-        } finally { [Environment]::SetEnvironmentVariable('TINYSTRATA_INSTALLER_TRANSACTION', $previousTransaction, 'Process') }
+        } finally {
+            # PowerShell's .NET binder can turn $null into an empty string;
+            # recent .NET preserves empty environment values instead of deleting
+            # them. Restore absence explicitly, while retaining real values.
+            if ($null -eq $previousTransaction) {
+                Remove-Item -LiteralPath Env:\TINYSTRATA_INSTALLER_TRANSACTION -ErrorAction SilentlyContinue
+            } else {
+                [Environment]::SetEnvironmentVariable('TINYSTRATA_INSTALLER_TRANSACTION', $previousTransaction, 'Process')
+            }
+        }
         if ($LASTEXITCODE -ne 0) { throw 'TinyStrata configuration failed.' }
         $prepared = Get-TinyStrataConfig -Path $candidateConfig
         if (-not $prepared -or $prepared.backend -ne $selectedBackend -or $prepared.exe -ne $selectedExe) { throw 'Prepared configuration does not match the selected native runtime.' }
