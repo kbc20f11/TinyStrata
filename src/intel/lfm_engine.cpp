@@ -1,6 +1,7 @@
 // Native Windows LFM2.5 causal text engine. LFM formulas follow the existing
 // src/lfm2 implementation (PolyStrata/Strata attribution in LICENSE/NOTICE).
 #include "strata/intel/lfm_model.hpp"
+#include "strata/intel/context_policy.hpp"
 #include "strata/intel/lfm_ops.hpp"
 #include "strata/intel/gemma_ops.hpp" // Generic head RMS/RoPE and causal Q8 attention; scale supplied explicitly.
 #include "strata/intel/weight_store.hpp"
@@ -35,6 +36,7 @@ class LfmEngine {
     struct State { GemmaKv kv;float* convolution=nullptr;float* backup=nullptr; };
     std::vector<State> states_;
     std::vector<void*> allocations_;
+    context_policy::Footprint actual_allocations_;
     int context_,chunk_,position_=0;
     bool logits_valid_=false;
     float *residual_,*norm_,*bcx_,*mixed_,*qraw_,*kraw_,*v_,*query_,*key_,*attended_,*attention_out_;
@@ -45,7 +47,7 @@ class LfmEngine {
         auto* p=shared?sycl::malloc_shared<T>(n,q_):sycl::malloc_device<T>(n,q_);
         if(!p)throw std::runtime_error("LFM USM allocation failed");
         try{allocations_.push_back(p);}catch(...){sycl::free(p,q_);throw;}
-        q_.memset(p,0,n*sizeof(T));return p;
+        actual_allocations_.allocation(n,sizeof(T),shared);q_.memset(p,0,n*sizeof(T));return p;
     }
     const ResidentTensor& tensor(const std::string& name)const{
         const auto at=weights_->tensors().find(name);if(at==weights_->tensors().end())throw std::runtime_error("Missing LFM tensor "+name);return at->second;
@@ -92,7 +94,7 @@ public:
     LfmEngine(const std::string& path,unsigned device,int context,int chunk,WeightMemory memory,bool mkl)
         :q_(select_device(device),[](sycl::exception_list errors){for(const auto& e:errors)std::rethrow_exception(e);},sycl::property::queue::in_order{}),
          device_(inspect_device(q_.get_device())),context_(context),chunk_(chunk){
-        if(context<1||context>32768||chunk<1||chunk>512)throw std::runtime_error("Initial LFM context1..32768/chunk1..512 required");
+        if(context<0||context>context_policy::lfm_limit||chunk<1||chunk>512)throw std::runtime_error("LFM context must be auto or1..131072; chunk1..512 required");
 #ifdef TINYSTRATA_INTEL_AOT_TARGET
         if(std::string(TINYSTRATA_INTEL_AOT_TARGET)=="intel_gpu_ptl_h"&&!device_.ptl_h_aot)
             throw std::runtime_error("PTL-H AOT requires Panther Lake; use the generic runtime on this GPU");
@@ -100,12 +102,13 @@ public:
         try{
             ExecutionRequest loading;
             weights_=WeightStore::load_validated(q_,path,memory,[&](const strata::GgufModel& model){geometry_=LfmGeometry::validate(model);});
-            const auto& g=geometry_;const size_t n=size_t(chunk_),width=g.width,cache_elements=size_t(context)*g.kv_heads*g.dim;
-            const uint64_t scratch=n*(20*width+3*size_t(g.dense_ff)+g.picks*(3ull*g.expert_ff+width))*sizeof(float)
-                +4ull*30*width*sizeof(float)+2*cache_elements*sizeof(float)+uint64_t(context)*std::max(chunk,8*g.heads)*sizeof(float)+256*1024*1024ULL;
-            const uint64_t shared_bytes=uint64_t(g.vocabulary)*sizeof(float)+n*sizeof(int32_t)+sizeof(int32_t)+uint64_t(g.experts)*sizeof(int32_t);
-            if(!execution_allocation_fits(memory_budget(device_),g.cache_bytes(context)+scratch+shared_bytes,shared_bytes,16*1024*1024ULL))
-                throw std::runtime_error("LFM state exceeds separate RAM/device budgets; unload another model first");
+            const auto& g=geometry_;context_policy::LfmSpec context_shape;
+            context_shape.chunk=chunk_;context_shape.mkl=mkl;
+            const auto remaining=memory_budget(device_);
+            const auto chosen=context_policy::select(context,g.model_context,remaining,device_.max_allocation,
+                [&](uint64_t tokens){return context_policy::lfm(tokens,context_shape);});
+            context=context_=chosen.tokens;
+            const size_t n=size_t(chunk_),width=g.width,cache_elements=size_t(context)*g.kv_heads*g.dim;
             states_.resize(g.layers);
             for(int l=0;l<g.layers;++l){auto& s=states_[l];if(g.attention(l)){
                 s.kv={allocate<int8_t>(cache_elements),allocate<int8_t>(cache_elements),allocate<sycl::half>(cache_elements/32),
@@ -125,6 +128,8 @@ public:
             // counts on the host; the expert slots/activations stay on device.
             counts_=allocate<int32_t>(g.experts,true);slots_=allocate<int32_t>(n*g.experts);
             const size_t max_tiles=(n*g.picks+3)/4+g.experts;owners_=allocate<int32_t>(max_tiles);offsets_=allocate<int32_t>(max_tiles);tiles_=allocate<int32_t>(1);
+            if(actual_allocations_.device!=chosen.bytes.owned_device||actual_allocations_.host_visible!=chosen.bytes.owned_host_visible||actual_allocations_.largest>chosen.bytes.largest)
+                throw std::logic_error("LFM context planner differs from actual engine allocations");
             attention_=std::make_unique<GemmaAttention>(q_,context,chunk,g.heads,g.dim,cache_elements,mkl);
 #ifdef TINYSTRATA_INTEL_MKL
             if(mkl)gemm_=std::make_unique<PrefillGemm>(q_,1,chunk);
@@ -133,6 +138,7 @@ public:
 #endif
             q_.wait_and_throw();
             std::fprintf(stderr,"Intel LFM2.5 layers40 conv30 attention10 width2048 head64 picks4of64 KV=int8 MTP0 mandatory_thinking=1 single_weight_store=1 cache_bytes=%llu\n",(unsigned long long)g.cache_bytes(context));
+            context_policy::report(chosen,g.model_context,remaining,device_.max_allocation);
         }catch(...){release();throw;}
     }
     ~LfmEngine(){release();}
@@ -247,7 +253,7 @@ int serve(LfmEngine& e){const auto& d=e.device_info();
 int main(int argc,char** argv){try{
     strata::paths::Utf8Arguments utf8(argc,argv);argc=utf8.argc();argv=utf8.argv();
     if(strata::intel::print_device_report_if_requested(argc,argv))return 0;
-    std::string model,tokens,file,dump;unsigned device=0;int context=8192,chunk=512;bool server=false;
+    std::string model,tokens,file,dump;unsigned device=0;int context=0,chunk=512;bool server=false;
 #ifdef TINYSTRATA_INTEL_MKL
     bool mkl=true;
 #else
@@ -275,19 +281,19 @@ int main(int argc,char** argv){try{
 #endif
             std::printf("{\"backend\":\"sycl\",\"experimental\":true,\"model_families\":[],"
                 "\"experimental_models\":[\"lfm2.5-24b-a2b\"],\"experimental_profiles\":%s,"
-                "\"experimental_model_contracts\":{\"lfm2.5-24b-a2b\":{\"version\":1,\"architecture\":\"lfm2moe\",\"kv_types\":[\"int8\"],\"mtp\":false,\"experimental_mtp_max_depth\":0,\"images\":false,\"thinking\":\"mandatory\",\"mode\":\"target_only\"}},"
-                "\"kv_types\":[\"int8\"],\"images\":false,\"mtp\":false,\"experimental_mtp_max_depth\":0,\"serve\":true,\"capabilities_schema\":1,\"mandatory_thinking\":true,"
+                "\"experimental_model_contracts\":{\"lfm2.5-24b-a2b\":{\"version\":1,\"architecture\":\"lfm2moe\",\"kv_types\":[\"int8\"],\"mtp\":false,\"experimental_mtp_max_depth\":0,\"images\":false,\"thinking\":\"mandatory\",\"mode\":\"target_only\",\"context_max\":131072}},"
+                "\"kv_types\":[\"int8\"],\"images\":false,\"mtp\":false,\"experimental_mtp_max_depth\":0,\"serve\":true,\"capabilities_schema\":1,\"context_auto\":true,\"max_context\":131072,\"mandatory_thinking\":true,"
                 "\"build\":{\"mkl\":%s,\"int8_xmx\":%s,\"aot_target\":\"%s\"},"
                 "\"weight_types\":{\"scalar\":[0,12,14],\"dp4a\":[],\"int8_xmx\":[]}}\n",profiles,mkl,xmx,aot);
             return 0;
         }
-        if(arg=="--help"){std::puts("tinystrata-intel-lfm2 --model PINNED.gguf [--serve | --tokens IDS | --tokens-file FILE] [--dump-full-logits FILE] [--max-context N] [--chunk N] [--kv-type int8] [--mtp 0] [--prefill-mkl | --no-prefill-mkl] [--device N] [--weight-memory host|shared|device]\nExperimental LFM2.5 target-only causal text. INT8 KV baseline; mandatory thinking; no MTP/images. Exact live-prefix reuse; edited/regenerated histories replay cleanly.");return 0;}
+        if(arg=="--help"){std::puts("tinystrata-intel-lfm2 --model PINNED.gguf [--serve | --tokens IDS | --tokens-file FILE] [--dump-full-logits FILE] [--max-context auto|N] [--chunk N] [--kv-type int8] [--mtp 0] [--prefill-mkl | --no-prefill-mkl] [--device N] [--weight-memory host|shared|device]\nExperimental LFM2.5 target-only causal text. INT8 KV baseline; mandatory thinking; no MTP/images. Exact live-prefix reuse; edited/regenerated histories replay cleanly.");return 0;}
         if(arg=="--serve"){server=true;continue;}if(arg=="--prefill-mkl"){mkl=true;continue;}if(arg=="--no-prefill-mkl"){mkl=false;continue;}
         if(i+1>=argc)throw std::runtime_error("Missing value for "+arg);const std::string value=argv[++i];
         if(arg=="--model")model=value;else if(arg=="--tokens")tokens=value;else if(arg=="--tokens-file")file=value;
         else if(arg=="--dump"||arg=="--dump-full-logits")dump=value;
         else if(arg=="--device")device=unsigned(strata::intel::integer(value,1024));
-        else if(arg=="--max-context")context=strata::intel::integer(value,32768);else if(arg=="--chunk")chunk=strata::intel::integer(value,512);
+        else if(arg=="--max-context")context=strata::intel::context_policy::parse(value,strata::intel::context_policy::lfm_limit);else if(arg=="--chunk")chunk=strata::intel::integer(value,512);
         else if(arg=="--kv-type"){if(value!="int8"&&value!="auto")throw std::runtime_error("Initial LFM SYCL baseline validates INT8 KV only");}
         else if(arg=="--mtp"){if(value!="0")throw std::runtime_error("LFM MTP is unimplemented; use --mtp 0");}
         else if(arg=="--weight-memory"){if(value=="host")memory=strata::intel::WeightMemory::Host;else if(value=="shared")memory=strata::intel::WeightMemory::Shared;else if(value=="device")memory=strata::intel::WeightMemory::Device;else throw std::runtime_error("Invalid weight memory kind");}

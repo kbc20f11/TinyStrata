@@ -1,4 +1,5 @@
 #include "strata/intel/prefill_gemm.hpp"
+#include "strata/intel/context_policy.hpp"
 #include "strata/intel/q6_interleave.hpp"
 #include "strata/artifact/gguf_reader.hpp"
 #include <oneapi/mkl/blas.hpp>
@@ -15,7 +16,7 @@ struct PrefillGemm::Impl {
     size_t score_elements;
     static constexpr size_t weight_elements = 8192 * 2048, input_elements = 1024 * 8192, output_elements = 1024 * 2048;
     explicit Impl(sycl::queue& queue, int context, int max_tokens) : q(queue), score_elements(size_t(context) * max_tokens) {
-        if (context < 1 || context > 32768 || max_tokens < 1 || max_tokens > 1024) throw std::invalid_argument("Invalid GEMM attention scratch shape");
+        if (context < 1 || context > context_policy::full_limit || max_tokens < 1 || max_tokens > 1024) throw std::invalid_argument("Invalid GEMM attention scratch shape");
         try {
             weights = sycl::malloc_device<sycl::half>(weight_elements, q);
             input = sycl::malloc_device<sycl::half>(input_elements, q);

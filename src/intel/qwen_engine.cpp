@@ -3,6 +3,7 @@
 // MIT; LICENSE and NOTICE). Optional arithmetic/MTP candidates are explicit;
 // compressed weights and FP32 recurrent/KV state are retained. No image route.
 #include "strata/intel/weight_store.hpp"
+#include "strata/intel/context_policy.hpp"
 #include "strata/intel/qwen_ops.hpp"
 #include "strata/intel/decode_dp4a.hpp"
 #include "strata/intel/q8_xmx.hpp"
@@ -134,6 +135,7 @@ class Engine {
     } turn_snapshot_;
     bool turn_checkpoint_enabled_ = false;
     size_t turn_checkpoint_bytes_ = 0;
+    context_policy::Footprint actual_allocations_;
     void free_allocations() noexcept {
         for (void* allocation : allocations_) {
             try { sycl::free(allocation, q_); }
@@ -145,6 +147,7 @@ class Engine {
         T* result = device_state_ && !cpu_visible ? sycl::malloc_device<T>(count, q_) : sycl::malloc_shared<T>(count, q_);
         if (!result) throw std::runtime_error("Intel activation/state allocation refused");
         try { allocations_.push_back(result); } catch (...) { sycl::free(result, q_); throw; }
+        actual_allocations_.allocation(count,sizeof(T),!device_state_||cpu_visible);
         q_.memset(result, 0, count * sizeof(T));
         return result;
     }
@@ -766,7 +769,7 @@ public:
                 g.ssm_k_heads != 16 || g.ssm_v_heads != 32 || g.n_head != 16 || g.n_head_kv != 2 ||
                 g.n_expert != 256 || g.n_expert_used != 8 || g.n_ff != 512 || g.n_ff_shexp != 512 ||
                 g.full_attention_interval != 4 || g.n_layers != 40 || g.n_vocab <= 0 || g.n_vocab > 1000000 ||
-                context < 1 || context > 32768)
+                context < 0 || context > context_policy::full_limit)
                 throw std::runtime_error("Initial Intel Qwen engine does not support this geometry/context");
             const bool measured_support_default = selected_device.vendor_id == 0x8086 && selected_device.device_id == 0xB082 &&
                 selected_device.integrated && selected_device.ptl_h_aot && g.n_vocab == 248320;
@@ -786,35 +789,19 @@ public:
                 throw std::runtime_error("Invalid Qwen normalization/rotary settings");
             const uint64_t attention_layers = uint64_t(g.n_layers / g.full_attention_interval);
             const uint64_t recurrent_layers = uint64_t(g.n_layers) - attention_layers;
-            const uint64_t cache_cell_bytes = kv_int8_ ? 256 * 2 + 8 * 2 * sizeof(sycl::half) : 256 * 2 * sizeof(float);
-            const uint64_t cache_bytes = (attention_layers + (mtp_depth ? 1 : 0)) * uint64_t(kv_heads_) * context * cache_cell_bytes;
             const uint64_t state_bytes = recurrent_layers * (uint64_t(hv_) * 128 * 128 + uint64_t(2 * hk_ + hv_) * 128 * 3) * sizeof(float);
             turn_checkpoint_bytes_ = turn_checkpoint_enabled_ ? size_t(state_bytes + uint64_t(n_) * sizeof(float) * (mtp_depth_ ? 2 : 1)) : 0;
-            const uint64_t scratch_reserve = uint64_t(chunk_) * 384 * 1024 + (64ull + (prefill_npu ? 96ull : 0ull) + (std::getenv("STRATA_REVIEW_NPU_SPLIT") ? 256ull : 0ull) + (prefill_mkl ? 96ull : 0ull) + (mtp_depth ? 96ull : 0ull) + (verify_graph ? 128ull : 0ull)) * 1024 * 1024 + (prefill_mkl ? uint64_t(chunk_) * context * sizeof(float) : 0)
-                + (dense_split_k ? 1024ull * 1024 : 0) + uint64_t(draft_vocab_limit_) * sizeof(int32_t)
-                + (gpu_support_sampling_ ? GpuSamplingCandidate::storage_bytes(size_t(g.n_vocab)) : 0)
-                + (kv_int8_ ? uint64_t(kv_heads_) * context * 256 * 2 * sizeof(float)
-                    + uint64_t(std::min(chunk_, verify_capacity)) * heads_ * (context + ((context + 255) / 256) * 256) * sizeof(float) : 0);
-            const uint64_t host_snapshot_bytes = turn_checkpoint_bytes_ +
-                (turn_checkpoint_enabled_ ? uint64_t(context_) * sizeof(int) : 0);
             const auto remaining_memory = memory_budget(selected_device);
-            if (selected_device.integrated) {
-                // Keep the existing UMA sum and reserve exactly unchanged.
-                if (cache_bytes + 2 * state_bytes + scratch_reserve + host_snapshot_bytes > allocation_budget(remaining_memory))
-                    throw std::runtime_error("Intel recurrent/KV/scratch buffers exceed the remaining memory budget");
-            } else {
-                const uint64_t host_visible_bytes = uint64_t(g.n_vocab) * sizeof(float) + uint64_t(experts_) * sizeof(int32_t) +
-                    uint64_t(chunk_) * sizeof(int32_t) * 2 + (kv_int8_ ? sizeof(int32_t) : 0) + (decode_dp4a ? sizeof(int32_t) : 0) +
-                    (mtp_depth_ ? (uint64_t(draft_vocab_limit_ ? draft_vocab_limit_ : int(g.n_vocab)) + uint64_t(verify_capacity) * g.n_vocab) * sizeof(float) +
-                        uint64_t(draft_vocab_limit_) * sizeof(int32_t) : 0) +
-                    (gpu_support_sampling_ ? GpuSamplingCandidate::storage_bytes(size_t(g.n_vocab)) : 0);
-                // Bounded host sampler/history/metadata work in addition to
-                // exact visible allocations and the optional turn snapshot.
-                constexpr uint64_t host_work_reserve = 16ull * 1024 * 1024;
-                if (!execution_allocation_fits(remaining_memory, cache_bytes + 2 * state_bytes + scratch_reserve,
-                        host_visible_bytes, host_snapshot_bytes + host_work_reserve))
-                    throw std::runtime_error("Intel discrete state/control/snapshot exceeds separate VRAM or host RAM/commit/non-local budgets");
-            }
+            context_policy::QwenSpec context_shape;
+            context_shape.chunk=chunk_;context_shape.vocabulary=g.n_vocab;context_shape.draft_vocabulary=draft_vocab_limit_;
+            context_shape.int8=kv_int8_;context_shape.mtp=mtp_depth_>0;context_shape.mkl=prefill_mkl;context_shape.dp4a=decode_dp4a;
+            context_shape.dense_split=dense_split_k;context_shape.support=gpu_support_sampling_;context_shape.device_state=device_state_;
+            context_shape.turn_checkpoint=turn_checkpoint_enabled_;context_shape.graph=use_graph&&!profiling;context_shape.verify_graph=verify_graph;
+            context_shape.npu=prefill_npu;context_shape.npu_split=std::getenv("STRATA_REVIEW_NPU_SPLIT")!=nullptr;
+            const int context_limit=context_policy::model_limit(metadata_number("context_length",0),clover_?context_policy::lfm_limit:context_policy::full_limit);
+            const auto chosen=context_policy::select(context,context_limit,remaining_memory,selected_device.max_allocation,
+                [&](uint64_t tokens){return context_policy::qwen(tokens,context_shape);});
+            context=context_=chosen.tokens;graph_extent_=std::min(context_,128);
             x_ = alloc<float>(size_t(chunk_) * (n_)); h_ = alloc<float>(size_t(chunk_) * (n_)); mixer_ = alloc<float>(size_t(chunk_) * (n_));
             qkv_ = alloc<float>(size_t(chunk_) * (std::max((2 * hk_ + hv_) * 128, heads_ * 512)));
             z_ = alloc<float>(size_t(chunk_) * (hv_ * 128)); alpha_ = alloc<float>(size_t(chunk_) * (hv_)); beta_ = alloc<float>(size_t(chunk_) * (hv_));
@@ -879,6 +866,8 @@ public:
                 npu_ = std::make_unique<NpuProjection>(q_);
             }
 #endif
+            if(actual_allocations_.device!=chosen.bytes.owned_device||actual_allocations_.host_visible!=chosen.bytes.owned_host_visible||actual_allocations_.largest>chosen.bytes.largest)
+                throw std::logic_error("Qwen context planner differs from actual engine allocations");
 #ifdef TINYSTRATA_INTEL_MKL
             if (prefill_mkl) gemm_ = std::make_unique<PrefillGemm>(q_, context_, chunk_);
 #endif
@@ -889,6 +878,7 @@ public:
                          device.name.c_str(), device.architecture.c_str(), context, kv_int8_ ? "INT8" : "FP32",
                          mtp_depth_, memory == WeightMemory::Host ? "host" : memory == WeightMemory::Shared ? "shared" : "device");
             print_memory("engine_ready", device);
+            context_policy::report(chosen,context_limit,remaining_memory,selected_device.max_allocation);
         } catch (...) {
             try { q_.wait_and_throw(); } catch (...) {}
             decode_graph_.reset();
@@ -1426,7 +1416,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         std::string path, token_list, token_file, dump_path;
-        int count = 32, context = 4096, device = 0, chunk = 128, mtp_depth = 0, draft_vocab = 0;
+        int count = 32, context = 0, device = 0, chunk = 128, mtp_depth = 0, draft_vocab = 0;
         bool serve = false, use_graph = true, profiling = false, prefill_xmx = false, prefill_npu = false, prefill_mkl = false, decode_dp4a = false, verify_xmx = false, kv_int8 = false, prefill_int8_xmx = false, vocab_xmx = false, verify_mkl_attention = false, stochastic_mtp = false, expert_layout = false, device_state = false, verify_graph = false, dense_layout = false, dense_split_k = false, experimental_tiel = false, experimental_clover = false, explicit_kv = false;
         std::string clover_mode = "causal";
         int clover_drafts = 0;
@@ -1455,7 +1445,7 @@ int main(int argc, char** argv) {
             if (option == "--host-profile") { strata::intel::host_profile::enabled = true; continue; }
             if (option == "--no-graph") { use_graph = false; continue; }
             if (option == "--help") {
-                std::puts("tinystrata-intel --model MODEL [--serve | --tokens IDS | --tokens-file FILE] [--n N] [--max-context N] [--device N] [--chunk 1..1024] [--mtp 0..7] [--kv-type fp32|int8] [--draft-vocab 0|64..4096] [--dump-full-logits FILE] [--experimental-tiel | --experimental-clover] [--host-profile]\ntinystrata-intel --device-info [--device N]\nExperimental text driver. Qwen/Tiel KV defaults to FP32; MTP and draft vocabulary selection default to 0 (off); images are unsupported. A nonzero draft vocabulary requires --serve --mtp-stochastic --mtp --vocab-xmx. --host-profile enables host phase wall timers without changing decode graphs. --experimental-tiel selects the separately pinned Ornith IQ3_XXS artifact. --experimental-clover selects the pinned Clover AD-IQ3_S-IQ3_XXS artifact with INT8 KV and causal D0 only (--clover-mode causal --clover-draft 0). It preserves Clover response-only penalties and stopping ramps; Qwen MTP and Clover images remain disabled.");
+                std::puts("tinystrata-intel --model MODEL [--serve | --tokens IDS | --tokens-file FILE] [--n N] [--max-context auto|N] [--device N] [--chunk 1..1024] [--mtp 0..7] [--kv-type fp32|int8] [--draft-vocab 0|64..4096] [--dump-full-logits FILE] [--experimental-tiel | --experimental-clover] [--host-profile]\ntinystrata-intel --device-info [--device N]\nExperimental text driver. Qwen/Tiel KV defaults to FP32; MTP and draft vocabulary selection default to 0 (off); images are unsupported. A nonzero draft vocabulary requires --serve --mtp-stochastic --mtp --vocab-xmx. --host-profile enables host phase wall timers without changing decode graphs. --experimental-tiel selects the separately pinned Ornith IQ3_XXS artifact. --experimental-clover selects the pinned Clover AD-IQ3_S-IQ3_XXS artifact with INT8 KV and causal D0 only (--clover-mode causal --clover-draft 0). It preserves Clover response-only penalties and stopping ramps; Qwen MTP and Clover images remain disabled.");
                 return 0;
             }
             if (option == "--capabilities") {
@@ -1484,8 +1474,8 @@ int main(int argc, char** argv) {
                 constexpr const char* aot_target = "";
 #endif
                 std::printf("{\"backend\":\"sycl\",\"experimental\":true,\"model_families\":[],\"kv_types\":[\"fp32\",\"int8\"],\"images\":false,\"mtp\":true,\"experimental_mtp_max_depth\":7,\"serve\":true,"
-                            "\"capabilities_schema\":1,\"experimental_models\":%s,\"experimental_profiles\":%s,"
-                            "\"experimental_model_contracts\":{\"clover-35b-a3b-preview\":{\"version\":1,\"architecture\":\"clover_moe\",\"kv_types\":[\"int8\"],\"mtp\":false,\"experimental_mtp_max_depth\":0,\"images\":false,\"thinking\":\"on_off\",\"mode\":\"causal_d0\"}},"
+                            "\"capabilities_schema\":1,\"context_auto\":true,\"max_context\":262144,\"experimental_models\":%s,\"experimental_profiles\":%s,"
+                            "\"experimental_model_contracts\":{\"clover-35b-a3b-preview\":{\"version\":1,\"architecture\":\"clover_moe\",\"kv_types\":[\"int8\"],\"mtp\":false,\"experimental_mtp_max_depth\":0,\"images\":false,\"thinking\":\"on_off\",\"mode\":\"causal_d0\",\"context_max\":131072}},"
                             "\"build\":{\"mkl\":%s,\"int8_xmx\":%s,\"aot_target\":\"%s\"},"
                             "\"weight_types\":{\"scalar\":[0,1,8,10,11,14,18,21,22,23,30],\"dp4a\":[8,10,11,14,18,21,22,23],\"int8_xmx\":%s}}\n",
                             models, profiles, mkl, int8_xmx, aot_target, xmx_types);
@@ -1497,7 +1487,7 @@ int main(int argc, char** argv) {
             else if (option == "--tokens-file") token_file = argv[++i];
             else if (option == "--dump-full-logits") dump_path = argv[++i];
             else if (option == "--n") count = strata::intel::number(argv[++i], 16384);
-            else if (option == "--context" || option == "--max-context") context = strata::intel::number(argv[++i], 32768);
+            else if (option == "--context" || option == "--max-context") context = strata::intel::context_policy::parse(argv[++i],strata::intel::context_policy::full_limit);
             else if (option == "--chunk") chunk = strata::intel::number(argv[++i], 1024);
             else if (option == "--device") device = strata::intel::number(argv[++i], 1024);
             else if (option == "--weight-memory") {
@@ -1544,9 +1534,10 @@ int main(int argc, char** argv) {
             token_list.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
         }
         auto tokens = strata::intel::parse_tokens(token_list);
-        if (tokens.size() + size_t(count) > size_t(context)) throw std::runtime_error("Prompt and requested output exceed --context");
+        if (context>0&&tokens.size() + size_t(count) > size_t(context)) throw std::runtime_error("Prompt and requested output exceed --context");
         strata::intel::ExecutionRequest active_request;
         strata::intel::Engine engine(path, context, unsigned(device), memory, chunk, use_graph, profiling, prefill_xmx, prefill_npu, prefill_mkl, decode_dp4a, mtp_depth, verify_xmx, kv_int8, prefill_int8_xmx, vocab_xmx, verify_mkl_attention, expert_layout, device_state, verify_graph, dense_layout, dense_split_k, draft_vocab, experimental_tiel, experimental_clover);
+        if(tokens.size()+size_t(count)>size_t(engine.context()))throw std::runtime_error("Prompt and requested output exceed allocated Intel context");
         const float* logits = nullptr;
         const auto start = std::chrono::steady_clock::now();
         for (size_t index = 0; index < tokens.size();) {

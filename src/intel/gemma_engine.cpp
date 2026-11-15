@@ -1,6 +1,7 @@
 // Native Gemma4 target-only causal text engine. Model formulas are the existing
 // TinyStrata Gemma engine's formulas (MIT; LICENSE/NOTICE), not Qwen aliases.
 #include "strata/intel/gemma_model.hpp"
+#include "strata/intel/context_policy.hpp"
 #include "strata/intel/gemma_ops.hpp"
 #include "strata/intel/weight_store.hpp"
 #include "strata/intel/qwen_ops.hpp"
@@ -31,6 +32,7 @@ class GemmaEngine {
     GemmaGeometry geometry_;
     std::vector<GemmaKv> cache_;
     std::vector<void*> allocations_;
+    context_policy::Footprint actual_allocations_;
     std::unique_ptr<GemmaAttention> attention_;
 #ifdef TINYSTRATA_INTEL_MKL
     std::unique_ptr<PrefillGemm> gemm_;
@@ -48,7 +50,8 @@ class GemmaEngine {
     template<class T>T* allocate(size_t count,bool shared=false){
         if(!count||count>std::numeric_limits<size_t>::max()/sizeof(T))throw std::runtime_error("Gemma allocation overflow");
         auto* p=shared?sycl::malloc_shared<T>(count,queue_):sycl::malloc_device<T>(count,queue_);
-        if(!p)throw std::runtime_error("Gemma USM allocation failed");allocations_.push_back(p);return p;
+        if(!p)throw std::runtime_error("Gemma USM allocation failed");allocations_.push_back(p);
+        actual_allocations_.allocation(count,sizeof(T),shared);return p;
     }
     const ResidentTensor& tensor(const std::string& name) const {
         const auto it=weights_->tensors().find(name);if(it==weights_->tensors().end())throw std::runtime_error("Missing Gemma tensor "+name);return it->second;
@@ -83,19 +86,19 @@ class GemmaEngine {
 public:
     GemmaEngine(const std::string& path,unsigned device,int context,int chunk,WeightMemory memory,bool prefill_mkl)
         :queue_(select_device(device),sycl::property::queue::in_order{}),device_(inspect_device(queue_.get_device())),context_(context),chunk_(chunk){
-        if(context<1||context>32768||chunk<1||chunk>512)throw std::runtime_error("Initial Gemma context1..32768/chunk1..512 required");
+        if(context<0||context>context_policy::full_limit||chunk<1||chunk>512)throw std::runtime_error("Gemma context must be auto or1..262144; chunk1..512 required");
         try{
             ExecutionRequest loading;
             weights_=WeightStore::load_validated(queue_,path,memory,[&](const strata::GgufModel& m){geometry_=GemmaGeometry::validate(m);});
             const auto& g=geometry_;const size_t n=size_t(chunk_);
+            context_policy::GemmaSpec context_shape;
+            context_shape.chunk=chunk_;context_shape.mkl=prefill_mkl;
+            const auto remaining=memory_budget(device_);
+            const auto chosen=context_policy::select(context,g.model_context,remaining,device_.max_allocation,
+                [&](uint64_t tokens){return context_policy::gemma(tokens,context_shape);});
+            context_=chosen.tokens;
             size_t cache_elements=0;
             for(int l=0;l<g.layers;++l)cache_elements=std::max(cache_elements,g.capacity(l,context_,chunk_)*g.kv_heads[l]*g.dim(l));
-            // Includes the one attention expansion workspace (not another model
-            // or per-layer FP32 KV store), matrices, control and GEMM workspaces.
-            const uint64_t scratch=n*uint64_t(16*g.width+4*g.heads*g.full_dim+8*g.swa_dim*4+g.picks*(3*g.expert_ff+g.width))*sizeof(float)
-                +2*cache_elements*sizeof(float)+uint64_t(context_)*std::max(chunk_,8*g.heads)*sizeof(float)+256*1024*1024ULL;
-            if(!execution_allocation_fits(memory_budget(device_),g.cache_bytes(context_,chunk_)+scratch,8*1024*1024ULL,0))
-                throw std::runtime_error("Gemma execution state exceeds separate RAM/device budget; another resident model must be unloaded");
             cache_.resize(g.layers);
             for(int l=0;l<g.layers;++l){auto& c=cache_[l];c.capacity=int(g.capacity(l,context_,chunk_));c.heads=g.kv_heads[l];c.dim=g.dim(l);c.window=g.sliding[l]?g.window:0;
                 const size_t cells=size_t(c.capacity)*c.heads*c.dim;c.key=allocate<int8_t>(cells);c.value=allocate<int8_t>(cells);c.key_scale=allocate<sycl::half>(cells/32);c.value_scale=allocate<sycl::half>(cells/32);}
@@ -110,6 +113,8 @@ public:
             input_ids_=allocate<int32_t>(n,true);quant_error_=allocate<int32_t>(1,true);logits_=allocate<float>(g.vocabulary,true);
             counts_=allocate<int32_t>(g.experts);slots_=allocate<int32_t>(n*g.experts);
             const size_t max_tiles=(n*g.picks+3)/4+g.experts;owners_=allocate<int32_t>(max_tiles);offsets_=allocate<int32_t>(max_tiles);tiles_=allocate<int32_t>(1);
+            if(actual_allocations_.device!=chosen.bytes.owned_device||actual_allocations_.host_visible!=chosen.bytes.owned_host_visible||actual_allocations_.largest>chosen.bytes.largest)
+                throw std::logic_error("Gemma context planner differs from actual engine allocations");
             attention_=std::make_unique<GemmaAttention>(queue_,context_,chunk_,g.heads,g.full_dim,cache_elements,prefill_mkl);
 #ifdef TINYSTRATA_INTEL_MKL
             if(prefill_mkl)gemm_=std::make_unique<PrefillGemm>(queue_,1,chunk_);
@@ -117,6 +122,7 @@ public:
             stops_=g.terminal_tokens;
             std::fprintf(stderr,"Intel Gemma terminal_ids=");for(int id:stops_)std::fprintf(stderr,"%d,",id);std::fprintf(stderr," full_vocabulary_lookup=1\n");
             std::fprintf(stderr,"Intel Gemma4 target_only=1 layers=%d width=%d SWA_window=%d full_dim=%d swa_dim=%d experts=%d picks=%d KV=int8 cache_bytes=%llu single_weight_store=1\n",g.layers,g.width,g.window,g.full_dim,g.swa_dim,g.experts,g.picks,(unsigned long long)g.cache_bytes(context_,chunk_));
+            context_policy::report(chosen,g.model_context,remaining,device_.max_allocation);
         }catch(...){release();throw;}
     }
     ~GemmaEngine(){release();}
@@ -250,7 +256,7 @@ int main(int argc,char** argv){
     try{
         strata::paths::Utf8Arguments arguments(argc,argv);argc=arguments.argc();argv=arguments.argv();
         if(strata::intel::print_device_report_if_requested(argc,argv))return 0;
-        std::string model,tokens,token_file,dump;unsigned device=0;int context=8192,chunk=512;bool server=false;
+        std::string model,tokens,token_file,dump;unsigned device=0;int context=0,chunk=512;bool server=false;
 #ifdef TINYSTRATA_INTEL_MKL
         bool mkl=true;
 #else
@@ -258,7 +264,7 @@ int main(int argc,char** argv){
 #endif
         auto memory=strata::intel::WeightMemory::Host;
         for(int i=1;i<argc;++i){const std::string option=argv[i];
-            if(option=="--help"){std::puts("tinystrata-intel-gemma4 --model TARGET.gguf [--serve | --tokens IDS | --tokens-file FILE] [--dump FILE] [--max-context N] [--chunk N] [--kv-type int8] [--mtp 0] [--prefill-mkl | --no-prefill-mkl] [--device N] [--weight-memory host|shared|device]\nExperimental target-only causal text path. Gemma INT8 KV is the default; assistant/speculation/FP8/images are not implemented by this executable.");return 0;}
+            if(option=="--help"){std::puts("tinystrata-intel-gemma4 --model TARGET.gguf [--serve | --tokens IDS | --tokens-file FILE] [--dump FILE] [--max-context auto|N] [--chunk N] [--kv-type int8] [--mtp 0] [--prefill-mkl | --no-prefill-mkl] [--device N] [--weight-memory host|shared|device]\nExperimental target-only causal text path. Gemma INT8 KV is the default; assistant/speculation/FP8/images are not implemented by this executable.");return 0;}
             if(option=="--capabilities"){
 #ifdef TINYSTRATA_INTEL_MKL
                 constexpr const char* mkl="true";
@@ -277,15 +283,15 @@ int main(int argc,char** argv){
 #endif
                 std::printf("{\"backend\":\"sycl\",\"experimental\":true,\"model_families\":[],"
                     "\"experimental_models\":[\"gemma-4-26b-a4b-it\"],\"experimental_profiles\":{\"b390-gemma4\":1,\"gemma4-target-only\":1},"
-                    "\"experimental_model_contracts\":{\"gemma-4-26b-a4b-it\":{\"version\":1,\"architecture\":\"gemma4\",\"kv_types\":[\"int8\"],\"mtp\":false,\"experimental_mtp_max_depth\":0,\"images\":false,\"thinking\":\"on_off\",\"mode\":\"target_only\"}},"
-                    "\"kv_types\":[\"int8\"],\"images\":false,\"mtp\":false,\"experimental_mtp_max_depth\":0,\"serve\":true,\"capabilities_schema\":1,\"target_only\":true,"
+                    "\"experimental_model_contracts\":{\"gemma-4-26b-a4b-it\":{\"version\":1,\"architecture\":\"gemma4\",\"kv_types\":[\"int8\"],\"mtp\":false,\"experimental_mtp_max_depth\":0,\"images\":false,\"thinking\":\"on_off\",\"mode\":\"target_only\",\"context_max\":262144}},"
+                    "\"kv_types\":[\"int8\"],\"images\":false,\"mtp\":false,\"experimental_mtp_max_depth\":0,\"serve\":true,\"capabilities_schema\":1,\"context_auto\":true,\"max_context\":262144,\"target_only\":true,"
                     "\"build\":{\"mkl\":%s,\"int8_xmx\":%s,\"aot_target\":\"%s\"},"
                     "\"weight_types\":{\"scalar\":[0,2,14],\"dp4a\":[],\"int8_xmx\":[]}}\n",mkl,int8_xmx,aot);return 0;}
             if(option=="--serve"){server=true;continue;}if(option=="--prefill-mkl"){mkl=true;continue;}if(option=="--no-prefill-mkl"){mkl=false;continue;}
             if(i+1>=argc)throw std::runtime_error("Missing value for "+option);const std::string value=argv[++i];
             if(option=="--model")model=value;else if(option=="--tokens")tokens=value;else if(option=="--tokens-file")token_file=value;else if(option=="--dump")dump=value;
             else if(option=="--device")device=unsigned(strata::intel::integer(value,1024));
-            else if(option=="--max-context")context=strata::intel::integer(value,32768);else if(option=="--chunk")chunk=strata::intel::integer(value,512);
+            else if(option=="--max-context")context=strata::intel::context_policy::parse(value,strata::intel::context_policy::full_limit);else if(option=="--chunk")chunk=strata::intel::integer(value,512);
             else if(option=="--kv-type"){if(value!="int8"&&value!="auto")throw std::runtime_error("Gemma target-only SYCL currently validates INT8 KV only");}
             else if(option=="--mtp"){if(value!="0")throw std::runtime_error("Gemma assistant verification is separate; use --mtp 0 for this target-only milestone");}
             else if(option=="--weight-memory"){if(value=="host")memory=strata::intel::WeightMemory::Host;else if(value=="shared")memory=strata::intel::WeightMemory::Shared;else if(value=="device")memory=strata::intel::WeightMemory::Device;else throw std::runtime_error("Invalid weight memory kind");}
