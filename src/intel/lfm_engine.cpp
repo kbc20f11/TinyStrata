@@ -3,6 +3,8 @@
 #include "strata/intel/lfm_model.hpp"
 #include "strata/intel/context_policy.hpp"
 #include "strata/intel/lfm_ops.hpp"
+#include "strata/intel/lfm_q4_policy.hpp"
+#include "strata/intel/decode_dp4a.hpp"
 #include "strata/intel/gemma_ops.hpp" // Generic head RMS/RoPE and causal Q8 attention; scale supplied explicitly.
 #include "strata/intel/weight_store.hpp"
 #include "strata/intel/qwen_ops.hpp"
@@ -31,6 +33,8 @@ class LfmEngine {
     LfmGeometry geometry_;
     std::unique_ptr<WeightStore> weights_;
     std::unique_ptr<GemmaAttention> attention_;
+    std::unique_ptr<DecodeDp4a> q4_dp4a_;
+    bool q4_dp4a_enabled_=false,prefill_q4_dp4a_enabled_=false;
 #ifdef TINYSTRATA_INTEL_MKL
     std::unique_ptr<PrefillGemm> gemm_;
 #endif
@@ -65,15 +69,20 @@ class LfmEngine {
         if(lfm_q4_fp32_eligible(int(t.info.type),tokens,q4_fp32_blocks_)){
             lfm_q4_fp32_matvec(q_,t.data,input,output,rows,width);return;
         }
+        if(q4_dp4a_enabled_&&tokens==1&&t.info.type==12){q4_dp4a_->dense(12,t.data,input,output,rows,width);return;}
         quantized_matmul(q_,int(t.info.type),t.data,input,output,rows,width,tokens);
     }
     void expert_matrix(const ResidentTensor& t,ExpertPlan plan,const float* input,float* output,int rows,int width,bool separate,int tokens){
+        if(prefill_q4_dp4a_enabled_&&lfm_q4_prefill_dp4a_shape(int(t.info.type),tokens)){
+            q4_dp4a_->grouped(12,t.data,plan,input,output,rows,width,separate);return;
+        }
 #ifdef TINYSTRATA_INTEL_MKL
         if(gemm_&&tokens>=16){gemm_->selected(int(t.info.type),t.data,t.bytes/geometry_.experts,plan,input,output,rows,width,separate);return;}
 #endif
         if(lfm_q4_fp32_eligible(int(t.info.type),tokens,q4_fp32_blocks_)){
             lfm_q4_fp32_selected(q_,t.data,ids_,input,output,rows,width,separate);return;
         }
+        if(q4_dp4a_enabled_&&tokens==1&&t.info.type==12){q4_dp4a_->selected(12,t.data,ids_,geometry_.picks,input,output,rows,width,separate);return;}
         if(tokens>=16)selected_matmul(q_,int(t.info.type),t.data,plan,input,output,rows,width,separate);
         else selected_matvec(q_,int(t.info.type),t.data,ids_,geometry_.picks,input,output,rows,width,separate,tokens);
     }
@@ -92,7 +101,7 @@ class LfmEngine {
     }
     void check_logits(){for(int i=0;i<geometry_.vocabulary;++i)if(!std::isfinite(logits_[i]))throw std::runtime_error("Non-finite LFM logits");}
     void release()noexcept{
-        try{q_.wait_and_throw();}catch(...){}attention_.reset();
+        try{q_.wait_and_throw();}catch(...){}attention_.reset();q4_dp4a_.reset();
 #ifdef TINYSTRATA_INTEL_MKL
         gemm_.reset();
 #endif
@@ -111,6 +120,11 @@ public:
         if(q4_blocks&&std::string(q4_blocks)!="0"&&std::string(q4_blocks)!="1")
             throw std::runtime_error("STRATA_INTEL_LFM_Q4_FP32_BLOCKS requires0 or1");
         q4_fp32_blocks_=q4_blocks?std::string(q4_blocks)=="1":measured_runtime&&measured_device;
+        q4_dp4a_enabled_=lfm_q4_candidate_flag(std::getenv("STRATA_INTEL_LFM_Q4_DP4A"),"STRATA_INTEL_LFM_Q4_DP4A");
+        prefill_q4_dp4a_enabled_=lfm_q4_candidate_flag(std::getenv("STRATA_INTEL_LFM_PREFILL_Q4_DP4A"),"STRATA_INTEL_LFM_PREFILL_Q4_DP4A");
+        lfm_q4_validate_modes(q4_fp32_blocks_,q4_dp4a_enabled_);
+        const bool q4_auxiliary=q4_dp4a_enabled_||prefill_q4_dp4a_enabled_;
+        if(q4_auxiliary&&!device_.capabilities.esimd)throw std::runtime_error("LFM Q4 DP4A candidate requires Intel ESIMD");
         if(context<0||context>context_policy::lfm_limit||chunk<1||chunk>512)throw std::runtime_error("LFM context must be auto or1..131072; chunk1..512 required");
 #ifdef TINYSTRATA_INTEL_AOT_TARGET
         if(std::string(TINYSTRATA_INTEL_AOT_TARGET)=="intel_gpu_ptl_h"&&!device_.ptl_h_aot)
@@ -120,7 +134,7 @@ public:
             ExecutionRequest loading;
             weights_=WeightStore::load_validated(q_,path,memory,[&](const strata::GgufModel& model){geometry_=LfmGeometry::validate(model);});
             const auto& g=geometry_;context_policy::LfmSpec context_shape;
-            context_shape.chunk=chunk_;context_shape.mkl=mkl;
+            context_shape.chunk=chunk_;context_shape.mkl=mkl;context_shape.q4_dp4a=q4_auxiliary;
             const auto remaining=memory_budget(device_);
             const auto chosen=context_policy::select(context,g.model_context,remaining,device_.max_allocation,
                 [&](uint64_t tokens){return context_policy::lfm(tokens,context_shape);});
@@ -153,7 +167,9 @@ public:
 #else
             if(mkl)throw std::runtime_error("LFM oneMKL requires an MKL build");
 #endif
+            if(q4_auxiliary)q4_dp4a_=std::make_unique<DecodeDp4a>(q_,false,false);
             q_.wait_and_throw();
+            std::printf("INFO lfm_q4_dp4a=%d lfm_prefill_q4_dp4a=%d\n",int(q4_dp4a_enabled_),int(prefill_q4_dp4a_enabled_));std::fflush(stdout);
             std::fprintf(stderr,"Intel LFM2.5 layers40 conv30 attention10 width2048 head64 picks4of64 KV=int8 MTP0 mandatory_thinking=1 single_weight_store=1 cache_bytes=%llu\n",(unsigned long long)g.cache_bytes(context));
             context_policy::report(chosen,g.model_context,remaining,device_.max_allocation);
         }catch(...){release();throw;}
@@ -211,6 +227,7 @@ public:
         }
         if(complete){q_.memcpy(last_hidden_,residual_+size_t(count-1)*width,size_t(width)*sizeof(float));if(final)output_head();}
         q_.wait_and_throw();if(*quant_error_)throw std::runtime_error("Nonfinite/overflow LFM INT8 KV input");
+        if(q4_dp4a_&&!q4_dp4a_->valid())throw std::runtime_error("Nonfinite/overflow LFM Q4 DP4A activation input");
         if(!complete||(cancelled&&cancelled->load())){checkpoint(true);q_.wait_and_throw();return nullptr;}
         if(final)check_logits();position_+=count;logits_valid_=final;return final?logits_:residual_;
     }
@@ -302,7 +319,7 @@ int main(int argc,char** argv){try{
                 "\"experimental_model_contracts\":{\"lfm2.5-24b-a2b\":{\"version\":1,\"architecture\":\"lfm2moe\",\"kv_types\":[\"int8\"],\"mtp\":false,\"experimental_mtp_max_depth\":0,\"images\":false,\"thinking\":\"mandatory\",\"mode\":\"target_only\",\"context_max\":131072}},"
                 "\"kv_types\":[\"int8\"],\"images\":false,\"mtp\":false,\"experimental_mtp_max_depth\":0,\"serve\":true,\"capabilities_schema\":1,\"context_auto\":true,\"max_context\":131072,\"mandatory_thinking\":true,"
                 "\"build\":{\"mkl\":%s,\"int8_xmx\":%s,\"aot_target\":\"%s\"},"
-                "\"weight_types\":{\"scalar\":[0,12,14],\"dp4a\":[],\"int8_xmx\":[]}}\n",profiles,mkl,xmx,aot);
+                "\"weight_types\":{\"scalar\":[0,12,14],\"dp4a\":[12],\"int8_xmx\":[]}}\n",profiles,mkl,xmx,aot);
             return 0;
         }
         if(arg=="--help"){std::puts("tinystrata-intel-lfm2 --model PINNED.gguf [--serve | --tokens IDS | --tokens-file FILE] [--dump-full-logits FILE] [--max-context auto|N] [--chunk N] [--kv-type int8] [--mtp 0] [--prefill-mkl | --no-prefill-mkl] [--device N] [--weight-memory host|shared|device]\nExperimental LFM2.5 target-only causal text. INT8 KV baseline; mandatory thinking; no MTP/images. Exact live-prefix reuse; edited/regenerated histories replay cleanly.");return 0;}

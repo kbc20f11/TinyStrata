@@ -42,6 +42,9 @@
 !/tests/intel-draft-vocabulary.cpp
 !/tests/test_intel_options.py
 !/tests/intel-lfm-q4-fp32.cpp
+!/tests/intel-lfm-q4-policy.cpp
+!/tests/intel-lfm-prefill-q4-dp4a.cpp
+!/tests/intel-lfm-q4-dp4a-reference.py
 !/tests/intel-lfm-q4-reference.py
 !/tests/test_intel_runtime_stage.py
 !/tests/test_intel_telemetry.py

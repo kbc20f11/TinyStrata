@@ -84,7 +84,7 @@ inline Footprint gemma(uint64_t c,const GemmaSpec& s={}){
     p.host(16ull<<20); // bounded sampler/history/metadata work; not another OS floor
     return p;
 }
-struct LfmSpec {uint64_t chunk=512,width=2048,vocabulary=128000,heads=32,kv_heads=8,dim=64,dense_ff=11776,experts=64,picks=4,expert_ff=1536;bool mkl=true;};
+struct LfmSpec {uint64_t chunk=512,width=2048,vocabulary=128000,heads=32,kv_heads=8,dim=64,dense_ff=11776,experts=64,picks=4,expert_ff=1536;bool mkl=true,q4_dp4a=false;};
 inline Footprint lfm(uint64_t c,const LfmSpec& s={}){
     Footprint p;const auto n=s.chunk,cells=mul(mul(c,s.kv_heads),s.dim);
     q8_cache(p,cells,false,10);p.allocation(mul(2,s.width),4,false,60); // live and rollback convolution,30 layers
@@ -99,6 +99,8 @@ inline Footprint lfm(uint64_t c,const LfmSpec& s={}){
     p.allocation(mul(n,s.experts),4);const auto tiles=add(add(mul(n,s.picks),3)/4,s.experts);
     p.allocation(tiles,4,false,2);p.allocation(1,4);p.own();
     attention(p,c,n,s.heads,s.dim,cells,s.mkl);if(s.mkl)gemm(p,1,n);
+    if(s.q4_dp4a){p.allocation(512*8192,1);p.allocation(512*8192/32,4);p.allocation(1,4,true);
+        p.allocation(2048,4);p.allocation(512,4);p.allocation(16,1);p.allocation(256,4);p.allocation(128,1);}
     p.host(16ull<<20);return p;
 }
 struct QwenSpec {
