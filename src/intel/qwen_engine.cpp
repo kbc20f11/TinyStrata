@@ -69,9 +69,11 @@ class Engine {
     size_t npu_deferred_qkv_calls_ = 0, npu_deferred_qkv_error_drains_ = 0;
 #endif
     bool npu_pair_chunks_ = false, npu_pair_trace_ = false;
+    unsigned npu_request_slots_ = 1;
     uint64_t npu_pair_attempts_ = 0, npu_pair_commits_ = 0, npu_pair_chunks_count_ = 0;
     uint64_t npu_pair_cancels_ = 0, npu_pair_boundary_refusals_ = 0, npu_pair_cancel_pending_drains_ = 0;
     uint64_t npu_pair_npu_calls_ = 0;
+    uint64_t npu_pair_two_pending_ = 0;
     PrefillBank pair_bank_;
     std::vector<void*> allocations_;
     std::vector<LayerState> layers_, checkpoints_;
@@ -195,7 +197,7 @@ class Engine {
         return it == weights_->metadata().end() ? fallback : it->second.num();
     }
 #if defined(TINYSTRATA_INTEL_NPU) && defined(TINYSTRATA_INTEL_MKL)
-    bool begin_deferred_qkv(const std::string& name, const float* input, float* output, int tokens, bool paired = false) {
+    bool begin_deferred_qkv(const std::string& name, const float* input, float* output, int tokens, bool paired = false, unsigned bank = 0) {
         if ((!npu_defer_qkv_ && !paired) || !npu_ || !gemm_ || tokens < 128) return false;
         const auto& t = tensor(name);
         const int width = int(t.info.shape[0]);
@@ -211,16 +213,18 @@ class Engine {
         options.profile_stages = npu_profile_stages_;
         sycl::event gpu_completion;
         const bool pending = npu_->begin_split(*gemm_, int(t.info.type), t.data, input, output,
-            rows, width, tokens, int(partition.npu_rows), options, gpu_completion);
+            rows, width, tokens, int(partition.npu_rows), options, gpu_completion, bank);
         if (pending) remember("npu_deferred_qkv_gpu", gpu_completion);
         return pending;
     }
     void drain_deferred_qkv_on_error() noexcept {
         // No rollback, buffer reuse or release may race an outstanding NPU
         // write or the already-submitted GPU projection/remainder work.
-        try { if (npu_ && npu_->split_pending()) npu_->finish_split(); }
-        catch (const std::exception& error) { std::fprintf(stderr, "Intel NPU deferred join during error: %s\n", error.what()); }
-        catch (...) { std::fprintf(stderr, "Intel NPU deferred join during error: unknown exception\n"); }
+        for (unsigned bank = 0; npu_ && bank < npu_request_slots_; ++bank) {
+            try { if (npu_->split_pending(bank)) npu_->finish_split(bank); }
+            catch (const std::exception& error) { std::fprintf(stderr, "Intel NPU deferred join during error bank=%u: %s\n", bank, error.what()); }
+            catch (...) { std::fprintf(stderr, "Intel NPU deferred join during error bank=%u: unknown exception\n", bank); }
+        }
         try { q_.wait_and_throw(); }
         catch (const std::exception& error) { std::fprintf(stderr, "Intel NPU deferred GPU drain during error: %s\n", error.what()); }
         catch (...) { std::fprintf(stderr, "Intel NPU deferred GPU drain during error: unknown exception\n"); }
@@ -335,7 +339,7 @@ class Engine {
 #endif
         } catch (...) {
 #if defined(TINYSTRATA_INTEL_NPU) && defined(TINYSTRATA_INTEL_MKL)
-            if (deferred_qkv || (npu_ && npu_->split_pending())) drain_deferred_qkv_on_error();
+            if (deferred_qkv || (npu_ && npu_->pending_split_count())) drain_deferred_qkv_on_error();
 #endif
             throw;
         }
@@ -817,6 +821,13 @@ public:
             if (value != "0" && value != "1") throw std::invalid_argument("STRATA_REVIEW_NPU_PAIR_CHUNKS must be0 or1");
             npu_pair_chunks_ = value == "1";
         }
+        if (const char* raw = std::getenv("STRATA_REVIEW_NPU_REQUESTS")) {
+            const std::string value(raw);
+            if (value != "1" && value != "2") throw std::invalid_argument("STRATA_REVIEW_NPU_REQUESTS must be1 or2");
+            npu_request_slots_ = value == "2" ? 2 : 1;
+        }
+        if (npu_request_slots_ == 2 && (!npu_pair_chunks_ || !npu_defer_qkv_))
+            throw std::invalid_argument("Two NPU requests require PAIR_CHUNKS=1 and DEFER_QKV=1");
         if (const char* raw = std::getenv("STRATA_REVIEW_NPU_PAIR_TRACE"); raw && *raw) {
             const std::string value(raw);
             if (value != "0" && value != "1") throw std::invalid_argument("STRATA_REVIEW_NPU_PAIR_TRACE must be0 or1");
@@ -957,6 +968,7 @@ public:
             context_shape.turn_checkpoint=turn_checkpoint_enabled_;context_shape.graph=use_graph&&!profiling;context_shape.verify_graph=verify_graph;
             context_shape.npu=prefill_npu;context_shape.npu_split=std::getenv("STRATA_REVIEW_NPU_SPLIT")!=nullptr;
             context_shape.npu_pair=npu_pair_chunks_;
+            context_shape.npu_requests=npu_request_slots_;
             const int context_limit=context_policy::model_limit(metadata_number("context_length",0),clover_?context_policy::lfm_limit:context_policy::full_limit);
             const auto chosen=context_policy::select(context,context_limit,remaining_memory,selected_device.max_allocation,
                 [&](uint64_t tokens){return context_policy::qwen(tokens,context_shape);});
@@ -1063,13 +1075,15 @@ public:
                 if ((npu_defer_qkv_ || npu_pair_chunks_) && (gate_rows != 0 ||
                     (npu_split_mode_ != "parallel" && npu_split_mode_ != "remote")))
                     throw std::invalid_argument("Deferred/paired QKV requires parallel/remote NPU split and gate_rows=0");
+                if (npu_request_slots_ == 2 && (qkv_rows == 0 || chunk_ < min_tokens || chunk_ > max_tokens))
+                    throw std::invalid_argument("Two NPU requests require an admitted QKV share and chunk interval");
 #ifndef TINYSTRATA_INTEL_MKL
                 if (npu_defer_qkv_ || npu_pair_chunks_) throw std::invalid_argument("Deferred/paired QKV requires oneMKL prefill support");
 #endif
-                std::fprintf(stderr, "Intel NPU policy mode=%s qkv_rows=%d gate_rows=%d min_tokens=%d max_tokens=%d reuse_tensors=%d stage_profile=%d defer_qkv=%d pair_chunks=%d pair_trace=%d\n",
+                std::fprintf(stderr, "Intel NPU policy mode=%s qkv_rows=%d gate_rows=%d min_tokens=%d max_tokens=%d reuse_tensors=%d stage_profile=%d defer_qkv=%d pair_chunks=%d pair_trace=%d request_slots=%u\n",
                     npu_split_mode_.empty() ? "full" : npu_split_mode_.c_str(), qkv_rows, gate_rows,
-                    min_tokens, max_tokens, int(npu_reuse_tensors_), int(npu_profile_stages_), int(npu_defer_qkv_), int(npu_pair_chunks_), int(npu_pair_trace_));
-                npu_ = std::make_unique<NpuProjection>(q_);
+                    min_tokens, max_tokens, int(npu_reuse_tensors_), int(npu_profile_stages_), int(npu_defer_qkv_), int(npu_pair_chunks_), int(npu_pair_trace_), npu_request_slots_);
+                npu_ = std::make_unique<NpuProjection>(q_, npu_request_slots_);
             }
 #endif
             if(actual_allocations_.device!=chosen.bytes.owned_device||actual_allocations_.host_visible!=chosen.bytes.owned_host_visible||actual_allocations_.largest>chosen.bytes.largest)
@@ -1097,7 +1111,7 @@ public:
     }
     ~Engine() {
 #if defined(TINYSTRATA_INTEL_NPU) && defined(TINYSTRATA_INTEL_MKL)
-        if (npu_ && npu_->split_pending()) drain_deferred_qkv_on_error();
+        if (npu_ && npu_->pending_split_count()) drain_deferred_qkv_on_error();
         if (npu_defer_qkv_) std::fprintf(stderr, "Intel NPU deferred_qkv calls=%zu error_drains=%zu\n",
             npu_deferred_qkv_calls_, npu_deferred_qkv_error_drains_);
 #endif
@@ -1112,11 +1126,18 @@ public:
     DeviceInfo device_info() const { return inspect_device(q_.get_device()); }
     void print_npu_pair_counters() const {
         if (!npu_pair_chunks_) return;
-        std::printf("INFO npu_pair_enabled=1 npu_pair_attempts=%llu npu_pair_commits=%llu npu_pair_chunks=%llu npu_pair_cancels=%llu npu_pair_boundary_refusals=%llu npu_pair_cancel_pending_drains=%llu npu_pair_npu_calls=%llu\n",
+        size_t request_slots = 0, maximum_pending = 0;
+#if defined(TINYSTRATA_INTEL_NPU) && defined(TINYSTRATA_INTEL_MKL)
+        if (npu_) {
+            request_slots = npu_->memory_usage().request_slots;
+            maximum_pending = npu_->split_counters().max_pending_requests;
+        }
+#endif
+        std::printf("INFO npu_pair_enabled=1 npu_pair_attempts=%llu npu_pair_commits=%llu npu_pair_chunks=%llu npu_pair_cancels=%llu npu_pair_boundary_refusals=%llu npu_pair_cancel_pending_drains=%llu npu_pair_npu_calls=%llu npu_pair_two_pending=%llu npu_request_slots=%zu npu_request_max_pending=%zu\n",
             static_cast<unsigned long long>(npu_pair_attempts_), static_cast<unsigned long long>(npu_pair_commits_),
             static_cast<unsigned long long>(npu_pair_chunks_count_), static_cast<unsigned long long>(npu_pair_cancels_),
             static_cast<unsigned long long>(npu_pair_boundary_refusals_), static_cast<unsigned long long>(npu_pair_cancel_pending_drains_),
-            static_cast<unsigned long long>(npu_pair_npu_calls_));
+            static_cast<unsigned long long>(npu_pair_npu_calls_), static_cast<unsigned long long>(npu_pair_two_pending_), request_slots, maximum_pending);
         std::fflush(stdout);
     }
     bool can_pair_prompt(size_t index, size_t remaining, size_t turn_at, bool checkpoint_requested) {
@@ -1135,6 +1156,8 @@ public:
         const int count = chunk_, start = position_;
         if (!npu_pair_chunks_ || verifying_ || recording_ || clover_ || !gemm_ ||
             start + 2 * count > context_) throw std::runtime_error("Invalid paired prefill request");
+        if (npu_request_slots_ == 2 && (!npu_ || npu_->memory_usage().request_slots != 2))
+            throw std::logic_error("Two-request paired prefill requires a two-slot NPU backend");
         for (int i = 0; i < 2 * count; ++i)
             if (tokens[i] < 0 || tokens[i] >= vocabulary()) throw std::runtime_error("Paired token outside vocabulary");
         if (cancelled && cancelled->load()) return nullptr;
@@ -1149,9 +1172,11 @@ public:
         };
         const auto rollback = [&] {
             std::exception_ptr drain_error;
-            if (npu_ && npu_->split_pending()) {
+            for (unsigned bank = 0; npu_ && bank < npu_request_slots_; ++bank) {
+                if (!npu_->split_pending(bank)) continue;
                 ++npu_pair_cancel_pending_drains_;
-                try { npu_->finish_split(); ++npu_pair_npu_calls_; } catch (...) { drain_error = std::current_exception(); }
+                try { npu_->finish_split(bank); ++npu_pair_npu_calls_; }
+                catch (...) { if (!drain_error) drain_error = std::current_exception(); }
             }
             try { q_.wait_and_throw(); } catch (...) { if (!drain_error) drain_error = std::current_exception(); }
             banks.restore(); position_ = start; logits_valid_ = false;
@@ -1174,8 +1199,9 @@ public:
             matrix(prefix + "ssm_alpha.weight", h_, alpha_, count);
             matrix(prefix + "ssm_beta.weight", h_, beta_, count);
         };
-        const auto begin = [&](const std::string& prefix) {
-            const bool pending = begin_deferred_qkv(prefix + "attn_qkv.weight", h_, qkv_, count, true);
+        const auto begin = [&](const std::string& prefix, unsigned bank = 0, bool require = false) {
+            const bool pending = begin_deferred_qkv(prefix + "attn_qkv.weight", h_, qkv_, count, true, bank);
+            if (!pending && require) throw std::runtime_error("Two-request NPU QKV projection was not admitted");
             if (!pending) matrix(prefix + "attn_qkv.weight", h_, qkv_, count, false);
             return pending;
         };
@@ -1198,28 +1224,58 @@ public:
                     select(true); norm(prefix); attention(prefix, state, count); finish_layer(prefix, count);
                     continue;
                 }
-                select(false); norm(prefix);
-                const bool first_pending = begin(prefix);
-                independent(prefix);
-                select(true); norm(prefix); independent(prefix);
-                if (first_pending) {
-                    const auto joined = npu_->finish_split(); ++npu_pair_npu_calls_;
-                    remember("npu_pair_first_join", joined);
+                if (npu_request_slots_ == 2) {
+                    // Both readiness events precede A's GPU suffix on this
+                    // in-order queue. B can therefore start its own request
+                    // without waiting for A's suffix or the shared MoE work.
+                    select(false); norm(prefix);
+                    npu_->prepare_split_input(0, h_, n_, count);
+                    select(true); norm(prefix);
+                    npu_->prepare_split_input(1, h_, n_, count);
+                    select(false); begin(prefix, 0, true);
+                    select(true); begin(prefix, 1, true);
+                    if (npu_->pending_split_count() != 2)
+                        throw std::logic_error("Two-request NPU pairing did not retain both requests");
+                    ++npu_pair_two_pending_;
+                    if (npu_pair_trace_) {
+                        std::fprintf(stderr, "Intel NPU pair trace stage=second_pending position=%d layer=%zu requests_pending=2\n", start, layer);
+                        std::fflush(stderr);
+                    }
+                    if (abort_if_cancelled()) return nullptr;
+                    select(false); independent(prefix);
+                    select(true); independent(prefix);
+                    if (abort_if_cancelled()) return nullptr;
+                    const auto first_joined = npu_->finish_split(0); ++npu_pair_npu_calls_;
+                    remember("npu_pair_first_join", first_joined);
+                    select(false); gdn_tail(prefix, state, count, layer); finish_layer(prefix, count);
+                    if (abort_if_cancelled()) return nullptr;
+                    const auto second_joined = npu_->finish_split(1); ++npu_pair_npu_calls_;
+                    remember("npu_pair_second_join", second_joined);
+                    select(true); gdn_tail(prefix, state, count, layer); finish_layer(prefix, count);
+                } else {
+                    select(false); norm(prefix);
+                    const bool first_pending = begin(prefix);
+                    independent(prefix);
+                    select(true); norm(prefix); independent(prefix);
+                    if (first_pending) {
+                        const auto joined = npu_->finish_split(); ++npu_pair_npu_calls_;
+                        remember("npu_pair_first_join", joined);
+                    }
+                    // B's input-ready fence retires A's merge before the
+                    // single NPU output slot can be overwritten.
+                    const bool second_pending = begin(prefix);
+                    if (second_pending && npu_pair_trace_) {
+                        std::fprintf(stderr, "Intel NPU pair trace stage=second_pending position=%d layer=%zu\n", start, layer);
+                        std::fflush(stderr);
+                    }
+                    select(false); gdn_tail(prefix, state, count, layer); finish_layer(prefix, count);
+                    if (abort_if_cancelled()) return nullptr;
+                    if (second_pending) {
+                        const auto joined = npu_->finish_split(); ++npu_pair_npu_calls_;
+                        remember("npu_pair_second_join", joined);
+                    }
+                    select(true); gdn_tail(prefix, state, count, layer); finish_layer(prefix, count);
                 }
-                // B's input-ready fence retires A's merge before the single
-                // NPU output slot can be overwritten. Only one request lives.
-                const bool second_pending = begin(prefix);
-                if (second_pending && npu_pair_trace_) {
-                    std::fprintf(stderr, "Intel NPU pair trace stage=second_pending position=%d layer=%zu\n", start, layer);
-                    std::fflush(stderr);
-                }
-                select(false); gdn_tail(prefix, state, count, layer); finish_layer(prefix, count);
-                if (abort_if_cancelled()) return nullptr;
-                if (second_pending) {
-                    const auto joined = npu_->finish_split(); ++npu_pair_npu_calls_;
-                    remember("npu_pair_second_join", joined);
-                }
-                select(true); gdn_tail(prefix, state, count, layer); finish_layer(prefix, count);
             }
             select(true);
             if (output_logits) {
@@ -1282,11 +1338,20 @@ public:
         if (cancelled && (!complete || cancelled->load())) {
 #if defined(TINYSTRATA_INTEL_NPU) && defined(TINYSTRATA_INTEL_MKL)
             // Normally gdn() already joined; keep rollback safe if a future
-            // cancellation path returns with an outstanding request.
-            if (npu_ && npu_->split_pending()) npu_->finish_split().wait_and_throw();
+            // cancellation path returns with outstanding requests. A failed
+            // join must not skip the other slot or checkpoint restoration.
+            std::exception_ptr pending_error;
+            for (unsigned bank = 0; npu_ && bank < npu_request_slots_; ++bank) {
+                try { if (npu_->split_pending(bank)) npu_->finish_split(bank).wait_and_throw(); }
+                catch (...) { if (!pending_error) pending_error = std::current_exception(); }
+            }
+            try { q_.wait_and_throw(); } catch (...) { if (!pending_error) pending_error = std::current_exception(); }
 #endif
             checkpoint(true);
             q_.wait_and_throw();
+#if defined(TINYSTRATA_INTEL_NPU) && defined(TINYSTRATA_INTEL_MKL)
+            if (pending_error) std::rethrow_exception(pending_error);
+#endif
             return nullptr;
         }
         if (output_logits) for (int64_t i = 0; i < g.n_vocab; ++i) if (!std::isfinite(logits_[i])) throw std::runtime_error("Non-finite Intel logits");
