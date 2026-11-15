@@ -25,6 +25,7 @@ public:
     sycl::event selected(int type, const uint8_t* weights, const int32_t* ids, int picks,
                          const float* input, float* output, int rows, int width, bool separate, int tokens = 1);
     sycl::event grouped(int type, const uint8_t* weights, ExpertPlan plan,
-                        const float* input, float* output, int rows, int width, bool separate, bool interleaved = false);
+                        const float* input, float* output, int rows, int width, bool separate, bool interleaved = false,
+                        bool large_prefill_packed = false);
 };
 } // namespace strata::intel

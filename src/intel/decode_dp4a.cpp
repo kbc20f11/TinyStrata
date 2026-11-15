@@ -3,6 +3,7 @@
 // Explicit SIMD dispatch, Q8 input quantization and IQ2_S support are TinyStrata's.
 #include "strata/intel/decode_dp4a.hpp"
 #include "strata/intel/quant.hpp"
+#include "strata/intel/moe_route_policy.hpp"
 #ifdef TINYSTRATA_INTEL_INT8_XMX
 #include "strata/intel/q8_xmx.hpp"
 #endif
@@ -411,12 +412,15 @@ sycl::event DecodeDp4a::selected(int type, const uint8_t* weights, const int32_t
 #undef PRODUCT
 }
 sycl::event DecodeDp4a::grouped(int type, const uint8_t* weights, ExpertPlan plan,
-    const float* input, float* output, int rows, int width, bool separate, bool interleaved) {
+    const float* input, float* output, int rows, int width, bool separate, bool interleaved, bool large_prefill_packed) {
     auto& p = *impl_;
     bool xmx_shape = false;
 #ifdef TINYSTRATA_INTEL_INT8_XMX
     xmx_shape = p.xmx && q8_xmx_supports(type);
 #endif
+    if (large_prefill_packed && (!xmx_shape || plan.tile_width != 4 ||
+        !moe_route_policy::measured_projection(type,rows,width,separate,interleaved,plan.tokens,plan.experts,plan.picks)))
+        throw std::invalid_argument("Unsupported adaptive packed MoE projection");
     if (rows < 1 || width < 64 || width > 8192 || width % 64 || (type != 8 && width % 256) ||
         plan.picks < 1 || plan.picks > 8 || plan.tokens < 1 || plan.tokens > 1024 || plan.experts < 1 || plan.experts > 256 ||
         (plan.tile_width != 2 && plan.tile_width != 4 && !(plan.tile_width == 1 && xmx_shape)) || (interleaved && (!xmx_shape || rows % 16 || plan.tile_width == 2)) ||
@@ -425,7 +429,7 @@ sycl::event DecodeDp4a::grouped(int type, const uint8_t* weights, ExpertPlan pla
     p.quantization = quantize_decode_input(p.q, input, p.input, p.scales, width, separate ? plan.picks * plan.tokens : plan.tokens, p.error);
 #ifdef TINYSTRATA_INTEL_INT8_XMX
     if (xmx_shape && (plan.tile_width == 1 || plan.tile_width == 4))
-        return q8_xmx_product(p.q, type, weights, p.input, p.scales, output, rows, width, plan, separate, p.iq2, p.iq3, interleaved, p.iq3xxs, p.iq_signs);
+        return q8_xmx_product(p.q, type, weights, p.input, p.scales, output, rows, width, plan, separate, p.iq2, p.iq3, interleaved, p.iq3xxs, p.iq_signs, large_prefill_packed);
 #endif
 #define GROUP_PRODUCT(T,Tile) product<T,Tile,true>(p.q, weights, p.input, p.scales, nullptr, plan.picks, plan.tokens, output, rows, width, separate, p.iq2, p.iq3, p.iq4, p.iq3xxs, p.iq_signs, plan)
 #define RUN(T) (plan.tile_width == 2 ? GROUP_PRODUCT(T,2) : GROUP_PRODUCT(T,4))

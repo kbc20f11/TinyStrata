@@ -1,4 +1,5 @@
 #include "strata/intel/q8_xmx.hpp"
+#include "strata/intel/moe_route_policy.hpp"
 #include <sycl/ext/intel/esimd.hpp>
 #include <sycl/ext/intel/esimd/xmx/dpas.hpp>
 #include <algorithm>
@@ -228,15 +229,15 @@ template<int Type,int M=4,bool Interleaved=false,bool PackedIq=false> sycl::even
     });
 }
 // Only measured interleaved IQ2_S/IQ3_S windows use packed gathers. Prefill
-// measurements used four-row tiles; retain the old M1 path beyond T8. Keep
-// T1, 9..31, 129+, Q6 and original-layout products on their existing paths.
+// measurements used four-row tiles; retain the old M1 path beyond T8. The
+// separate large-prefill argument admits only route-selected measured shapes.
 template<int Type,int M> sycl::event dispatch_expert_product(sycl::queue& q,const uint8_t* weights,
     const int8_t* input,const float* scales,float* output,int rows,int width,ExpertPlan plan,
     bool separate,const uint32_t* iq2,const uint32_t* iq3,bool interleaved,
-    const uint32_t* iq3xxs,const uint8_t* iq_signs) {
+    const uint32_t* iq3xxs,const uint8_t* iq_signs,bool large_prefill_packed) {
     if(interleaved) {
         if constexpr(Type==21 || Type==22) {
-            if((plan.tokens>=2 && plan.tokens<=8) || (M==4 && plan.tokens>=32 && plan.tokens<=128))
+            if((plan.tokens>=2 && plan.tokens<=8) || (M==4 && ((plan.tokens>=32 && plan.tokens<=128) || large_prefill_packed)))
                 return run<Type,M,true,true>(q,weights,input,scales,output,rows,width,plan,separate,iq2,iq3,iq3xxs,iq_signs);
         }
         return run<Type,M,true,false>(q,weights,input,scales,output,rows,width,plan,separate,iq2,iq3,iq3xxs,iq_signs);
@@ -246,12 +247,15 @@ template<int Type,int M> sycl::event dispatch_expert_product(sycl::queue& q,cons
 }
 sycl::event q8_xmx_product(sycl::queue& q,int type,const uint8_t* weights,const int8_t* input,
     const float* scales,float* output,int rows,int width,ExpertPlan plan,bool separate,const uint32_t* iq2,const uint32_t* iq3,bool interleaved,
-    const uint32_t* iq3xxs,const uint8_t* iq_signs){
+    const uint32_t* iq3xxs,const uint8_t* iq_signs,bool large_prefill_packed){
     if(!q.has_property<sycl::property::queue::in_order>()||rows<1||width<256||width%256||plan.tokens<1||plan.tokens>1024||
         plan.experts<1||plan.experts>256||(plan.tile_width!=4&&plan.tile_width!=1)||plan.picks<1||plan.picks>8)throw std::invalid_argument("Invalid INT8 XMX product geometry");
     if(interleaved && rows%16) throw std::invalid_argument("Interleaved experts need complete 16-row tiles");
     if(type==18 && (!iq3xxs || !iq_signs)) throw std::invalid_argument("IQ3_XXS XMX requires its grid and sign tables");
-#define PRODUCT(T,M) dispatch_expert_product<T,M>(q,weights,input,scales,output,rows,width,plan,separate,iq2,iq3,interleaved,iq3xxs,iq_signs)
+    if(large_prefill_packed && (plan.tile_width!=4 ||
+        !moe_route_policy::measured_projection(type,rows,width,separate,interleaved,plan.tokens,plan.experts,plan.picks)))
+        throw std::invalid_argument("Unsupported adaptive packed MoE projection");
+#define PRODUCT(T,M) dispatch_expert_product<T,M>(q,weights,input,scales,output,rows,width,plan,separate,iq2,iq3,interleaved,iq3xxs,iq_signs,large_prefill_packed)
 #define RUN(T) (plan.tile_width==1 ? PRODUCT(T,1) : PRODUCT(T,4))
     switch(type){case 14:return RUN(14);case 18:return RUN(18);case 21:return RUN(21);case 22:return RUN(22);default:throw std::invalid_argument("Unsupported INT8 XMX GGUF type");}
 #undef RUN

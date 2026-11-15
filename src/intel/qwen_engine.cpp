@@ -8,6 +8,7 @@
 #include "strata/intel/qwen_ops.hpp"
 #include "strata/intel/decode_dp4a.hpp"
 #include "strata/intel/q8_xmx.hpp"
+#include "strata/intel/moe_route_policy.hpp"
 #include "strata/intel/kv_q8.hpp"
 #include "strata/intel/execution_request.hpp"
 #include "strata/intel/turn_checkpoint.hpp"
@@ -113,6 +114,11 @@ class Engine {
     bool graph_enabled_ = true;
     bool recording_ = false, profiling_ = false, prefill_xmx_ = false, verify_xmx_ = false, prefill_int8_xmx_ = false;
     bool verify_mkl_attention_ = false, dense_split_k_ = false;
+    bool moe_route_adaptive_ = false, moe_route_observe_ = false;
+    uint64_t moe_route_observed_ = 0, moe_route_eligible_ = 0, moe_route_q8_projections_ = 0;
+    uint64_t moe_route_observed_512_ = 0, moe_route_eligible_512_ = 0;
+    int moe_route_active_min_ = 256, moe_route_active_max_ = 0, moe_route_peak_max_ = 0;
+    uint32_t moe_route_hot_slots_max_ = 0;
     bool device_state_ = false;
     bool verify_graph_enabled_ = false;
     int recording_extent_ = 128;
@@ -557,10 +563,34 @@ class Engine {
             && q8_xmx_supports(int(gate.info.type)) && q8_xmx_supports(int(up.info.type)) && q8_xmx_supports(int(down.info.type));
         const bool grouped = tokens >= 64 || small_dp || prefill_dp || interleaved_experts;
         plan.tile_width = interleaved_experts ? (tokens == 1 ? 1 : 4) : prefill_dp ? 4 : small_dp ? (verify_xmx_ ? 4 : 2) : prefill_xmx_ && tokens >= 64 ? 8 : 4;
-        if (grouped) remember("expert_plan", plan_experts(q_, ids, plan));
+        bool route_packed_q8 = false;
+        if (grouped) {
+            const auto expert_plan = plan_experts(q_, ids, plan);
+            remember("expert_plan", expert_plan);
+#ifdef TINYSTRATA_INTEL_MKL
+        if (moe_route_observe_ && !recording_ && !verifying_ && prefix != "blk.40." && gemm_ && dp4a_ &&
+            moe_route_policy::measured_projection(int(gate.info.type),ff,n,false,interleaved_experts,tokens,experts,picks) &&
+            moe_route_policy::measured_projection(int(up.info.type),ff,n,false,interleaved_experts,tokens,experts,picks) &&
+            moe_route_policy::measured_projection(int(down.info.type),n,ff,true,interleaved_experts,tokens,experts,picks)) {
+            // The plan already produces these shared control counts. One
+            // scoped completion and one bounded scan serve all projections;
+            // no IDs/weights/slots are copied, filtered, or reordered.
+            expert_plan.wait_and_throw();
+            const auto route = moe_route_policy::analyze(expert_counts_,experts,tokens,picks);
+            const bool eligible = moe_route_policy::prefer_packed_q8(route);
+            ++moe_route_observed_; moe_route_eligible_ += eligible;
+            if (tokens == 512) { ++moe_route_observed_512_; moe_route_eligible_512_ += eligible; }
+            moe_route_active_min_ = std::min(moe_route_active_min_,route.active);
+            moe_route_active_max_ = std::max(moe_route_active_max_,route.active);
+            moe_route_peak_max_ = std::max(moe_route_peak_max_,route.peak);
+            moe_route_hot_slots_max_ = std::max(moe_route_hot_slots_max_,route.hot_slots);
+            route_packed_q8 = moe_route_adaptive_ && eligible;
+        }
+#endif
+        }
         auto product = [&](const ResidentTensor& weight, const float* input, float* output, int rows, int width, bool separate) {
 #ifdef TINYSTRATA_INTEL_MKL
-            if (interleaved_experts && gemm_ && tokens >= 512) {
+            if (interleaved_experts && gemm_ && tokens >= 512 && !route_packed_q8) {
                 remember("mkl_interleaved_experts", gemm_->selected(int(weight.info.type), weight.data, weight.bytes / experts,
                     plan, input, output, rows, width, separate, true));
                 return;
@@ -568,7 +598,8 @@ class Engine {
 #endif
             if (interleaved_experts) {
                 if (!dp4a_) throw std::runtime_error("Interleaved experts require Q8 input kernels");
-                const auto event = dp4a_->grouped(int(weight.info.type), weight.data, plan, input, output, rows, width, separate, true);
+                const auto event = dp4a_->grouped(int(weight.info.type), weight.data, plan, input, output, rows, width, separate, true, route_packed_q8);
+                moe_route_q8_projections_ += route_packed_q8;
                 if (profiling_) { remember("q8_input_quantization", dp4a_->quantization_event()); remember("interleaved_xmx_experts", event); }
                 return;
             }
@@ -874,6 +905,13 @@ public:
         verify_graph_enabled_ = verify_graph;
         if (device_state_) std::fprintf(stderr, "Intel state_memory=device cpu_control_and_logits=shared\n");
         prefill_int8_xmx_ = prefill_int8_xmx;
+        moe_route_adaptive_ = moe_route_policy::enabled(std::getenv("STRATA_REVIEW_INTEL_MOE_ROUTE"));
+        moe_route_observe_ = moe_route_policy::enabled(std::getenv("STRATA_REVIEW_INTEL_MOE_ROUTE_STATS"),"STRATA_REVIEW_INTEL_MOE_ROUTE_STATS") || moe_route_adaptive_;
+        if (moe_route_observe_ && (experimental_tiel || experimental_clover || !expert_layout || !prefill_mkl || !decode_dp4a || !prefill_int8_xmx))
+            throw std::runtime_error("Adaptive MoE route experiment requires Qwen interleaved experts, MKL, DP4A and INT8 XMX prefill");
+#if !defined(TINYSTRATA_INTEL_MKL) || !defined(TINYSTRATA_INTEL_INT8_XMX)
+        if (moe_route_observe_) throw std::runtime_error("Adaptive MoE route experiment requires MKL and INT8 XMX build support");
+#endif
         mtp_depth_ = mtp_depth;
         bool measured_clover_runtime = false;
 #ifdef TINYSTRATA_INTEL_AOT_TARGET
@@ -1100,6 +1138,7 @@ public:
             print_memory("engine_ready", device);
             context_policy::report(chosen,context_limit,remaining_memory,selected_device.max_allocation);
             print_npu_pair_counters();
+            print_moe_routes();
             if(clover_){std::printf("INFO clover_fused_t1_hint=%d\n",int(clover_fused_t1_hint_));std::fflush(stdout);}
         } catch (...) {
             try { q_.wait_and_throw(); } catch (...) {}
@@ -1360,6 +1399,17 @@ public:
         return logits_;
     }
     int vocabulary() const { return int(weights_->geometry().n_vocab); }
+    void print_moe_routes() const {
+        std::printf("INFO moe_route_adaptive=%d\nINFO moe_route_observe=%d\n",int(moe_route_adaptive_),int(moe_route_observe_));
+        if (moe_route_observe_) std::printf(
+            "INFO moe_route_observed=%llu\nINFO moe_route_eligible=%llu\nINFO moe_route_q8_projections=%llu\n"
+            "INFO moe_route_observed_512=%llu\nINFO moe_route_eligible_512=%llu\n"
+            "INFO moe_route_active_min=%d\nINFO moe_route_active_max=%d\nINFO moe_route_peak_max=%d\nINFO moe_route_hot_slots_max=%u\n",
+            (unsigned long long)moe_route_observed_,(unsigned long long)moe_route_eligible_,(unsigned long long)moe_route_q8_projections_,
+            (unsigned long long)moe_route_observed_512_,(unsigned long long)moe_route_eligible_512_,
+            moe_route_observed_ ? moe_route_active_min_ : 0,moe_route_active_max_,moe_route_peak_max_,moe_route_hot_slots_max_);
+        std::fflush(stdout);
+    }
     int mtp_depth() const { return mtp_depth_; }
     const std::vector<int32_t>& draft_vocabulary() const { return draft_vocab_host_; }
     void prepare_draft_vocabulary(const float* target, const std::vector<int>& history) {
@@ -1796,6 +1846,7 @@ int serve(Engine& engine, bool stochastic_mtp = false) {
         engine.print_npu_pair_counters();
         const double decode_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - decode_start).count();
         engine.print_spec_stats();
+        engine.print_moe_routes();
         host_profile::print();
         const auto speculation_end = engine.speculation_counts();
         std::printf("DONE %d %zu %.3f %.3f %s %llu %llu %zu %d 0 0 0 0.0 %zu 0\n", produced, prompt.size(), prompt_ms, decode_ms, finish,
