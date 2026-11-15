@@ -254,7 +254,32 @@ int main(int argc,char** argv){try{
 #endif
     auto memory=strata::intel::WeightMemory::Host;
     for(int i=1;i<argc;++i){const std::string arg=argv[i];
-        if(arg=="--capabilities"){std::puts("{\"backend\":\"sycl\",\"experimental\":true,\"model_families\":[],\"experimental_models\":[\"lfm2.5-24b-a2b\"],\"experimental_profiles\":{\"lfm25-causal\":1},\"kv_types\":[\"int8\"],\"images\":false,\"mtp\":false,\"serve\":true,\"capabilities_schema\":1,\"mandatory_thinking\":true}");return 0;}
+        if(arg=="--capabilities"){
+#ifdef TINYSTRATA_INTEL_MKL
+            constexpr const char* mkl="true";
+            constexpr const char* profiles="{\"b390-lfm25\":1,\"lfm25-causal\":1}";
+#else
+            constexpr const char* mkl="false";
+            constexpr const char* profiles="{\"lfm25-causal\":1}";
+#endif
+#ifdef TINYSTRATA_INTEL_INT8_XMX
+            constexpr const char* xmx="true";
+#else
+            constexpr const char* xmx="false";
+#endif
+#ifdef TINYSTRATA_INTEL_AOT_TARGET
+            constexpr const char* aot=TINYSTRATA_INTEL_AOT_TARGET;
+#else
+            constexpr const char* aot="";
+#endif
+            std::printf("{\"backend\":\"sycl\",\"experimental\":true,\"model_families\":[],"
+                "\"experimental_models\":[\"lfm2.5-24b-a2b\"],\"experimental_profiles\":%s,"
+                "\"experimental_model_contracts\":{\"lfm2.5-24b-a2b\":{\"version\":1,\"architecture\":\"lfm2moe\",\"kv_types\":[\"int8\"],\"mtp\":false,\"experimental_mtp_max_depth\":0,\"images\":false,\"thinking\":\"mandatory\",\"mode\":\"target_only\"}},"
+                "\"kv_types\":[\"int8\"],\"images\":false,\"mtp\":false,\"experimental_mtp_max_depth\":0,\"serve\":true,\"capabilities_schema\":1,\"mandatory_thinking\":true,"
+                "\"build\":{\"mkl\":%s,\"int8_xmx\":%s,\"aot_target\":\"%s\"},"
+                "\"weight_types\":{\"scalar\":[0,12,14],\"dp4a\":[],\"int8_xmx\":[]}}\n",profiles,mkl,xmx,aot);
+            return 0;
+        }
         if(arg=="--help"){std::puts("tinystrata-intel-lfm2 --model PINNED.gguf [--serve | --tokens IDS | --tokens-file FILE] [--dump-full-logits FILE] [--max-context N] [--chunk N] [--kv-type int8] [--mtp 0] [--prefill-mkl | --no-prefill-mkl] [--device N] [--weight-memory host|shared|device]\nExperimental LFM2.5 target-only causal text. INT8 KV baseline; mandatory thinking; no MTP/images. Exact live-prefix reuse; edited/regenerated histories replay cleanly.");return 0;}
         if(arg=="--serve"){server=true;continue;}if(arg=="--prefill-mkl"){mkl=true;continue;}if(arg=="--no-prefill-mkl"){mkl=false;continue;}
         if(i+1>=argc)throw std::runtime_error("Missing value for "+arg);const std::string value=argv[++i];
