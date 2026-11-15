@@ -2,6 +2,15 @@
 
 更新日: 2026-11-15
 
+## Intel NPU支援の再評価（2026-11-15）
+
+- ユーザー提示の[PC Watch T5 Max記事](https://pc.watch.impress.co.jp/docs/column/hothot/2155899.html)は、onwx-dashでQwen3.6のprefillをNPU併用により約10%改善した報告。「NPUでは高速化できない」と一般化しない。現行Intel候補を既定offにした判断と、NPU支援全体の見込みを区別する
+- [既存Intel測定](../benchmark/results/intel-review-20261115.json)の実モデル比較はSTRATA_REVIEW_NPU_SPLIT=parallel、QKV/gateの先頭1024出力行固定・FP16 runtime weights・128MiBキャッシュ（32スライス）という限定方式。4Kは293.717→281.671、16Kは274.287→265.918 tok/s。RemoteTensorは24形状の数値/単体速度試験に含むが、通常実モデルのremoteモード速度比較は記録されていない。並列版は24形状全てで直列版より速いが、GPU単独より速い形は0
+- [移植元Gufo fork](https://github.com/mikealanni/gufo/tree/f3fd1a9679a9852745d050bf5f3032e4843e6b16)はQwen3.6で4K 3013→3276（+8.7%）、8K 2862→3134（+9.5%）を公開。複数チャンクの交互進行でNPU待ちを別チャンクのGPU処理へ重ね、入力長と行列別にNPU担当量を変える。これはAMDでの別実装の公開値で、Intelで同率向上する証明ではない。onwx-dashはHF revision 63302253e785539eebe133302f8dd3c339008f85を参照し、Windows移植版のバイナリとGufo最新sourceを同一物と扱わない
+- [onwx-dash変更履歴](https://huggingface.co/ryugyosoft/onwx-dash/blob/63302253e785539eebe133302f8dd3c339008f85/CHANGELOG_en.md)の0.8.9には、NPU併用時にだけGPU kernelのregister不足で2Kが約1000→290 tok/sになった後、tile変更で4K/8KがGPU単独より約10%改善した記録がある。IntelでもNPU本体だけでなくGPU残部、準備/変換/同期/結合の費用を分解する根拠になるが、同じ不具合の再現を示すものではない
+- 再検証の優先候補は、分担後GPU経路の個別計時、行列別/入力長別の分担探索、実モデルRemoteTensor・固定prepack/重み/バッファ再利用、因果/recurrent状態順序を保つチャンク交互進行。AMDのXDNA2 kernelはIntelへ直接移植できず、公開NPU経路のblock-float丸めもIntel側で品質を確認する。Flash-NextのQ4 decode copy/F16 residual等の別近似をQwen3.6のNPU利得と混同しない。通常CUDA/HIP相当の数値差を許容しつつ、必要な資料情報・長文検索・コード等で品質を評価する
+- 今回はコード/一次資料/保存測定の再監査であり、NPUの新しい速度測定・ビルド・既定値変更はしていない。このPCはBlackwellでIntel NPU実機を利用できない。現行候補のoffを維持し、改善案の採否は[Issue #11](https://github.com/kbc20f11/TinyStrata/issues/11)で実機再検証する。資料保存先TinyStrata-work/npu-reference-review-20261115
+
 ## Intel UMAフッターの修正（2026-11-15）
 
 - **更新時の旧runtime再利用の追補**: 最新カタログを持つソースでも、source更新不要・同じIntel profile・既存exeありの場合に旧generationを再利用する経路が残っていた。配布済み旧PTL-Hの実65payloadを検証・私有generationへimportし、自己検証には通るがexe/元manifest SHAが新カタログと異なることを確認。通常Intel導入では選択profile/model/AOTに対応するカタログと、保存generationの全payload・実exe SHA・ImportedFromManifestSha256を照合する。相違時は既存の検証付きdownload/import transactionへ進み、同じ現行packageなら無関係なソース更新だけで再importしない。明示offline stageとCUDA/HIPは維持する。稼働中の古いIntel APIを黙って再利用せず、既存の停止要件を明示する。この追補のIntel実機での更新と、ユーザーの再報告がこの経路によるものかは未確認。[Issue #18](https://github.com/kbc20f11/TinyStrata/issues/18)で継続。私有検証はTinyStrata-work/intel-kv-followup-20261115、Intel nativeや通常モデルを起動せず、設定・履歴は変更していない
