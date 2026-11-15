@@ -10,7 +10,7 @@
 namespace strata::intel::quant {
 inline float half(uint16_t value) { return float(sycl::bit_cast<sycl::half>(value)); }
 template<int Type> inline float value(const uint8_t* row, size_t col) {
-    static_assert(Type == 0 || Type == 1 || Type == 2 || Type == 30 || Type == 8 || Type == 10 || Type == 11 ||
+    static_assert(Type == 0 || Type == 1 || Type == 2 || Type == 30 || Type == 8 || Type == 10 || Type == 11 || Type == 12 ||
                   Type == 14 || Type == 18 || Type == 21 || Type == 22 || Type == 23, "Unsupported Intel GGUF block type");
     if constexpr (Type == 0) return reinterpret_cast<const float*>(row)[col];
     if constexpr (Type == 1) return half(reinterpret_cast<const uint16_t*>(row)[col]);
@@ -23,6 +23,16 @@ template<int Type> inline float value(const uint8_t* row, size_t col) {
     if constexpr (Type == 8) {
         const auto& b = reinterpret_cast<const block_q8_0*>(row)[col / 32];
         return half(b.d) * b.qs[col % 32];
+    }
+    if constexpr (Type == 12) {
+        const auto& b = reinterpret_cast<const block_q4_K*>(row)[col / 256];
+        const int i = int(col % 256), group = i / 32;
+        const int scale = group < 4 ? b.scales[group] & 63 :
+            (b.scales[group + 4] & 15) | ((b.scales[group - 4] >> 6) << 4);
+        const int minimum = group < 4 ? b.scales[group + 4] & 63 :
+            (b.scales[group + 4] >> 4) | ((b.scales[group] >> 6) << 4);
+        const int bits = (b.qs[(i / 64) * 32 + i % 32] >> ((group % 2) * 4)) & 15;
+        return half(b.data.data.d) * scale * bits - half(b.data.data.dmin) * minimum;
     }
     if constexpr (Type == 14) {
         const auto& b = reinterpret_cast<const block_q6_K*>(row)[col / 256];
