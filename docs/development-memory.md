@@ -223,6 +223,7 @@ Gemmaの `auto` はGPUに応じてFP8かINT8を選ぶ意味ではなく、常に
 - ダウンロードと推論を全体で排他しない。取得済みの別モデルでの会話・切替・再配置を許可し、切替対象自身の取得・検証・準備・worker終了待ちだけを拒否する
 - 共有Projectorと同名partファイルの競合を避けるためファイル取得は1件ずつ。使用中モデルの削除、転送中の削除、インストーラー更新の排他は維持する。生成中でも取得開始を許可し、別モデルの切替中も取得中止を許可する
 - 起動時の取得完了callbackはControllerでnative公開を予約する。別のモデルが選択済み／切替受付済みならファイルとProfile準備だけを行い、選択中モデルを奪わない。Profile更新はController lockで直列化し、FIFO待機中にController lockを保持しない
+- active callbackは新規受付を予約で止めた後、既存admit leaseが0になるまでConditionで待つ。tokenizer準備前の既存requestも旧runtimeで完了できるよう、待機中はFIFOとController lockを保持しない。stop/close時は予約を解除する。既存lease・後続拒否・停止を含む13 CPUテストで確認。並行してmainに入った94fd4f9を保持して統合し、配布nativeのsource commit c36と後続server/UI変更を混同しない
 - UI一覧の権限は取得開始・終了・中止完了・失敗の境界で再取得する。進捗の各更新やdownloading→verifyingでは再取得を増やさない。入力・モデルピッカーを取得中という理由だけで無効にしない
 - Blackwell実機とPlaywrightの実UIで、Gemmaの実assistant 251,939,328 bytesをローカルHTTPから取得し、Qwen→LFMでの会話、取得完了後のGemma切替・生成を確認した。Qwen生成受付中の中止でも回答は継続。Range/206でpartから再開し、最終SHA一致と完了時に元の選択を維持することを同じPCの2つの隔離UI環境で確認した
 - 実モデル4回答の資料26項目が独立正解と一致。長文はLFM4,993入力tok、Qwen5,473入力tokで訂正・未採用案を含む8項目を照合した。小さい正常例や偽の生成APIだけで済ませていない。UIの配置・文字・入力可能状態を画像でも確認した

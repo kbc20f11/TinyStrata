@@ -75,6 +75,7 @@ class ModelSwitcher:
         self.profiles = ModelProfiles(config_path, cfg)
         self.active_id = self.profiles.current_id
         self._lock = threading.RLock()
+        self._requests_drained = threading.Condition(self._lock)
         self._requests = 0
         self._closed = False
         self._worker = None
@@ -128,8 +129,9 @@ class ModelSwitcher:
         try:
             yield
         finally:
-            with self._lock:
+            with self._requests_drained:
                 self._requests -= 1
+                self._requests_drained.notify_all()
 
     def check_model(self, req):
         name = req.get('model')
@@ -238,9 +240,10 @@ class ModelSwitcher:
     def download_activation(self, model):
         """Reserve live bootstrap activation, or leave an inactive download as files only.
 
-        Do not hold the controller lock while waiting for the generation FIFO.
-        Reserving before native/tokenizer work prevents a switch from passing an
-        early active-id check and then being overwritten by a stale callback.
+        Reserve before native/tokenizer work, then drain accepted requests with
+        no FIFO held. Their parsing can still be using the old tokenizer before
+        reaching that FIFO. The reservation rejects new requests and switches;
+        the condition releases the controller lock while old requests finish.
         """
         with self._lock:
             self._open(allow_update=True)
@@ -250,6 +253,13 @@ class ModelSwitcher:
                 self._target, self._error, self._rollback = model, None, None
                 self._started, self._finished = time.time(), None
         try:
+            if activate:
+                with self._requests_drained:
+                    while self._requests:
+                        self._open(allow_update=True)
+                        # A stopping Event has no condition notification.
+                        self._requests_drained.wait(timeout=.25)
+                    self._open(allow_update=True)
             yield activate
         except BaseException as error:
             if activate:
@@ -908,8 +918,9 @@ class ModelSwitcher:
             return {**result, 'model_id': target, 'active': target == self.active_id}
 
     def close(self):
-        with self._lock:
+        with self._requests_drained:
             self._closed = True
+            self._requests_drained.notify_all()
             managers = list(self._downloads.values())
             worker = self._worker
         # Never join a download while holding the generation FIFO: its active

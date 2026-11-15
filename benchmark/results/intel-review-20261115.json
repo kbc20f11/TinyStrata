@@ -21,7 +21,19 @@
       "required_next_gate": "completed: final_shipping_native and new_canonical_four_start_text_benchmark",
       "shipping_executable_sha256": "86d46415d24eac4d00f18b55b9933284bc98e7d236fc0ed1a2248623869bc2df"
     },
-    "runtime_source_commit": "c36a84a4657f27d4051c1b2d1b9e9f6050d75c55"
+    "runtime_source_commit": "c36a84a4657f27d4051c1b2d1b9e9f6050d75c55",
+    "main_integration": {
+      "concurrent_main_commit_preserved": "94fd4f9ab46a722409c7c16a2d8c888151ed9f2c",
+      "native_sources_changed_after_runtime_build": false,
+      "additional_fix": "Active download activation reserves the controller, drains existing request leases without holding the generation FIFO, and releases the reservation on stop/close before publishing a new tokenizer/runtime.",
+      "post_merge_cpu_tests": {
+        "download_chat_concurrency": 13,
+        "model_switch_vision_resilience": 3,
+        "model_profile_identity": 29,
+        "ui_model_download_checks": 178
+      },
+      "scope": "CPU integration checks only; the earlier completed shipping-native and actual-installer measurements are not represented as reruns of this later server/UI integration."
+    }
   },
   "private_evidence_roots": {
     "review": "intel-review-20261115",

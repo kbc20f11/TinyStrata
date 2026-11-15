@@ -227,6 +227,101 @@ class DownloadChatConcurrency(unittest.TestCase):
         self.assertFalse(owned.closed)
         self.assertEqual(self.f.control.active_id, switching.NEW)
 
+    def test_active_bootstrap_drains_existing_request_before_runtime_preparation(self):
+        reserved, prepared = threading.Event(), threading.Event()
+        errors = []
+        armed = False
+        def current_path(_):
+            if armed:
+                prepared.set()
+            return Path('verified.gguf')
+        original_open = self.f.control._open
+        def opened(**kwargs):
+            original_open(**kwargs)
+            if threading.current_thread() is worker:
+                reserved.set()
+        def run():
+            try:
+                activate(Path('verified.gguf'))
+            except BaseException as error:
+                errors.append(error)
+        self.f.svc.vision = None
+        with patch.object(model_setup, 'model_path', side_effect=current_path):
+            activate, _ = self.bootstrap_callback()
+            armed = True
+            worker = threading.Thread(target=run)
+            with patch.object(self.f.control, '_open', side_effect=opened):
+                try:
+                    # The accepted request has not reached the generation FIFO.
+                    with self.f.control.admit():
+                        worker.start()
+                        self.assertTrue(reserved.wait(1))
+                        with self.f.control._lock:
+                            self.assertTrue(self.f.control._busy)
+                        self.assertFalse(prepared.wait(.05))
+                        # Activation must leave the FIFO to the old request.
+                        self.assertTrue(self.f.svc.fifo.acquire(blocking=False))
+                        self.f.svc.fifo.release()
+                        self.f.assert_text_works('old')
+                        self.assertIs(self.f.svc.engine, self.f.old_engine)
+                        self.assertIs(self.f.svc.tok, self.f.tok)
+                        with self.assertRaises(ModelControlError) as caught:
+                            with self.f.control.admit():
+                                self.fail('activation must reject later requests while draining')
+                        self.assertEqual(caught.exception.status, 503)
+                    self.assertTrue(prepared.wait(1))
+                finally:
+                    worker.join(2)
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(errors)
+        self.assertFalse(self.f.control._busy)
+        self.assertEqual(self.f.control._requests, 0)
+
+    def _assert_activation_drain_stops(self, close):
+        reserved, activated = threading.Event(), threading.Event()
+        errors = []
+        original_open = self.f.control._open
+        def opened(**kwargs):
+            original_open(**kwargs)
+            if threading.current_thread() is worker:
+                reserved.set()
+        def run():
+            try:
+                with self.f.control.download_activation(switching.OLD):
+                    activated.set()
+            except BaseException as error:
+                errors.append(error)
+        worker = threading.Thread(target=run)
+        with patch.object(self.f.control, '_open', side_effect=opened):
+            with self.f.control.admit():
+                worker.start()
+                try:
+                    self.assertTrue(reserved.wait(1))
+                    with self.f.control._lock:
+                        self.assertTrue(self.f.control._busy)
+                    if close:
+                        self.f.control.close()
+                    else:
+                        self.f.svc.stopping.set()
+                    worker.join(1)
+                    self.assertFalse(worker.is_alive())
+                    self.assertFalse(activated.is_set())
+                    self.assertFalse(self.f.control._busy)
+                    self.assertEqual(self.f.control._requests, 1)
+                finally:
+                    self.f.svc.stopping.set()
+            worker.join(2)
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], ModelControlError)
+        self.assertEqual(errors[0].status, 503)
+        self.assertEqual(self.f.control._requests, 0)
+
+    def test_stopping_aborts_activation_drain_without_acquiring_runtime(self):
+        self._assert_activation_drain_stops(close=False)
+
+    def test_controller_close_aborts_activation_drain_without_acquiring_runtime(self):
+        self._assert_activation_drain_stops(close=True)
+
 
 class CatalogDownloadAdmission(unittest.TestCase):
     def test_active_generation_blocks_deletion_but_keeps_download_action_available(self):
