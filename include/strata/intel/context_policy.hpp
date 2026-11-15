@@ -1,5 +1,6 @@
 #pragma once
 #include "strata/intel/memory_policy.hpp"
+#include "strata/intel/gemma_prefix.hpp"
 #include <cstdint>
 #include <cmath>
 #include <cstdio>
@@ -81,6 +82,9 @@ inline Footprint gemma(uint64_t c,const GemmaSpec& s={}){
     attention(p,c,n,s.heads,s.full_dim,expansion,s.mkl);
     if(s.pv_split)p.allocation(mul(mul(s.heads,add(c,255)/256),s.full_dim),4);
     if(s.mkl)gemm(p,1,n);
+    // One bounded ordinary-host turn snapshot; full-attention KV remains in
+    // its original arena. This is RAM/commit admission, never WDDM residency.
+    p.host(gemma_prefix::snapshot_bytes(sliding,8,s.swa_dim,25));
     p.host(16ull<<20); // bounded sampler/history/metadata work; not another OS floor
     return p;
 }

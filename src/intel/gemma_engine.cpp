@@ -3,6 +3,7 @@
 #include "strata/intel/gemma_model.hpp"
 #include "strata/intel/context_policy.hpp"
 #include "strata/intel/gemma_ops.hpp"
+#include "strata/intel/gemma_turn_snapshot.hpp"
 #include "strata/intel/weight_store.hpp"
 #include "strata/intel/qwen_ops.hpp"
 #include "strata/intel/execution_request.hpp"
@@ -35,6 +36,7 @@ class GemmaEngine {
     std::vector<void*> allocations_;
     context_policy::Footprint actual_allocations_;
     std::unique_ptr<GemmaAttention> attention_;
+    std::unique_ptr<GemmaTurnSnapshot> turn_;
 #ifdef TINYSTRATA_INTEL_MKL
     std::unique_ptr<PrefillGemm> gemm_;
 #endif
@@ -78,7 +80,7 @@ class GemmaEngine {
     void add(const float* input,float* destination,size_t count){queue_.parallel_for(sycl::range<1>(count),[=](sycl::id<1> i){destination[i]+=input[i];});}
     void release() noexcept {
         try{queue_.wait_and_throw();}catch(...){}
-        attention_.reset();
+        turn_.reset();attention_.reset();
 #ifdef TINYSTRATA_INTEL_MKL
         gemm_.reset();
 #endif
@@ -113,6 +115,11 @@ public:
             cache_.resize(g.layers);
             for(int l=0;l<g.layers;++l){auto& c=cache_[l];c.capacity=int(g.capacity(l,context_,chunk_));c.heads=g.kv_heads[l];c.dim=g.dim(l);c.window=g.sliding[l]?g.window:0;
                 const size_t cells=size_t(c.capacity)*c.heads*c.dim;c.key=allocate<int8_t>(cells);c.value=allocate<int8_t>(cells);c.key_scale=allocate<sycl::half>(cells/32);c.value_scale=allocate<sycl::half>(cells/32);}
+            turn_=std::make_unique<GemmaTurnSnapshot>(cache_);
+            if(turn_->bytes()!=gemma_prefix::snapshot_bytes(std::min(size_t(context_),size_t(g.window+chunk_)),8,g.swa_dim,25))
+                throw std::logic_error("Gemma turn snapshot differs from admitted host footprint");
+            actual_allocations_.host(turn_->bytes());
+            std::printf("INFO gemma_turn_checkpoint=1 turn_snapshot_host_bytes=%zu\n",turn_->bytes());std::fflush(stdout);
             residual_=allocate<float>(n*g.width);norm_=allocate<float>(n*g.width);
             query_raw_=allocate<float>(n*g.heads*g.full_dim);query_=allocate<float>(n*g.heads*g.full_dim);
             key_raw_=allocate<float>(n*8*g.swa_dim);value_raw_=allocate<float>(n*8*g.swa_dim);key_=allocate<float>(n*8*g.swa_dim);value_=allocate<float>(n*8*g.swa_dim);
@@ -124,7 +131,7 @@ public:
             input_ids_=allocate<int32_t>(n,true);quant_error_=allocate<int32_t>(1,true);logits_=allocate<float>(g.vocabulary,true);
             counts_=allocate<int32_t>(g.experts);slots_=allocate<int32_t>(n*g.experts);
             const size_t max_tiles=(n*g.picks+3)/4+g.experts;owners_=allocate<int32_t>(max_tiles);offsets_=allocate<int32_t>(max_tiles);tiles_=allocate<int32_t>(1);
-            if(actual_allocations_.device!=chosen.bytes.owned_device||actual_allocations_.host_visible!=chosen.bytes.owned_host_visible||actual_allocations_.largest>chosen.bytes.largest)
+            if(actual_allocations_.device!=chosen.bytes.owned_device||actual_allocations_.host_visible!=chosen.bytes.owned_host_visible||actual_allocations_.largest>chosen.bytes.largest||actual_allocations_.host_only!=chosen.bytes.host_only-(16ull<<20))
                 throw std::logic_error("Gemma context planner differs from actual engine allocations");
             attention_=std::make_unique<GemmaAttention>(queue_,context_,chunk_,g.heads,g.full_dim,cache_elements,prefill_mkl,pv_split_);
             std::fprintf(stderr,"Intel Gemma split_pv=%d decode_only=1 min_visible=1024 key_tile=256 scratch_bytes=%llu\n",int(pv_split_),
@@ -143,7 +150,18 @@ public:
     const DeviceInfo& device_info() const{return device_;}
     int context() const{return context_;}int chunk() const{return chunk_;}int consumed() const{return position_;}int vocabulary() const{return geometry_.vocabulary;}
     bool terminal(int token) const{return std::find(stops_.begin(),stops_.end(),token)!=stops_.end();}
-    void reset(){queue_.wait_and_throw();position_=0;logits_valid_=false;}
+    bool logits_valid()const{return logits_valid_;}
+    bool turn_valid()const{return turn_->valid();}
+    void invalidate_turn(){turn_->invalidate();}
+    void reset(){queue_.wait_and_throw();position_=0;logits_valid_=false;invalidate_turn();}
+    bool save_turn(size_t logical,const std::atomic<bool>* cancelled){return turn_->save(queue_,logical,size_t(position_),size_t(chunk_),cancelled);}
+    void restore_turn(){if(turn_->position()>size_t(position_))throw std::logic_error("Gemma turn is ahead of resident KV");position_=int(turn_->restore(queue_));logits_valid_=false;}
+    void rewind_one(){
+        if(position_<1)throw std::logic_error("Gemma cannot replay before position0");
+        for(const auto& c:cache_)if(c.window&&!gemma_prefix::ring_retains(size_t(position_-1),size_t(position_),c.capacity,c.window))
+            throw std::logic_error("Gemma replay no longer retains the required window");
+        queue_.wait_and_throw();--position_;logits_valid_=false;
+    }
     const float* logits(){if(!logits_valid_)throw std::runtime_error("Gemma logits are not available");return logits_;}
     const float* step_many(const int* tokens,int count,bool final=true,const std::atomic<bool>* cancelled=nullptr){
         if(count<1||count>chunk_||position_+count>context_)throw std::runtime_error("Gemma step exceeds context/chunk");
@@ -219,32 +237,52 @@ void option(sampling_policy::Sampling& s,const std::string& text){
     else if(k=="penalty_freq")s.frequency=n;
     else if(k=="penalty_present")s.presence=n;
     else if(k=="penalty_last_n"&&n>=-1&&n<=32768&&n==std::floor(n))s.last_n=int(n);
-    else if((k=="ckpt"||k=="turn_at")&&n>=0&&n==std::floor(n)){} // first target-only milestone replays the exact full prefix
     else if((k=="mtp_auto"||k=="lookup_draft")&&n==0){}
     else throw std::runtime_error("Unsupported Gemma request option: "+text);
 }
 int serve(GemmaEngine& e){
     const auto& d=e.device_info();
     std::printf("INFO backend=sycl experimental=1 model=gemma-4-26b-a4b-it family=gemma4 kv=int8 mtp=0 vision=0 memory_model=%s single_weight_store=1 expert_gpu_percent=100 expert_cpu_percent=0 device_vendor=%u device_id=%u device_integrated=%d device_architecture=%s adapter_luid=%s adapter_node_mask=%u kv_used_tokens=0\nREADY %d stop\n",d.integrated?"uma":"discrete",d.vendor_id,d.device_id,int(d.integrated),d.architecture.c_str(),d.adapter_luid.empty()?"unknown":d.adapter_luid.c_str(),d.adapter_node_mask,e.context());std::fflush(stdout);
-    strata::common::CommandInbox inbox;std::string line;
+    strata::common::CommandInbox inbox;std::string line;std::vector<int> live,saved;
     int reported_position=0;
     const auto report_position=[&]{if(reported_position!=e.consumed()){reported_position=e.consumed();std::printf("INFO kv_used_tokens=%d\n",reported_position);std::fflush(stdout);}};
     while(inbox.next(line)){
         if(line=="QUIT")return 0;if(line.empty())continue;
         std::vector<int> prompt;int count=0;sampling_policy::Sampling sampling;
+        bool checkpoint=true,seen_checkpoint=false,seen_turn=false;size_t turn_at=0;
         try{
             if(line.rfind("GEN ",0)!=0)throw std::runtime_error("Gemma target-only route supports text GEN only");
             std::istringstream in(line.substr(4));std::string field,ids;
             if(!(in>>field))throw std::runtime_error("Missing output count");count=integer(field,e.context());
-            while(in>>field){if(ids.empty()&&field.find('=')!=std::string::npos)option(sampling,field);else{if(!ids.empty())ids+=' ';ids+=field;}}
+            while(in>>field){if(ids.empty()&&field.find('=')!=std::string::npos){
+                if(field.rfind("ckpt=",0)==0){if(seen_checkpoint)throw std::runtime_error("Duplicate Gemma ckpt option");checkpoint=integer(field.substr(5),1)!=0;seen_checkpoint=true;}
+                else if(field.rfind("turn_at=",0)==0){if(seen_turn)throw std::runtime_error("Duplicate Gemma turn_at option");turn_at=size_t(integer(field.substr(8),e.context()));seen_turn=true;}
+                else option(sampling,field);
+            }else{if(!ids.empty())ids+=' ';ids+=field;}}
             prompt=parse_tokens(ids);if(count<1||prompt.size()+size_t(count)>size_t(e.context()))throw std::runtime_error("Gemma request exceeds context");
             for(int id:prompt)if(id>=e.vocabulary())throw std::runtime_error("Gemma token outside vocabulary");
+            turn_at=gemma_prefix::turn_boundary(turn_at,prompt.size());
         }catch(const std::exception& error){std::printf("ERROR %s\n",error.what());std::fflush(stdout);continue;}
-        ExecutionRequest active;const auto start=std::chrono::steady_clock::now();e.reset();
-        report_position();std::printf("RESUME 0\n");std::fflush(stdout);
-        size_t consumed=0;const float* logits=nullptr;
+        ExecutionRequest active;const auto start=std::chrono::steady_clock::now();
+        if(live.size()!=size_t(e.consumed()))throw std::logic_error("Gemma committed history/position mismatch");
+        const auto reuse=gemma_prefix::choose(live,prompt,saved,size_t(e.consumed()),e.logits_valid(),e.turn_valid(),checkpoint);
+        if(reuse.source==gemma_prefix::Source::reset){e.reset();live.clear();saved.clear();}
+        else if(reuse.source==gemma_prefix::Source::saved_turn){e.restore_turn();live=saved;}
+        else if(reuse.source==gemma_prefix::Source::replay_last){e.rewind_one();live.resize(reuse.tokens);}
+        const size_t reused=reuse.tokens;
+        report_position();std::printf("RESUME %zu\n",reused);std::fflush(stdout);
+        size_t consumed=reused;const float* logits=nullptr;
         for(;consumed<prompt.size()&&!inbox.cancelled().load();){const int n=int(std::min(size_t(e.chunk()),prompt.size()-consumed));
+            const size_t before=consumed;
             logits=e.step_many(prompt.data()+consumed,n,consumed+n==prompt.size(),&inbox.cancelled());if(!logits)break;consumed+=n;
+            live.insert(live.end(),prompt.begin()+before,prompt.begin()+consumed);
+            // Keep the existing cold-prefill chunks. Save their complete SWA
+            // rings but attach only the requested logical boundary. Causal
+            // masking ignores later rows, and every fresh suffix rewrites them.
+            if(checkpoint&&before<turn_at&&turn_at<=consumed){
+                saved.clear();
+                if(e.save_turn(turn_at,&inbox.cancelled()))saved.assign(prompt.begin(),prompt.begin()+turn_at);
+            }
             const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
             report_position();std::printf("PP %zu %zu %.3f\n",consumed,prompt.size(),ms);std::fflush(stdout);}
         const auto decode_start=std::chrono::steady_clock::now();const double prefill=std::chrono::duration<double,std::milli>(decode_start-start).count();
@@ -252,14 +290,15 @@ int serve(GemmaEngine& e){
         if(inbox.cancelled().load())finish="cancel";
         else for(int n=0;n<count;++n){
             if(inbox.cancelled().load()){finish="cancel";break;}
+            if(n==0)logits=e.logits();
             const int token=sampling_policy::sample(logits,e.vocabulary(),sampling,history,random);++produced;history.push_back(token);
             std::printf("T %d\n",token);std::fflush(stdout);if(e.terminal(token)){finish="stop";break;}
-            if(n+1<count){logits=e.step_many(&token,1,true,&inbox.cancelled());if(!logits){finish="cancel";break;}report_position();}
+            if(n+1<count){logits=e.step_many(&token,1,true,&inbox.cancelled());if(!logits){finish="cancel";break;}live.push_back(token);report_position();}
         }
-        if(inbox.cancelled().load())e.reset();
+        if(inbox.cancelled().load()){e.reset();live.clear();saved.clear();}
         report_position();
         const double decode=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-decode_start).count();
-        std::printf("DONE %d %zu %.3f %.3f %s 0 0 0 0 0 0 0 0.0 %zu 0\n",produced,prompt.size(),prefill,decode,finish,consumed);std::fflush(stdout);
+        std::printf("DONE %d %zu %.3f %.3f %s 0 0 %zu 0 0 0 0 0.0 %zu 0\n",produced,prompt.size(),prefill,decode,finish,reused,consumed-reused);std::fflush(stdout);
     }
     return 0;
 }
