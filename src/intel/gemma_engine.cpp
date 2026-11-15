@@ -88,6 +88,11 @@ public:
     GemmaEngine(const std::string& path,unsigned device,int context,int chunk,WeightMemory memory,bool prefill_mkl)
         :queue_(select_device(device),sycl::property::queue::in_order{}),device_(inspect_device(queue_.get_device())),context_(context),chunk_(chunk){
         if(context<0||context>context_policy::full_limit||chunk<1||chunk>512)throw std::runtime_error("Gemma context must be auto or1..262144; chunk1..512 required");
+        bool measured_runtime=false;
+#ifdef TINYSTRATA_INTEL_AOT_TARGET
+        measured_runtime=std::string(TINYSTRATA_INTEL_AOT_TARGET)=="intel_gpu_ptl_h";
+#endif
+        pv_split_=measured_runtime&&device_.vendor_id==0x8086&&device_.device_id==0xB082&&device_.integrated&&device_.ptl_h_aot;
         if(const char* value=std::getenv("TINYSTRATA_INTEL_GEMMA_SPLIT_PV")){
             const std::string mode(value);
             if(!mode.empty()&&mode!="0"&&mode!="1")throw std::runtime_error("Gemma PV candidate accepts only0/1");
