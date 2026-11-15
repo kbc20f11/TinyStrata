@@ -54,6 +54,12 @@ int main() {
     discrete.wddm_known = false;
     check(allocation_budget(discrete, MemoryPool::Device) == 0);
     constexpr uint64_t snapshot = 63ull * 1024 * 1024;
+    MemoryBudget uma_snapshot{4*GiB+GiB+snapshot,4*GiB+GiB+snapshot,GiB,true,true};
+    check(execution_allocation_fits(uma_snapshot,GiB,GiB,snapshot)); // snapshot has no WDDM backing
+    check(!execution_allocation_fits(uma_snapshot,GiB+1,0,snapshot)); // device is over WDDM
+    check(!execution_allocation_fits(uma_snapshot,GiB,0,snapshot+1)); // one byte below RAM floor
+    --uma_snapshot.available_commit;
+    check(!execution_allocation_fits(uma_snapshot,GiB,0,snapshot)); // commit remains separate
     MemoryBudget separate{4 * GiB, 4 * GiB, GiB, true, false, GiB, true};
     check(!execution_allocation_fits(separate, GiB / 2, 1, snapshot)); // zero host room
     separate.available_physical += snapshot; separate.available_commit += snapshot;

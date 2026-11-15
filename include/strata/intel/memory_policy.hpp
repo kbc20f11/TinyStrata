@@ -51,14 +51,20 @@ inline bool allocation_fits(const MemoryBudget& m, uint64_t bytes, uint64_t max_
     return bytes != 0 && limit && bytes <= allocation_budget(m, pool);
 }
 // device_bytes already includes shared/control USM's possible device backing.
-// UMA counts that single pool once. Discrete additionally admits its possible
+// UMA counts that single RAM pool once, but ordinary CPU snapshots/work do
+// not consume WDDM GPU backing. Discrete additionally admits its possible
 // host backing and ordinary host-only snapshots/work without charging snapshots
 // to VRAM. RAM and VRAM capacities are never added together.
 inline bool execution_allocation_fits(const MemoryBudget& m, uint64_t device_bytes,
                                       uint64_t host_visible_bytes, uint64_t host_only_bytes) {
     const uint64_t device = allocation_budget(m);
     if (device_bytes > device) return false;
-    if (m.integrated) return host_only_bytes <= device - device_bytes;
+    if (m.integrated) {
+        // The check above already admits device backing against WDDM and RAM.
+        // Admit the additional ordinary host allocations against RAM/commit,
+        // preserving the same one4GiB OS floor without charging them to WDDM.
+        return host_only_bytes <= system_allocation_budget(m) - device_bytes;
+    }
     const uint64_t host = system_allocation_budget(m);
     if (host_visible_bytes > host || host_only_bytes > host - host_visible_bytes) return false;
     if (host_visible_bytes && (!m.wddm_nonlocal_known || host_visible_bytes > m.wddm_nonlocal_available)) return false;

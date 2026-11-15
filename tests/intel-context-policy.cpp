@@ -76,7 +76,16 @@ int main(){try{
     rejected([&]{cp::select(0,262144,none,GiB,linear);});
     // WDDM and max single allocation can independently limit auto. There is
     // no sum of RAM and shared/local GPU capacity.
-    auto wddm=uma;wddm.wddm_available=need;check(cp::select(0,262144,wddm,GiB,linear).tokens==65536);
+    auto wddm=uma;wddm.wddm_available=65537ull*1024;check(cp::select(0,262144,wddm,GiB,linear).tokens==65536);
+    // Replay the first real B390 auto-startup budgets. Device USM is WDDM
+    // charged; the ordinary83MiB snapshot/work is RAM-only. This is a CPU
+    // admission fixture, not a claim of a new real GPU allocation.
+    MemoryBudget measured{7494410240ull+4*GiB,7494410240ull+4*GiB,4039076372ull,true,true};
+    q.device_state=true;q.dense_split=true;
+    const auto improved=cp::select(0,262144,measured,17677697024ull,[&](uint64_t c){return cp::qwen(c,q);});
+    check(improved.tokens==157696);check(improved.bytes.device==4014184612ull);
+    check(improved.bytes.host_only==83288064ull);
+    check(!cp::fits(measured,17677697024ull,cp::qwen(159744,q)));
     check(cp::select(0,262144,uma,65536ull*1024,linear).tokens==65536);
     rejected([&]{cp::select(65537,262144,uma,65536ull*1024,linear);});
     MemoryBudget separate{4*GiB+(63ull<<20),4*GiB+(63ull<<20),8*GiB,true,false,GiB,true};
