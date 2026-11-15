@@ -103,7 +103,14 @@ public:
         :q_(select_device(device),[](sycl::exception_list errors){for(const auto& e:errors)std::rethrow_exception(e);},sycl::property::queue::in_order{}),
          device_(inspect_device(q_.get_device())),context_(context),chunk_(chunk){
         const char* q4_blocks=std::getenv("STRATA_INTEL_LFM_Q4_FP32_BLOCKS");
-        q4_fp32_blocks_=q4_blocks&&std::string(q4_blocks)=="1";
+        bool measured_runtime=false;
+#ifdef TINYSTRATA_INTEL_AOT_TARGET
+        measured_runtime=std::string(TINYSTRATA_INTEL_AOT_TARGET)=="intel_gpu_ptl_h";
+#endif
+        const bool measured_device=device_.vendor_id==0x8086&&device_.device_id==0xB082&&device_.integrated&&device_.ptl_h_aot;
+        if(q4_blocks&&std::string(q4_blocks)!="0"&&std::string(q4_blocks)!="1")
+            throw std::runtime_error("STRATA_INTEL_LFM_Q4_FP32_BLOCKS requires0 or1");
+        q4_fp32_blocks_=q4_blocks?std::string(q4_blocks)=="1":measured_runtime&&measured_device;
         if(context<0||context>context_policy::lfm_limit||chunk<1||chunk>512)throw std::runtime_error("LFM context must be auto or1..131072; chunk1..512 required");
 #ifdef TINYSTRATA_INTEL_AOT_TARGET
         if(std::string(TINYSTRATA_INTEL_AOT_TARGET)=="intel_gpu_ptl_h"&&!device_.ptl_h_aot)

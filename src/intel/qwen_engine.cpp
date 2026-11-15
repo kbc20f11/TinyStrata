@@ -725,7 +725,7 @@ public:
         if (device_state_) std::fprintf(stderr, "Intel state_memory=device cpu_control_and_logits=shared\n");
         prefill_int8_xmx_ = prefill_int8_xmx;
         mtp_depth_ = mtp_depth;
-        if(const char* setting=std::getenv("STRATA_INTEL_CLOVER_FUSED_T1")){
+        if(const char* setting=experimental_clover?std::getenv("STRATA_INTEL_CLOVER_FUSED_T1"):nullptr){
             const std::string value(setting);
             if(value!="0"&&value!="1")throw std::runtime_error("STRATA_INTEL_CLOVER_FUSED_T1 requires0 or1");
             clover_fused_t1_hint_=experimental_clover&&value=="1";
