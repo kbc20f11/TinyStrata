@@ -169,6 +169,8 @@ inline bool fits(const MemoryBudget& memory,uint64_t max_allocation,const Footpr
 inline std::string rejection(const char* why,int requested,const Footprint& p,const MemoryBudget& m,uint64_t maximum){
     return std::string(why)+" requested="+std::to_string(requested)+" device_bytes="+std::to_string(p.device)+
         " device_budget="+std::to_string(allocation_budget(m))+" host_visible_bytes="+std::to_string(p.host_visible)+
+        " wddm_known="+std::to_string(m.wddm_known)+" wddm_available_raw="+std::to_string(m.wddm_known?m.wddm_available:0)+
+        " wddm_headroom="+std::to_string(wddm_headroom(m))+" wddm_budget="+std::to_string(wddm_allocation_budget(m))+
         " host_only_bytes="+std::to_string(p.host_only)+" host_budget="+std::to_string(system_allocation_budget(m))+
         " nonlocal_budget="+std::to_string(m.wddm_nonlocal_known?m.wddm_nonlocal_available:0)+
         " largest_allocation="+std::to_string(p.largest)+" maximum_allocation="+std::to_string(maximum);
@@ -185,5 +187,7 @@ template<class Estimate>Selection select(int requested,int ceiling,const MemoryB
 inline void report(const Selection& s,int limit,const MemoryBudget& m,uint64_t maximum){
     std::fprintf(stderr,"Intel context_auto=%d max_context=%d model_limit=%d quantum=%d context_budget_device=%llu context_budget_host=%llu context_budget_nonlocal=%llu context_budget_wddm_known=%d context_budget_max_allocation=%llu context_bytes_device=%llu context_bytes_host_visible=%llu context_bytes_host_only=%llu context_bytes_cache=%llu context_bytes_largest_allocation=%llu os_headroom_bytes=%llu\n",int(s.automatic),s.tokens,limit,auto_quantum,(unsigned long long)allocation_budget(m),(unsigned long long)system_allocation_budget(m),(unsigned long long)(m.wddm_nonlocal_known?m.wddm_nonlocal_available:0),int(m.wddm_known),(unsigned long long)maximum,(unsigned long long)s.bytes.device,(unsigned long long)s.bytes.host_visible,(unsigned long long)s.bytes.host_only,(unsigned long long)s.bytes.cache,(unsigned long long)s.bytes.largest,(unsigned long long)(4*GiB));
     std::printf("INFO context_auto=%d\nINFO context_budget_device=%llu\nINFO context_bytes_device=%llu\nINFO context_bytes_host_visible=%llu\nINFO context_bytes_host_only=%llu\nINFO max_context=%d\n",int(s.automatic),(unsigned long long)allocation_budget(m),(unsigned long long)s.bytes.device,(unsigned long long)s.bytes.host_visible,(unsigned long long)s.bytes.host_only,s.tokens);std::fflush(stdout);
+    std::fprintf(stderr,"Intel context_wddm_known=%d context_wddm_available_raw=%llu context_wddm_headroom=%llu context_wddm_usable=%llu\n",int(m.wddm_known),(unsigned long long)(m.wddm_known?m.wddm_available:0),(unsigned long long)wddm_headroom(m),(unsigned long long)wddm_allocation_budget(m));
+    std::printf("INFO context_wddm_known=%d\nINFO context_wddm_available_raw=%llu\nINFO context_wddm_headroom=%llu\nINFO context_wddm_usable=%llu\n",int(m.wddm_known),(unsigned long long)(m.wddm_known?m.wddm_available:0),(unsigned long long)wddm_headroom(m),(unsigned long long)wddm_allocation_budget(m));std::fflush(stdout);
 }
 } // namespace strata::intel::context_policy

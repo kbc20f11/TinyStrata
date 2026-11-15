@@ -105,16 +105,36 @@ int main(){try{
     rejected([&]{cp::select(0,262144,none,GiB,linear);});
     // WDDM and max single allocation can independently limit auto. There is
     // no sum of RAM and shared/local GPU capacity.
-    auto wddm=uma;wddm.wddm_available=65537ull*1024;check(cp::select(0,262144,wddm,GiB,linear).tokens==65536);
+    auto wddm=uma;wddm.wddm_available=uma_wddm_headroom+65537ull*1024;check(cp::select(0,262144,wddm,GiB,linear).tokens==65536);
+    check(cp::select(65537,262144,wddm,GiB,linear).tokens==65537);
+    rejected([&]{cp::select(65538,262144,wddm,GiB,linear);});
+    for(uint64_t raw:{uint64_t{0},uma_wddm_headroom-1,uma_wddm_headroom}){
+        auto exhausted=uma;exhausted.wddm_available=raw;
+        rejected([&]{cp::select(0,262144,exhausted,GiB,linear);});
+    }
+    auto unknown=edge;unknown.wddm_known=false;unknown.wddm_available=uma_wddm_headroom;
+    check(cp::select(0,262144,unknown,GiB,linear).tokens==65536);
     // Replay the first real B390 auto-startup budgets. Device USM is WDDM
     // charged; the ordinary83MiB snapshot/work is RAM-only. This is a CPU
     // admission fixture, not a claim of a new real GPU allocation.
     MemoryBudget measured{7494410240ull+4*GiB,7494410240ull+4*GiB,4039076372ull,true,true};
     q.device_state=true;q.dense_split=true;
     const auto improved=cp::select(0,262144,measured,17677697024ull,[&](uint64_t c){return cp::qwen(c,q);});
-    check(improved.tokens==157696);check(improved.bytes.device==4014184612ull);
-    check(improved.bytes.host_only==83288064ull);
-    check(!cp::fits(measured,17677697024ull,cp::qwen(159744,q)));
+    check(improved.tokens==120832);check(improved.bytes.device==3233257636ull);
+    check(improved.bytes.host_only==83140608ull);
+    check(measured.wddm_available-improved.bytes.device>=uma_wddm_headroom);
+    check(!cp::fits(measured,17677697024ull,cp::qwen(122880,q)));
+    // The installed 2026-11-16 startup left only3.5MiB at the old157696
+    // capacity. Keep auto large while reserving768MiB in the WDDM ceiling.
+    auto current=measured;current.wddm_available=4017682964ull;
+    const auto reserved=cp::select(0,262144,current,17677697024ull,[&](uint64_t c){return cp::qwen(c,q);});
+    check(reserved.automatic&&reserved.tokens==118784);
+    check(reserved.bytes.device==3189872804ull);
+    check(reserved.bytes.host_only==83132416ull);
+    check(current.wddm_available-reserved.bytes.device==827810160ull);
+    check(current.wddm_available-reserved.bytes.device>=uma_wddm_headroom);
+    check(!cp::fits(current,17677697024ull,cp::qwen(120832,q)));
+    rejected([&]{cp::select(157696,262144,current,17677697024ull,[&](uint64_t c){return cp::qwen(c,q);});});
     check(cp::select(0,262144,uma,65536ull*1024,linear).tokens==65536);
     rejected([&]{cp::select(65537,262144,uma,65536ull*1024,linear);});
     MemoryBudget separate{4*GiB+(63ull<<20),4*GiB+(63ull<<20),8*GiB,true,false,GiB,true};
