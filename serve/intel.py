@@ -13,6 +13,14 @@ import signal
 import threading
 
 
+def context_option(value):
+    if value == "auto":
+        return value
+    if not value.isascii() or not value.isdigit() or not 16 <= int(value) <= 262144:
+        raise argparse.ArgumentTypeError("context must be auto or a whole number from 16 to 262144")
+    return int(value)
+
+
 def main(argv=None, *, stop_event: threading.Event | None = None) -> int:
     from serve.stdio import configure_utf8_stdio
     from serve.tinyconfig import DEFAULT_MAX_TOKENS
@@ -24,7 +32,8 @@ def main(argv=None, *, stop_event: threading.Event | None = None) -> int:
     from serve.intel_models import MODEL_PROFILES
     parser.add_argument("--intel-profile", choices=("generic", *MODEL_PROFILES.values()), default=None)
     parser.add_argument("--model-family", choices=("qwen36", "tiel", "gemma4", "lfm2", "clover"), default=None)
-    parser.add_argument("--context", type=int, default=4096)
+    parser.add_argument("--context", type=context_option, default="auto",
+                        help="auto lets native choose the largest context fitting actual memory after loading; explicit values are retained")
     parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS,
                         help="default output limit; omitted request limits fit the remaining context")
     parser.add_argument("--device", type=int, default=0)
@@ -53,7 +62,7 @@ def main(argv=None, *, stop_event: threading.Event | None = None) -> int:
     args = parser.parse_args(argv)
     if os.name != "nt":
         parser.error("The experimental Intel entry point currently requires native Windows")
-    if not 16 <= args.context <= 32768 or not 1 <= args.port <= 65535 or args.device < 0 or not 1 <= args.chunk <= 1024 or args.max_tokens < 1:
+    if not 1 <= args.port <= 65535 or args.device < 0 or not 1 <= args.chunk <= 1024 or args.max_tokens < 1:
         parser.error("Invalid context, port, device index, chunk or output token limit")
     if args.mtp and args.chunk < max(4, args.mtp + 1):
         parser.error("Experimental MTP needs chunk >= max(4, depth+1)")
@@ -94,11 +103,24 @@ def main(argv=None, *, stop_event: threading.Event | None = None) -> int:
                  "lfm2": LFM_MODEL, "clover": CLOVER_MODEL}.get(args.model_family)
     if requested is not None and requested != selected:
         parser.error("--model-family does not match the actual GGUF identity")
+    from serve.intel_backend import context_tokens
+    try:
+        context_tokens({"arch": arch, "model_name": selected, "args": ["--max-context", str(args.context)]})
+    except ValueError as error:
+        parser.error(str(error))
     if selected in TARGET_ONLY_MODELS or selected == TIEL_MODEL:
         pinned = manifest_for_arch(arch, selected)
         if args.model.name != pinned.filename or args.model.stat().st_size != pinned.size:
             parser.error("The selected Intel family requires its pinned model artifact")
     args.kv_type = args.kv_type or ("int8" if selected in TARGET_ONLY_MODELS else "fp32")
+    if selected == QWEN_MODEL and args.intel_profile is None and (args.context == "auto" or args.context > 32768):
+        # Preserve the diagnostic Qwen option surface, but never send auto or
+        # a larger explicit request to an old fixed-context executable.
+        from serve.intel_capabilities import probe_capabilities, validate_capabilities
+        proof = probe_capabilities({"backend": "sycl", "exe": str(args.exe.resolve()),
+                                    "lib_dirs": [str(path.resolve()) for path in args.lib_dir]})
+        validate_capabilities(proof.report, model=selected, profile="generic", allow_legacy=True,
+                              requested_context=args.context)
     from serve.tokenizer import Tokenizer, extract
     from serve.frontend import ChatTemplate
     from serve.server import Service, StrataEngine, serve

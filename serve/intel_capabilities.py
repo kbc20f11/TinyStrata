@@ -79,9 +79,13 @@ def _check_report(report):
     depth = report.get("experimental_mtp_max_depth")
     if type(depth) is not int or not 0 <= depth <= 7 or (depth == 0) != (report["mtp"] is False):
         raise IntelCapabilityError("Invalid Intel experimental MTP depth")
+    if "context_auto" in report or "max_context" in report:
+        if (type(report.get("context_auto")) is not bool or type(report.get("max_context")) is not int or
+                not 16 <= report["max_context"] <= 262144):
+            raise IntelCapabilityError("Invalid Intel native context capability contract")
     if "capabilities_schema" not in report:
         # Partial new metadata must never silently downgrade into legacy policy.
-        if any(key in report for key in ("experimental_models", "experimental_profiles", "build", "weight_types", "experimental_model_contracts")):
+        if any(key in report for key in ("experimental_models", "experimental_profiles", "build", "weight_types", "experimental_model_contracts", "context_auto", "max_context")):
             raise IntelCapabilityError("Intel build metadata is missing capabilities_schema")
         if report["mtp"] is not True:
             raise IntelCapabilityError("Legacy Intel metadata requires the retained text/MTP server")
@@ -133,7 +137,8 @@ def _check_report(report):
 
 
 def validate_capabilities(report: dict, *, model: str = QWEN_MODEL, profile: str = "generic",
-                          required_types: Mapping | None = None, allow_legacy: bool = False) -> None:
+                          required_types: Mapping | None = None, allow_legacy: bool = False,
+                          requested_context: int | str | None = None) -> None:
     """Pure compatibility check; never start a process or inspect a device.
 
     New imports should keep ``allow_legacy=False``. Explicit legacy compatibility
@@ -154,6 +159,25 @@ def validate_capabilities(report: dict, *, model: str = QWEN_MODEL, profile: str
         if any(type(item) is not int or not 0 <= item <= 65535 for item in types):
             raise IntelCapabilityError("Invalid required Intel GGUF type")
     _check_report(report)
+    if requested_context is not None:
+        from serve.intel_models import MODEL_CONTEXT_LIMITS
+        model_limit = MODEL_CONTEXT_LIMITS.get(model)
+        if model_limit is None:
+            raise IntelCapabilityError("Unknown Intel model context contract")
+        native_limit = report.get("max_context", 32768)  # Retained old native explicit-only ceiling.
+        # Clover shares an executable with Qwen/Tiel. Its trained context is
+        # smaller than the binary's top-level ceiling; the exact model contract
+        # is checked by _check_report before it may restrict this capability.
+        declared_limit = report.get("experimental_model_contracts", {}).get(model, {}).get("context_max")
+        if declared_limit is not None:
+            native_limit = min(native_limit, declared_limit)
+        if native_limit > model_limit:
+            raise IntelCapabilityError("Intel native context capability exceeds this model's declared ceiling")
+        if requested_context == "auto":
+            if report.get("context_auto") is not True:
+                raise IntelCapabilityError("This Intel runtime lacks memory-aware context auto; update its model runtime instead of fixing a smaller context")
+        elif type(requested_context) is not int or not 16 <= requested_context <= native_limit:
+            raise IntelCapabilityError(f"The selected Intel runtime supports explicit context up to {native_limit}; the request was not reduced")
     if "capabilities_schema" not in report:
         if not allow_legacy or model != QWEN_MODEL or profile not in ("generic", B390_PROFILE):
             raise IntelCapabilityError("Legacy Intel metadata is allowed only for an explicitly retained Qwen route")

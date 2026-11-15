@@ -92,7 +92,7 @@ def validate_intel_executable(cfg: dict, *, allow_legacy: bool = True):
         executable = Path(cfg.get("cwd") or ROOT) / executable
     if not executable.is_file():
         return None
-    from serve.intel_backend import canonical_model, engine_args, MODEL_PROFILES, TIEL_MODEL, QWEN_ENGINE_MODELS
+    from serve.intel_backend import canonical_model, context_tokens, engine_args, MODEL_PROFILES, TIEL_MODEL, QWEN_ENGINE_MODELS
     from serve.intel_capabilities import probe_capabilities, validate_capabilities
     proof = probe_capabilities(cfg)
     model = canonical_model(cfg)
@@ -109,8 +109,10 @@ def validate_intel_executable(cfg: dict, *, allow_legacy: bool = True):
         if selected_path is not None and selected_path.is_file():
             from serve.gguf_reader import GGUFFile
             required = {"scalar": sorted({tensor.type_id for tensor in GGUFFile(selected_path).tensors})}
+    requested_context = context_tokens(cfg)
     validate_capabilities(proof.report, model=model, profile=cfg.get("intel_profile", "generic"),
-                          required_types=required, allow_legacy=allow_legacy)
+                          required_types=required, allow_legacy=allow_legacy,
+                          requested_context="auto" if requested_context is None else requested_context)
     launch = engine_args(cfg, allow_uninstalled=True)
     if "--prefill-mkl" in launch and not proof.report.get("build", {}).get("mkl") and not proof.legacy:
         raise ValueError("The selected Intel runtime does not compile the requested MKL path")

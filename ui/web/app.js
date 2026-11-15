@@ -2800,6 +2800,16 @@ async function summarizeContext(history, maxTokens, body, signal) {
 }
 
 // Check the request, rather than the engine's last KV gauge: that gauge may belong to another chat.
+async function countContext(request, signal) {
+  let counted = await contextJson("v1/chat/token-count", request, signal);
+  if (counted.backend === "sycl" && counted.context_pending === true && counted.model === request.model) {
+    // Native auto needs the loaded weights and actual remaining memory. Load
+    // through the normal lifecycle before planning; never guess a capacity.
+    await contextJson("load", {}, signal);
+    counted = await contextJson("v1/chat/token-count", request, signal);
+  }
+  return counted;
+}
 async function prepareContext(body, rows, m, signal, serialize = apiMessageSerializer(body.model)) {
   const owner = chat, transcript = messages;
   const checkpoint = chat?.compaction || null;
@@ -2810,7 +2820,7 @@ async function prepareContext(body, rows, m, signal, serialize = apiMessageSeria
     const prepared = await StrataContextCompaction.prepare({
       messages: rows, checkpoint, request: body, signal,
       serialize,
-      count: (request) => contextJson("v1/chat/token-count", request, signal),
+      count: (request) => countContext(request, signal),
       onProgress: (stage) => { m.compacting = stage !== "checking"; refreshTerminalStats(); },
       summarize: (history, maxTokens) => summarizeContext(history, maxTokens, body, signal),
     });

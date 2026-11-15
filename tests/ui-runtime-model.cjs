@@ -27,13 +27,41 @@ function fixture() {
   vm.runInContext(block(app, "function fileBlock(", "function renderAttachments("), ctx);
   vm.runInContext(block(app, "function assistantMessages(", "function busyHint("), ctx);
   vm.runInContext(block(app, "const UI_SYSTEM_PROMPT", "async function contextJson("), ctx);
-  vm.runInContext(block(app, "async function prepareContext(", "// An answer that used MCP tools"), ctx);
+  vm.runInContext(block(app, "async function countContext(", "// An answer that used MCP tools"), ctx);
   return ctx;
 }
 const identityLine = (messages) => messages[0].content.split("\n").find((line) => line.startsWith("The local TinyStrata runtime"));
 const hasModel = (messages, model) => identityLine(messages) === `The local TinyStrata runtime reports the current model ID as ${JSON.stringify(model)}.`;
 
 async function main() {
+  // Unloaded Intel auto has no allocated capacity until the real /load returns.
+  // A send may load once and re-count; reads and other backends never invent it.
+  for (const first of [
+    {backend: "sycl", context_pending: true, max_context: 0, model: "qwen3.6-35b-a3b"},
+    {backend: "sycl", context_pending: false, max_context: 262144, model: "qwen3.6-35b-a3b"},
+    {backend: "cuda", context_pending: true, max_context: 0, model: "qwen3.6-35b-a3b"},
+    {backend: "sycl", context_pending: true, max_context: 0, model: "other"},
+  ]) {
+    const state = fixture(), calls = [], request = {model: "qwen3.6-35b-a3b", messages: []};
+    state.contextJson = async (url, body) => {
+      calls.push({url, body});
+      return calls.length === 1 ? first : {model: request.model, max_context: 262144, prompt_tokens: 42};
+    };
+    const result = await state.countContext(request, new AbortController().signal);
+    const load = first.backend === "sycl" && first.context_pending && first.model === request.model;
+    check(calls.map((c) => c.url).join() === (load ? "v1/chat/token-count,load,v1/chat/token-count" : "v1/chat/token-count"), "only a pending matching Intel request loads and re-counts");
+    check(load ? result.max_context === 262144 : result === first, "capacity comes from the actual count reply");
+  }
+  {
+    const state = fixture(), calls = [], request = {model: "qwen3.6-35b-a3b"};
+    state.contextJson = async (url) => {
+      calls.push(url);
+      if (url === "load") throw new DOMException("cancelled", "AbortError");
+      return {backend: "sycl", context_pending: true, max_context: 0, model: request.model};
+    };
+    await assert.rejects(state.countContext(request, new AbortController().signal), {name: "AbortError"}); checks++;
+    check(calls.join() === "v1/chat/token-count,load", "load cancellation does not loop or reuse guessed capacity");
+  }
   let f = fixture(), original = copy(f.messages), wire = f.apiMessages();
   check(hasModel(wire, f.health.model), "current /health model supplies runtime identity despite stale catalog");
   check(wire[0].content.startsWith("明示的な言語指定") && wire[0].content.endsWith(f.StrataLocalTools.guidance), "language and tool guidance remain intact");

@@ -413,7 +413,7 @@ exec(compile(Path(code_path).read_text(encoding="utf-8-sig"), "shipping-installe
         Write-IntelFixture $oldDirectory 'keep.txt' 'previous generation'
         $configRoot = Join-Path $work 'runtime\.tinystrata'
         $cfg = [ordered]@{backend='sycl'; intel_profile=$familySpec.IntelProfile; model_name=$familySpec.Model; arch='qwen35moe'; vision_mode='no';
-            exe=(Join-Path $oldDirectory 'tinystrata-intel.exe'); lib_dirs=@($oldDirectory); api_key='fixture-secret-do-not-print'; args=@('--model','fixture.gguf')}
+            exe=(Join-Path $oldDirectory 'tinystrata-intel.exe'); lib_dirs=@($oldDirectory); api_key='fixture-secret-do-not-print'; args=@('--model','fixture.gguf','--max-context','auto')}
         Write-IntelFixture $configRoot $familySpec.ConfigFile ($cfg | ConvertTo-Json -Depth 6)
         if($family -eq 'tiel'){Write-IntelFixture $configRoot 'config-sycl.json' '{"backend":"sycl","model_name":"qwen3.6-35b-a3b","sentinel":"Qwen remains unchanged"}'}
         Write-IntelFixture $configRoot 'config.json' '{"backend":"cuda","sentinel":"unchanged"}'
@@ -445,6 +445,7 @@ exec(compile(Path(code_path).read_text(encoding="utf-8-sig"), "shipping-installe
         else {
             $committed=Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
             Assert-Intel ($committed.api_key -ceq $cfg.api_key -and $committed.lib_dirs.Count -eq 1 -and $committed.exe -ne $cfg.exe) 'successful candidate preserves explicit credentials and selects only its new generation'
+            Assert-Intel ($committed.args[[Array]::IndexOf($committed.args,'--max-context')+1] -ceq 'auto') 'runtime import preserves saved context auto instead of inventing a fixed allocation'
             $firstExe=$committed.exe
             $script:capabilityMode=if($family -eq 'qwen36'){'legacy-reuse'}else{'tiel-success'}
             Invoke-TinyStrataInstaller -SourceDirectory $source -WorkingDirectory $work -Backend sycl -Family $family -DoNotStart $true -DoNotDownload $true

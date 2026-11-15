@@ -46,7 +46,7 @@ class IntelLaunch(unittest.TestCase):
         self.assertEqual(Path(cfg["log"]).name, "engine-intel.log")
         self.assertEqual(cfg["vision_mode"], "no")
         self.assertEqual(config.value_of(cfg, "kv_type"), "auto")
-        self.assertEqual(intel_backend.context_tokens(cfg), 8192)
+        self.assertIsNone(intel_backend.context_tokens(cfg))
         self.assertEqual(self.primary.read_bytes(), self.original_bytes)
         self.assertTrue(cfg["model_bootstrap"])
 
@@ -100,7 +100,7 @@ class IntelLaunch(unittest.TestCase):
         self.assertFalse(self.primary.with_name("config-sycl.json").exists())
 
     def test_unsupported_context_or_images_do_not_publish(self):
-        for options in ({"max_context": 32769}, {"vision": "gpu"}, {"expert_vram": 4}):
+        for options in ({"max_context": 262145}, {"vision": "gpu"}, {"expert_vram": 4}):
             with self.subTest(options=options), self.assertRaises(ValueError):
                 self.prepare(**options)
             self.assertFalse(self.primary.with_name("config-sycl.json").exists())
@@ -163,6 +163,7 @@ class IntelLaunch(unittest.TestCase):
         exe.write_bytes(b"fixture; never executed")
         report = {"backend": "sycl", "experimental": True, "model_families": [], "images": False,
                   "serve": True, "mtp": True, "kv_types": ["fp32", "int8"],
+                  "context_auto": True, "max_context": 262144,
                   "experimental_mtp_max_depth": 7, "capabilities_schema": 1,
                   "experimental_models": ["qwen3.6-35b-a3b"], "experimental_profiles": {"generic": 1},
                   "build": {"mkl": True, "int8_xmx": False, "aot_target": ""},
@@ -186,7 +187,7 @@ class IntelLaunch(unittest.TestCase):
     def test_explicit_legacy_qwen_compatibility_does_not_change_saved_config(self):
         exe = self.root / "legacy.exe"
         exe.write_bytes(b"fixture; never executed")
-        cfg = {"backend": "sycl", "exe": str(exe), "intel_profile": "b390-qwen36"}
+        cfg = {"backend": "sycl", "exe": str(exe), "intel_profile": "b390-qwen36", "args": ["--max-context", "32768"]}
         saved = deepcopy(cfg)
         report = {"backend": "sycl", "experimental": True, "model_families": [], "images": False,
                   "serve": True, "mtp": True, "kv_types": ["fp32", "int8"], "experimental_mtp_max_depth": 7}

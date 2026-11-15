@@ -3567,10 +3567,21 @@ class Service:
         return asked if isinstance(asked, str) and asked in self.aliases else self.model
 
     def reported_ctx(self) -> int:
-        """The context the endpoints report (/v1/status, /v1/models, /props, /health, /slots, /metrics): the engine's,
-        or the last one it reported while it restarts (max_context is 0 until READY, and a client that sizes its
-        prompt from it would send nothing, #351).  Reporting only: requests are checked in prepare()."""
+        """Observed capacity for Intel; other backends retain their restart fallback.
+
+        An Intel auto allocation may change at every load. Never advertise its
+        predecessor's capacity while unloaded/starting; requests load first and
+        are checked against that process's READY in prepare().
+        """
+        if self.intel_context():
+            if not self.loaded() or getattr(self.engine, "starting", False):
+                return 0
+            return int(getattr(self.engine, "max_context", 0) or 0)
         return int(getattr(self.engine, "max_context", 0) or getattr(self.engine, "known_ctx", 0) or 0)
+
+    def intel_context(self) -> bool:
+        return (getattr(self, "backend", None) == "sycl" or
+                (getattr(self.engine, "info", {}) or {}).get("backend") == "sycl")
 
     def reasoning_budget(self, req) -> int | None:
         """#123: the most tokens this request may think, or None: the request's `reasoning_budget_tokens`, else the
@@ -4120,6 +4131,12 @@ class Service:
             live["replicas"] = self.engine.replica_view()
         engine = {"model": self.model, "max_context": self.reported_ctx(),
                   **dict(getattr(self.engine, "info", {}) or {})}
+        if self.intel_context():
+            # A retained INFO/known_ctx belongs to the released allocation.
+            # READY of the currently loaded engine is the sole capacity source.
+            engine["max_context"] = self.reported_ctx()
+            if not engine["max_context"]:
+                engine["kv_used_tokens"] = None
         engine["images"] = self.vision_available()
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
@@ -4304,8 +4321,11 @@ class Service:
                 limit = 1120 if gemma else 4096  # tinystrata_vision.cpp's enforced default
             boundaries = len([one("<|image>"), one("<image|>")]) if gemma else 0
             count += len(images) * (limit + boundaries - 1)
-        return {"prompt_tokens": count, "max_context": self.reported_ctx(),
-                "exact": not images, "images_estimated": len(images), "model": self.model}
+        result = {"prompt_tokens": count, "max_context": self.reported_ctx(),
+                  "exact": not images, "images_estimated": len(images), "model": self.model}
+        if self.intel_context() and not result["max_context"]:
+            result.update(backend="sycl", context_pending=True)
+        return result
 
     def prompt_turn_at(self, messages, tools, kwargs, ids) -> int | None:
         """A reusable history boundary before the generated assistant prefix.
@@ -4614,13 +4634,13 @@ class Service:
             ids = out
             if expanded_turn_at is not None and 0 < expanded_turn_at < len(ids):
                 self.embeddings.turn_at = expanded_turn_at
-        ctx = self.engine.max_context
+        ctx = self.reported_ctx() if self.intel_context() else self.engine.max_context
         if ctx <= 0:
             if getattr(self.engine, "starting", False):   # #344: (re)starting, not a prompt that is too long
                 raise EngineStarting("the engine is starting (a minute or two); try again shortly")
             # a failed restart leaves max_context 0: check against the last known context, so the request reaches
             # run() - which starts the engine again - instead of failing with "exceeds the context (0)" forever
-            ctx = getattr(self.engine, "known_ctx", 0)
+            ctx = 0 if self.intel_context() else getattr(self.engine, "known_ctx", 0)
             if ctx <= 0:
                 raise EngineStarting("the engine is starting (a minute or two); try again shortly")
         room = ctx - CTX_SLACK - len(ids)

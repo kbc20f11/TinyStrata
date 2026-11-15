@@ -30,7 +30,7 @@ class IntelBackendPolicy(unittest.TestCase):
                 self.assertEqual(value(args, "--mtp"), "0")
                 self.assertEqual(value(args, "--kv-type"), "int8")
                 self.assertEqual(value(args, "--chunk"), "512")
-                self.assertEqual(value(args, "--max-context"), "8192")
+                self.assertEqual(value(args, "--max-context"), "auto")
                 self.assertNotIn("--mtp-stochastic", args)
                 self.assertNotIn("--verify-xmx", args)
                 self.assertEqual(source, before)
@@ -84,7 +84,7 @@ class IntelBackendPolicy(unittest.TestCase):
         self.assertIn("--experimental-tiel", native)
         self.assertNotIn("--experimental-tiel", prepared["args"])
         self.assertNotIn("--experimental-tiel", intel.engine_args(intel.configure_backend(configuration(intel_profile=intel.B390_PROFILE))))
-        self.assertEqual((value(native, "--max-context"), value(native, "--chunk"), value(native, "--mtp")), ("8192", "1024", "3"))
+        self.assertEqual((value(native, "--max-context"), value(native, "--chunk"), value(native, "--mtp")), ("auto", "1024", "3"))
         self.assertEqual(prepared["sampling"], cfg["sampling"])
         self.assertEqual(prepared["reasoning_effort"], "medium")
         self.assertEqual(cfg, original)
@@ -117,7 +117,7 @@ class IntelBackendPolicy(unittest.TestCase):
     def test_generic_defaults_do_not_enable_b390_optimizations(self):
         result = intel.configure_backend(configuration())
         command = intel.engine_args(result)
-        self.assertEqual(value(command, "--max-context"), "4096")
+        self.assertEqual(value(command, "--max-context"), "auto")
         self.assertEqual(value(command, "--chunk"), "128")
         self.assertEqual(value(command, "--mtp"), "0")
         self.assertEqual(value(command, "--kv-type"), "int8")
@@ -127,7 +127,7 @@ class IntelBackendPolicy(unittest.TestCase):
     def test_b390_requested_profile_fills_validated_engine_options_only(self):
         result = intel.configure_backend(configuration(), profile=intel.B390_PROFILE)
         command = intel.engine_args(result)
-        self.assertEqual(value(command, "--max-context"), "8192")
+        self.assertEqual(value(command, "--max-context"), "auto")
         self.assertEqual(value(command, "--chunk"), "1024")
         self.assertEqual(value(command, "--mtp"), "3")
         self.assertEqual(value(command, "--draft-vocab"), "2048")
@@ -240,14 +240,23 @@ class IntelBackendPolicy(unittest.TestCase):
                     intel.configure_backend(cfg)
 
     def test_context_is_bounded_without_hardware_or_vram_probe(self):
-        for limit in ("16", "32768"):
+        for limit in ("16", "32768", "131072", "262144"):
             self.assertEqual(intel.context_tokens(configuration("--max-context", limit)), int(limit))
-        for limit in ("15", "32769", "262144", "-1", "4.5", "inf"):
+        for limit in ("15", "262145", "-1", "4.5", "inf"):
             with self.subTest(limit=limit), self.assertRaisesRegex(ValueError, "Intel context"):
                 intel.configure_backend(configuration("--max-context", limit))
         with patch("subprocess.run", side_effect=AssertionError("No VRAM/device inference")):
-            self.assertEqual(intel.context_tokens(configuration()), 4096)
-            self.assertEqual(intel.context_tokens(configuration(intel_profile=intel.B390_PROFILE)), 8192)
+            self.assertIsNone(intel.context_tokens(configuration()))
+            self.assertIsNone(intel.context_tokens(configuration(intel_profile=intel.B390_PROFILE)))
+        for model, ceiling in intel.MODEL_CONTEXT_LIMITS.items():
+            cfg = configuration("--max-context", str(ceiling), model_name=model, arch=intel.MODEL_ARCHES[model])
+            before = deepcopy(cfg)
+            self.assertEqual(intel.context_tokens(cfg), ceiling)
+            self.assertEqual(value(intel.engine_args(cfg), "--max-context"), str(ceiling))
+            self.assertEqual(cfg, before)
+            cfg["args"][cfg["args"].index("--max-context") + 1] = str(ceiling + 1)
+            with self.assertRaisesRegex(ValueError, "Intel context"):
+                intel.configure_backend(cfg)
 
     def test_unsupported_images_placement_and_state_are_rejected(self):
         for fields in ({"vision": {"exe": "encoder.exe"}}, {"images": {"enabled": True}}, {"vision_mode": "gpu"},

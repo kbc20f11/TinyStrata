@@ -24,8 +24,9 @@ class IntelOutputOptions(unittest.TestCase):
             executable.touch()
             tokenizer = ByteTokenizer()
             engine = MockEngine(tokenizer, "", max_context=context)
-            engine.alive = Mock(return_value=False)
+            engine.alive = Mock(return_value=True)  # The mocked constructor represents a completed native READY.
             engine.close = Mock()
+            engine._send = Mock()
             inherited_environment = dict(os.environ if environment is None else environment)
             stack.enter_context(patch.object(intel, "os", SimpleNamespace(
                 name="nt", environ=inherited_environment, pathsep=os.pathsep)))

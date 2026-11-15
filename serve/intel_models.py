@@ -18,15 +18,17 @@ MODEL_CONFIGS = {QWEN_MODEL: "config-sycl.json", TIEL_MODEL: "config-tiel-coder-
 MODEL_LOGS = {QWEN_MODEL: "engine-intel.log", TIEL_MODEL: "engine-intel-tiel.log",
               GEMMA_MODEL: "engine-intel-gemma4.log", LFM_MODEL: "engine-intel-lfm2.log",
               CLOVER_MODEL: "engine-intel-clover.log"}
+MODEL_CONTEXT_LIMITS = {QWEN_MODEL: 262144, TIEL_MODEL: 262144, GEMMA_MODEL: 262144,
+                        LFM_MODEL: 131072, CLOVER_MODEL: 131072}
 TARGET_ONLY_MODELS = frozenset((GEMMA_MODEL, LFM_MODEL, CLOVER_MODEL))
 QWEN_ENGINE_MODELS = frozenset((QWEN_MODEL, TIEL_MODEL))
 MODEL_CONTRACTS = {
     GEMMA_MODEL: {"version": 1, "architecture": "gemma4", "kv_types": ["int8"], "mtp": False,
-                  "experimental_mtp_max_depth": 0, "images": False, "thinking": "on_off", "mode": "target_only"},
+                  "experimental_mtp_max_depth": 0, "images": False, "thinking": "on_off", "mode": "target_only", "context_max": 262144},
     LFM_MODEL: {"version": 1, "architecture": "lfm2moe", "kv_types": ["int8"], "mtp": False,
-                "experimental_mtp_max_depth": 0, "images": False, "thinking": "mandatory", "mode": "target_only"},
+                "experimental_mtp_max_depth": 0, "images": False, "thinking": "mandatory", "mode": "target_only", "context_max": 131072},
     CLOVER_MODEL: {"version": 1, "architecture": "clover_moe", "kv_types": ["int8"], "mtp": False,
-                   "experimental_mtp_max_depth": 0, "images": False, "thinking": "on_off", "mode": "causal_d0"},
+                   "experimental_mtp_max_depth": 0, "images": False, "thinking": "on_off", "mode": "causal_d0", "context_max": 131072},
 }
 
 

@@ -12,12 +12,11 @@ from copy import deepcopy
 import os
 from collections.abc import Mapping
 from serve.intel_models import (QWEN_MODEL, TIEL_MODEL, GEMMA_MODEL, LFM_MODEL, CLOVER_MODEL,
-                                MODEL_PROFILES, MODEL_ARCHES, TARGET_ONLY_MODELS, QWEN_ENGINE_MODELS)
+                                MODEL_PROFILES, MODEL_ARCHES, MODEL_CONTEXT_LIMITS, TARGET_ONLY_MODELS, QWEN_ENGINE_MODELS)
 
 
 B390_PROFILE = "b390-qwen36"
 TIEL_PROFILE = "b390-tiel-coder"
-MAX_CONTEXT = 32768
 _MODEL_NAMES = {QWEN_MODEL: QWEN_MODEL, "qwen36": QWEN_MODEL, "qwen3.6": QWEN_MODEL,
                 "qwen35moe": QWEN_MODEL, TIEL_MODEL: TIEL_MODEL, "tiel": TIEL_MODEL, "tiel-coder": TIEL_MODEL,
                 GEMMA_MODEL: GEMMA_MODEL, "gemma4": GEMMA_MODEL, "gemma-4": GEMMA_MODEL,
@@ -95,18 +94,21 @@ def _integer(value, name, low, high):
     return int(text)
 
 
-def context_tokens(cfg: dict) -> int:
-    """Resolve UMA auto without discrete VRAM guesses; native budget checks follow.
+def context_limit(cfg: dict) -> int:
+    """Model ceiling; this is never an allocated capacity or a RAM estimate."""
+    return MODEL_CONTEXT_LIMITS[canonical_model(cfg)]
 
-    Keep the saved ``auto`` spelling intact. The requested B390 profile uses
-    8192 context; retained Qwen/Tiel generic uses 4096 and new target-only
-    families use 8192. Never silently clamp an explicit
-    context or infer capacity by adding shared GPU memory to system RAM.
+
+def context_tokens(cfg: dict) -> int | None:
+    """Validate an explicit request; auto stays unknown until native READY.
+
+    The native engine chooses the largest fitting context after loading the
+    weights, with its actual KV/state/scratch costs and OS memory reserve.
     """
     values, _ = _options(cfg)
-    profile = _profile(cfg)
+    _profile(cfg)
     value = values.get("--max-context", "auto")
-    return (8192 if canonical_model(cfg) in TARGET_ONLY_MODELS or profile in MODEL_PROFILES.values() else 4096) if value == "auto" else _integer(value, "Intel context", 16, MAX_CONTEXT)
+    return None if value == "auto" else _integer(value, "Intel context", 16, context_limit(cfg))
 
 
 def _chunk(cfg, values):
@@ -308,7 +310,8 @@ def engine_args(cfg: dict, *, allow_uninstalled: bool = False) -> list[str]:
     validate_config(new, allow_uninstalled=allow_uninstalled)
     values, _ = _options(new)
     args = list(new["args"])
-    _put(args, "--max-context", context_tokens(new))
+    requested_context = context_tokens(new)
+    _put(args, "--max-context", "auto" if requested_context is None else requested_context)
     _put(args, "--kv-type", _kv(values))
     _put(args, "--chunk", _chunk(new, values))
     if "--device" not in values:

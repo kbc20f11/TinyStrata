@@ -68,6 +68,43 @@ for line in sys.stdin:
 
 
 class IntelContextTelemetry(unittest.TestCase):
+    def test_auto_uses_each_native_ready_capacity_and_unload_is_unknown(self):
+        """The real stdout parser receives two different CPU fixture READYs."""
+        with tempfile.TemporaryDirectory(prefix="intel-context-auto-protocol-") as temporary:
+            child = Path(temporary) / "fixture.py"
+            child.write_text('import sys\nprint("INFO backend=sycl kv_used_tokens=0 max_context=8192", flush=True)\n'
+                             'print("READY " + sys.argv[1] + " stop", flush=True)\n'
+                             'for line in sys.stdin:\n if line.startswith("QUIT"): break\n', encoding="utf-8")
+            capacities, processes = iter((262144, 65536)), []
+            def start(description, command, **kwargs):
+                self.assertEqual(command[command.index("--max-context") + 1], "auto")
+                kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                process = subprocess.Popen([sys.executable, "-I", "-B", str(child), str(next(capacities))], **kwargs)
+                processes.append(process)
+                return process
+            with patch.object(server, "popen", side_effect=start), patch.object(server, "ENGINE_READY_S", 3):
+                engine = server.StrataEngine("cpu-protocol-fixture", ["--max-context", "auto"], lazy=True)
+                service = server.Service(engine, server.ByteTokenizer(), SimpleNamespace(call_format="function"))
+                service.backend = "sycl"
+                try:
+                    self.assertEqual(service.reported_ctx(), 0)
+                    for actual in (262144, 65536):
+                        engine.restart(tries=1)
+                        self.assertEqual(engine.max_context, actual)
+                        self.assertEqual(service.metrics()["engine"]["max_context"], actual)
+                        engine.unload()
+                        self.assertEqual(service.reported_ctx(), 0)
+                        self.assertIsNone(service.metrics()["engine"]["kv_used_tokens"])
+                finally:
+                    engine.close()
+                    for process in processes:
+                        if process.poll() is None:
+                            process.kill()  # CPU fixture only, never a model/application process.
+                        process.wait(timeout=5)
+                        for stream in (process.stdin, process.stdout):
+                            if stream is not None and not stream.closed:
+                                stream.close()
+
     def test_committed_usage_reaches_metrics_across_request_lifecycle(self):
         with tempfile.TemporaryDirectory(prefix="intel-kv-protocol-") as temporary:
             child = Path(temporary) / "fixture.py"

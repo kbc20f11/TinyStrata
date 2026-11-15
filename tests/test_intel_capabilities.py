@@ -30,6 +30,68 @@ def report(*, mkl=True, xmx=True):
 
 
 class CompatibilityPolicy(unittest.TestCase):
+    def test_memory_aware_context_requires_actual_native_support(self):
+        modern = report()
+        modern.update(context_auto=True, max_context=262144)
+        before = deepcopy(modern)
+        with patch("subprocess.run", side_effect=AssertionError("Pure contract only")):
+            for requested in ("auto", 8192, 32768, 262144):
+                intel.validate_capabilities(modern, profile=intel.B390_PROFILE, requested_context=requested)
+        self.assertEqual(modern, before)
+        for old in (report(), legacy_report()):
+            for requested in (8192, 32768):
+                intel.validate_capabilities(old, allow_legacy=True, requested_context=requested)
+            with self.assertRaisesRegex(intel.IntelCapabilityError, "update its model runtime"):
+                intel.validate_capabilities(old, allow_legacy=True, requested_context="auto")
+            for requested in (32769, 65536):
+                with self.assertRaisesRegex(intel.IntelCapabilityError, "not reduced"):
+                    intel.validate_capabilities(old, allow_legacy=True, requested_context=requested)
+
+    def test_context_ceiling_is_native_capability_not_allocated_capacity(self):
+        current = report()
+        current.update(context_auto=True, max_context=65536)
+        intel.validate_capabilities(current, requested_context="auto")
+        intel.validate_capabilities(current, requested_context=65536)
+        for requested in (65537, 262144, 0, True, "8192"):
+            with self.subTest(requested=requested), self.assertRaises(intel.IntelCapabilityError):
+                intel.validate_capabilities(current, requested_context=requested)
+        lfm = report(xmx=False)
+        lfm.update(experimental_models=[LFM_MODEL], experimental_profiles={MODEL_PROFILES[LFM_MODEL]: 1},
+                   mtp=False, experimental_mtp_max_depth=0, kv_types=["int8"],
+                   experimental_model_contracts={LFM_MODEL: deepcopy(MODEL_CONTRACTS[LFM_MODEL])},
+                   context_auto=True, max_context=131072)
+        intel.validate_capabilities(lfm, model=LFM_MODEL, requested_context=131072)
+        with self.assertRaises(intel.IntelCapabilityError):
+            intel.validate_capabilities(lfm, model=LFM_MODEL, requested_context=131073)
+        lfm["max_context"] = 262144
+        intel.validate_capabilities(lfm, model=LFM_MODEL, requested_context="auto")
+        with self.assertRaisesRegex(intel.IntelCapabilityError, "not reduced"):
+            intel.validate_capabilities(lfm, model=LFM_MODEL, requested_context=131073)
+
+    def test_mixed_clover_context_contract_does_not_inherit_qwen_ceiling(self):
+        current = report()
+        current.update(context_auto=True, max_context=262144)
+        current["experimental_models"].append(CLOVER_MODEL)
+        current["experimental_profiles"][MODEL_PROFILES[CLOVER_MODEL]] = 1
+        current["experimental_model_contracts"] = {CLOVER_MODEL: deepcopy(MODEL_CONTRACTS[CLOVER_MODEL])}
+        intel.validate_capabilities(current, requested_context=262144)
+        for requested in ("auto", 131072):
+            intel.validate_capabilities(current, model=CLOVER_MODEL, requested_context=requested)
+        with self.assertRaisesRegex(intel.IntelCapabilityError, "not reduced"):
+            intel.validate_capabilities(current, model=CLOVER_MODEL, requested_context=131073)
+        current["experimental_model_contracts"][CLOVER_MODEL]["context_max"] = 262144
+        with self.assertRaisesRegex(intel.IntelCapabilityError, "model-specific"):
+            intel.validate_capabilities(current, model=CLOVER_MODEL, requested_context="auto")
+
+    def test_partial_or_malformed_native_context_metadata_fails_closed(self):
+        for fields in ({"context_auto": True}, {"max_context": 262144},
+                       {"context_auto": 1, "max_context": 262144},
+                       {"context_auto": "true", "max_context": 262144},
+                       {"context_auto": True, "max_context": True},
+                       {"context_auto": True, "max_context": 262145}):
+            with self.subTest(fields=fields), self.assertRaises(intel.IntelCapabilityError):
+                intel.validate_capabilities({**report(), **fields}, requested_context="auto")
+
     def test_new_target_only_reports_require_explicit_per_model_contracts(self):
         for model in (GEMMA_MODEL, LFM_MODEL, CLOVER_MODEL):
             current = report(xmx=False)

@@ -364,10 +364,10 @@ class ModelProfiles:
         """Configured context and model ceiling; allocation requires native READY."""
         profile = self.get(name)
         if self._intel:
-            from serve.intel_backend import MAX_CONTEXT, context_tokens
+            from serve.intel_backend import context_limit, context_tokens
             context_tokens(profile.config)
             requested = config.value_of(profile.config, "max_context")
-            return {"allocated_tokens": None, "model_limit": MAX_CONTEXT,
+            return {"allocated_tokens": None, "model_limit": context_limit(profile.config),
                     "requested": "auto" if requested in (None, "auto", 0) else int(requested)}
         limit = _CONTEXT_LIMITS[profile.arch]
         requested = config.value_of(profile.config, "max_context")

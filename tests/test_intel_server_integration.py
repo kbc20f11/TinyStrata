@@ -27,6 +27,7 @@ def capability_report(*, tiel=False):
     result = {"backend": "sycl", "experimental": True, "model_families": [],
             "kv_types": ["fp32", "int8"], "images": False, "mtp": True,
             "experimental_mtp_max_depth": 7, "serve": True, "capabilities_schema": 1,
+            "context_auto": True, "max_context": 262144,
             "experimental_models": [QWEN], "experimental_profiles": {"b390-qwen36": 1},
             "build": {"mkl": True, "int8_xmx": True, "aot_target": "intel_gpu_ptl_h"},
             "weight_types": {"scalar": [0, 1, 8, 10, 11, 14, 18, 21, 22, 23, 30],
@@ -47,6 +48,7 @@ class IntelServerIntegration(unittest.TestCase):
         from serve.intel_models import MODEL_CONTRACTS
         self.capabilities = capability_report()
         self.capabilities.update(experimental_models=[model], experimental_profiles={profile: 1}, mtp=False,
+            max_context=intel_backend.MODEL_CONTEXT_LIMITS[model],
             experimental_mtp_max_depth=0, kv_types=["int8"], experimental_model_contracts={model: deepcopy(MODEL_CONTRACTS[model])})
         self.capabilities["build"]["int8_xmx"] = False
         self.capabilities["weight_types"]["int8_xmx"] = []
@@ -222,11 +224,58 @@ class IntelServerIntegration(unittest.TestCase):
              patch.object(server, "ordered_gpus", side_effect=AssertionError("CUDA ordinal")):
             args = server.engine_args(self.cfg)
         self.assertNotIn("--serve", args)
-        self.assertEqual(args[args.index("--max-context") + 1], "8192")
+        self.assertEqual(args[args.index("--max-context") + 1], "auto")
         self.assertEqual(args[args.index("--kv-type") + 1], "int8")
         self.assertEqual(args[args.index("--draft-vocab") + 1], "2048")
         self.assertNotIn("--expert-profile", args)
         self.assertEqual(self.cfg, original)
+
+    def test_auto_context_is_unknown_until_ready_and_uses_actual_capacity_after_reload(self):
+        svc = self.service()
+        control = ModelSwitcher(svc, self.cfg, self.path, server)
+        svc.encode_prompt = Mock(return_value=[1] * 40000)
+        svc.prompt_turn_at = Mock(return_value=None)
+        svc.engine.known_ctx = 8192
+        svc.engine.info.update(max_context=8192, kv_used_tokens=123)
+        svc.engine.alive.return_value = False
+        self.assertEqual(control.context_info(QWEN), {"allocated_tokens": None, "model_limit": 262144, "requested": "auto"})
+        self.assertEqual(svc.reported_ctx(), 0)
+        self.assertIsNone(svc.metrics()["engine"]["kv_used_tokens"])
+        counted = svc.chat_token_count({"model": QWEN, "messages": [{"role": "user", "content": "data"}]})
+        self.assertEqual(counted["max_context"], 0)
+        self.assertTrue(counted["context_pending"])
+        svc.engine.unload.assert_not_called()
+        with self.assertRaises(server.EngineStarting):
+            svc.prepare([{"role": "user", "content": "data"}], None, {}, 1)
+        svc.engine.alive.return_value = True
+        for actual in (262144, 65536):
+            svc.engine.max_context = actual  # Real READY is the sole allocation authority.
+            self.assertEqual(control.context_info(QWEN)["allocated_tokens"], actual)
+            self.assertEqual(svc.metrics()["engine"]["max_context"], actual)
+            self.assertEqual(svc.chat_token_count({"model": QWEN, "messages": []})["max_context"], actual)
+            ids, _, output = svc.prepare([{"role": "user", "content": "data"}], None, {}, 100)
+            self.assertEqual((len(ids), output), (40000, 100))
+        svc.engine.max_context = 32768
+        with self.assertRaisesRegex(ValueError, "never truncated"):
+            svc.prepare([{"role": "user", "content": "data"}], None, {}, 100)
+        svc.engine.alive.return_value = False
+        self.assertIsNone(control.context_info(QWEN)["allocated_tokens"])
+        self.assertEqual(svc.metrics()["engine"]["max_context"], 0)
+
+    def test_old_auto_runtime_rejects_before_config_save_worker_or_unload(self):
+        self.capabilities.pop("context_auto")
+        self.capabilities.pop("max_context")
+        before = self.path.read_bytes()
+        svc = self.service({**self.cfg, "args": ["--model", str(self.model), "--max-context", "32768"]})
+        control = ModelSwitcher(svc, self.cfg, self.path, server)
+        with patch("serve.model_switch.threading.Thread") as thread, patch.object(model_setup, "save_settings") as save:
+            with self.assertRaisesRegex(intel_capabilities.IntelCapabilityError, "update its model runtime"):
+                control._validate_intel_runtime(QWEN)
+            thread.assert_not_called()
+            save.assert_not_called()
+        svc.engine.unload.assert_not_called()
+        svc.engine.close.assert_not_called()
+        self.assertEqual(self.path.read_bytes(), before)
 
     def test_child_environment_uses_only_intel_runtime_policy(self):
         with patch.dict(os.environ, {"PATH": "parent-path"}, clear=True), \
@@ -267,7 +316,7 @@ class IntelServerIntegration(unittest.TestCase):
         for key in ("exe", "lib_dirs", "intel_profile", "sampling", "enable_thinking", "api_key", "aliases", "history_preference"):
             self.assertEqual(profile.config[key], self.cfg[key])
         self.assertFalse(profiles.list()[0]["vision"])
-        self.assertEqual(profiles.context_info(QWEN), {"allocated_tokens": None, "model_limit": 32768, "requested": "auto"})
+        self.assertEqual(profiles.context_info(QWEN), {"allocated_tokens": None, "model_limit": 262144, "requested": "auto"})
         for path, data in others.items():
             self.assertEqual(path.read_bytes(), data)
 
@@ -468,7 +517,9 @@ class IntelServerIntegration(unittest.TestCase):
     def test_legacy_qwen_compatibility_is_explicit_and_other_backends_do_not_probe(self):
         self.capabilities = {key: value for key, value in capability_report().items()
                              if key not in ("capabilities_schema", "experimental_models", "experimental_profiles",
-                                            "build", "weight_types")}
+                                            "build", "weight_types", "context_auto", "max_context")}
+        self.cfg["args"][self.cfg["args"].index("--max-context") + 1] = "32768"
+        self.path.write_text(json.dumps(self.cfg), encoding="utf-8")
         svc = self.service()
         control = ModelSwitcher(svc, self.cfg, self.path, server)
         control._validate_intel_runtime(QWEN)
