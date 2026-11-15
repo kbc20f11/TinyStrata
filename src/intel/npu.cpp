@@ -19,8 +19,19 @@ struct NpuProjection::Impl {
     sycl::half *weights = nullptr, *input = nullptr;
     float* output = nullptr;
     static constexpr size_t weight_elements = 8192 * 2048, activation_elements = 1024 * 8192;
-    struct Graph { ov::CompiledModel compiled; ov::InferRequest request; };
+    struct Graph {
+        ov::CompiledModel compiled; ov::InferRequest request;
+        ov::Tensor host_input, host_output, remote_input, remote_output;
+        std::map<const sycl::half*, ov::Tensor> host_weights, remote_weights;
+        const sycl::half* bound_weights = nullptr;
+        bool bound_remote = false, binding_valid = false;
+    };
     std::map<std::tuple<int,int,int>, Graph> graphs;
+    static constexpr size_t graph_limit = 16;
+    NpuSplitTiming timing;
+    NpuSplitCounters counters;
+    sycl::event timing_weight, timing_input;
+    sycl::event timing_gpu_begin, timing_gpu_compute, timing_gpu_gather, timing_merge;
     size_t calls = 0;
     double wall_ms = 0;
     sycl::half* split_weights = nullptr;
@@ -62,10 +73,13 @@ struct NpuProjection::Impl {
         std::fprintf(stderr, "Intel NPU projection calls=%zu wall_ms=%.3f shapes=%zu\n", calls, wall_ms, shapes);
         if (split_calls) std::fprintf(stderr, "Intel NPU split calls=%zu cache_hits=%zu cache_bytes=%zu compile_ms=%.3f prepare_ms=%.3f wait_ms=%.3f gpu_done_npu_pending=%zu\n",
             split_calls, split_hits, split_cache_used * sizeof(sycl::half), split_compile_ms, split_prepare_ms, split_wait_ms, split_gpu_done_npu_pending);
+        if(counters.eligible) std::fprintf(stderr,"Intel NPU coverage eligible=%zu served=%zu cache_capacity_skips=%zu graph_capacity_skips=%zu first_fit_no_eviction=1\n",
+            counters.eligible,counters.served,counters.cache_capacity_skips,counters.graph_capacity_skips);
     }
     Graph& graph(int rows, int width, int tokens) {
         const auto key = std::make_tuple(rows, width, tokens);
         if (auto found = graphs.find(key); found != graphs.end()) return found->second;
+        if (graphs.size() >= graph_limit) throw std::runtime_error("NPU compiled shape cache is full");
         const ov::Shape input_shape{size_t(tokens), size_t(width)}, weight_shape{size_t(rows), size_t(width)}, output_shape{size_t(tokens), size_t(rows)};
         auto x = std::make_shared<ov::opset13::Parameter>(ov::element::f16, input_shape);
         auto w = std::make_shared<ov::opset13::Parameter>(ov::element::f16, weight_shape);
@@ -75,9 +89,11 @@ struct NpuProjection::Impl {
         Graph entry;
         entry.compiled = core.compile_model(model, "NPU", {{"PERFORMANCE_HINT", "LATENCY"}});
         entry.request = entry.compiled.create_infer_request();
-        entry.request.set_input_tensor(0, ov::Tensor(ov::element::f16, input_shape, input));
+        entry.host_input = ov::Tensor(ov::element::f16, input_shape, input);
+        entry.host_output = ov::Tensor(ov::element::f32, output_shape, output);
+        entry.request.set_input_tensor(0, entry.host_input);
         entry.request.set_input_tensor(1, ov::Tensor(ov::element::f16, weight_shape, weights));
-        entry.request.set_output_tensor(ov::Tensor(ov::element::f32, output_shape, output));
+        entry.request.set_output_tensor(entry.host_output);
         return graphs.emplace(key, std::move(entry)).first->second;
     }
 };
@@ -90,9 +106,16 @@ sycl::event NpuProjection::run(int type, const uint8_t* weights, const float* in
         throw std::invalid_argument("Intel NPU projection exceeds bounded scratch");
     const auto start = std::chrono::steady_clock::now();
     auto& graph = p.graph(rows, width, tokens);
-    dequantize_half(p.q, type, weights, p.weights, size_t(rows) * width);
-    convert_half(p.q, input, p.input, size_t(tokens) * width);
-    p.q.wait_and_throw();
+    auto weight_ready = dequantize_half(p.q, type, weights, p.weights, size_t(rows) * width);
+    auto input_ready = convert_half(p.q, input, p.input, size_t(tokens) * width);
+    weight_ready.wait_and_throw(); input_ready.wait_and_throw();
+    // The full operator also permits out-of-order callers. Preserve its old
+    // retirement fence before infer can overwrite the shared output buffer.
+    if(!p.q.has_property<sycl::property::queue::in_order>()) p.q.wait_and_throw();
+    graph.request.set_input_tensor(0, graph.host_input);
+    graph.request.set_input_tensor(1, ov::Tensor(ov::element::f16, {size_t(rows),size_t(width)}, p.weights));
+    graph.request.set_output_tensor(graph.host_output);
+    graph.binding_valid = false;
     graph.request.infer();
     const auto event = p.q.memcpy(output, p.output, size_t(tokens) * rows * sizeof(float));
     ++p.calls;
@@ -102,12 +125,26 @@ sycl::event NpuProjection::run(int type, const uint8_t* weights, const float* in
 #ifdef TINYSTRATA_INTEL_MKL
 bool NpuProjection::run_split(PrefillGemm& gpu, int type, const uint8_t* weights, const float* input,
     float* output, int rows, int width, int tokens, int npu_rows, bool parallel, bool remote, sycl::event& completion, bool interleaved) {
+    NpuSplitOptions options;
+    options.parallel=parallel; options.remote=remote; options.interleaved=interleaved;
+    return run_split(gpu,type,weights,input,output,rows,width,tokens,npu_rows,options,completion);
+}
+bool NpuProjection::run_split(PrefillGemm& gpu, int type, const uint8_t* weights, const float* input,
+    float* output, int rows, int width, int tokens, int npu_rows, const NpuSplitOptions& options, sycl::event& completion) {
     auto& p = *impl_;
+    p.timing = {};
+    const bool parallel=options.parallel, remote=options.remote, interleaved=options.interleaved;
+    const auto call_start=std::chrono::steady_clock::now();
+    const auto elapsed=[](auto start){return std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();};
     // The experiment is bounded to original Q6_K projection rows. Other
     // types/layouts keep the existing GPU path rather than guessing strides.
     if (type != 14 || width != 2048 || tokens < 128 || tokens > 1024 ||
         npu_rows < 256 || npu_rows % 256 || npu_rows >= rows ||
-        size_t(rows) * tokens > p.activation_elements) return false;
+        size_t(rows) * tokens > p.activation_elements ||
+        !p.q.has_property<sycl::property::queue::in_order>()) return false;
+    ++p.counters.eligible;
+    const auto graph_key=std::make_tuple(npu_rows,width,tokens);
+    if (!p.graphs.count(graph_key) && p.graphs.size()>=p.graph_limit) {++p.counters.graph_capacity_skips;return false;}
     if (!p.split_weights) {
         auto* weights_buffer = sycl::aligned_alloc_host<sycl::half>(4096, p.split_cache_elements, p.q);
         float* output_buffer = nullptr;
@@ -125,16 +162,27 @@ bool NpuProjection::run_split(PrefillGemm& gpu, int type, const uint8_t* weights
     const auto key = std::make_tuple(weights, type + (interleaved ? 1000 : 0), npu_rows, width);
     const size_t elements = size_t(npu_rows) * width;
     auto found = p.split_cache.find(key);
-    if (found == p.split_cache.end() && p.split_cache_used + elements > p.split_cache_elements) return false;
+    if (found == p.split_cache.end() && p.split_cache_used + elements > p.split_cache_elements) {++p.counters.cache_capacity_skips;return false;}
     auto started = std::chrono::steady_clock::now();
     auto& graph = p.graph(npu_rows, width, tokens);
-    p.split_compile_ms += std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now() - started).count();
+    p.timing.compile_ms=elapsed(started); p.split_compile_ms += p.timing.compile_ms;
+    p.timing.rows=rows; p.timing.npu_rows=npu_rows; p.timing.tokens=tokens;
+    p.timing.cache_hit=found!=p.split_cache.end();
+    p.timing.profiled=options.profile_stages && p.q.has_property<sycl::property::queue::enable_profiling>();
+    if(p.timing.profiled) {
+        // Explicit diagnostic fence separates predecessor drain from our
+        // preparation. It is not present on the normal candidate path.
+        const auto before=std::chrono::steady_clock::now();
+        auto prior=p.q.ext_oneapi_submit_barrier();prior.wait_and_throw();
+        p.timing.prior_gpu_drain_ms=elapsed(before);
+    }
     started = std::chrono::steady_clock::now();
     sycl::half* prepared = nullptr;
+    sycl::event weight_ready;
     if (found == p.split_cache.end()) {
         prepared = p.split_weights + p.split_cache_used;
-        if (!interleaved) dequantize_half(p.q, type, weights, prepared, elements);
-        else p.q.parallel_for(sycl::range<1>(elements), [=](sycl::id<1> id) {
+        if (!interleaved) weight_ready=dequantize_half(p.q, type, weights, prepared, elements);
+        else weight_ready=p.q.parallel_for(sycl::range<1>(elements), [=](sycl::id<1> id) {
             const size_t row = id[0] / width, col = id[0] % width;
             const size_t block = col / 256, local = col % 256;
             const size_t start = (((row / 16) * (width / 256) + block) * 53 * 16 + row % 16) * 4;
@@ -147,13 +195,25 @@ bool NpuProjection::run_split(PrefillGemm& gpu, int type, const uint8_t* weights
             prepared[id[0]] = sycl::half(float(sycl::bit_cast<sycl::half>(bits)) * float(scale) * float((low | high << 4) - 32));
         });
     } else { prepared = found->second; ++p.split_hits; }
-    convert_half(p.q, input, p.input, size_t(tokens) * width);
-    p.q.wait_and_throw();
+    p.timing.weight_prepare_ms=elapsed(started);
+    started=std::chrono::steady_clock::now();
+    auto input_ready=convert_half(p.q, input, p.input, size_t(tokens) * width);
+    p.timing_input=input_ready;if(found==p.split_cache.end())p.timing_weight=weight_ready;
+    p.timing.input_prepare_ms=elapsed(started);
+    started=std::chrono::steady_clock::now();
+    // Wait only for these buffers. The old global queue wait also drained
+    // unrelated work, and did not identify conversion versus NPU waiting.
+    if(found==p.split_cache.end()) weight_ready.wait_and_throw();
+    input_ready.wait_and_throw();
+    p.timing.prepare_wait_ms=elapsed(started);
     if (found == p.split_cache.end()) {
         p.split_cache.emplace(key, prepared);
         p.split_cache_used += elements;
     }
     const ov::Shape xshape{size_t(tokens), size_t(width)}, wshape{size_t(npu_rows), size_t(width)}, yshape{size_t(tokens), size_t(npu_rows)};
+    started=std::chrono::steady_clock::now();
+    const bool reuse=options.reuse_tensors && graph.binding_valid && graph.bound_remote==remote && graph.bound_weights==prepared;
+    p.timing.tensor_reused=reuse;
     if (remote) {
         auto context = graph.compiled.get_context().as<ov::intel_npu::level_zero::ZeroContext>();
         const auto kind = ov::intel_npu::MemType::CPU_VA;
@@ -168,34 +228,53 @@ bool NpuProjection::run_split(PrefillGemm& gpu, int type, const uint8_t* weights
             p.split_remote_output = std::move(output_region);
             p.split_remote_weights = std::move(weights_region);
         }
-        graph.request.set_input_tensor(0, context.create_tensor(ov::element::f16, xshape, p.input, kind));
-        graph.request.set_input_tensor(1, context.create_tensor(ov::element::f16, wshape, prepared, kind));
-        graph.request.set_output_tensor(context.create_tensor(ov::element::f32, yshape, p.output, kind));
-    } else {
-        graph.request.set_input_tensor(0, ov::Tensor(ov::element::f16, xshape, p.input));
-        graph.request.set_input_tensor(1, ov::Tensor(ov::element::f16, wshape, prepared));
-        graph.request.set_output_tensor(ov::Tensor(ov::element::f32, yshape, p.output));
+        if(!reuse) {
+            if(!options.reuse_tensors || !graph.remote_input) {
+                graph.remote_input=context.create_tensor(ov::element::f16,xshape,p.input,kind);
+                graph.remote_output=context.create_tensor(ov::element::f32,yshape,p.output,kind);
+            }
+            auto tensor=graph.remote_weights.find(prepared);
+            if(!options.reuse_tensors || tensor==graph.remote_weights.end())
+                tensor=graph.remote_weights.insert_or_assign(prepared,context.create_tensor(ov::element::f16,wshape,prepared,kind)).first;
+            graph.request.set_input_tensor(0,graph.remote_input);
+            graph.request.set_input_tensor(1,tensor->second);
+            graph.request.set_output_tensor(graph.remote_output);
+        }
+    } else if(!reuse) {
+        auto tensor=graph.host_weights.find(prepared);
+        if(!options.reuse_tensors || tensor==graph.host_weights.end())
+            tensor=graph.host_weights.insert_or_assign(prepared,ov::Tensor(ov::element::f16,wshape,prepared)).first;
+        graph.request.set_input_tensor(0,graph.host_input);
+        graph.request.set_input_tensor(1,tensor->second);
+        graph.request.set_output_tensor(graph.host_output);
     }
-    p.split_prepare_ms += std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now() - started).count();
+    graph.bound_weights=prepared; graph.bound_remote=remote; graph.binding_valid=true;
+    p.timing.tensor_bind_ms=elapsed(started);
+    p.split_prepare_ms+=p.timing.weight_prepare_ms+p.timing.input_prepare_ms+p.timing.prepare_wait_ms+p.timing.tensor_bind_ms;
     // Independent buffers: GPU computes every remaining row while NPU is in
     // flight. The request is joined only after useful GPU work is submitted.
     const int gpu_rows = rows - npu_rows;
     const size_t stride = size_t(width / 256) * (interleaved ? 212 : 210);
+    const auto npu_begin=std::chrono::steady_clock::now();
     try {
+        started=std::chrono::steady_clock::now();
         if (parallel) graph.request.start_async();
         else graph.request.infer();
-        if (interleaved) gpu.dense_interleaved_q6(weights + size_t(npu_rows) * stride, input, p.split_gpu_output, gpu_rows, width, tokens);
-        else gpu.dense(type, weights + size_t(npu_rows) * stride, input, p.split_gpu_output, gpu_rows, width, tokens);
+        p.timing.npu_submit_ms=elapsed(started);
+        if(p.timing.profiled) p.timing_gpu_begin=p.q.ext_oneapi_submit_barrier();
+        started=std::chrono::steady_clock::now();
+        auto gpu_compute=interleaved?gpu.dense_interleaved_q6(weights + size_t(npu_rows) * stride, input, p.split_gpu_output, gpu_rows, width, tokens):
+            gpu.dense(type, weights + size_t(npu_rows) * stride, input, p.split_gpu_output, gpu_rows, width, tokens);
+        p.timing.gpu_submit_ms=elapsed(started);p.timing_gpu_compute=gpu_compute;
         const float* gpu_result = p.split_gpu_output;
-        auto gpu_end = p.q.parallel_for(sycl::range<1>(size_t(tokens) * gpu_rows), [=](sycl::id<1> id) {
+        auto gpu_end = p.q.submit([&](sycl::handler& handler){handler.depends_on(gpu_compute);handler.parallel_for(sycl::range<1>(size_t(tokens) * gpu_rows), [=](sycl::id<1> id) {
             const size_t token = id[0] / gpu_rows, row = id[0] % gpu_rows;
             output[token * rows + npu_rows + row] = gpu_result[id[0]];
-        });
-        // Numerical micro tests enable profiling and can observe the request
-        // still in flight after useful GPU work completes. Normal model runs
-        // preserve asynchronous submission and join only at the dependency.
-        if (parallel && p.q.has_property<sycl::property::queue::enable_profiling>()) {
-            gpu_end.wait_and_throw();
+        });});
+        p.timing_gpu_gather=gpu_end;
+        // Nonblocking observation; profiling no longer forces GPU completion
+        // before NPUwait, which previously hid most actual host waiting.
+        if (parallel && gpu_end.get_info<sycl::info::event::command_execution_status>()==sycl::info::event_command_status::complete) {
             if (!graph.request.wait_for(std::chrono::milliseconds(0))) ++p.split_gpu_done_npu_pending;
         }
         started = std::chrono::steady_clock::now();
@@ -204,14 +283,39 @@ bool NpuProjection::run_split(PrefillGemm& gpu, int type, const uint8_t* weights
         if (parallel) { try { graph.request.wait(); } catch (...) {} }
         throw;
     }
-    p.split_wait_ms += std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now() - started).count();
+    p.timing.npu_wait_ms=parallel?elapsed(started):0;
+    p.timing.npu_host_span_ms=elapsed(npu_begin);p.split_wait_ms+=p.timing.npu_wait_ms;
     const float* npu_result = p.output;
-    completion = p.q.parallel_for(sycl::range<1>(size_t(tokens) * npu_rows), [=](sycl::id<1> id) {
+    completion = p.q.submit([&](sycl::handler& handler){handler.depends_on(p.timing_gpu_gather);handler.parallel_for(sycl::range<1>(size_t(tokens) * npu_rows), [=](sycl::id<1> id) {
         const size_t token = id[0] / npu_rows, row = id[0] % npu_rows;
         output[token * rows + row] = npu_result[id[0]];
-    });
+    });});
+    p.timing_merge=completion;p.timing.valid=true;p.timing.host_ms=elapsed(call_start);
     ++p.split_calls;
+    ++p.counters.served;if(p.timing.cache_hit)++p.counters.cache_hits;
     return true;
 }
+NpuSplitTiming NpuProjection::last_split_timing() const {
+    const auto& p=*impl_;auto result=p.timing;
+    if(!result.valid || !result.profiled || p.timing_merge.get_info<sycl::info::event::command_execution_status>()!=sycl::info::event_command_status::complete) return result;
+    const auto begin=[](const sycl::event& e){return e.get_profiling_info<sycl::info::event_profiling::command_start>();};
+    const auto end=[](const sycl::event& e){return e.get_profiling_info<sycl::info::event_profiling::command_end>();};
+    result.gpu_remainder_ms=double(end(p.timing_gpu_compute)-end(p.timing_gpu_begin))*1e-6;
+    result.gpu_compute_event_ms=double(end(p.timing_gpu_compute)-begin(p.timing_gpu_compute))*1e-6;
+    result.weight_decode_gpu_ms=result.cache_hit?0:double(end(p.timing_weight)-begin(p.timing_weight))*1e-6;
+    result.input_convert_gpu_ms=double(end(p.timing_input)-begin(p.timing_input))*1e-6;
+    result.gpu_gather_ms=double(end(p.timing_gpu_gather)-begin(p.timing_gpu_gather))*1e-6;
+    result.npu_merge_ms=double(end(p.timing_merge)-begin(p.timing_merge))*1e-6;
+    return result;
+}
+NpuSplitCounters NpuProjection::split_counters() const {return impl_->counters;}
 #endif
+NpuMemoryUsage NpuProjection::memory_usage() const {
+    const auto& p=*impl_;NpuMemoryUsage result;
+    result.host_usm_bytes=p.weight_elements*sizeof(sycl::half)+p.activation_elements*(sizeof(sycl::half)+sizeof(float));
+    if(p.split_weights){result.fp16_cache_capacity_bytes=p.split_cache_elements*sizeof(sycl::half);result.host_usm_bytes+=result.fp16_cache_capacity_bytes;result.device_usm_bytes=p.activation_elements*sizeof(float);}
+    result.fp16_cache_used_bytes=p.split_cache_used*sizeof(sycl::half);result.compiled_graphs=p.graphs.size();
+    for(const auto& item:p.graphs) result.tensor_bindings+=2+item.second.host_weights.size()+item.second.remote_weights.size()+(item.second.remote_input?2:0);
+    return result;
+}
 } // namespace strata::intel

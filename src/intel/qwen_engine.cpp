@@ -17,6 +17,7 @@
 #endif
 #ifdef TINYSTRATA_INTEL_NPU
 #include "strata/intel/npu.hpp"
+#include "strata/intel/npu_schedule_policy.hpp"
 #endif
 #include "strata/common/utf8_args.hpp"
 #include "strata/common/utf8_path.hpp"
@@ -56,6 +57,9 @@ class Engine {
 #endif
 #ifdef TINYSTRATA_INTEL_NPU
     std::unique_ptr<NpuProjection> npu_;
+    npu_policy::SharePolicy npu_share_;
+    std::string npu_split_mode_;
+    bool npu_reuse_tensors_ = true, npu_profile_stages_ = false, npu_split_requested_ = false;
 #endif
     std::vector<void*> allocations_;
     std::vector<LayerState> layers_, checkpoints_;
@@ -183,14 +187,23 @@ class Engine {
         const int width = int(t.info.shape[0]);
         const int rows = t.info.shape.size() < 2 ? 1 : int(t.info.shape[1]);
 #ifdef TINYSTRATA_INTEL_NPU
-        const char* split_mode = std::getenv("STRATA_REVIEW_NPU_SPLIT");
+        const char* split_mode = npu_split_requested_ ? npu_split_mode_.c_str() : nullptr;
 #ifdef TINYSTRATA_INTEL_MKL
         if (npu_ && gemm_ && split_mode && *split_mode && tokens >= 128 &&
             (name.find("attn_qkv.weight") != std::string::npos || name.find("attn_gate.weight") != std::string::npos)) {
+            const auto projection = name.find("attn_qkv.weight") != std::string::npos
+                ? npu_policy::Projection::qkv : npu_policy::Projection::gate;
+            const auto partition = npu_share_.select({projection, int(t.info.type),
+                size_t(rows), size_t(width), size_t(tokens)});
+            NpuSplitOptions options;
+            options.parallel = npu_split_mode_ != "serial";
+            options.remote = npu_split_mode_ == "remote";
+            options.interleaved = t.layout == WeightLayout::Q6Interleaved16;
+            options.reuse_tensors = npu_reuse_tensors_;
+            options.profile_stages = npu_profile_stages_;
             sycl::event completion;
-            if (npu_->run_split(*gemm_, int(t.info.type), t.data, input, output, rows, width, tokens,
-                               1024, std::string(split_mode) != "serial", std::string(split_mode) == "remote", completion,
-                               t.layout == WeightLayout::Q6Interleaved16)) {
+            if (partition.offloaded() && npu_->run_split(*gemm_, int(t.info.type), t.data, input, output,
+                               rows, width, tokens, int(partition.npu_rows), options, completion)) {
                 remember("npu_split_join", completion);
                 return;
             }
@@ -882,6 +895,37 @@ public:
             if (prefill_npu || std::getenv("STRATA_REVIEW_NPU_SPLIT")) {
                 if (inspect_device(q_.get_device()).device_id != 0xB082)
                     throw std::runtime_error("NPU assistance is validated only with Arc B390");
+                if (const char* mode = std::getenv("STRATA_REVIEW_NPU_SPLIT")) {
+                    npu_split_requested_ = true;
+                    npu_split_mode_ = mode;
+                }
+                if (!npu_split_mode_.empty() && npu_split_mode_ != "serial" &&
+                    npu_split_mode_ != "parallel" && npu_split_mode_ != "remote")
+                    throw std::invalid_argument("Unknown experimental NPU split mode");
+                const auto setting = [](const char* name, int fallback, int maximum) {
+                    const char* raw = std::getenv(name);
+                    if (!raw || !*raw) return fallback;
+                    const std::string value(raw);
+                    size_t consumed = 0;
+                    const int result = std::stoi(value, &consumed);
+                    if (consumed != value.size() || result < 0 || result > maximum)
+                        throw std::invalid_argument(std::string("Invalid experimental NPU setting: ") + name);
+                    return result;
+                };
+                const int qkv_rows = setting("STRATA_REVIEW_NPU_QKV_ROWS", 1024, 8192);
+                const int gate_rows = setting("STRATA_REVIEW_NPU_GATE_ROWS", 1024, 8192);
+                const int min_tokens = setting("STRATA_REVIEW_NPU_MIN_TOKENS", 128, 1024);
+                const int max_tokens = setting("STRATA_REVIEW_NPU_MAX_TOKENS", 1024, 1024);
+                if (min_tokens < 128 || min_tokens > max_tokens)
+                    throw std::invalid_argument("Invalid experimental NPU token interval");
+                npu_share_ = npu_policy::SharePolicy({
+                    {npu_policy::Projection::qkv, size_t(min_tokens), size_t(max_tokens), size_t(qkv_rows)},
+                    {npu_policy::Projection::gate, size_t(min_tokens), size_t(max_tokens), size_t(gate_rows)}});
+                npu_reuse_tensors_ = setting("STRATA_REVIEW_NPU_REUSE_TENSORS", 1, 1) != 0;
+                npu_profile_stages_ = setting("STRATA_REVIEW_NPU_PROFILE_STAGES", 0, 1) != 0;
+                std::fprintf(stderr, "Intel NPU policy mode=%s qkv_rows=%d gate_rows=%d min_tokens=%d max_tokens=%d reuse_tensors=%d stage_profile=%d\n",
+                    npu_split_mode_.empty() ? "full" : npu_split_mode_.c_str(), qkv_rows, gate_rows,
+                    min_tokens, max_tokens, int(npu_reuse_tensors_), int(npu_profile_stages_));
                 npu_ = std::make_unique<NpuProjection>(q_);
             }
 #endif
