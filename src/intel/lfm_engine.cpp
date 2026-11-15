@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <limits>
 #include <random>
@@ -39,6 +40,7 @@ class LfmEngine {
     context_policy::Footprint actual_allocations_;
     int context_,chunk_,position_=0;
     bool logits_valid_=false;
+    bool q4_fp32_blocks_=false;
     float *residual_,*norm_,*bcx_,*mixed_,*qraw_,*kraw_,*v_,*query_,*key_,*attended_,*attention_out_;
     float *gate_,*up_,*hidden_,*expert_down_,*ffn_out_,*router_,*selected_weights_,*last_hidden_,*backup_hidden_,*logits_;
     int32_t *ids_,*input_ids_,*quant_error_,*counts_,*slots_,*owners_,*offsets_,*tiles_;
@@ -60,12 +62,18 @@ class LfmEngine {
 #ifdef TINYSTRATA_INTEL_MKL
         if(gemm_&&tokens>=16&&t.info.type!=0){gemm_->dense(int(t.info.type),t.data,input,output,rows,width,tokens);return;}
 #endif
+        if(lfm_q4_fp32_eligible(int(t.info.type),tokens,q4_fp32_blocks_)){
+            lfm_q4_fp32_matvec(q_,t.data,input,output,rows,width);return;
+        }
         quantized_matmul(q_,int(t.info.type),t.data,input,output,rows,width,tokens);
     }
     void expert_matrix(const ResidentTensor& t,ExpertPlan plan,const float* input,float* output,int rows,int width,bool separate,int tokens){
 #ifdef TINYSTRATA_INTEL_MKL
         if(gemm_&&tokens>=16){gemm_->selected(int(t.info.type),t.data,t.bytes/geometry_.experts,plan,input,output,rows,width,separate);return;}
 #endif
+        if(lfm_q4_fp32_eligible(int(t.info.type),tokens,q4_fp32_blocks_)){
+            lfm_q4_fp32_selected(q_,t.data,ids_,input,output,rows,width,separate);return;
+        }
         if(tokens>=16)selected_matmul(q_,int(t.info.type),t.data,plan,input,output,rows,width,separate);
         else selected_matvec(q_,int(t.info.type),t.data,ids_,geometry_.picks,input,output,rows,width,separate,tokens);
     }
@@ -94,6 +102,8 @@ public:
     LfmEngine(const std::string& path,unsigned device,int context,int chunk,WeightMemory memory,bool mkl)
         :q_(select_device(device),[](sycl::exception_list errors){for(const auto& e:errors)std::rethrow_exception(e);},sycl::property::queue::in_order{}),
          device_(inspect_device(q_.get_device())),context_(context),chunk_(chunk){
+        const char* q4_blocks=std::getenv("STRATA_INTEL_LFM_Q4_FP32_BLOCKS");
+        q4_fp32_blocks_=q4_blocks&&std::string(q4_blocks)=="1";
         if(context<0||context>context_policy::lfm_limit||chunk<1||chunk>512)throw std::runtime_error("LFM context must be auto or1..131072; chunk1..512 required");
 #ifdef TINYSTRATA_INTEL_AOT_TARGET
         if(std::string(TINYSTRATA_INTEL_AOT_TARGET)=="intel_gpu_ptl_h"&&!device_.ptl_h_aot)
@@ -144,6 +154,7 @@ public:
     ~LfmEngine(){release();}
     const DeviceInfo& device_info()const{return device_;}
     int context()const{return context_;}int chunk()const{return chunk_;}int consumed()const{return position_;}int vocabulary()const{return geometry_.vocabulary;}
+    bool q4_fp32_blocks()const{return q4_fp32_blocks_;}
     bool terminal(int token)const{return std::find(geometry_.terminal_tokens.begin(),geometry_.terminal_tokens.end(),token)!=geometry_.terminal_tokens.end();}
     void reset(){for(auto& s:states_)if(s.convolution)q_.memset(s.convolution,0,size_t(2*geometry_.width)*sizeof(float));q_.wait_and_throw();position_=0;logits_valid_=false;}
     const float* logits(){if(!position_)throw std::runtime_error("No committed LFM prompt");if(!logits_valid_){output_head();q_.wait_and_throw();check_logits();logits_valid_=true;}return logits_;}
@@ -214,8 +225,8 @@ void option(sampling_policy::Sampling& s,const std::string& text){const auto at=
     else if((k=="mtp_auto"||k=="lookup_draft")&&n==0){}
     else throw std::runtime_error("Unsupported LFM request option: "+text);}
 int serve(LfmEngine& e){const auto& d=e.device_info();
-    std::printf("INFO backend=sycl experimental=1 model=lfm2.5-24b-a2b family=lfm2moe kv=int8 mtp=0 vision=0 mandatory_thinking=1 memory_model=%s single_weight_store=1 device_vendor=%u device_id=%u device_integrated=%d device_architecture=%s adapter_luid=%s adapter_node_mask=%u kv_used_tokens=0\nREADY %d stop\n",
-        d.integrated?"uma":"discrete",d.vendor_id,d.device_id,int(d.integrated),d.architecture.c_str(),d.adapter_luid.empty()?"unknown":d.adapter_luid.c_str(),d.adapter_node_mask,e.context());std::fflush(stdout);
+    std::printf("INFO backend=sycl experimental=1 model=lfm2.5-24b-a2b family=lfm2moe kv=int8 mtp=0 vision=0 mandatory_thinking=1 lfm_q4_fp32_blocks=%d memory_model=%s single_weight_store=1 device_vendor=%u device_id=%u device_integrated=%d device_architecture=%s adapter_luid=%s adapter_node_mask=%u kv_used_tokens=0\nREADY %d stop\n",
+        int(e.q4_fp32_blocks()),d.integrated?"uma":"discrete",d.vendor_id,d.device_id,int(d.integrated),d.architecture.c_str(),d.adapter_luid.empty()?"unknown":d.adapter_luid.c_str(),d.adapter_node_mask,e.context());std::fflush(stdout);
     strata::common::CommandInbox inbox;std::string line;std::vector<int> live;int reported=0;
     const auto report=[&]{if(reported!=e.consumed()){reported=e.consumed();std::printf("INFO kv_used_tokens=%d\n",reported);std::fflush(stdout);}};
     while(inbox.next(line)){if(line=="QUIT")return 0;if(line.empty())continue;
