@@ -43,7 +43,10 @@ MODELS = {
 }
 TEXT_ONLY_MODELS = ('lfm', 'clover')
 TIEL_MODEL = ('config-tiel-coder.json', 'qwen35moe', 'tiel-coder-35b-a3b')
-INTEL_TEXT_CONFIGS = {'qwen': 'config-sycl.json', 'tiel': 'config-tiel-coder-sycl.json'}
+INTEL_TEXT_CONFIGS = {'qwen': 'config-sycl.json', 'tiel': 'config-tiel-coder-sycl.json',
+                      'gemma': 'config-gemma4-sycl.json', 'lfm': 'config-lfm2-sycl.json',
+                      'clover': 'config-clover-sycl.json'}
+INTEL_TARGET_ONLY = ('gemma', 'lfm', 'clover')
 # Adding a model must not change the existing v1 texts/image or their hashes.
 CLOVER_SAMPLING = {'temperature': 0.0, 'top_p': 1.0, 'top_k': 64, 'min_p': 0.0,
                    'presence_penalty': 0.9, 'repetition_penalty': 1.05, 'frequency_penalty': 0.0}
@@ -69,7 +72,7 @@ ENGINE_KEYS = ('model', 'family', 'version', 'kv', 'kv_grow', 'mtp', 'clover_dra
                'q36_mmq_min_rows', 'q36_mmq_auto_workspace_bytes',
                'hip_vmm_family', 'hip_vmm_verified', 'hip_vmm_driver_min_kib', 'hip_vmm_quantum_kib',
                'hip_runtime_version', 'hip_compiled_version', 'hip_vmm_reason')
-ENGINE_KEYS += ('backend', 'experimental', 'intel_profile', 'memory_model', 'single_weight_store',
+ENGINE_KEYS += ('backend', 'experimental', 'intel_profile', 'memory_model', 'single_weight_store', 'model_family', 'mandatory_thinking',
                 'device_vendor', 'device_id', 'device_integrated', 'device_architecture',
                 'adapter_luid', 'adapter_node_mask')
 CLOVER_INFO_FLOATS = ('clover_threshold', 'clover_last_threshold', 'clover_preview_ms',
@@ -161,7 +164,7 @@ def model_definition(model):
 def benchmark_models(model, saved_profile=False, *, intel_text=False):
     if intel_text:
         if model not in INTEL_TEXT_CONFIGS:
-            raise ValueError('--intel-text requires one explicit --model qwen or tiel')
+            raise ValueError('--intel-text requires one explicit --model qwen, tiel, gemma, lfm or clover')
         from serve.intel_backend import supports_model
         _, arch, name = model_definition(model)
         if not supports_model({'arch': arch, 'model_name': name}):
@@ -223,7 +226,7 @@ def intel_text_config(original, model, folder, port, cases):
     """
     benchmark_models(model, intel_text=True)
     from serve import config as engine_config
-    from serve.intel_backend import configure_backend, engine_args, validate_config
+    from serve.intel_backend import configure_backend, engine_args, validate_config, canonical_model, MODEL_PROFILES
     if original.get('backend') != 'sycl':
         raise ValueError('--intel-text requires an explicitly installed sycl profile')
     _, arch, name = model_definition(model)
@@ -231,9 +234,18 @@ def intel_text_config(original, model, folder, port, cases):
         raise ValueError('The Intel profile does not match the selected model architecture')
     validate_config(original, allow_uninstalled=True)
     selected = configure_backend(original)
+    if canonical_model(selected) != name or selected.get('intel_profile') != MODEL_PROFILES[name]:
+        raise ValueError('--intel-text requires the installed model-specific Intel profile')
     actual = engine_args(selected, allow_uninstalled=True)
     required = {'--kv-type': 'int8', '--mtp': '3', '--chunk': '1024',
                 '--weight-memory': 'host', '--draft-vocab': '2048'}
+    if model in INTEL_TARGET_ONLY:
+        auto, _ = engine_config.apply(selected, {'chunk': 'auto'})
+        auto_args = engine_args(auto, allow_uninstalled=True)
+        required = {'--kv-type': 'int8', '--mtp': '0', '--chunk': auto_args[auto_args.index('--chunk') + 1],
+                    '--weight-memory': 'host'}
+        if model == 'clover':
+            required.update({'--clover-mode': 'causal', '--clover-draft': '0', '--draft-vocab': '0'})
     if selected.get('intel_profile', 'generic') == 'generic':
         raise ValueError('--intel-text requires the approved optimized Intel MTP3 profile')
     for flag, expected in required.items():
@@ -250,7 +262,8 @@ def intel_text_config(original, model, folder, port, cases):
     def resolved(value):
         path = Path(value).expanduser()
         return str((path if path.is_absolute() else base / path).resolve())
-    cfg, _ = engine_config.apply(cfg, {'max_context': 32768, 'chunk': 'auto', 'kv_type': 'int8', 'mtp': 3})
+    cfg, _ = engine_config.apply(cfg, {'max_context': 32768, 'chunk': 'auto', 'kv_type': 'int8',
+                                     'mtp': 0 if model in INTEL_TARGET_ONLY else 3})
     model_at = cfg['args'].index('--model') + 1
     cfg['args'][model_at] = resolved(cfg['args'][model_at])
     for key in ('exe', 'tokenizer'):
@@ -269,19 +282,56 @@ def intel_text_config(original, model, folder, port, cases):
     return cfg
 
 
+def intel_text_parameters(cfg):
+    """Record the effective model profile; auto is resolved from current source.
+
+    This is a configuration plan, not native INFO or a hardware measurement.
+    Exact resident argv and available INFO are checked separately at runtime.
+    """
+    from serve.intel_backend import engine_args, canonical_model
+    from serve.intel_models import TARGET_ONLY_MODELS, CLOVER_MODEL
+    args = engine_args(cfg, allow_uninstalled=True)
+    value = lambda flag, default=None: args[args.index(flag) + 1] if flag in args else default
+    model = canonical_model(cfg)
+    target = model in TARGET_ONLY_MODELS
+    return {'model': model, 'profile': cfg['intel_profile'], 'context_tokens': int(value('--max-context')),
+            'kv': value('--kv-type'), 'mtp': int(value('--mtp')), 'chunk_tokens': int(value('--chunk')),
+            'chunk_policy': 'Intel profile auto', 'draft_vocab': int(value('--draft-vocab', '0')),
+            'mode': 'causal_d0' if model == CLOVER_MODEL else 'target_only' if target else 'mtp',
+            'assistant': False,
+            'native_profile': ('Dedicated Intel causal D0/INT8/MTP0; no assistant, draft, lookup or images'
+                               if model == CLOVER_MODEL else
+                               'Dedicated Intel target-only INT8/MTP0; no assistant or images' if target else
+                               'Retained approved Intel MTP3/INT8/draft2048; graphs use profile defaults')}
+
+
 def validate_intel_text_engine(info, health, cfg):
     """Confirm the actual API/device and the fixed-context text variant."""
     if (health.get('backend') != 'sycl' or health.get('intel_profile') != cfg['intel_profile'] or
             health.get('experimental') is not True or health.get('model') != cfg['model_name'] or
             health.get('images') is not False):
         raise ValueError('The owned API does not identify the selected experimental Intel text profile')
+    from serve.intel_backend import canonical_model
+    from serve.intel_models import TARGET_ONLY_MODELS
+    target = canonical_model(cfg) in TARGET_ONLY_MODELS
+    expected_mtp = 0 if target else 3
+    expected_chunk = intel_text_parameters(cfg)['chunk_tokens'] if target else 1024
     if (info.get('backend') != 'sycl' or info.get('memory_model') != 'uma' or
-            info.get('kv') != 'int8' or info.get('mtp') != 3 or info.get('max_context') != 32768 or
+            info.get('kv') != 'int8' or info.get('mtp') != expected_mtp or info.get('max_context') != 32768 or
             info.get('vision') != 0 or info.get('device_vendor') != 32902 or info.get('device_integrated') != 1 or
             info.get('kv_grow') not in (None, False, 0)):
-        raise ValueError(f'Intel engine does not match the fixed INT8/MTP3 UMA text variant: {info}')
-    if info.get('chunk') not in (None, 1024):
+        raise ValueError(f'Intel engine does not match the fixed INT8/MTP{expected_mtp} UMA text variant: {info}')
+    if info.get('chunk') not in (None, expected_chunk):
         raise ValueError('Intel engine reports a different input chunk size')
+    if target:
+        if (info.get('model') != cfg['model_name'] or info.get('family', info.get('model_family')) != cfg['arch'] or
+                type(info.get('mtp')) is not int or info.get('single_weight_store') != 1):
+            raise ValueError('Intel target-only engine identity/one-arena contract differs from its model profile')
+        if cfg['arch'] == 'lfm2moe' and info.get('mandatory_thinking') != 1:
+            raise ValueError('Intel LFM benchmark requires the native mandatory-thinking contract')
+        if cfg['arch'] == 'clover_moe' and (info.get('clover_mode') not in (None, 'causal') or
+                                           info.get('clover_draft') not in (None, 0)):
+            raise ValueError('Intel Clover benchmark requires causal D0')
     cache_bytes(info, intel_text=True)
 
 
@@ -290,6 +340,11 @@ def intel_text_build(cfg):
     proof = validate_intel_executable(cfg, allow_legacy=False)
     if proof is None:
         raise ValueError('--intel-text requires an installed native build with current capability metadata')
+    from serve.intel_backend import canonical_model
+    from serve.intel_models import TARGET_ONLY_MODELS
+    if canonical_model(cfg) in TARGET_ONLY_MODELS:
+        from serve.intel_capabilities import validate_capabilities
+        validate_capabilities(proof.report, model=canonical_model(cfg), profile=cfg['intel_profile'], allow_legacy=False)
     folders = [Path(cfg['exe']).parent, *(Path(path) for path in cfg.get('lib_dirs', []))]
     manifests = list(dict.fromkeys(path / '.tinystrata-intel-runtime.json' for path in folders
                                   if (path / '.tinystrata-intel-runtime.json').is_file()))
@@ -808,7 +863,10 @@ def render_report(report):
     if report.get('saved_profile'):
         lines[4:4] = ['Saved-profile variant: native settings and samplers are retained; each canonical generation text runs once per start.', '']
     if report.get('intel_text'):
-        lines[4:4] = ['Intel text variant: fixed context32768, INT8 KV, MTP3 and profile chunk1024; '
+        selected = [f'{model}: MTP{params["mtp"]}, profile chunk{params["chunk_tokens"]}'
+                    for model, data in report['models'].items() if (params := data.get('native_profile_parameters'))]
+        profiles = '; '.join(selected) or 'model-specific MTP and input chunk profiles'
+        lines[4:4] = [f'Intel text variant: fixed context32768, INT8 KV, {profiles}; '
                       'GPU Vision, dynamic KV growth and independent Expert cache are unsupported. '
                       'Image is N/A. Canonical v1 text inputs, sampler, seed, warmup and repetitions are retained.', '']
     if profile:
@@ -980,7 +1038,7 @@ def main():
     report = dict(protocol=cases['protocol'] + variant_suffix,
                   base_protocol=cases['protocol'], standard=options.runs == cases['runs'] and not variant,
                   clover_mode=options.clover_mode, clover_block_size=options.clover_block_size,
-                  clover_threshold=options.clover_threshold, clover_profile=clover_profile if options.model == 'clover' and not options.saved_profile else None,
+                  clover_threshold=options.clover_threshold, clover_profile=clover_profile if options.model == 'clover' and not options.saved_profile and not options.intel_text else None,
                   complete=False,
                   label=options.label, source_commit=commit, benchmark_sha256=sha256(__file__),
                   cases_sha256=sha256(HERE / 'cases.json'), image_sha256=sha256(HERE / 'image.png'),
@@ -994,11 +1052,13 @@ def main():
                       config_hashes_before={str(p): sha256(p) for p in options.config_dir.glob('config*.json')},
                       protocol_differences={'vision': {'supported': False, 'image_case': 'unsupported'},
                           'kv_growth': {'supported': False, 'mode': 'fixed'}, 'context_tokens': 32768,
-                          'chunk_tokens': 1024, 'chunk_policy': 'Intel profile auto',
+                          'chunk_tokens': None if options.model in INTEL_TARGET_ONLY else 1024, 'chunk_policy': 'Intel profile auto',
                           'expert_cache': {'applicable': False, 'reason': 'UMA; no independent Expert cache'},
                           'expert_placement': {'applicable': False, 'reason': 'UMA single weight store; no discrete Expert VRAM budget'},
                           'cpu_workers': {'applicable': False, 'reason': 'Intel does not expose the CUDA/HIP Expert worker setting'},
-                          'native_profile': 'Retained approved Intel MTP3/INT8/draft2048; graphs use profile defaults'})
+                          'native_profile': ('Model-specific target-only profile; effective arguments recorded after planning'
+                                             if options.model in INTEL_TARGET_ONLY else
+                                             'Retained approved Intel MTP3/INT8/draft2048; graphs use profile defaults')})
     if options.include_64k:
         report['include_64k'] = True
     if self_spec_variant:
@@ -1043,6 +1103,11 @@ def main():
                 data['native_build'] = intel_text_build(prepared)
                 from serve.intel_backend import engine_args as intel_args
                 data['resolved_native_arguments'] = intel_args(prepared)
+                data['native_profile_parameters'] = intel_text_parameters(prepared)
+                if model in INTEL_TARGET_ONLY:
+                    report['protocol_differences'].update({key: data['native_profile_parameters'][key]
+                        for key in ('chunk_tokens', 'native_profile')})
+                    report['protocol_differences']['mtp_depth'] = 0
             for path in assets(prepared):
                 if not path.is_file():
                     raise FileNotFoundError(f'Install the model/binary before benchmarking: {path}')
@@ -1058,6 +1123,10 @@ def main():
                     saved_config(original, model, folder, free_port(), cases, copy_profiles=not options.prepare_only) if options.saved_profile else \
                     controlled_config(original, model, folder, free_port(), cases, **profile_options)
                 tinyconfig.validate(cfg)
+                if options.intel_text and model in INTEL_TARGET_ONLY:
+                    if (intel_args(cfg) != data['resolved_native_arguments'] or
+                            intel_text_parameters(cfg) != data['native_profile_parameters']):
+                        raise ValueError('The model-specific Intel source profile changed after benchmark preparation')
                 save(folder / 'config.json', cfg)
                 if options.prepare_only:
                     continue
@@ -1075,6 +1144,13 @@ def main():
                         run['api_identity'] = service.json('/health')
                         validate_intel_text_engine(info, run['api_identity'], cfg)
                         run['native_identity'] = service.intel_native_identity()
+                        if model in INTEL_TARGET_ONLY:
+                            run['native_profile_parameters'] = copy.deepcopy(data['native_profile_parameters'])
+                            run['native_info_observations'] = {
+                                'chunk_tokens': info.get('chunk'),
+                                'chunk_verification': 'native INFO and exact --serve argv' if info.get('chunk') is not None else
+                                                      'exact --serve argv; native INFO does not report chunk',
+                                'mode': info.get('clover_mode'), 'draft': info.get('clover_draft')}
                         run['native_build'] = intel_text_build(cfg)
                         if run['native_build'] != data['native_build']:
                             raise ValueError('Intel native/runtime metadata changed after benchmark preparation')
@@ -1085,9 +1161,9 @@ def main():
                     expected_kv = clover_profile['kv'] if model == 'clover' else 'int8'
                     if not options.saved_profile and not options.intel_text and (info.get('kv') != expected_kv or info.get('kv_grow') != 1 or info.get('mtp') != (0 if model in TEXT_ONLY_MODELS else 3)):
                         raise ValueError(f'Engine does not match protocol settings: {info}')
-                    if not options.saved_profile and model == 'clover' and not self_spec_variant and info.get('clover_draft') != 0:
+                    if not options.saved_profile and not options.intel_text and model == 'clover' and not self_spec_variant and info.get('clover_draft') != 0:
                         raise ValueError(f'The causal/diffusion profiles do not use self-speculative drafts: {info}')
-                    if model == 'clover' and not options.saved_profile:
+                    if model == 'clover' and not options.saved_profile and not options.intel_text:
                         if options.cpu_workers and info.get('cpu_workers') != options.cpu_workers:
                             raise ValueError(f'Clover worker count differs from requested profile: {info}')
                         if isinstance(options.chunk, int) and info.get('chunk') != options.chunk:

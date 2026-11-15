@@ -205,7 +205,9 @@ class IntelTextBenchmarkVariant(unittest.TestCase):
         self.assertEqual(bench.INTEL_TEXT_CONFIGS['qwen'], 'config-sycl.json')
         self.assertEqual(bench.benchmark_models('qwen', intel_text=True), ['qwen'])
         self.assertEqual(bench.benchmark_models('tiel', intel_text=True), ['tiel'])
-        for model in ('all', 'gemma', 'lfm', 'clover'):
+        for model in ('gemma', 'lfm', 'clover'):
+            self.assertEqual(bench.benchmark_models(model, intel_text=True), [model])
+        for model in ('all', 'unknown'):
             with self.subTest(model=model), self.assertRaises(ValueError):
                 bench.benchmark_models(model, intel_text=True)
         with patch('serve.intel_backend.supports_model', return_value=False), self.assertRaises(ValueError):
@@ -415,6 +417,182 @@ class IntelTextBenchmarkVariant(unittest.TestCase):
             self.assertFalse(report['standard'])
             self.assertEqual(report['models']['tiel']['sampling'], tinyconfig.TIEL_SAMPLING)
             self.assertEqual(len(list(output.glob('tiel-*/config.json'))), 4)
+
+
+class IntelTargetOnlyBenchmark(unittest.TestCase):
+    def original(self, model):
+        from serve.intel_backend import configure_backend, MODEL_PROFILES
+        _, arch, name = bench.model_definition(model)
+        return configure_backend({'backend': 'sycl', 'arch': arch, 'model_name': name,
+            'intel_profile': MODEL_PROFILES[name], 'exe': 'dedicated/tinystrata-intel.exe',
+            'cwd': str(ROOT), 'lib_dirs': ['dedicated'], 'tokenizer': 'models/tokenizer',
+            'args': ['--model', 'models/target.gguf', '--max-context', 'auto', '--chunk', 'auto',
+                     '--kv-type', 'auto', '--mtp', '0'],
+            'sampling': {'temperature': .37}, 'api_key': 'private-fixture-key',
+            'max_tokens': 777, 'history': {'retained': True}, 'model_bootstrap': True})
+
+    def configured(self, model):
+        return bench.intel_text_config(self.original(model), model, ROOT / 'unused-plan', 18019, CASES)
+
+    def report(self, model):
+        from serve.intel_models import MODEL_CONTRACTS
+        cfg = self.original(model)
+        return {'backend': 'sycl', 'experimental': True, 'model_families': [],
+                'experimental_models': [cfg['model_name']], 'experimental_profiles': {cfg['intel_profile']: 1},
+                'experimental_model_contracts': {cfg['model_name']: copy.deepcopy(MODEL_CONTRACTS[cfg['model_name']])},
+                'capabilities_schema': 1, 'serve': True, 'mtp': False, 'experimental_mtp_max_depth': 0,
+                'images': False, 'kv_types': ['int8'],
+                'build': {'mkl': True, 'int8_xmx': False, 'aot_target': 'intel_gpu_ptl_h'},
+                'weight_types': {'scalar': [0, 2, 14], 'dp4a': [], 'int8_xmx': []}}
+
+    def test_fixed_inputs_and_limits_retain_the_original_protocol_bytes(self):
+        self.assertEqual(bench.sha256(ROOT / 'benchmark/cases.json'),
+                         'aa49a07349a72542a089222c755d4aa8203ab44b35e22fb3166838ef086eabde')
+        self.assertEqual(bench.sha256(ROOT / 'benchmark/image.png'),
+                         'b6983fe5adacff8a4fc2f8b7b0cd3b235d8961550e9f9bca7a669396b3d33138')
+        self.assertEqual((CASES['runs'], CASES['seed'], CASES['generation_max_tokens'], CASES['prefill_max_tokens']),
+                         (4, 1234, 128, 32))
+        self.assertEqual(len(CASES['generation']), 3)
+        self.assertEqual(bench.generation_passes(False), (1, 2))
+
+    def test_new_profiles_are_target_only_and_preserve_the_source(self):
+        from serve.intel_backend import engine_args
+        for model in bench.INTEL_TARGET_ONLY:
+            source = self.original(model); before = copy.deepcopy(source)
+            with self.subTest(model=model), patch.object(bench.subprocess, 'Popen', side_effect=AssertionError('No native')):
+                cfg = bench.intel_text_config(source, model, ROOT / 'unused-plan', 18019, CASES)
+                params = bench.intel_text_parameters(cfg); args = engine_args(cfg)
+                self.assertEqual((params['mtp'], params['kv'], params['context_tokens'], params['chunk_tokens']), (0, 'int8', 32768, 512))
+                self.assertEqual(config.value_of(cfg, 'chunk'), 'auto')
+                self.assertEqual(params['draft_vocab'], 0)
+                self.assertFalse(params['assistant'])
+                self.assertEqual(params['mode'], 'causal_d0' if model == 'clover' else 'target_only')
+                for key in ('api_key', 'draft_model', 'vision', 'history', 'model_bootstrap'):
+                    self.assertNotIn(key, cfg)
+                self.assertNotIn('--draft-model', args)
+                self.assertNotIn('--mtp-stochastic', args)
+                self.assertNotIn('--decode-dp4a', args)
+                if model == 'clover':
+                    for flag, value in (('--clover-mode', 'causal'), ('--clover-draft', '0'), ('--draft-vocab', '0')):
+                        self.assertEqual(args[args.index(flag) + 1], value)
+                else:
+                    self.assertNotIn('--draft-vocab', args)
+                self.assertEqual(source, before)
+
+    def test_model_samplers_and_all_text_requests_are_fixed_v1(self):
+        for model, temperature in (('gemma', 1.0), ('lfm', .1), ('clover', 0.0)):
+            cfg = self.configured(model)
+            self.assertEqual(cfg['sampling'], bench.model_sampling(model, CASES))
+            self.assertEqual(cfg['sampling']['temperature'], temperature)
+            for text, limit in [(CASES['warmup_text'], CASES['warmup_max_tokens']),
+                                *[(p['text'], CASES['generation_max_tokens']) for p in CASES['generation']],
+                                (CASES['long_question'], CASES['prefill_max_tokens'])]:
+                body = bench.request_body(model, text, limit, CASES, sampling=cfg['sampling'])
+                self.assertEqual(body['messages'], [{'role': 'user', 'content': text}])
+                self.assertEqual((body['seed'], body['max_tokens']), (1234, limit))
+                self.assertTrue(body['enable_thinking'])
+                self.assertFalse(body['strata_checkpoint'])
+                for key, value in bench.model_sampling(model, CASES).items():
+                    self.assertEqual(body[key], value)
+
+    def test_clover_source_auto_is_resolved_without_changing_qwen_gemma_or_lfm(self):
+        from serve import intel_backend
+        original_chunk = intel_backend._chunk
+        def changed_source_auto(cfg, values):
+            if intel_backend.canonical_model(cfg) == intel_backend.CLOVER_MODEL and values.get('--chunk', 'auto') in ('auto', '0'):
+                return 1024
+            return original_chunk(cfg, values)
+        with patch.object(intel_backend, '_chunk', side_effect=changed_source_auto):
+            params = bench.intel_text_parameters(self.configured('clover'))
+            self.assertEqual(params['chunk_tokens'], 1024)
+            for model in ('gemma', 'lfm'):
+                self.assertEqual(bench.intel_text_parameters(self.configured(model))['chunk_tokens'], 512)
+            qwen = IntelTextBenchmarkVariant().configured()
+            self.assertEqual(bench.intel_text_parameters(qwen)['chunk_tokens'], 1024)
+
+    def test_generic_wrong_model_and_unsupported_saved_choices_fail_closed(self):
+        for model in bench.INTEL_TARGET_ONLY:
+            for change in ({'intel_profile': 'generic'}, {'intel_profile': 'unknown'},
+                           {'intel_profile': 'b390-qwen36'}, {'backend': 'cuda'},
+                           {'draft_model': 'assistant.gguf'}, {'vision_mode': 'gpu'}):
+                with self.subTest(model=model, change=change), self.assertRaises(ValueError):
+                    bench.intel_text_config({**self.original(model), **change}, model, ROOT / 'unused', 18019, CASES)
+            for key, value in (('mtp', 3), ('kv_type', 'fp32'), ('chunk', 128)):
+                source, _ = config.apply(self.original(model), {key: value})
+                with self.subTest(model=model, key=key), self.assertRaises(ValueError):
+                    bench.intel_text_config(source, model, ROOT / 'unused', 18019, CASES)
+        for model in ('gemma', 'lfm'):
+            source, _ = config.apply(self.original(model), {'chunk': 1024})
+            with self.assertRaises(ValueError):
+                bench.intel_text_config(source, model, ROOT / 'unused', 18019, CASES)
+        source = self.original('clover'); source['args'] += ['--clover-mode', 'self-spec', '--clover-draft', '3']
+        with self.assertRaises(ValueError):
+            bench.intel_text_config(source, 'clover', ROOT / 'unused', 18019, CASES)
+
+    def test_native_info_identity_and_target_only_mode_are_checked(self):
+        for model in bench.INTEL_TARGET_ONLY:
+            cfg = self.configured(model)
+            health = dict(backend='sycl', intel_profile=cfg['intel_profile'], experimental=True, model=cfg['model_name'], images=False)
+            info = dict(backend='sycl', model=cfg['model_name'], family=cfg['arch'], memory_model='uma',
+                        kv='int8', mtp=0, max_context=32768, vision=0, device_vendor=32902, device_integrated=1,
+                        single_weight_store=1, expert_cache_bytes=None, expert_cache_mib=None)
+            if model == 'lfm': info['mandatory_thinking'] = 1
+            bench.validate_intel_text_engine(info, health, cfg)
+            for change in ({'mtp': 3}, {'mtp': False}, {'kv': 'fp32'}, {'family': 'qwen35moe'},
+                           {'single_weight_store': None}, {'model': 'another-model'}, {'chunk': 1024}):
+                with self.subTest(model=model, change=change), self.assertRaises(ValueError):
+                    bench.validate_intel_text_engine({**info, **change}, health, cfg)
+            if model == 'clover':
+                clover = dict(info); del clover['family']; clover['model_family'] = 'clover_moe'
+                bench.validate_intel_text_engine(clover, health, cfg)
+                with self.assertRaises(ValueError):
+                    bench.validate_intel_text_engine({**clover, 'clover_draft': 3}, health, cfg)
+
+    def test_runtime_proof_requires_exact_new_model_contract_before_benchmarking(self):
+        for model in bench.INTEL_TARGET_ONLY:
+            with tempfile.TemporaryDirectory() as temp:
+                folder = Path(temp); (folder / '.tinystrata-intel-runtime.json').write_text('{"fixture":true}', encoding='utf-8')
+                cfg = self.configured(model); cfg.update(exe=str(folder / 'tinystrata-intel.exe'), lib_dirs=[str(folder)])
+                report = self.report(model)
+                proof = SimpleNamespace(executable=cfg['exe'], sha256='a' * 64, report=report)
+                with patch('serve.model_setup.validate_intel_executable', return_value=proof) as gate:
+                    recorded = bench.intel_text_build(cfg)
+                gate.assert_called_once_with(cfg, allow_legacy=False)
+                self.assertEqual(recorded['capabilities'], report)
+                report.pop('experimental_model_contracts')
+                with patch('serve.model_setup.validate_intel_executable', return_value=proof), self.assertRaises(ValueError):
+                    bench.intel_text_build(cfg)
+
+    def test_prepare_only_each_new_model_records_four_plans_without_service_start(self):
+        for model in bench.INTEL_TARGET_ONLY:
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp); cfg = self.original(model)
+                native, target = root / 'tinystrata-intel.exe', root / 'target.gguf'
+                native.write_bytes(b'CPU fixture; never execute'); target.write_bytes(b'CPU fixture; never open as GGUF')
+                cfg.update(exe=str(native), cwd=str(root), lib_dirs=[str(root)])
+                cfg['args'][cfg['args'].index('--model') + 1] = str(target)
+                path = root / bench.INTEL_TEXT_CONFIGS[model]
+                path.write_text(json.dumps(cfg), encoding='utf-8'); before = path.read_bytes()
+                output = root / 'plans'
+                argv = ['benchmark/run.py', '--intel-text', '--model', model, '--prepare-only', '--config-dir', str(root), '--output', str(output)]
+                with patch.object(sys, 'argv', argv), patch.object(bench, 'intel_text_build', return_value={'fixture': True}), \
+                     patch.object(bench.subprocess, 'check_output', return_value='fixture-head\n'), \
+                     patch.object(bench, 'Service', side_effect=AssertionError('No actual benchmark/model/native')), \
+                     patch.object(bench.subprocess, 'Popen', side_effect=AssertionError('No process')):
+                    bench.main()
+                report = json.loads((output / 'result.json').read_text(encoding='utf-8'))
+                self.assertTrue(report['prepared_only']); self.assertFalse(report['standard'])
+                self.assertTrue(report['configs_unchanged']); self.assertEqual(path.read_bytes(), before)
+                self.assertEqual((report['runs'], report['generation_passes'], report['seed']), (4, 2, 1234))
+                self.assertEqual(len(list(output.glob(model + '-*/config.json'))), 4)
+                self.assertEqual(report['models'][model]['sampling'], bench.model_sampling(model, CASES))
+                params = report['models'][model]['native_profile_parameters']
+                self.assertEqual((params['mtp'], params['chunk_tokens']), (0, 512))
+                self.assertEqual(report['protocol_differences']['chunk_tokens'], params['chunk_tokens'])
+                self.assertNotIn('MTP3', report['protocol_differences']['native_profile'])
+                self.assertIn('MTP0', (output / 'report.md').read_text(encoding='utf-8'))
+                self.assertFalse(report['models'][model]['image_supported'])
+                self.assertEqual(report['models'][model]['unsupported_cases'][0]['status'], 'unsupported')
 
 
 if __name__ == "__main__":
