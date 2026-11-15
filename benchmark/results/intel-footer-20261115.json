@@ -1,0 +1,388 @@
+{
+  "schema": "tinystrata-intel-footer-measurements-v1",
+  "date": "2026-11-15",
+  "timezone": "Asia/Tokyo",
+  "draft": false,
+  "complete": true,
+  "issue": "https://github.com/kbc20f11/TinyStrata/issues/18",
+  "source_commit": "ceb7bb4a8262a8599bdbc3d14763726b85438822",
+  "passed": true,
+  "normal_answers": [
+    {
+      "case": "qwen-4k-normal",
+      "model": "qwen3.6-35b-a3b",
+      "input": 4096,
+      "fresh": 4096,
+      "reused": 0,
+      "output": 1510,
+      "prefill_tok_s": 365.0,
+      "generation_tok_s": 32.1,
+      "TTFT_seconds": 11.265999999999622,
+      "committed": 5605,
+      "normal_EOS_P_plus_T_minus_1_equal": true,
+      "six_facts_correct": true,
+      "finish": "stop",
+      "request_cap_sampling_thinking_overrides_omitted": true
+    },
+    {
+      "case": "qwen-follow-reuse",
+      "model": "qwen3.6-35b-a3b",
+      "input": 4185,
+      "fresh": 94,
+      "reused": 4091,
+      "output": 1227,
+      "prefill_tok_s": 80.5,
+      "generation_tok_s": 31.9,
+      "TTFT_seconds": 1.1870000000017171,
+      "committed": 5411,
+      "normal_EOS_P_plus_T_minus_1_equal": true,
+      "six_facts_correct": true,
+      "finish": "stop",
+      "request_cap_sampling_thinking_overrides_omitted": true
+    },
+    {
+      "case": "qwen-regenerate",
+      "model": "qwen3.6-35b-a3b",
+      "input": 4185,
+      "fresh": 5,
+      "reused": 4180,
+      "output": 1227,
+      "prefill_tok_s": 45.6,
+      "generation_tok_s": 31.9,
+      "TTFT_seconds": 0.13999999999941792,
+      "committed": 5411,
+      "normal_EOS_P_plus_T_minus_1_equal": true,
+      "six_facts_correct": true,
+      "finish": "stop",
+      "request_cap_sampling_thinking_overrides_omitted": true
+    },
+    {
+      "case": "qwen-after-prefill-cancel",
+      "model": "qwen3.6-35b-a3b",
+      "input": 4096,
+      "fresh": 4096,
+      "reused": 0,
+      "output": 1510,
+      "prefill_tok_s": 386.2,
+      "generation_tok_s": 32.3,
+      "TTFT_seconds": 10.65599999999904,
+      "committed": 5605,
+      "normal_EOS_P_plus_T_minus_1_equal": true,
+      "six_facts_correct": true,
+      "finish": "stop",
+      "request_cap_sampling_thinking_overrides_omitted": true
+    },
+    {
+      "case": "qwen-after-mtp-cancel",
+      "model": "qwen3.6-35b-a3b",
+      "input": 4185,
+      "fresh": 5,
+      "reused": 4180,
+      "output": 1227,
+      "prefill_tok_s": 48.1,
+      "generation_tok_s": 32.0,
+      "TTFT_seconds": 0.14099999999962165,
+      "committed": 5411,
+      "normal_EOS_P_plus_T_minus_1_equal": true,
+      "six_facts_correct": true,
+      "finish": "stop",
+      "request_cap_sampling_thinking_overrides_omitted": true
+    },
+    {
+      "case": "qwen-short-reset",
+      "model": "qwen3.6-35b-a3b",
+      "input": 84,
+      "fresh": 84,
+      "reused": 0,
+      "output": 2004,
+      "prefill_tok_s": 112.5,
+      "generation_tok_s": 33.2,
+      "TTFT_seconds": 0.7820000000028813,
+      "committed": 2087,
+      "normal_EOS_P_plus_T_minus_1_equal": true,
+      "six_facts_correct": true,
+      "finish": "stop",
+      "request_cap_sampling_thinking_overrides_omitted": true
+    },
+    {
+      "case": "tiel-normal",
+      "model": "tiel-coder-35b-a3b",
+      "input": 263,
+      "fresh": 263,
+      "reused": 0,
+      "output": 156,
+      "prefill_tok_s": 103.3,
+      "generation_tok_s": 29.5,
+      "TTFT_seconds": 2.577999999997701,
+      "committed": 418,
+      "normal_EOS_P_plus_T_minus_1_equal": true,
+      "six_facts_correct": true,
+      "finish": "stop",
+      "request_cap_sampling_thinking_overrides_omitted": true
+    }
+  ],
+  "cancellations": [
+    {
+      "case": "qwen-prefill-cancel",
+      "phase": "prefill",
+      "committed": 1024,
+      "server_finish": "cancel",
+      "no_P_plus_T_formula_applied": true
+    },
+    {
+      "case": "qwen-mtp-cancel-recovered",
+      "phase": "mtp",
+      "committed": 4224,
+      "server_finish": "disconnect",
+      "no_P_plus_T_formula_applied": true
+    }
+  ],
+  "preservation": {
+    "configs": {
+      "qwen3.6-35b-a3b": {
+        "changed_fields": [
+          "exe",
+          "lib_dirs"
+        ],
+        "protected_fields_equal": true,
+        "API_key_SHA_equal": true
+      },
+      "tiel-coder-35b-a3b": {
+        "changed_fields": [
+          "exe",
+          "lib_dirs"
+        ],
+        "protected_fields_equal": true,
+        "API_key_SHA_equal": true
+      }
+    },
+    "UI_settings_protected_equal": true,
+    "history_logical_equal": true,
+    "history_file_SHA_equal": false,
+    "GGUF_stat_equal": true,
+    "before_snapshot": "Persisted and fsync before any unload/update; only hashes, no secret key/chat contents saved"
+  },
+  "fixed_UMA_placement": true,
+  "PTL_diagnostics": {
+    "PTL_lifecycle_acceptance": true,
+    "raw_runner_passed": false,
+    "raw_result": "private:intel-footer-20261115/installed-footer-lifecycle/lifecycle-tail/result.json",
+    "expected_model_switch_metrics_HTTP503": 126,
+    "unexpected_console_errors": [],
+    "JS_exceptions": 0,
+    "network_failures": 0,
+    "placement_browser_HTTP": 0,
+    "model_switch_interval_unix": [
+      1794712097.4803002,
+      1794712116.194738
+    ],
+    "classification": "Only exact /metrics 503 network-console errors inside the actual Tiel-idle to Qwen-zero switch interval are expected. Raw diagnostics/false result retained. Private forced poll created extra timer chains and increased count; no clean-console claim."
+  },
+  "generic": {
+    "passed": true,
+    "exe_sha256": "f1341a2e338c9ac4579b568e0450626c561c511fc15c9a3a8780b1c62e82f369",
+    "profile": "generic",
+    "max_context": 4096,
+    "timings": {
+      "cache_n": 0,
+      "prompt_n": 84,
+      "prompt_ms": 3579.0,
+      "prompt_per_token_ms": 42.607,
+      "prompt_per_second": 23.5,
+      "predicted_n": 1355,
+      "predicted_ms": 109643.6,
+      "predicted_per_token_ms": 80.918,
+      "predicted_per_second": 12.4,
+      "draft_n": 1236,
+      "draft_n_accepted": 942
+    },
+    "TTFT": 3.625,
+    "usage": {
+      "prompt_tokens": 84,
+      "completion_tokens": 1355,
+      "total_tokens": 1439,
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      }
+    },
+    "committed": 1438,
+    "quality": true,
+    "SDK_DLLs": [],
+    "private_API_exit": 0,
+    "native_cleanup": [
+      {
+        "name": "owned API descendant",
+        "process_name": "tinystrata-intel.exe",
+        "pid": 3816,
+        "executable": "private:intel-footer-20261115/shipping/runtime-stage-generic/tinystrata-intel.exe",
+        "created": 1794712266.228646,
+        "created_100ns": 134391858662286460,
+        "forced": false,
+        "state_after_api_exit": "exited",
+        "exit": 0
+      }
+    ],
+    "actual_Qwen_restored_loaded_counter0": true
+  },
+  "formal_benchmark": {
+    "rerun": false,
+    "retained_baseline_source": "c36a84a4657f27d4051c1b2d1b9e9f6050d75c55",
+    "reason": "#18 adds committed-position INFO reporting and UMA UI policy; no inference math/sampling change. The prior complete eight-start formal cohort remains separate."
+  },
+  "performance_scope": "Lifecycle timings with concurrent pinned model downloads; no isolated causal speed comparison. Generic23.5pp/12.4tg is retained as slower fallback.",
+  "evidence_root": "intel-footer-20261115/installed-footer-lifecycle",
+  "scope": "Real B390 committed-KV and fixed UMA-placement footer rollout; separate from broader Issue11/model/hardware goals.",
+  "hardware": {
+    "CPU": "Intel Core Ultra X7 358H",
+    "GPU": "Intel Arc B390",
+    "vendor_id": 32902,
+    "device_id": 45186,
+    "integrated": true,
+    "RAM_GiB": 32,
+    "OS": "native Windows 11"
+  },
+  "release": {
+    "tag": "intel-windows-preview-20261115-kv",
+    "url": "https://github.com/kbc20f11/TinyStrata/releases/tag/intel-windows-preview-20261115-kv",
+    "published": true,
+    "remote_tag_source_commit": "ceb7bb4a8262a8599bdbc3d14763726b85438822",
+    "NPU_enabled": false,
+    "variants": [
+      {
+        "name": "ptl-h",
+        "aot_target": "intel_gpu_ptl_h",
+        "source_commit": "ceb7bb4a8262a8599bdbc3d14763726b85438822",
+        "payload_files": 65,
+        "executable_sha256": "7bce30ae1f63ee025c138a99ec448b87b48e0bb8c57b57468a20dee04d3d62f9",
+        "manifest_sha256": "d9c31e28fa74917f80c7bf265259bdc325d8cb1c01acf31444be1e88478ab47d",
+        "archive": {
+          "filename": "TinyStrata-intel-windows-x64-ptl-h-20261115.zip",
+          "bytes": 267580464,
+          "sha256": "1a5a166e7ec340e4df38f1110d710f3a8f19d347cf9de60674fa183d695d1dbe",
+          "url": "https://github.com/kbc20f11/TinyStrata/releases/download/intel-windows-preview-20261115-kv/TinyStrata-intel-windows-x64-ptl-h-20261115.zip"
+        },
+        "published_download_extract_verify": true
+      },
+      {
+        "name": "generic",
+        "aot_target": "",
+        "source_commit": "ceb7bb4a8262a8599bdbc3d14763726b85438822",
+        "payload_files": 65,
+        "executable_sha256": "f1341a2e338c9ac4579b568e0450626c561c511fc15c9a3a8780b1c62e82f369",
+        "manifest_sha256": "91d25f0b793afbcc4426edbed801b1810b8101cf6838a50434333ea37858a931",
+        "archive": {
+          "filename": "TinyStrata-intel-windows-x64-generic-20261115.zip",
+          "bytes": 266954917,
+          "sha256": "d2032601cacfa06e98594eb6453671497cb38bbae7afe31638d35284a2d89d51",
+          "url": "https://github.com/kbc20f11/TinyStrata/releases/download/intel-windows-preview-20261115-kv/TinyStrata-intel-windows-x64-generic-20261115.zip"
+        },
+        "published_download_extract_verify": true
+      }
+    ]
+  },
+  "checks": {
+    "intel_CPU": {
+      "tests": 128,
+      "skipped": 11,
+      "result": "passed",
+      "skip_scope": "hardware/private opt-in tests"
+    },
+    "installer_PowerShell": {
+      "checks": 227,
+      "result": "passed"
+    },
+    "installer_Python": {
+      "tests": 10,
+      "result": "passed"
+    },
+    "UI": {
+      "checks": 80,
+      "result": "passed"
+    },
+    "public_delivery": {
+      "passed": true,
+      "shipping_download_and_extract_functions": true,
+      "archives": 2,
+      "payload_files_verified_each": 65,
+      "model_or_GPU_started": false
+    }
+  },
+  "actual_installer": {
+    "passed": true,
+    "driver_exit": 0,
+    "payload_files": 65,
+    "runtime_executable_sha256": "7bce30ae1f63ee025c138a99ec448b87b48e0bb8c57b57468a20dee04d3d62f9",
+    "launch": "Actual shipping installer via existing Explorer COM independent job, regular-file logs/exit receipt; no hand-copy or tool-job kill",
+    "existing_GGUF_reused": true,
+    "SDK_driver_global_PATH_unchanged": true
+  },
+  "footer": {
+    "native_field": "INFO kv_used_tokens",
+    "used_never_exceeds_logical_max": true,
+    "rendered_percentage_matches_counter": true,
+    "GPU_percent": 100,
+    "CPU_percent": 0,
+    "policy": "Fixed expert execution over shared RAM; not utilization/dedicated VRAM/resident expert counts.",
+    "placement_button_disabled": true,
+    "mouse_keyboard_stale_settings_direct_apply_blocked": true,
+    "direct_dialog": "Read-only fixed-policy information with requested placement, slider and apply hidden.",
+    "browser_placement_HTTP_calls": 0,
+    "screenshots_visually_reviewed": true,
+    "unload_hides_stale_usage": true,
+    "scenarios": [
+      "initial-zero",
+      "4K-prefill",
+      "ordinary-MTP-generation",
+      "next-turn-reuse",
+      "regeneration",
+      "prefill-cancel-retry",
+      "MTP-disconnect-STOP-retry",
+      "reset",
+      "unload-unknown",
+      "reload-zero",
+      "Qwen-Tiel-switch",
+      "Tiel-normal",
+      "Qwen-restore-zero"
+    ],
+    "representative_samples": [
+      {
+        "phase": "initial",
+        "used": 0,
+        "max": 8192,
+        "percent": 0.0
+      },
+      {
+        "phase": "prefill",
+        "used": 1024,
+        "max": 8192,
+        "percent": 12.5
+      },
+      {
+        "phase": "Qwen-4K-complete",
+        "used": 5605,
+        "max": 8192,
+        "percent": 68.4
+      },
+      {
+        "phase": "Tiel-complete",
+        "used": 418,
+        "max": 8192,
+        "percent": 5.1
+      }
+    ]
+  },
+  "SDK_DLLs_each_resident_native": 0,
+  "private_harness_limitations": [
+    "Initial direct-readonly-dialog return value was overconstrained; fixed to test hidden/disabled controls and direct apply rejection.",
+    "API intentional client cancellation may report disconnect rather than cancel; native STOP drained to idle and retry completed normally.",
+    "Frontend switch transient unknown was sampled before settling; readiness corrected without production edits.",
+    "126 exact /metrics HTTP503 console entries were confined to real model-switch interval. Private forced poll multiplied timer chains. Raw false gate preserved; no clean-console claim."
+  ],
+  "handoff": {
+    "Qwen_restored_loaded_committed0_after_acceptance": true,
+    "later_root_requested_normal_unload": true,
+    "Qwen_selected": true,
+    "API_UI_continued": true,
+    "process_kill": false
+  }
+}

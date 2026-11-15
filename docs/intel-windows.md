@@ -2,7 +2,9 @@
 
 The installer now supports the validated **Arc B390 / Core Ultra X7 358H / 32 GB RAM** configuration through a prebuilt, hash-pinned Intel runtime. It supports experimental **Qwen3.6 and Tiel Coder text**, with model-specific profiles and separate settings. Images, Gemma, LFM and Clover remain unsupported on Intel; the broader [Issue #11](https://github.com/kbc20f11/TinyStrata/issues/11) remains open.
 
-The **2026-11-15 runtime release** and actual installed-app verification are complete. Its canonical generation/4K/16K rates are **32.88/307.12/274.02 tok/s for Qwen** and **25.77/237.61/217.97 for Tiel**. The [final results below](#shipping-runtime-and-installed-app-validation-2026-11-15) distinguish these measurements from the earlier milestones, disclose installer recovery limitations, and retain Tiel's unmet 30 tok/s goal.
+The current runtime is [**20261115-kv**](https://github.com/kbc20f11/TinyStrata/releases/tag/intel-windows-preview-20261115-kv), built from `ceb7bb4` with the live committed-KV counter. Its [B390 footer rollout results](../benchmark/results/intel-footer-20261115.json) cover the normal installer and actual UI. The c36 release and formal benchmark below remain a historical baseline; that older binary does not emit the new counter.
+
+The earlier **c36 runtime's canonical text measurements** completed at **32.88/307.12/274.02 tok/s for Qwen** and **25.77/237.61/217.97 for Tiel** (generation/4K/16K). The [results below](#shipping-runtime-and-installed-app-validation-2026-11-15) retain their original conditions, installer recovery limitations and Tiel's unmet 30 tok/s goal.
 
 On 2026-11-14, the actual shipping installer prepared a fresh Python environment, imported 65 runtime/license files, created the Intel desktop shortcut and started the real API/UI on the B390-only PC. It used the local source checkout and existing verified GGUF rather than downloading a second model copy. Its normal Qwen request used 84 fresh input tokens and returned 1,268 tokens with thinking enabled: **107.2 tok/s prefill, 34.4 tok/s decode**, terminal stop and the correct six-field answer. No request output cap or sampler override was supplied. This earlier chunk512 checkpoint is retained separately. Real Qwen/Tiel switching, native unload/reload and live Monitor/About checks subsequently passed, preserving settings and keys with no compiler-SDK DLLs loaded.
 
@@ -17,6 +19,28 @@ The implementation began with a Qwen3.6-only causal-text proof of concept and a 
 The native diagnostic CLI defaults MTP to zero; the normal B390 profiles select experimental MTP3. `--capabilities` retains an empty formal `model_families` list while separately declaring the two experimental text models, profile contracts and compiled quantization paths. Images, Clover, Gemma and LFM are not enabled on Intel. The wider gates in the issue remain open.
 
 Owner clarification on 2026-11-14: a working prototype is **not sufficient for adoption**. Upstream Coder already exceeds 20 tok/s with a model larger than 20 GiB. Prefill must reach at least 100 tok/s, with a dedicated-engine generation aim of 30–40 tok/s and the issue's separate 42.5 tok/s MTP reference retained. Keep model and speculation differences visible. Practical throughput and answer quality must both pass.
+
+## Live KV footer rollout (2026-11-15, current)
+
+Both PTL-H and generic packages were rebuilt from `ceb7bb4`, published under the `-kv` release, and downloaded through the shipping verification/extraction helpers. Each archive's SHA, executable SHA, manifest SHA and 65 runtime/license payloads matched. The real installer updated the existing B390 installation through an immutable generation, with installer exit code0, existing GGUF reuse and no Intel SDK, driver or global-PATH changes. The [measurement JSON](../benchmark/results/intel-footer-20261115.json) records all hashes and public URLs. CPU checks passed: 117 Intel tests with11 skipped, installer227 PowerShell checks plus10 Python tests, and UI80 checks.
+
+Actual native `INFO kv_used_tokens` reached `/metrics` and the rendered footer: initial0/8192, prefill1024/8192=12.5%, Qwen completion5605/8192, and Tiel completion418/8192=5.1%. The screen follows committed positions through ordinary MTP generation, next-turn reuse, regeneration, prefill/MTP cancellation and retry, reset, unload/reload and Qwen/Tiel switching. Unload hides stale usage; reload and switching start at zero. Every observed counter stayed within its logical maximum and matched the displayed percentage. Cancellation positions were read from the engine, without a prompt-plus-output estimate.
+
+The UMA footer stays **GPU100% / CPU0% as an execution policy**, including while unloaded. It is disabled for mouse/keyboard interaction. Stale settings cannot enable it; direct dialog invocation shows only fixed-policy information with placement inputs and apply hidden, and direct apply rejects before HTTP. The real browser made zero placement API calls. This does not measure GPU utilization, dedicated VRAM occupancy or resident expert counts.
+
+Seven normal-thinking answers passed all six reservation facts and natural stop/DONE, including retries; two additional requests were intentionally cancelled. No request cap or sampler/thinking override was introduced. Selected lifecycle observations are:
+
+| Runtime/profile and case | Fresh / reused input | Output | Prefill / generation tok/s | TTFT |
+| --- | ---: | ---: | ---: | ---: |
+| PTL-H Qwen, 4K | 4096 / 0 | 1510 | 365.0 / 32.1 | 11.266 s |
+| PTL-H Qwen, next turn | 94 / 4091 | 1227 | 80.5 / 31.9 | 1.187 s |
+| PTL-H Qwen, regenerate | 5 / 4180 | 1227 | 45.6 / 31.9 | 0.140 s |
+| PTL-H Tiel, medium | 263 / 0 | 156 | 103.3 / 29.5 | 2.578 s |
+| Generic Qwen, context4096 | 84 / 0 | 1355 | 23.5 / 12.4 | 3.625 s |
+
+The generic answer also passed, with committed1438/4096, SDK DLL0 and natural private API/native exit0; its slower fallback speed is retained. Concurrent pinned model downloads make these lifecycle observations unsuitable for a causal speed comparison. The prior complete c36 eight-start/64-measurement formal cohort was not rerun: this change adds counter reporting and UI policy without changing inference arithmetic or sampling.
+
+Before any update/unload, a hash-only snapshot was persisted. Both configs retained every field except the intended exe/lib_dirs update; keys, UI settings, all logical SQLite schema/rows and GGUF size/mtime matched. The SQLite file byte SHA changed, so byte-identical history files are not claimed. Private harness false assertions and raw diagnostics are retained:126 `/metrics`503 console entries occurred only within the real model-switch interval, amplified by private forced polling. There were no JavaScript exceptions, network failures or browser placement calls; the footer recovered to the new counter. Qwen was restored loaded at counter0, then normally unloaded for subsequent GPU tests while the API/UI continued. No process kill or power-setting change was used.
 
 ## Test machine and dependencies
 
