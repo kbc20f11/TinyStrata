@@ -49,6 +49,7 @@
 !/tests/test_intel_server_integration.py
 !/tests/test_intel_capabilities.py
 !/tests/installer-intel-runtime.ps1
+!/tests/installer-intel-ui-runtimes.ps1
 !/tests/intel-qwen-ops.cpp
 !/tests/intel-fused-q8-attention.cpp
 !/tests/intel-turn-checkpoint.cpp
@@ -150,6 +151,7 @@
 !/assets/memory-sharing.png
 !/assets/automatic-settings.png
 /cmake/**
+!/cmake/install-intel-ui-runtimes.ps1
 !/cmake/**/
 !/cmake/**/*.cmake
 !/cmake/build-intel.ps1

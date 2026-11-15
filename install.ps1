@@ -117,7 +117,7 @@ function Get-TinyStrataSourceFingerprint {
             $relative = $item.FullName.Substring($root.Length + 1).Replace('\', '/')
             if ($NativeOnly -and ($relative -in @('src/intel','include/strata/intel') -or
                 $relative -in @('cmake/sycl_backend.cmake','cmake/build-intel.ps1','cmake/install-intel-runtime.ps1',
-                    'cmake/intel-runtime-package.ps1','cmake/intel-runtime-catalog.json','cmake/stage-intel-runtime.ps1','cmake/stage-intel-runtime.md'))) { continue }
+                    'cmake/install-intel-ui-runtimes.ps1','cmake/intel-runtime-package.ps1','cmake/intel-runtime-catalog.json','cmake/stage-intel-runtime.ps1','cmake/stage-intel-runtime.md'))) { continue }
             if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Cannot fingerprint linked source paths.' }
             if ($item.PSIsContainer) { $pending.Push($item.FullName) }
             elseif ($item.FullName -ne (Join-Path $root '.tinystrata-source.json')) { $files.Add($item.FullName) }
@@ -2452,6 +2452,7 @@ function Invoke-TinyStrataInstaller {
     if ($Revision -and $archiveInstall) { $RefreshSource = $true }
     if ($RefreshSource -and $Revision -and (Test-TinyStrataSourceRevision -Directory $sourceRoot -Revision $Revision)) { $RefreshSource = $false }
     if ($IncludeUI) { $DoNotDownload = $true }
+    $intelOfflineStage = [bool]$IntelRuntimeDirectory
     if (-not $sourceReady) { Assert-TinyStrataSourceDestination -Directory $sourceRoot }
     if (-not $WorkingDirectory) { $WorkingDirectory = $sourceRoot + '-work' }
     $workRoot = [IO.Path]::GetFullPath($WorkingDirectory).TrimEnd('\')
@@ -2513,6 +2514,8 @@ function Invoke-TinyStrataInstaller {
             Write-Host "Experimental Intel $($selectedFamily.Model) text; requested profile $IntelProfile is not a hardware approval."
             Write-Host 'Use the pinned published runtime package, or an offline -IntelRuntimeDirectory, in an immutable native/sycl-* generation; no SDK/driver/PATH changes.'
             Write-Host 'Dedicated model-specific -sycl configuration and ui-sycl history/settings; existing CUDA/HIP state stays separate.'
+            if ($IncludeUI -and -not $intelOfflineStage) { Write-Host 'Prepare published dedicated runtimes for UI model switching; model weights are downloaded only when requested.' }
+            elseif ($IncludeUI) { Write-Host 'Offline stage: do not download additional model runtimes.' }
         }
         Write-Host 'Plan: reuse installed components; prepare Python/dependencies; reuse or build the selected GPU engine; prepare its runtime; save configuration.'
         if ($selectedBackend -eq 'hip') { Write-Host 'AMD: use the private pinned ROCm 10.2.0a20260930 SDK (HIP 7.17) by default; -HipDirectory selects a custom SDK; Qwen/LFM select native FP8 when available, otherwise INT8; Gemma uses INT8.' }
@@ -2579,6 +2582,8 @@ function Invoke-TinyStrataInstaller {
         $installationGuard = $updateGuard
         $pythonTransaction = @{}
         $preparationCommitted = $false
+        $intelConfigurations = New-Object 'System.Collections.Generic.List[object]'
+        $intelGenerations = New-Object 'System.Collections.Generic.List[string]'
         try {
         if (-not $installationGuard) { $installationGuard = Enter-TinyStrataInstallationGuard -WorkRoot $workRoot }
         Assert-TinyStrataInstallationIdle -SourceRoot $sourceRoot -WorkRoot $workRoot
@@ -2753,13 +2758,28 @@ function Invoke-TinyStrataInstaller {
             @($prepared.lib_dirs).Count -ne 1 -or [string]$prepared.lib_dirs[0] -ne (Split-Path -Parent $selectedExe))) {
             throw 'Prepared experimental Intel configuration must match its text model/profile and selected app-local runtime.'
         }
-        if (Test-Path -LiteralPath $configPath -PathType Leaf) { [IO.File]::Replace($candidateConfig, $configPath, ($configPath + '.bak')) }
+        if ($selectedBackend -eq 'sycl' -and $IncludeUI) {
+            . (Join-Path $sourceRoot 'cmake\install-intel-ui-runtimes.ps1')
+            $intelConfigurations.Add([pscustomobject]@{Path=$configPath;Candidate=$candidateConfig})
+            $sourceManifest = if ($stage.Manifest.ImportedFromManifestSha256) { $stage.Manifest.ImportedFromManifestSha256 } else { $stage.ManifestSha256 }
+            $runtimeCache = @{}
+            $runtimeCache[($sourceManifest.ToLowerInvariant()+':'+$exeEvidence[0].Sha256.ToLowerInvariant())] = [pscustomobject]@{Exe=$selectedExe;DllDirectories=@($dllDirs)}
+            Prepare-TinyStrataIntelUiRuntimes -SourceRoot $sourceRoot -WorkRoot $workRoot -Python $python -CatalogPath $catalogPath `
+                -CacheRoot $cacheRoot -SelectedModel $selectedFamily.Model -GuardToken $installationGuard.Token `
+                -AotTarget $intelRuntimeSelection.AotTarget -Offline $intelOfflineStage -RuntimeCache $runtimeCache `
+                -Configurations $intelConfigurations -Generations $intelGenerations
+            Publish-TinyStrataIntelConfigurations -Configurations $intelConfigurations
+        } elseif (Test-Path -LiteralPath $configPath -PathType Leaf) { [IO.File]::Replace($candidateConfig, $configPath, ($configPath + '.bak')) }
         else { [IO.File]::Move($candidateConfig, $configPath) }
         $preparationCommitted = $true
         $cfg = $prepared
         } catch {
             $preparationError = $_
-            try { Remove-TinyStrataNativeGeneration -WorkRoot $workRoot -Directory $generation } catch { Write-Warning "Unpublished native files remain: $generation" }
+            if (-not $preparationError.Exception.Data['IntelConfigurationRollbackFailed']) {
+                foreach ($unpublished in @($generation) + @($intelGenerations)) {
+                    try { Remove-TinyStrataNativeGeneration -WorkRoot $workRoot -Directory $unpublished } catch { Write-Warning "Unpublished native files remain: $unpublished" }
+                }
+            } else { Write-Warning 'Configuration rollback needs repair; its runtime generations and rollback evidence were retained.' }
             try { Complete-TinyStrataPythonTransaction -Transaction $pythonTransaction -Rollback } catch { Write-Warning "Python rollback needs repair from $($pythonTransaction.PythonBackup): $_" }
             Restore-TinyStrataSource -Change $sourceChange
             throw $preparationError
@@ -2769,7 +2789,9 @@ function Invoke-TinyStrataInstaller {
                 try { Complete-TinyStrataPythonTransaction -Transaction $pythonTransaction } catch { Write-Warning "The old Python snapshot could not be removed: $($pythonTransaction.PythonBackup)" }
             }
             if ($candidateConfig) {
-                foreach ($temporary in @($candidateConfig, ($candidateConfig + '.bak'), ($candidateConfig + '.tmp'))) { if (Test-Path -LiteralPath $temporary -PathType Leaf) { [IO.File]::Delete($temporary) } }
+                foreach ($candidate in @($candidateConfig) + @($intelConfigurations | ForEach-Object { $_.Candidate })) {
+                    foreach ($temporary in @($candidate, ($candidate + '.bak'), ($candidate + '.tmp'))) { if (Test-Path -LiteralPath $temporary -PathType Leaf) { [IO.File]::Delete($temporary) } }
+                }
             }
             } finally {
                 Exit-TinyStrataInstallationGuard -Guard $installationGuard
