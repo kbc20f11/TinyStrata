@@ -1,0 +1,721 @@
+{
+    "schema":  1,
+    "complete":  true,
+    "standard":  false,
+    "scope":  "memory-aware Intel context correction; Qwen/Tiel delivery milestone",
+    "native_source_commit":  "5700726bed0aac3b7f597f072f0983b06c0fd740",
+    "hardware":  "Core Ultra X7 358H / Arc B390 8086:B082 / 32GB / Windows 11",
+    "selection":  {
+                      "quantum_tokens":  2048,
+                      "qwen_tiel_model_limit":  262144,
+                      "gemma_model_limit":  262144,
+                      "lfm_clover_model_limit":  131072,
+                      "os_headroom_bytes":  4294967296,
+                      "device_admission":  "remaining WDDM and RAM/commit; shared RAM counted once",
+                      "ordinary_host_admission":  "remaining RAM/commit including device bytes; no WDDM charge",
+                      "explicit_context":  "retained exactly; rejected before allocation when over budget",
+                      "before_ready":  "unknown, not a guessed capacity"
+                  },
+    "prior_conservative_cohort":  {
+                                      "passed":  true,
+                                      "source_commit":  "ccd5ddce92cfc257796042db7e234e78499184e5",
+                                      "executable_sha256":  "e59aa3f40715a5300cf57c577fc8301a0e4e6391433eef8d893bec14d4c6fa8e",
+                                      "models":  [
+                                                     {
+                                                         "model":  "qwen3.6-35b-a3b",
+                                                         "requested_context":  "auto",
+                                                         "allocated_context":  153600,
+                                                         "pinned_model_sha256":  "36f9ec0e4c775f6efd3a61c1ea76f0875128469c3d012e3d9e2495a90e7a7150",
+                                                         "pinned_model_bytes":  14069266720,
+                                                         "sampling":  {
+                                                                          "frequency_penalty":  0.0,
+                                                                          "temperature":  1.0,
+                                                                          "top_p":  0.95,
+                                                                          "top_k":  20,
+                                                                          "min_p":  0.0,
+                                                                          "presence_penalty":  1.5,
+                                                                          "repetition_penalty":  1.0
+                                                                      },
+                                                         "template_controls":  {
+                                                                                   "enable_thinking":  true
+                                                                               },
+                                                         "minimum_ram_available_bytes":  6324178944,
+                                                         "constructor_owned_allocation_equality_gate":  "READY implies native exact allocation counter matched the CPU planner; raw owned counters are not separately exported",
+                                                         "native_info":  {
+                                                                             "context_auto":  "1",
+                                                                             "context_budget_device":  "4038994452",
+                                                                             "context_bytes_device":  "3927414948",
+                                                                             "context_bytes_host_visible":  "12239888",
+                                                                             "context_bytes_host_only":  "83271680",
+                                                                             "max_context":  "153600",
+                                                                             "backend":  "sycl",
+                                                                             "experimental":  "1",
+                                                                             "model_family":  "qwen35moe",
+                                                                             "kv":  "int8",
+                                                                             "mtp":  "3",
+                                                                             "vision":  "0",
+                                                                             "memory_model":  "uma",
+                                                                             "single_weight_store":  "1",
+                                                                             "device_vendor":  "32902",
+                                                                             "device_id":  "45186",
+                                                                             "device_integrated":  "1",
+                                                                             "device_architecture":  "panther_lake_xe3",
+                                                                             "adapter_luid":  "00000000:0000dddc",
+                                                                             "adapter_node_mask":  "1",
+                                                                             "kv_used_tokens":  "42628"
+                                                                         },
+                                                         "cases":  [
+                                                                       {
+                                                                           "case":  "40k-seed",
+                                                                           "passed":  true,
+                                                                           "prompt_tokens":  40946,
+                                                                           "output_tokens":  1658,
+                                                                           "finish":  "stop",
+                                                                           "reused_tokens":  0,
+                                                                           "fresh_tokens":  40946,
+                                                                           "checkpoint_restored":  false,
+                                                                           "prefill_ms":  207378.697,
+                                                                           "decode_ms":  67293.021,
+                                                                           "prefill_tok_s":  197.44554572063882,
+                                                                           "decode_steps_tok_s":  24.62365302339451,
+                                                                           "wall_seconds":  274.71900000000096,
+                                                                           "ttft_seconds":  207.40600000000268,
+                                                                           "kv_used_final":  42603,
+                                                                           "intentional_cancel":  false,
+                                                                           "thinking_closed":  true,
+                                                                           "independent_fact_checks":  {
+                                                                                                           "id":  true,
+                                                                                                           "project":  true,
+                                                                                                           "room":  true,
+                                                                                                           "participants":  true,
+                                                                                                           "fee":  true,
+                                                                                                           "venue":  true,
+                                                                                                           "start":  true,
+                                                                                                           "remaining":  true
+                                                                                                       },
+                                                                           "facts_correct":  true,
+                                                                           "exact_requested_json":  true,
+                                                                           "format_only_difference":  false,
+                                                                           "first_terminal_is_last":  true
+                                                                       },
+                                                                       {
+                                                                           "case":  "same-prefix-followup",
+                                                                           "passed":  true,
+                                                                           "prompt_tokens":  41086,
+                                                                           "output_tokens":  998,
+                                                                           "finish":  "stop",
+                                                                           "reused_tokens":  40941,
+                                                                           "fresh_tokens":  145,
+                                                                           "checkpoint_restored":  true,
+                                                                           "prefill_ms":  5951.784,
+                                                                           "decode_ms":  40971.352,
+                                                                           "prefill_tok_s":  24.362443260709732,
+                                                                           "decode_steps_tok_s":  24.334076161313888,
+                                                                           "wall_seconds":  46.98400000000038,
+                                                                           "ttft_seconds":  6.014999999999418,
+                                                                           "kv_used_final":  42083,
+                                                                           "intentional_cancel":  false,
+                                                                           "thinking_closed":  true,
+                                                                           "independent_fact_checks":  {
+                                                                                                           "id":  true,
+                                                                                                           "project":  true,
+                                                                                                           "room":  true,
+                                                                                                           "participants":  true,
+                                                                                                           "fee":  true,
+                                                                                                           "venue":  true,
+                                                                                                           "start":  true,
+                                                                                                           "remaining":  true
+                                                                                                       },
+                                                                           "facts_correct":  true,
+                                                                           "exact_requested_json":  true,
+                                                                           "format_only_difference":  false,
+                                                                           "first_terminal_is_last":  true
+                                                                       },
+                                                                       {
+                                                                           "case":  "edited-fresh",
+                                                                           "passed":  true,
+                                                                           "prompt_tokens":  40952,
+                                                                           "output_tokens":  1677,
+                                                                           "finish":  "stop",
+                                                                           "reused_tokens":  0,
+                                                                           "fresh_tokens":  40952,
+                                                                           "checkpoint_restored":  false,
+                                                                           "prefill_ms":  179528.314,
+                                                                           "decode_ms":  64959.369,
+                                                                           "prefill_tok_s":  228.1088653236057,
+                                                                           "decode_steps_tok_s":  25.800743230741666,
+                                                                           "wall_seconds":  244.56200000000172,
+                                                                           "ttft_seconds":  179.57800000000134,
+                                                                           "kv_used_final":  42628,
+                                                                           "intentional_cancel":  false,
+                                                                           "thinking_closed":  true,
+                                                                           "independent_fact_checks":  {
+                                                                                                           "id":  true,
+                                                                                                           "project":  true,
+                                                                                                           "room":  true,
+                                                                                                           "participants":  true,
+                                                                                                           "fee":  true,
+                                                                                                           "venue":  true,
+                                                                                                           "start":  true,
+                                                                                                           "remaining":  true
+                                                                                                       },
+                                                                           "facts_correct":  true,
+                                                                           "exact_requested_json":  true,
+                                                                           "format_only_difference":  false,
+                                                                           "first_terminal_is_last":  true
+                                                                       },
+                                                                       {
+                                                                           "case":  "edited-clean-replay",
+                                                                           "passed":  true,
+                                                                           "prompt_tokens":  40952,
+                                                                           "output_tokens":  1677,
+                                                                           "finish":  "stop",
+                                                                           "reused_tokens":  0,
+                                                                           "fresh_tokens":  40952,
+                                                                           "checkpoint_restored":  false,
+                                                                           "prefill_ms":  188725.178,
+                                                                           "decode_ms":  68208.842,
+                                                                           "prefill_tok_s":  216.99277454119024,
+                                                                           "decode_steps_tok_s":  24.571594398274637,
+                                                                           "wall_seconds":  257.0,
+                                                                           "ttft_seconds":  188.76599999999962,
+                                                                           "kv_used_final":  42628,
+                                                                           "intentional_cancel":  false,
+                                                                           "thinking_closed":  true,
+                                                                           "independent_fact_checks":  {
+                                                                                                           "id":  true,
+                                                                                                           "project":  true,
+                                                                                                           "room":  true,
+                                                                                                           "participants":  true,
+                                                                                                           "fee":  true,
+                                                                                                           "venue":  true,
+                                                                                                           "start":  true,
+                                                                                                           "remaining":  true
+                                                                                                       },
+                                                                           "facts_correct":  true,
+                                                                           "exact_requested_json":  true,
+                                                                           "format_only_difference":  false,
+                                                                           "first_terminal_is_last":  true
+                                                                       },
+                                                                       {
+                                                                           "case":  "intentional-prefill-cancel",
+                                                                           "passed":  true,
+                                                                           "prompt_tokens":  53075,
+                                                                           "output_tokens":  0,
+                                                                           "finish":  "cancel",
+                                                                           "reused_tokens":  0,
+                                                                           "fresh_tokens":  33792,
+                                                                           "checkpoint_restored":  false,
+                                                                           "prefill_ms":  144104.445,
+                                                                           "decode_ms":  0.115,
+                                                                           "prefill_tok_s":  234.4965833635458,
+                                                                           "decode_steps_tok_s":  0,
+                                                                           "wall_seconds":  144.15699999999924,
+                                                                           "ttft_seconds":  null,
+                                                                           "kv_used_final":  33792,
+                                                                           "intentional_cancel":  true
+                                                                       },
+                                                                       {
+                                                                           "case":  "cancel-safe-retry",
+                                                                           "passed":  true,
+                                                                           "prompt_tokens":  40952,
+                                                                           "output_tokens":  1677,
+                                                                           "finish":  "stop",
+                                                                           "reused_tokens":  33792,
+                                                                           "fresh_tokens":  7160,
+                                                                           "checkpoint_restored":  false,
+                                                                           "prefill_ms":  40673.721,
+                                                                           "decode_ms":  66336.367,
+                                                                           "prefill_tok_s":  176.03503746313254,
+                                                                           "decode_steps_tok_s":  25.26517618910303,
+                                                                           "wall_seconds":  107.06300000000192,
+                                                                           "ttft_seconds":  40.71900000000096,
+                                                                           "kv_used_final":  42628,
+                                                                           "intentional_cancel":  false,
+                                                                           "thinking_closed":  true,
+                                                                           "independent_fact_checks":  {
+                                                                                                           "id":  true,
+                                                                                                           "project":  true,
+                                                                                                           "room":  true,
+                                                                                                           "participants":  true,
+                                                                                                           "fee":  true,
+                                                                                                           "venue":  true,
+                                                                                                           "start":  true,
+                                                                                                           "remaining":  true
+                                                                                                       },
+                                                                           "facts_correct":  true,
+                                                                           "exact_requested_json":  true,
+                                                                           "format_only_difference":  false,
+                                                                           "first_terminal_is_last":  true
+                                                                       }
+                                                                   ],
+                                                         "natural_cleanup_passed":  true
+                                                     },
+                                                     {
+                                                         "model":  "tiel-coder-35b-a3b",
+                                                         "requested_context":  "auto",
+                                                         "allocated_context":  176128,
+                                                         "pinned_model_sha256":  "a4d8ffc7f030466c67db289543871a8f9e6d5340241b300c09fbaf16642273ca",
+                                                         "pinned_model_bytes":  13600579424,
+                                                         "sampling":  {
+                                                                          "frequency_penalty":  0.0,
+                                                                          "temperature":  1.0,
+                                                                          "top_p":  0.95,
+                                                                          "top_k":  20,
+                                                                          "min_p":  0.0,
+                                                                          "presence_penalty":  0.0,
+                                                                          "repetition_penalty":  1.0
+                                                                      },
+                                                         "template_controls":  {
+                                                                                   "enable_thinking":  true,
+                                                                                   "reasoning_effort":  "medium"
+                                                                               },
+                                                         "minimum_ram_available_bytes":  7669317632,
+                                                         "constructor_owned_allocation_equality_gate":  "READY implies native exact allocation counter matched the CPU planner; raw owned counters are not separately exported",
+                                                         "native_info":  {
+                                                                             "context_auto":  "1",
+                                                                             "context_budget_device":  "4512885268",
+                                                                             "context_bytes_device":  "4404648100",
+                                                                             "context_bytes_host_visible":  "12239888",
+                                                                             "context_bytes_host_only":  "83361792",
+                                                                             "max_context":  "176128",
+                                                                             "backend":  "sycl",
+                                                                             "experimental":  "1",
+                                                                             "model_family":  "qwen35moe",
+                                                                             "kv":  "int8",
+                                                                             "mtp":  "3",
+                                                                             "vision":  "0",
+                                                                             "memory_model":  "uma",
+                                                                             "single_weight_store":  "1",
+                                                                             "device_vendor":  "32902",
+                                                                             "device_id":  "45186",
+                                                                             "device_integrated":  "1",
+                                                                             "device_architecture":  "panther_lake_xe3",
+                                                                             "adapter_luid":  "00000000:0000dddc",
+                                                                             "adapter_node_mask":  "1",
+                                                                             "kv_used_tokens":  "0"
+                                                                         },
+                                                         "cases":  [
+
+                                                                   ],
+                                                         "natural_cleanup_passed":  true
+                                                     }
+                                                 ],
+                                      "standard":  false,
+                                      "timing_scope":  "normal full answers and cache/cancel checks; not a fixed-protocol benchmark"
+                                  },
+    "shipping_native_cohort":  {
+                                   "passed":  true,
+                                   "source_commit":  "5700726bed0aac3b7f597f072f0983b06c0fd740",
+                                   "executable_sha256":  "015843c0ff2f770d5a5d25cd1954160e76610736c8ebed522a25d8df432dc240",
+                                   "models":  [
+                                                  {
+                                                      "model":  "qwen3.6-35b-a3b",
+                                                      "requested_context":  "auto",
+                                                      "allocated_context":  157696,
+                                                      "pinned_model_sha256":  "36f9ec0e4c775f6efd3a61c1ea76f0875128469c3d012e3d9e2495a90e7a7150",
+                                                      "pinned_model_bytes":  14069266720,
+                                                      "sampling":  {
+                                                                       "frequency_penalty":  0.0,
+                                                                       "temperature":  1.0,
+                                                                       "top_p":  0.95,
+                                                                       "top_k":  20,
+                                                                       "min_p":  0.0,
+                                                                       "presence_penalty":  1.5,
+                                                                       "repetition_penalty":  1.0
+                                                                   },
+                                                      "template_controls":  {
+                                                                                "enable_thinking":  true
+                                                                            },
+                                                      "minimum_ram_available_bytes":  7087169536,
+                                                      "constructor_owned_allocation_equality_gate":  "READY implies native exact allocation counter matched the CPU planner; raw owned counters are not separately exported",
+                                                      "native_info":  {
+                                                                          "context_auto":  "1",
+                                                                          "context_budget_device":  "4044024340",
+                                                                          "context_bytes_device":  "4014184612",
+                                                                          "context_bytes_host_visible":  "12239888",
+                                                                          "context_bytes_host_only":  "83288064",
+                                                                          "max_context":  "157696",
+                                                                          "backend":  "sycl",
+                                                                          "experimental":  "1",
+                                                                          "model_family":  "qwen35moe",
+                                                                          "kv":  "int8",
+                                                                          "mtp":  "3",
+                                                                          "vision":  "0",
+                                                                          "memory_model":  "uma",
+                                                                          "single_weight_store":  "1",
+                                                                          "device_vendor":  "32902",
+                                                                          "device_id":  "45186",
+                                                                          "device_integrated":  "1",
+                                                                          "device_architecture":  "panther_lake_xe3",
+                                                                          "adapter_luid":  "00000000:0000dddc",
+                                                                          "adapter_node_mask":  "1",
+                                                                          "kv_used_tokens":  "0"
+                                                                      },
+                                                      "cases":  [
+                                                                    {
+                                                                        "case":  "40k-seed",
+                                                                        "passed":  true,
+                                                                        "prompt_tokens":  40946,
+                                                                        "output_tokens":  1658,
+                                                                        "finish":  "stop",
+                                                                        "reused_tokens":  0,
+                                                                        "fresh_tokens":  40946,
+                                                                        "checkpoint_restored":  false,
+                                                                        "prefill_ms":  208268.012,
+                                                                        "decode_ms":  68460.335,
+                                                                        "prefill_tok_s":  196.60244320188738,
+                                                                        "decode_steps_tok_s":  24.203796256620713,
+                                                                        "wall_seconds":  276.7649999999994,
+                                                                        "ttft_seconds":  208.31200000000172,
+                                                                        "kv_used_final":  42603,
+                                                                        "intentional_cancel":  false,
+                                                                        "thinking_closed":  true,
+                                                                        "independent_fact_checks":  {
+                                                                                                        "id":  true,
+                                                                                                        "project":  true,
+                                                                                                        "room":  true,
+                                                                                                        "participants":  true,
+                                                                                                        "fee":  true,
+                                                                                                        "venue":  true,
+                                                                                                        "start":  true,
+                                                                                                        "remaining":  true
+                                                                                                    },
+                                                                        "facts_correct":  true,
+                                                                        "exact_requested_json":  true,
+                                                                        "format_only_difference":  false,
+                                                                        "first_terminal_is_last":  true
+                                                                    }
+                                                                ],
+                                                      "natural_cleanup_passed":  true
+                                                  },
+                                                  {
+                                                      "model":  "tiel-coder-35b-a3b",
+                                                      "requested_context":  "auto",
+                                                      "allocated_context":  180224,
+                                                      "pinned_model_sha256":  "a4d8ffc7f030466c67db289543871a8f9e6d5340241b300c09fbaf16642273ca",
+                                                      "pinned_model_bytes":  13600579424,
+                                                      "sampling":  {
+                                                                       "frequency_penalty":  0.0,
+                                                                       "temperature":  1.0,
+                                                                       "top_p":  0.95,
+                                                                       "top_k":  20,
+                                                                       "min_p":  0.0,
+                                                                       "presence_penalty":  0.0,
+                                                                       "repetition_penalty":  1.0
+                                                                   },
+                                                      "template_controls":  {
+                                                                                "enable_thinking":  true,
+                                                                                "reasoning_effort":  "medium"
+                                                                            },
+                                                      "minimum_ram_available_bytes":  7519817728,
+                                                      "constructor_owned_allocation_equality_gate":  "READY implies native exact allocation counter matched the CPU planner; raw owned counters are not separately exported",
+                                                      "native_info":  {
+                                                                          "context_auto":  "1",
+                                                                          "context_budget_device":  "4512672276",
+                                                                          "context_bytes_device":  "4491417764",
+                                                                          "context_bytes_host_visible":  "12239888",
+                                                                          "context_bytes_host_only":  "83378176",
+                                                                          "max_context":  "180224",
+                                                                          "backend":  "sycl",
+                                                                          "experimental":  "1",
+                                                                          "model_family":  "qwen35moe",
+                                                                          "kv":  "int8",
+                                                                          "mtp":  "3",
+                                                                          "vision":  "0",
+                                                                          "memory_model":  "uma",
+                                                                          "single_weight_store":  "1",
+                                                                          "device_vendor":  "32902",
+                                                                          "device_id":  "45186",
+                                                                          "device_integrated":  "1",
+                                                                          "device_architecture":  "panther_lake_xe3",
+                                                                          "adapter_luid":  "00000000:0000dddc",
+                                                                          "adapter_node_mask":  "1",
+                                                                          "kv_used_tokens":  "0"
+                                                                      },
+                                                      "cases":  [
+
+                                                                ],
+                                                      "natural_cleanup_passed":  true
+                                                  }
+                                              ],
+                                   "standard":  false,
+                                   "timing_scope":  "normal full answers and cache/cancel checks; not a fixed-protocol benchmark"
+                               },
+    "generic_startup":  {
+                            "passed":  true,
+                            "source_commit":  "5700726bed0aac3b7f597f072f0983b06c0fd740",
+                            "executable_sha256":  "7564f0f074cb81fe026aee9c80f9ca76c240091336248f253197d2d0d51e2f8e",
+                            "models":  [
+                                           {
+                                               "model":  "qwen3.6-35b-a3b",
+                                               "requested_context":  "auto",
+                                               "allocated_context":  157696,
+                                               "pinned_model_sha256":  "36f9ec0e4c775f6efd3a61c1ea76f0875128469c3d012e3d9e2495a90e7a7150",
+                                               "pinned_model_bytes":  14069266720,
+                                               "sampling":  {
+                                                                "frequency_penalty":  0.0,
+                                                                "temperature":  1.0,
+                                                                "top_p":  0.95,
+                                                                "top_k":  20,
+                                                                "min_p":  0.0,
+                                                                "presence_penalty":  1.5,
+                                                                "repetition_penalty":  1.0
+                                                            },
+                                               "template_controls":  {
+                                                                         "enable_thinking":  true
+                                                                     },
+                                               "minimum_ram_available_bytes":  7673794560,
+                                               "constructor_owned_allocation_equality_gate":  "READY implies native exact allocation counter matched the CPU planner; raw owned counters are not separately exported",
+                                               "native_info":  {
+                                                                   "context_auto":  "1",
+                                                                   "context_budget_device":  "4044024340",
+                                                                   "context_bytes_device":  "4014184612",
+                                                                   "context_bytes_host_visible":  "12239888",
+                                                                   "context_bytes_host_only":  "83288064",
+                                                                   "max_context":  "157696",
+                                                                   "backend":  "sycl",
+                                                                   "experimental":  "1",
+                                                                   "model_family":  "qwen35moe",
+                                                                   "kv":  "int8",
+                                                                   "mtp":  "3",
+                                                                   "vision":  "0",
+                                                                   "memory_model":  "uma",
+                                                                   "single_weight_store":  "1",
+                                                                   "device_vendor":  "32902",
+                                                                   "device_id":  "45186",
+                                                                   "device_integrated":  "1",
+                                                                   "device_architecture":  "panther_lake_xe3",
+                                                                   "adapter_luid":  "00000000:0000dddc",
+                                                                   "adapter_node_mask":  "1",
+                                                                   "kv_used_tokens":  "0"
+                                                               },
+                                               "cases":  [
+
+                                                         ],
+                                               "natural_cleanup_passed":  true
+                                           }
+                                       ],
+                            "standard":  false,
+                            "timing_scope":  "Generic runtime allocation/READY/SDK isolation and natural unload only; no generated answer or throughput claim"
+                        },
+    "packages":  [
+                     {
+                         "id":  "qwen-family-ptl-h",
+                         "aot_target":  "intel_gpu_ptl_h",
+                         "source_commit":  "5700726bed0aac3b7f597f072f0983b06c0fd740",
+                         "executable_sha256":  "015843c0ff2f770d5a5d25cd1954160e76610736c8ebed522a25d8df432dc240",
+                         "manifest_sha256":  "6b0a316a6b4eb070b6530fa603937bead78ac39075c1eb3c587c7f338cc379ba",
+                         "payload_files":  65,
+                         "archive":  {
+                                         "bytes":  267651004,
+                                         "sha256":  "5da7e0830dffcb643d01ba6d3b9281165f4f55e9c083421eaab48d999db6f0cd"
+                                     },
+                         "asset":  "TinyStrata-intel-windows-x64-qwen-family-ptl-h-20261115.zip"
+                     },
+                     {
+                         "id":  "qwen-family-generic",
+                         "aot_target":  "",
+                         "source_commit":  "5700726bed0aac3b7f597f072f0983b06c0fd740",
+                         "executable_sha256":  "7564f0f074cb81fe026aee9c80f9ca76c240091336248f253197d2d0d51e2f8e",
+                         "manifest_sha256":  "982970e03066ab7aea187af6b2c55005369f369b61ccb7dcc228b967f49b9147",
+                         "payload_files":  65,
+                         "archive":  {
+                                         "bytes":  266988362,
+                                         "sha256":  "37d02ee4df4ff4dc3455585bf63067e8ef246d6026358d1bc9779e01733936d0"
+                                     },
+                         "asset":  "TinyStrata-intel-windows-x64-qwen-family-generic-20261115.zip"
+                     }
+                 ],
+    "installed":  {
+                      "passed":  true,
+                      "installer_exit":  0,
+                      "generation":  {
+                                         "path":  "C:\\Users\\user\\AppData\\Local\\TinyStrata-Intel-work\\native\\sycl-f7adcff18cc24e0c9a393df8034164de",
+                                         "exe_sha256":  "015843c0ff2f770d5a5d25cd1954160e76610736c8ebed522a25d8df432dc240",
+                                         "imported_from_manifest_sha256":  "6b0a316a6b4eb070b6530fa603937bead78ac39075c1eb3c587c7f338cc379ba",
+                                         "files":  65
+                                     },
+                      "preservation":  {
+                                           "qwen3.6-35b-a3b":  {
+                                                                   "changed_fields":  [
+                                                                                          "exe",
+                                                                                          "lib_dirs"
+                                                                                      ],
+                                                                   "allowed_runtime_fields":  [
+                                                                                                  "exe",
+                                                                                                  "lib_dirs"
+                                                                                              ],
+                                                                   "unexpected_fields":  [
+
+                                                                                         ],
+                                                                   "preserved":  true
+                                                               },
+                                           "tiel-coder-35b-a3b":  {
+                                                                      "changed_fields":  [
+                                                                                             "exe",
+                                                                                             "lib_dirs"
+                                                                                         ],
+                                                                      "allowed_runtime_fields":  [
+                                                                                                     "exe",
+                                                                                                     "lib_dirs"
+                                                                                                 ],
+                                                                      "unexpected_fields":  [
+
+                                                                                            ],
+                                                                      "preserved":  true
+                                                                  }
+                                       },
+                      "settings_preservation":  {
+                                                    "changed_fields":  [
+                                                                           "source_dir"
+                                                                       ],
+                                                    "allowed_runtime_fields":  [
+                                                                                   "source_dir"
+                                                                               ],
+                                                    "unexpected_fields":  [
+
+                                                                          ],
+                                                    "preserved":  true
+                                                },
+                      "keys_preserved":  true,
+                      "history_preserved":  true,
+                      "models_unchanged":  true,
+                      "final_installed_services_left_running":  true,
+                      "normal_answers":  [
+                                             {
+                                                 "label":  "qwen-turn1",
+                                                 "timings":  {
+                                                                 "cache_n":  0,
+                                                                 "prompt_n":  84,
+                                                                 "prompt_ms":  976.1,
+                                                                 "prompt_per_token_ms":  11.621,
+                                                                 "prompt_per_second":  86.1,
+                                                                 "predicted_n":  2004,
+                                                                 "predicted_ms":  59829.2,
+                                                                 "predicted_per_token_ms":  29.855,
+                                                                 "predicted_per_second":  33.5,
+                                                                 "draft_n":  1947,
+                                                                 "draft_n_accepted":  1354
+                                                             },
+                                                 "usage":  {
+                                                               "prompt_tokens":  84,
+                                                               "completion_tokens":  2004,
+                                                               "total_tokens":  2088,
+                                                               "prompt_tokens_details":  {
+                                                                                             "cached_tokens":  0
+                                                                                         }
+                                                           },
+                                                 "six_facts_correct":  true,
+                                                 "thinking_present":  true,
+                                                 "finish_reason":  "stop",
+                                                 "sse_done":  true,
+                                                 "TTFT_seconds":  1.0159999999996217
+                                             },
+                                             {
+                                                 "label":  "qwen-turn2-cache",
+                                                 "timings":  {
+                                                                 "cache_n":  79,
+                                                                 "prompt_n":  87,
+                                                                 "prompt_ms":  752.9,
+                                                                 "prompt_per_token_ms":  8.654,
+                                                                 "prompt_per_second":  115.6,
+                                                                 "predicted_n":  1328,
+                                                                 "predicted_ms":  38009.1,
+                                                                 "predicted_per_token_ms":  28.621,
+                                                                 "predicted_per_second":  34.9,
+                                                                 "draft_n":  1263,
+                                                                 "draft_n_accepted":  906
+                                                             },
+                                                 "usage":  {
+                                                               "prompt_tokens":  166,
+                                                               "completion_tokens":  1328,
+                                                               "total_tokens":  1494,
+                                                               "prompt_tokens_details":  {
+                                                                                             "cached_tokens":  79
+                                                                                         }
+                                                           },
+                                                 "six_facts_correct":  true,
+                                                 "thinking_present":  true,
+                                                 "finish_reason":  "stop",
+                                                 "sse_done":  true,
+                                                 "TTFT_seconds":  0.7809999999990396
+                                             },
+                                             {
+                                                 "label":  "tiel-normal-medium",
+                                                 "timings":  {
+                                                                 "cache_n":  0,
+                                                                 "prompt_n":  263,
+                                                                 "prompt_ms":  1831.1,
+                                                                 "prompt_per_token_ms":  6.962,
+                                                                 "prompt_per_second":  143.6,
+                                                                 "predicted_n":  156,
+                                                                 "predicted_ms":  4984.7,
+                                                                 "predicted_per_token_ms":  31.953,
+                                                                 "predicted_per_second":  31.3,
+                                                                 "draft_n":  165,
+                                                                 "draft_n_accepted":  100
+                                                             },
+                                                 "usage":  {
+                                                               "prompt_tokens":  263,
+                                                               "completion_tokens":  156,
+                                                               "total_tokens":  419,
+                                                               "prompt_tokens_details":  {
+                                                                                             "cached_tokens":  0
+                                                                                         }
+                                                           },
+                                                 "six_facts_correct":  true,
+                                                 "thinking_present":  true,
+                                                 "finish_reason":  "stop",
+                                                 "sse_done":  true,
+                                                 "TTFT_seconds":  1.875
+                                             }
+                                         ],
+                      "api_after_desktop_restart":  {
+                                                        "max_context":  159744,
+                                                        "context_auto":  1,
+                                                        "kv_used_tokens":  0,
+                                                        "backend":  "sycl",
+                                                        "model_family":  "qwen35moe",
+                                                        "single_weight_store":  1
+                                                    }
+                  },
+    "limits":  [
+                   "40K checks do not establish full 256K quality or performance.",
+                   "Auto capacity changes with other applications and the current WDDM budget.",
+                   "The prior canonical Qwen/Tiel benchmark remains historical; these are full answers.",
+                   "Gemma/LFM/Clover prototypes and optimization candidates remain tracked in Issue19."
+               ],
+    "retained_failed_diagnostics":  [
+                                        "Final native157696 allocation first passed, but an obsolete private checker charged ordinary host work to WDDM; it failed before GEN and exited naturally. The checker was corrected and the completed cohort is reported separately.",
+                                        "After three completed installed answers, the old private Desktop broker refused the new source directory. The real shortcut was launched through Explorer with its current exact binding; answers were retained, not rerun.",
+                                        "The old private DOM assertion required hiding UMA placement. Issue18 instead deliberately shows disabled GPU100/CPU0 policy. Actual disabled/aria-disabled/fixed percentages were checked; production UI code was unchanged."
+                                    ],
+    "public_downloads":  {
+                             "passed":  true,
+                             "shipping_download_and_extract_functions":  true,
+                             "model_or_gpu_started":  false,
+                             "archives":  [
+                                              {
+                                                  "profile":  "b390-qwen36",
+                                                  "url":  "https://github.com/kbc20f11/TinyStrata/releases/download/intel-context-preview-20261115/TinyStrata-intel-windows-x64-qwen-family-ptl-h-20261115.zip",
+                                                  "archive_bytes":  267651004,
+                                                  "archive_sha256":  "5da7e0830dffcb643d01ba6d3b9281165f4f55e9c083421eaab48d999db6f0cd",
+                                                  "manifest_sha256":  "6b0a316a6b4eb070b6530fa603937bead78ac39075c1eb3c587c7f338cc379ba",
+                                                  "executable_sha256":  "015843c0ff2f770d5a5d25cd1954160e76610736c8ebed522a25d8df432dc240",
+                                                  "source_commit":  "5700726bed0aac3b7f597f072f0983b06c0fd740",
+                                                  "payloads_verified":  65
+                                              },
+                                              {
+                                                  "profile":  "generic",
+                                                  "url":  "https://github.com/kbc20f11/TinyStrata/releases/download/intel-context-preview-20261115/TinyStrata-intel-windows-x64-qwen-family-generic-20261115.zip",
+                                                  "archive_bytes":  266988362,
+                                                  "archive_sha256":  "37d02ee4df4ff4dc3455585bf63067e8ef246d6026358d1bc9779e01733936d0",
+                                                  "manifest_sha256":  "982970e03066ab7aea187af6b2c55005369f369b61ccb7dcc228b967f49b9147",
+                                                  "executable_sha256":  "7564f0f074cb81fe026aee9c80f9ca76c240091336248f253197d2d0d51e2f8e",
+                                                  "source_commit":  "5700726bed0aac3b7f597f072f0983b06c0fd740",
+                                                  "payloads_verified":  65
+                                              }
+                                          ]
+                         }
+}
