@@ -129,6 +129,7 @@ public:
             attention_=std::make_unique<GemmaAttention>(queue_,context_,chunk_,g.heads,g.full_dim,cache_elements,prefill_mkl,pv_split_);
             std::fprintf(stderr,"Intel Gemma split_pv=%d decode_only=1 min_visible=1024 key_tile=256 scratch_bytes=%llu\n",int(pv_split_),
                 (unsigned long long)(pv_split_?uint64_t(g.heads)*((context_+255)/256)*g.full_dim*sizeof(float):0));
+            std::printf("INFO gemma_pv_split=%d\n",int(pv_split_));std::fflush(stdout);
 #ifdef TINYSTRATA_INTEL_MKL
             if(prefill_mkl)gemm_=std::make_unique<PrefillGemm>(queue_,1,chunk_);
 #endif
