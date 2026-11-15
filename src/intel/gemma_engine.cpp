@@ -249,6 +249,7 @@ int serve(GemmaEngine& e){
 int main(int argc,char** argv){
     try{
         strata::paths::Utf8Arguments arguments(argc,argv);argc=arguments.argc();argv=arguments.argv();
+        if(strata::intel::print_device_report_if_requested(argc,argv))return 0;
         std::string model,tokens,token_file,dump;unsigned device=0;int context=8192,chunk=512;bool server=false;
 #ifdef TINYSTRATA_INTEL_MKL
         bool mkl=true;

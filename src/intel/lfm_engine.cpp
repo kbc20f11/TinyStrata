@@ -246,6 +246,7 @@ int serve(LfmEngine& e){const auto& d=e.device_info();
 
 int main(int argc,char** argv){try{
     strata::paths::Utf8Arguments utf8(argc,argv);argc=utf8.argc();argv=utf8.argv();
+    if(strata::intel::print_device_report_if_requested(argc,argv))return 0;
     std::string model,tokens,file,dump;unsigned device=0;int context=8192,chunk=512;bool server=false;
 #ifdef TINYSTRATA_INTEL_MKL
     bool mkl=true;

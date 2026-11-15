@@ -25,6 +25,9 @@ struct DeviceInfo {
 // Select an explicitly enumerated Intel Level Zero GPU, never a CPU fallback.
 sycl::device select_device(unsigned index);
 DeviceInfo inspect_device(const sycl::device& device);
+// Explicit installer probe. Returns false without device enumeration unless
+// --device-info is present; that mode accepts only an optional --device N.
+bool print_device_report_if_requested(int argc, char** argv);
 MemoryBudget memory_budget(const DeviceInfo& device);
 void print_memory(const char* stage, const DeviceInfo& device);
 } // namespace strata::intel

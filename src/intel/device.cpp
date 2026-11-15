@@ -14,6 +14,43 @@
 
 namespace strata::intel {
 using Microsoft::WRL::ComPtr;
+bool print_device_report_if_requested(int argc, char** argv) {
+    if (argc <= 1 || !std::any_of(argv + 1, argv + argc,
+        [](const char* arg) { return std::string(arg) == "--device-info"; })) return false;
+    unsigned selected = 0;
+    for (int i = 1; i < argc; ++i) {
+        const std::string option(argv[i]);
+        if (option == "--device-info") continue;
+        if (option != "--device" || i + 1 >= argc)
+            throw std::runtime_error("--device-info accepts only an optional --device N");
+        const std::string text(argv[++i]);
+        size_t end = 0;
+        const auto index = std::stoul(text, &end, 10);
+        if (end != text.size() || index > 1024)
+            throw std::runtime_error("Invalid Intel device index");
+        selected = unsigned(index);
+    }
+    const auto info = inspect_device(select_device(selected));
+    const auto quoted = [](const std::string& value) {
+        constexpr char hex[] = "0123456789abcdef";
+        std::string out = "\"";
+        for (unsigned char c : value) {
+            if (c == '"' || c == '\\') { out += '\\'; out += char(c); }
+            else if (c < 32) { out += "\\u00"; out += hex[c >> 4]; out += hex[c & 15]; }
+            else out += char(c);
+        }
+        return out + '"';
+    };
+    std::printf("{\"schema\":1,\"backend\":\"sycl\",\"device_index\":%u,\"vendor_id\":%u,\"device_id\":%u,\"integrated\":%s,"
+                "\"architecture\":%s,\"adapter_luid\":%s,\"adapter_node_mask\":%u,\"name\":%s,\"driver\":%s,"
+                "\"capabilities\":{\"baseline\":%s,\"esimd\":%s,\"matrix\":%s,\"local_memory\":%llu,\"max_work_group\":%llu}}\n",
+        selected, info.vendor_id, info.device_id, info.integrated ? "true" : "false", quoted(info.architecture).c_str(),
+        quoted(info.adapter_luid).c_str(), info.adapter_node_mask, quoted(info.name).c_str(), quoted(info.driver).c_str(),
+        baseline_limitation(info.capabilities) ? "false" : "true", info.capabilities.esimd ? "true" : "false",
+        info.capabilities.matrix ? "true" : "false", (unsigned long long)info.capabilities.local_memory,
+        (unsigned long long)info.capabilities.max_work_group);
+    return true;
+}
 sycl::device select_device(unsigned index) {
     std::vector<sycl::device> devices;
     for (const auto& platform : sycl::platform::get_platforms()) {
