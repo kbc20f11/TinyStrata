@@ -154,7 +154,7 @@ inline Footprint qwen(uint64_t c,const QwenSpec& s={}){
     if(s.graph)p.device=add(p.device,64ull<<20);
     if(s.verify_graph)p.device=add(p.device,128ull<<20);
     if(s.npu||s.npu_split){p.allocation(8192*2048,2,true);p.allocation(1024*8192,2,true);p.allocation(1024*8192,4,true);p.host(96ull<<20);}
-    if(s.npu_split){p.allocation(64ull*1024*1024,2,true);p.allocation(1024*8192,4);}
+    if(s.npu_split)p.allocation(64ull*1024*1024,2,true);
     return p;
 }
 inline bool fits(const MemoryBudget& memory,uint64_t max_allocation,const Footprint& p){

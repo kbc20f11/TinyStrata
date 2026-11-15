@@ -8,10 +8,11 @@ class PrefillGemm {
 public:
     explicit PrefillGemm(sycl::queue& queue, int context = 1, int max_tokens = 1024);
     ~PrefillGemm();
+    // Zero stride uses rows; larger strides write directly into a row slice.
     sycl::event dense(int type, const uint8_t* weights, const float* input, float* output,
-                      int rows, int width, int tokens);
+                      int rows, int width, int tokens, int output_stride = 0);
     sycl::event dense_interleaved_q6(const uint8_t* weights, const float* input, float* output,
-                      int rows, int width, int tokens);
+                      int rows, int width, int tokens, int output_stride = 0);
     // Counts may be device, host or shared USM. Only a bounded counts array is
     // read back for device USM; slots/weights/activations remain on the GPU.
     sycl::event selected(int type, const uint8_t* weights, size_t expert_bytes, ExpertPlan plan,
