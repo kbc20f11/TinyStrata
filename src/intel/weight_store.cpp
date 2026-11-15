@@ -216,7 +216,7 @@ std::unique_ptr<WeightStore> WeightStore::load_impl(sycl::queue queue, const std
                     (tensor.shape[0] <= 2048 || (interleave_split_output && tensor.shape[0] == 4096 && tensor.shape[1] == 2048)) && tensor.shape[1] >= 2048 && tensor.shape[0] % 256 == 0 && tensor.shape[1] % 16 == 0 &&
                     (tensor.name == "output.weight" || tensor.shape[0] * tensor.shape[1] <= 8192 * 2048);
                 if (dense) ++packed_dense_tensors;
-                const bool packed = expert || dense || (interleave_output && tensor.name == "output.weight");
+                const bool packed = expert || dense || (interleave_output && tensor.name == "output.weight" && tensor.type == 14);
                 if (packed && ((expert ? tensor.type != 14 && tensor.type != 18 && tensor.type != 21 && tensor.type != 22 : tensor.type != 14) ||
                     tensor.shape.size() != size_t(expert ? 3 : 2) || tensor.shape[0] > 8192 || tensor.shape[1] > 1000000 ||
                     (expert && (tensor.shape[1] % 16 || tensor.shape[2] > 256))))
