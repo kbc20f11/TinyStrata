@@ -103,7 +103,7 @@ public:
             const auto& g=geometry_;const size_t n=size_t(chunk_),width=g.width,cache_elements=size_t(context)*g.kv_heads*g.dim;
             const uint64_t scratch=n*(20*width+3*size_t(g.dense_ff)+g.picks*(3ull*g.expert_ff+width))*sizeof(float)
                 +4ull*30*width*sizeof(float)+2*cache_elements*sizeof(float)+uint64_t(context)*std::max(chunk,8*g.heads)*sizeof(float)+256*1024*1024ULL;
-            const uint64_t shared_bytes=uint64_t(g.vocabulary)*sizeof(float)+n*sizeof(int32_t)+sizeof(int32_t);
+            const uint64_t shared_bytes=uint64_t(g.vocabulary)*sizeof(float)+n*sizeof(int32_t)+sizeof(int32_t)+uint64_t(g.experts)*sizeof(int32_t);
             if(!execution_allocation_fits(memory_budget(device_),g.cache_bytes(context)+scratch+shared_bytes,shared_bytes,16*1024*1024ULL))
                 throw std::runtime_error("LFM state exceeds separate RAM/device budgets; unload another model first");
             states_.resize(g.layers);
@@ -121,7 +121,9 @@ public:
             selected_weights_=allocate<float>(n*g.picks);ids_=allocate<int32_t>(n*g.picks);
             input_ids_=allocate<int32_t>(n,true);quant_error_=allocate<int32_t>(1,true);logits_=allocate<float>(g.vocabulary,true);
             last_hidden_=allocate<float>(width);backup_hidden_=allocate<float>(width);
-            counts_=allocate<int32_t>(g.experts);slots_=allocate<int32_t>(n*g.experts);
+            // The bounded oneMKL selected-expert scheduler reads these small
+            // counts on the host; the expert slots/activations stay on device.
+            counts_=allocate<int32_t>(g.experts,true);slots_=allocate<int32_t>(n*g.experts);
             const size_t max_tiles=(n*g.picks+3)/4+g.experts;owners_=allocate<int32_t>(max_tiles);offsets_=allocate<int32_t>(max_tiles);tiles_=allocate<int32_t>(1);
             attention_=std::make_unique<GemmaAttention>(q_,context,chunk,g.heads,g.dim,cache_elements,mkl);
 #ifdef TINYSTRATA_INTEL_MKL
