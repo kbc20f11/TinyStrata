@@ -8,8 +8,27 @@ using namespace strata::intel;
 void check(bool condition) { if (!condition) throw std::runtime_error("Intel memory policy regression"); }
 int main() {
     MemoryBudget m{20 * GiB, 30 * GiB, 12 * GiB, true};
-    check(allocation_budget(m) == 12 * GiB);
+    check(uma_wddm_headroom == 805306368);
+    check(wddm_headroom(m) == uma_wddm_headroom);
+    check(allocation_budget(m) == 12 * GiB - uma_wddm_headroom);
+    for (uint64_t raw : {uint64_t{0}, uma_wddm_headroom - 1, uma_wddm_headroom}) {
+        auto edge = m; edge.wddm_available = raw;
+        check(wddm_allocation_budget(edge) == 0);
+        check(allocation_budget(edge) == 0);
+        check(!allocation_fits(edge, 1, GiB));
+    }
+    auto one_byte = m; one_byte.wddm_available = uma_wddm_headroom + 1;
+    check(allocation_budget(one_byte) == 1);
+    check(allocation_fits(one_byte, 1, GiB));
+    check(!allocation_fits(one_byte, 2, GiB));
+    // Apply independent ceilings with min: never add RAM/shared capacity,
+    // or subtract the WDDM reserve a second time from the RAM OS floor.
+    MemoryBudget ram_limited{8 * GiB, 8 * GiB, 5 * GiB, true, true};
+    check(allocation_budget(ram_limited) == 4 * GiB);
+    check(execution_allocation_fits(ram_limited, 4 * GiB, 0, 0));
+    check(!execution_allocation_fits(ram_limited, 4 * GiB + 1, 0, 0));
     m.wddm_known = false;
+    check(wddm_allocation_budget(m) == 0); // unknown is not measured free GPU memory
     check(allocation_budget(m) == 16 * GiB);
     m.available_commit = 8 * GiB;
     check(allocation_budget(m) == 4 * GiB);
@@ -54,7 +73,7 @@ int main() {
     discrete.wddm_known = false;
     check(allocation_budget(discrete, MemoryPool::Device) == 0);
     constexpr uint64_t snapshot = 63ull * 1024 * 1024;
-    MemoryBudget uma_snapshot{4*GiB+GiB+snapshot,4*GiB+GiB+snapshot,GiB,true,true};
+    MemoryBudget uma_snapshot{4*GiB+GiB+snapshot,4*GiB+GiB+snapshot,GiB+uma_wddm_headroom,true,true};
     check(execution_allocation_fits(uma_snapshot,GiB,GiB,snapshot)); // snapshot has no WDDM backing
     check(!execution_allocation_fits(uma_snapshot,GiB+1,0,snapshot)); // device is over WDDM
     check(!execution_allocation_fits(uma_snapshot,GiB,0,snapshot+1)); // one byte below RAM floor

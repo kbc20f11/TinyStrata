@@ -4,6 +4,7 @@
 
 namespace strata::intel {
 constexpr uint64_t GiB = uint64_t{1} << 30;
+constexpr uint64_t uma_wddm_headroom = 768ull << 20;
 struct MemoryBudget {
     uint64_t available_physical = 0;
     uint64_t available_commit = 0;
@@ -14,6 +15,13 @@ struct MemoryBudget {
     bool wddm_nonlocal_known = false;
 };
 enum class MemoryPool { Host, Shared, Device };
+inline uint64_t wddm_headroom(const MemoryBudget& m) {
+    return m.integrated ? uma_wddm_headroom : GiB / 4;
+}
+inline uint64_t wddm_allocation_budget(const MemoryBudget& m) {
+    const uint64_t reserve = wddm_headroom(m);
+    return m.wddm_known && m.wddm_available > reserve ? m.wddm_available - reserve : 0;
+}
 inline uint64_t system_allocation_budget(const MemoryBudget& m, uint64_t reserve = 4 * GiB) {
     const uint64_t available = std::min(m.available_physical, m.available_commit);
     return available > reserve ? available - reserve : 0;
@@ -24,12 +32,15 @@ inline uint64_t allocation_budget(const MemoryBudget& m, uint64_t reserve = 4 * 
     // A discrete GPU's local budget is VRAM, not another view of system RAM.
     // Keep modest local headroom; host staging/control is checked separately.
     if (!m.integrated) {
-        constexpr uint64_t local_reserve = GiB / 4;
-        return m.wddm_known && m.wddm_available > local_reserve ? m.wddm_available - local_reserve : 0;
+        return wddm_allocation_budget(m);
     }
     const uint64_t available = std::min(m.available_physical, m.available_commit);
     uint64_t budget = available > reserve ? available - reserve : 0;
-    if (m.wddm_known) budget = std::min(budget, m.wddm_available);
+    // RAM and WDDM are two constraints on the same UMA backing, not two
+    // capacities. Each reserve is applied once to its own reported available
+    // value, then the tighter ceiling wins. Unknown WDDM retains the existing
+    // RAM/commit fallback and must not be presented as measured GPU headroom.
+    if (m.wddm_known) budget = std::min(budget, wddm_allocation_budget(m));
     return budget;
 }
 inline uint64_t allocation_budget(const MemoryBudget& m, MemoryPool pool, uint64_t reserve = 4 * GiB) {
