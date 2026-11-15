@@ -1467,7 +1467,7 @@ int main(int argc, char** argv) {
                 constexpr const char* xmx_types = "[]";
 #endif
 #if defined(TINYSTRATA_INTEL_MKL) && defined(TINYSTRATA_INTEL_INT8_XMX)
-                constexpr const char* profiles = "{\"b390-qwen36\":1,\"b390-tiel-coder\":1,\"b390-clover-causal\":1}";
+                constexpr const char* profiles = "{\"b390-qwen36\":1,\"b390-tiel-coder\":1,\"b390-clover\":1}";
                 constexpr const char* models = "[\"qwen3.6-35b-a3b\",\"tiel-coder-35b-a3b\",\"clover-35b-a3b-preview\"]";
 #else
                 constexpr const char* profiles = "{}";
@@ -1480,7 +1480,7 @@ int main(int argc, char** argv) {
 #endif
                 std::printf("{\"backend\":\"sycl\",\"experimental\":true,\"model_families\":[],\"kv_types\":[\"fp32\",\"int8\"],\"images\":false,\"mtp\":true,\"experimental_mtp_max_depth\":7,\"serve\":true,"
                             "\"capabilities_schema\":1,\"experimental_models\":%s,\"experimental_profiles\":%s,"
-                            "\"experimental_model_features\":{\"clover-35b-a3b-preview\":{\"causal_d0\":true,\"mtp\":false,\"kv_types\":[\"int8\"],\"images\":false}},"
+                            "\"experimental_model_contracts\":{\"clover-35b-a3b-preview\":{\"version\":1,\"architecture\":\"clover_moe\",\"kv_types\":[\"int8\"],\"mtp\":false,\"experimental_mtp_max_depth\":0,\"images\":false,\"thinking\":\"on_off\",\"mode\":\"causal_d0\"}},"
                             "\"build\":{\"mkl\":%s,\"int8_xmx\":%s,\"aot_target\":\"%s\"},"
                             "\"weight_types\":{\"scalar\":[0,1,8,10,11,14,18,21,22,23,30],\"dp4a\":[8,10,11,14,18,21,22,23],\"int8_xmx\":%s}}\n",
                             models, profiles, mkl, int8_xmx, aot_target, xmx_types);
