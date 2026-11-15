@@ -155,7 +155,14 @@ try {
     $choice=Get-TinyStrataIntelRuntimeSelection -Model 'tiel-coder-35b-a3b' -RequestedProfile generic -Controllers @([pscustomobject]@{PNPDeviceID='PCI\VEN_8086&DEV_B082'})
     Assert-Intel ($choice.Profile -eq 'generic') 'explicit generic remains selectable on B390'
     Assert-Intel ((Get-TinyStrataModelFamily qwen36 -Backend sycl).ConfigFile -eq 'config-sycl.json') 'explicit Intel has a dedicated config'
-    Assert-IntelRejected { Get-TinyStrataModelFamily gemma4 -Backend sycl } 'unsupported family rejected before preparation'
+    foreach ($entry in @(@('gemma4','b390-gemma4','config-gemma4-sycl.json'),@('lfm2','b390-lfm25','config-lfm2-sycl.json'),@('clover','b390-clover','config-clover-sycl.json'))) {
+        $family=Get-TinyStrataModelFamily $entry[0] -Backend sycl
+        Assert-Intel ($family.IntelProfile -eq $entry[1] -and $family.ConfigFile -eq $entry[2] -and $family.NativeFile -eq 'tinystrata-intel.exe') 'new text family has its own profile/config and staged engine basename'
+        $choice=Get-TinyStrataIntelRuntimeSelection -Model $family.Model -Controllers @([pscustomobject]@{PNPDeviceID='PCI\VEN_8086&DEV_B082'})
+        Assert-Intel ($choice.Profile -eq $entry[1]) 'new B390 model selects only its dedicated candidate profile'
+        Assert-IntelRejected { Get-TinyStrataIntelRuntimeArtifact -CatalogPath (Join-Path $repository 'cmake\intel-runtime-catalog.json') -Profile $entry[1] -Model $family.Model } 'absent new-family catalog asset never borrows a Qwen/Tiel runtime'
+    }
+    Assert-IntelRejected { Get-TinyStrataModelFamily 'unknown' -Backend sycl } 'unknown family rejected before preparation'
     Assert-IntelRejected {Assert-TinyStrataIntelManagedDeviceSelection @{gpu=1;args=@('--model','fixture.gguf')}} 'custom nonzero GPU cannot be certified with the device0 probe'
     Assert-IntelRejected {Assert-TinyStrataIntelManagedDeviceSelection @{gpu=0;args=@('--device','1')}} 'native explicit nonzero device cannot be certified with the device0 probe'
     $device0=@{gpu=0;args=@('--device','0','--model','fixture.gguf')}
@@ -293,6 +300,13 @@ function Invoke-TinyStrataInstaller {
     $repeatEntry=& $entry -SourceDir $shortcutSource -WorkDir $shortcutWork -Backend sycl -WithUI
     Assert-Intel ($repeatEntry.UiPort -eq 3017 -and $repeatEntry.IntelProfile -eq 'b390-qwen36') 'Intel entrypoint preserves its custom saved UI port'
     function Test-TinyStrataSource { param($Directory) return $true }
+    foreach($family in @('gemma4','lfm2','clover')) {
+        Write-IntelFixture $shortcutWork 'runtime\ui-sycl\settings.json' (@{model_family=$family;port=3017}|ConvertTo-Json -Compress)
+        $inspection = Invoke-TinyStrataInstaller -SourceDirectory $shortcutSource -WorkingDirectory $shortcutWork -Backend sycl -Family qwen36 -FamilyExplicit $false -IncludeUI $true -ApiPort 0 -InspectOnly $true 6>&1 | Out-String
+        $expected=Get-TinyStrataModelFamily $family -Backend sycl
+        Assert-Intel ($inspection.Contains($expected.Model) -and $inspection.Contains($expected.ConfigFile)) 'real installer preparation follows saved new-family selection without reverting to Qwen'
+    }
+    Write-IntelFixture $shortcutWork 'runtime\ui-sycl\settings.json' '{"model_family":"qwen36","port":3017}'
     function Get-TinyStrataSavedProcess { param($StatePath,$ConfigPath,$SourcePath,$ApiPort) return $null }
     function Get-NetTCPConnection { param($LocalPort,$State,$ErrorAction) return @() }
     function Assert-TinyStrataInstallationIdle { param($SourceRoot,$WorkRoot) }

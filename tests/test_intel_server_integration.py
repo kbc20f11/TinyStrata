@@ -16,7 +16,7 @@ from unittest.mock import Mock, patch
 from serve import intel_backend, intel_capabilities, model_setup, server
 from serve.model_profiles import ModelProfiles
 from serve.model_switch import ModelBundle, ModelControlError, ModelSwitcher
-from serve.model_download import FIXED_MODEL, FIXED_TIEL_MODEL
+from serve.model_download import FIXED_MODEL, FIXED_TIEL_MODEL, manifest_for_arch
 
 
 QWEN = "qwen3.6-35b-a3b"
@@ -38,6 +38,145 @@ def capability_report(*, tiel=False):
 
 
 class IntelServerIntegration(unittest.TestCase):
+    def target_configuration(self, model):
+        profile = intel_backend.MODEL_PROFILES[model]
+        cfg = intel_backend.configure_backend({"backend": "sycl", "arch": intel_backend.MODEL_ARCHES[model],
+            "model_name": model, "intel_profile": profile, "cwd": str(self.root), "exe": str(self.exe),
+            "lib_dirs": [str(self.runtime)], "args": ["--model", str(self.root / "absent-pinned.gguf")],
+            "vision_mode": "no", "api_key": "private-fixture-key"})
+        from serve.intel_models import MODEL_CONTRACTS
+        self.capabilities = capability_report()
+        self.capabilities.update(experimental_models=[model], experimental_profiles={profile: 1}, mtp=False,
+            experimental_mtp_max_depth=0, kv_types=["int8"], experimental_model_contracts={model: deepcopy(MODEL_CONTRACTS[model])})
+        self.capabilities["build"]["int8_xmx"] = False
+        self.capabilities["weight_types"]["int8_xmx"] = []
+        return cfg
+
+    def test_new_family_bootstrap_downloads_only_its_pinned_target(self):
+        from serve.model_download import FixedModelDownloader
+        for model in intel_backend.TARGET_ONLY_MODELS:
+            cfg = self.target_configuration(model)
+            svc = self.service(cfg)
+            path = self.root / (model + ".json")
+            with self.subTest(model=model):
+                server.configure_model_downloads(svc, cfg, path)
+                self.assertIs(type(svc.downloads), FixedModelDownloader)
+                self.assertEqual(svc.downloads.manifest, manifest_for_arch(cfg["arch"], model))
+                self.assertNotIn("draft_model", cfg)
+                self.assertNotIn("vision", cfg)
+                svc.downloads.close()
+
+    def test_missing_new_family_runtime_rejects_switch_without_unloading(self):
+        svc = self.service()
+        control = ModelSwitcher(svc, self.cfg, self.path, server)
+        with patch("serve.model_switch.threading.Thread") as thread:
+            for model in intel_backend.TARGET_ONLY_MODELS:
+                with self.subTest(model=model), self.assertRaisesRegex(ValueError, "dedicated Intel runtime"):
+                    control.start(model)
+            thread.assert_not_called()
+        svc.engine.unload.assert_not_called()
+        svc.engine.close.assert_not_called()
+
+    def test_cross_family_current_id_change_cannot_reassign_initial_runtime(self):
+        profiles = ModelProfiles(self.path, self.cfg)
+        gemma = self.target_configuration(intel_backend.GEMMA_MODEL)
+        dedicated = self.root / "gemma-runtime" / "tinystrata-intel.exe"
+        dedicated.parent.mkdir()
+        dedicated.write_bytes(b"dedicated Gemma fixture; never execute")
+        gemma.update(exe=str(dedicated), lib_dirs=[str(dedicated.parent)])
+        profiles.current_id = intel_backend.GEMMA_MODEL  # Same transition performed after READY.
+        updated = profiles.update(intel_backend.GEMMA_MODEL, gemma)
+        self.assertEqual(updated.config["exe"], str(dedicated))
+        self.assertEqual(updated.config["lib_dirs"], [str(dedicated.parent)])
+        # Qwen/Tiel keep their intentional common-engine generation behavior.
+        tiel = profiles.get(TIEL).config
+        self.assertEqual(tiel["exe"], str(self.exe))
+
+    def test_intel_new_family_features_and_request_controls_do_not_inherit_cuda(self):
+        for model in intel_backend.TARGET_ONLY_MODELS:
+            cfg = self.target_configuration(model)
+            svc = self.service(cfg)
+            with self.subTest(model=model):
+                features = server.intel_feature_fields(svc)["features"]
+                for key in ("images", "assistant", "mtp", "lookup", "clover_draft"):
+                    self.assertIs(features[key], False)
+                self.assertEqual(features["kv_types"], ["int8"])
+                self.assertTrue(features["target_only"])
+                svc.engine.unload.assert_not_called()
+                for req in ({"lookup_draft": 4}, {"mtp_auto": 1}, {"clover_mode": "diffusion"},
+                            {"clover_mode": "self-spec", "clover_draft": 3}, {"clover_lookup": 4}):
+                    with self.assertRaises(ValueError):
+                        svc.clover_request_settings(req)
+                if model == intel_backend.CLOVER_MODEL:
+                    svc.engine.info.update(clover_mode="self-spec", clover_draft=3, clover_lookup=16)
+                    self.assertEqual(svc.clover_request_settings({}), {"clover_mode": "causal", "clover_draft": 0})
+                    self.assertIsNone(svc.clover_preview_block({}))
+                else:
+                    self.assertIsNone(svc.clover_request_settings({}))
+                svc.engine.unload.assert_not_called()
+                svc.engine.close.assert_not_called()
+
+    def test_lfm_shared_thinking_off_is_rejected_before_persistence(self):
+        svc = self.service(self.target_configuration(intel_backend.LFM_MODEL))
+        shared = self.root / "shared-lfm.json"
+        shared.write_text('{"temperature": 0.1}', encoding="utf-8")
+        svc.shared, svc.shared_path = {"temperature": .1}, str(shared)
+        for disabled in ({"enable_thinking": False}, {"reasoning_effort": "none"}):
+            with self.assertRaisesRegex(ValueError, "always uses thinking"):
+                svc.set_shared(disabled)
+            self.assertEqual(svc.shared, {"temperature": .1})
+            self.assertEqual(shared.read_text(encoding="utf-8"), '{"temperature": 0.1}')
+
+    def test_intel_inventory_requires_only_pinned_target_not_cuda_auxiliaries(self):
+        from serve.model_library import artifacts, inventory
+        directory = self.root / "model-files"
+        directory.mkdir()
+        for model, arch in intel_backend.MODEL_ARCHES.items():
+            artifact = manifest_for_arch(arch, model)
+            target = directory / artifact.filename
+            target.write_bytes(b"CPU fixture; never open as GGUF")
+            profile = SimpleNamespace(id=model, arch=arch, path=self.root / (model + ".json"),
+                config={"backend": "sycl", "vision_mode": "no", "args": ["--model", str(target)]})
+            with self.subTest(model=model):
+                self.assertEqual(artifacts(profile), (artifact,))
+                plan = inventory(profile, (profile,))
+                self.assertTrue(plan.management["complete"])
+                self.assertEqual(plan.management["download_bytes"], artifact.size)
+                self.assertEqual([entry.path for entry in plan.files], [target])
+
+    def test_new_family_health_props_and_catalog_expose_runtime_feature_limits(self):
+        svc = self.service(self.target_configuration(intel_backend.CLOVER_MODEL))
+        svc.template.source, svc.template.caps = "CPU fixture template", {}
+        svc.models = ModelSwitcher(svc, self.target_configuration(intel_backend.CLOVER_MODEL),
+                                   self.root / "config-clover-sycl.json", server)
+        with patch.object(svc, "start_telemetry"):
+            httpd = server.serve(svc, "127.0.0.1", 0)
+        try:
+            for route in ("/health", "/props", "/v1/models"):
+                client = http.client.HTTPConnection("127.0.0.1", httpd.server_port, timeout=3)
+                try:
+                    client.request("GET", route)
+                    response = client.getresponse()
+                    body = json.loads(response.read())
+                finally:
+                    client.close()
+                self.assertEqual(response.status, 200)
+                if route == "/v1/models":
+                    for row in body["data"]:
+                        self.assertEqual(row["architecture"]["input_modalities"], ["text"])
+                        self.assertFalse(row["features"]["assistant"])
+                        if row["id"] in intel_backend.TARGET_ONLY_MODELS:
+                            self.assertFalse(row["features"]["mtp"])
+                    body = next(row for row in body["data"] if row["id"] == intel_backend.CLOVER_MODEL)
+                self.assertFalse(body["features"]["images"])
+                self.assertFalse(body["features"]["mtp"])
+                self.assertFalse(body["features"]["lookup"])
+                self.assertEqual(body["features"]["clover_modes"], ["causal"])
+        finally:
+            svc.stopping.set()
+            httpd.shutdown()
+            httpd.server_close()
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="intel-server-cpu-")
         self.addCleanup(self.temporary.cleanup)
@@ -119,7 +258,10 @@ class IntelServerIntegration(unittest.TestCase):
             path.write_bytes(data)
         with patch("serve.model_profiles.config.load", side_effect=AssertionError("Other config read")):
             profiles = ModelProfiles(self.path, self.cfg)
-        self.assertEqual([row["id"] for row in profiles.list()], [QWEN, TIEL])
+        self.assertEqual({row["id"] for row in profiles.list()}, set(intel_backend.MODEL_PROFILES))
+        for model in intel_backend.TARGET_ONLY_MODELS:
+            self.assertNotIn("exe", profiles.get(model).config)
+            self.assertNotIn("lib_dirs", profiles.get(model).config)
         profile = profiles.get("qwen36")
         self.assertEqual(profile.path, self.path)
         for key in ("exe", "lib_dirs", "intel_profile", "sampling", "enable_thinking", "api_key", "aliases", "history_preference"):
@@ -142,6 +284,11 @@ class IntelServerIntegration(unittest.TestCase):
     def test_tiel_and_other_models_reject_before_job_start_or_unload(self):
         svc = self.service()
         control = ModelSwitcher(svc, self.cfg, self.path, server)
+        # A different family's Qwen executable is not a new-model runtime.
+        for model in intel_backend.TARGET_ONLY_MODELS:
+            profile = control.profiles.get(model)
+            cfg = {**profile.config, "exe": str(self.exe), "lib_dirs": [str(self.runtime)]}
+            profile.path.write_text(json.dumps(cfg), encoding="utf-8")
         with patch("serve.model_switch.threading.Thread") as thread, patch.object(control, "_downloader") as downloader:
             for model in (TIEL, "gemma4", "lfm2", "clover"):
                 with self.subTest(model=model), self.assertRaises(ValueError):
@@ -155,7 +302,7 @@ class IntelServerIntegration(unittest.TestCase):
         self.assertTrue(svc.loaded())
 
     def test_wrong_current_model_and_unsupported_saved_settings_reject_before_prepare(self):
-        with self.assertRaisesRegex(ValueError, "Qwen3.6"):
+        with self.assertRaisesRegex(ValueError, "match its pinned model"):
             ModelProfiles(self.path, {**self.cfg, "model_name": TIEL})
         profiles = ModelProfiles(self.path, self.cfg)
         for change in ({"model_name": TIEL}, {"vision_mode": "gpu"}, {"images": {"exe": "image.exe"}},
@@ -513,6 +660,8 @@ class IntelServerIntegration(unittest.TestCase):
             self.assertIs(body["experimental"], True)
             self.assertNotIn(self.cfg["api_key"], json.dumps(body))
             self.assertFalse(body["images"])
+            self.assertFalse(body["features"]["images"])
+            self.assertFalse(body["features"]["assistant"])
         finally:
             svc.stopping.set()
             httpd.shutdown()

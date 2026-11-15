@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from serve import intel_capabilities as intel
+from serve.intel_models import MODEL_CONTRACTS, MODEL_PROFILES, GEMMA_MODEL, LFM_MODEL, CLOVER_MODEL
 
 
 def legacy_report():
@@ -29,6 +30,35 @@ def report(*, mkl=True, xmx=True):
 
 
 class CompatibilityPolicy(unittest.TestCase):
+    def test_new_target_only_reports_require_explicit_per_model_contracts(self):
+        for model in (GEMMA_MODEL, LFM_MODEL, CLOVER_MODEL):
+            current = report(xmx=False)
+            current.update(experimental_models=[model], experimental_profiles={MODEL_PROFILES[model]: 1},
+                           mtp=False, experimental_mtp_max_depth=0, kv_types=["int8"],
+                           experimental_model_contracts={model: deepcopy(MODEL_CONTRACTS[model])})
+            for profile in ("generic", MODEL_PROFILES[model]):
+                intel.validate_capabilities(current, model=model, profile=profile)
+            before = deepcopy(current)
+            del current["experimental_model_contracts"]
+            with self.assertRaisesRegex(intel.IntelCapabilityError, "explicit target-only contract"):
+                intel.validate_capabilities(current, model=model)
+            current = before
+            current["experimental_model_contracts"][model]["mtp"] = True
+            with self.assertRaisesRegex(intel.IntelCapabilityError, "model-specific"):
+                intel.validate_capabilities(current, model=model)
+
+    def test_mixed_clover_global_mtp_cannot_override_causal_contract(self):
+        current = report()
+        current["experimental_models"].append(CLOVER_MODEL)
+        current["experimental_profiles"][MODEL_PROFILES[CLOVER_MODEL]] = 1
+        current["experimental_model_contracts"] = {CLOVER_MODEL: deepcopy(MODEL_CONTRACTS[CLOVER_MODEL])}
+        intel.validate_capabilities(current, model=CLOVER_MODEL, profile=MODEL_PROFILES[CLOVER_MODEL])
+        for key, value in (("mode", "diffusion"), ("images", True), ("experimental_mtp_max_depth", 3)):
+            changed = deepcopy(current)
+            changed["experimental_model_contracts"][CLOVER_MODEL][key] = value
+            with self.subTest(field=key), self.assertRaises(intel.IntelCapabilityError):
+                intel.validate_capabilities(changed, model=CLOVER_MODEL)
+
     def test_generic_tiel_needs_declared_model_and_scalar_type18_without_xmx(self):
         current = report(mkl=False, xmx=False)
         current["build"]["aot_target"] = ""

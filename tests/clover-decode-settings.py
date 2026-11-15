@@ -191,7 +191,7 @@ class DecodeCompatibility(unittest.TestCase):
             self.assertEqual(config.value_of(new,'kv_type'),'auto')
 
     def test_factories_use_clover_policy_only(self):
-        profiles=object.__new__(ModelProfiles);profiles._hardware={'backend':'hip'};profiles._engine=None
+        profiles=object.__new__(ModelProfiles);profiles._hardware={'backend':'hip'};profiles._engine=None;profiles._intel=False
         for name,arch in (('clover-35b-a3b-preview','clover_moe'),('qwen3.6-35b-a3b','qwen35moe'),
                           ('gemma-4-26b-a4b-it','gemma4'),('lfm2.5-24b-a2b','lfm2moe')):
             new=profiles._defaults(name,arch)

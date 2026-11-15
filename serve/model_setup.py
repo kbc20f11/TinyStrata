@@ -92,20 +92,31 @@ def validate_intel_executable(cfg: dict, *, allow_legacy: bool = True):
         executable = Path(cfg.get("cwd") or ROOT) / executable
     if not executable.is_file():
         return None
-    from serve.intel_backend import canonical_model, MODEL_PROFILES, TIEL_MODEL
+    from serve.intel_backend import canonical_model, engine_args, MODEL_PROFILES, TIEL_MODEL, QWEN_ENGINE_MODELS
     from serve.intel_capabilities import probe_capabilities, validate_capabilities
     proof = probe_capabilities(cfg)
     model = canonical_model(cfg)
     required = None
-    if not proof.legacy:
+    if not proof.legacy and model in QWEN_ENGINE_MODELS:
         required = {"scalar": [0, 8, 10, 11, 14, 21, 22, 23, 30]}
         if cfg.get("intel_profile", "generic") in MODEL_PROFILES.values():
             required.update(dp4a=[8, 10, 11, 14, 21, 22, 23], int8_xmx=[14, 21, 22])
         if model == TIEL_MODEL:
             for types in required.values():
                 types.append(18)
+    elif not proof.legacy:
+        selected_path = model_path(cfg)
+        if selected_path is not None and selected_path.is_file():
+            from serve.gguf_reader import GGUFFile
+            required = {"scalar": sorted({tensor.type_id for tensor in GGUFFile(selected_path).tensors})}
     validate_capabilities(proof.report, model=model, profile=cfg.get("intel_profile", "generic"),
                           required_types=required, allow_legacy=allow_legacy)
+    launch = engine_args(cfg, allow_uninstalled=True)
+    if "--prefill-mkl" in launch and not proof.report.get("build", {}).get("mkl") and not proof.legacy:
+        raise ValueError("The selected Intel runtime does not compile the requested MKL path")
+    kv = launch[launch.index("--kv-type") + 1]
+    if kv not in proof.report["kv_types"]:
+        raise ValueError("The selected Intel runtime does not support the requested KV format")
     return proof
 
 
@@ -125,9 +136,11 @@ def resolve_executable(cfg: dict) -> Path | None:
     suffix = ".exe" if os.name == "nt" else ""
     work = ROOT.with_name(ROOT.name + "-work")
     if cfg.get("backend") == "sycl":
-        from serve.intel_backend import supports_model
+        from serve.intel_backend import supports_model, canonical_model, QWEN_ENGINE_MODELS
         if not supports_model(cfg):
             return None
+        if canonical_model(cfg) not in QWEN_ENGINE_MODELS:
+            return None  # New families must select their own installed/runtime executable explicitly.
         for folder in (work / "build-intel", work / "build-intel/Release", ROOT / "bin"):
             candidate = folder / ("tinystrata-intel" + suffix)
             if usable(candidate):
@@ -318,6 +331,10 @@ def configure_vision(cfg: dict, model: Path, *, projector: Path | None = None,
 
 def configure_assistant(cfg: dict, *, assistant: Path | None = None, verified: bool = False) -> dict:
     """Attach only the matching pinned QAT assistant to Gemma's native MTP path."""
+    if cfg.get("backend") == "sycl":
+        if assistant is not None or cfg.get("draft_model") or "--draft-model" in cfg.get("args", []):
+            raise ValueError("Intel target-only text does not support an assistant model")
+        return cfg
     if cfg.get("arch") != "gemma4":
         return cfg
     from serve.model_download import FIXED_GEMMA4_ASSISTANT as artifact
@@ -366,15 +383,18 @@ def prepare_installed_model(cfg: dict, config_path: str | Path, model_path: str 
         raise ValueError("The GGUF architecture differs from this configuration; use --model-family with a separate config")
     if cfg.get("backend") == "sycl":
         from serve.gguf_reader import GGUFFile
-        from serve.intel_backend import canonical_model, QWEN_MODEL, TIEL_MODEL
-        from serve.model_download import TIEL_MODEL_FILENAME
+        from serve.intel_backend import canonical_model, QWEN_MODEL, TIEL_MODEL, TARGET_ONLY_MODELS
+        from serve.model_download import TIEL_MODEL_FILENAME, manifest_for_arch
         metadata = GGUFFile(model).metadata
         selected = canonical_model(cfg)
         name = str(metadata.get("general.name", ""))
-        if (actual_arch != "qwen35moe" or
-                selected == QWEN_MODEL and "qwen3.6" not in name.lower() or
+        if (selected == QWEN_MODEL and "qwen3.6" not in name.lower() or
                 selected == TIEL_MODEL and (name != "Ornith-1.5-35B" or model.name != TIEL_MODEL_FILENAME)):
             raise ValueError("The Intel GGUF identity does not match the selected pinned Qwen3.6 or Tiel artifact")
+        if selected in TARGET_ONLY_MODELS:
+            artifact = manifest_for_arch(actual_arch, selected)
+            if model.name != artifact.filename or model.stat().st_size != artifact.size:
+                raise ValueError("The Intel GGUF does not match the selected pinned family artifact")
         validate_intel_executable(cfg)
     st = model.stat()
     identity = f"{model}\n{st.st_size}\n{st.st_mtime_ns}"
@@ -389,7 +409,8 @@ def prepare_installed_model(cfg: dict, config_path: str | Path, model_path: str 
     args = new["args"]
     args[args.index("--model") + 1] = str(model)
     new["tokenizer"] = str(tokenizer)
-    log_name = (("engine-intel-tiel.log" if selected == TIEL_MODEL else "engine-intel.log") if cfg.get("backend") == "sycl" else "engine-tiel-coder.log" if cfg.get("model_name") == "tiel-coder-35b-a3b" else
+    from serve.intel_models import MODEL_LOGS
+    log_name = (MODEL_LOGS[selected] if cfg.get("backend") == "sycl" else "engine-tiel-coder.log" if cfg.get("model_name") == "tiel-coder-35b-a3b" else
                 {"lfm2moe": "engine-lfm2.log", "gemma4": "engine-gemma4.log",
                  "clover_moe": "engine-clover.log"}.get(actual_arch, "engine.log"))
     new["log"] = str(path.parent / log_name)

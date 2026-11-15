@@ -10,7 +10,7 @@ function Get-TinyStrataIntelRuntimeCatalog {
         $catalog.availability -notin @('pending_release','published') -or @($catalog.supported_devices).Count -eq 0) { throw 'Invalid experimental Intel runtime catalog.' }
     foreach ($device in @($catalog.supported_devices)) {
         if ($device.vendor_id -ne 32902 -or $device.integrated -ne $true -or $device.architecture -ne 'panther_lake_xe3' -or
-            $device.profile -notin @('b390-qwen36','b390-tiel-coder') -or $device.aot_target -ne 'intel_gpu_ptl_h' -or @($device.device_ids).Count -eq 0) { throw 'Intel runtime catalog contains an unvalidated device/profile/target.' }
+            $device.profile -notin @('b390-qwen36','b390-tiel-coder','b390-gemma4','b390-lfm25','b390-clover') -or $device.aot_target -ne 'intel_gpu_ptl_h' -or @($device.device_ids).Count -eq 0) { throw 'Intel runtime catalog contains an unvalidated device/profile/target.' }
         foreach ($id in @($device.device_ids)) { if ($id -isnot [int] -and $id -isnot [long] -or $id -lt 1 -or $id -gt 65535) { throw 'Invalid Intel catalog device ID.' } }
     }
     return $catalog
@@ -21,8 +21,8 @@ function Get-TinyStrataIntelRuntimeArtifact {
           [AllowEmptyString()][string]$AotTarget = 'intel_gpu_ptl_h')
     $catalog = Get-TinyStrataIntelRuntimeCatalog $CatalogPath
     if ($catalog.availability -ne 'published') { throw 'The experimental Intel runtime package has not been published. Use a verified -IntelRuntimeDirectory offline stage; no SDK was installed.' }
-    $expectedModel = switch($Profile) { 'b390-qwen36' {'qwen3.6-35b-a3b'} 'b390-tiel-coder' {'tiel-coder-35b-a3b'} 'generic' {$Model} default {throw 'Unknown experimental Intel runtime profile.'} }
-    if ($expectedModel -notin @('qwen3.6-35b-a3b','tiel-coder-35b-a3b') -or ($Model -and $Model -ne $expectedModel) -or
+    $expectedModel = switch($Profile) { 'b390-qwen36' {'qwen3.6-35b-a3b'} 'b390-tiel-coder' {'tiel-coder-35b-a3b'} 'b390-gemma4' {'gemma-4-26b-a4b-it'} 'b390-lfm25' {'lfm2.5-24b-a2b'} 'b390-clover' {'clover-35b-a3b-preview'} 'generic' {$Model} default {throw 'Unknown experimental Intel runtime profile.'} }
+    if ($expectedModel -notin @('qwen3.6-35b-a3b','tiel-coder-35b-a3b','gemma-4-26b-a4b-it','lfm2.5-24b-a2b','clover-35b-a3b-preview') -or ($Model -and $Model -ne $expectedModel) -or
         ($Profile -eq 'generic' -and $AotTarget -ne '') -or ($Profile -ne 'generic' -and $AotTarget -ne 'intel_gpu_ptl_h')) { throw 'Intel runtime model/profile/target selection is inconsistent.' }
     $matchingArtifacts = @($catalog.artifacts | Where-Object { $_.profile -eq $Profile -and $_.model -eq $expectedModel -and [string]$_.aot_target -eq $AotTarget })
     if ($matchingArtifacts.Count -ne 1) { throw 'No unique published Intel runtime exists for the requested profile.' }

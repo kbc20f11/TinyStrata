@@ -23,7 +23,10 @@ PROFILES = {"qwen36": ("qwen3.6-35b-a3b", "config.json"),
 MODELS = {model: family for family, (model, _) in PROFILES.items()}
 FAMILY_ALIASES = {"tiel-coder": "tiel"}
 INTEL_PROFILES = {"qwen36": ("b390-qwen36", "config-sycl.json", "server-state-sycl.json"),
-                  "tiel": ("b390-tiel-coder", "config-tiel-coder-sycl.json", "server-state-tiel-coder-sycl.json")}
+                  "tiel": ("b390-tiel-coder", "config-tiel-coder-sycl.json", "server-state-tiel-coder-sycl.json"),
+                  "gemma4": ("b390-gemma4", "config-gemma4-sycl.json", "server-state-gemma4-sycl.json"),
+                  "lfm2": ("b390-lfm25", "config-lfm2-sycl.json", "server-state-lfm2-sycl.json"),
+                  "clover": ("b390-clover", "config-clover-sycl.json", "server-state-clover-sycl.json")}
 
 
 def retired_model(name):
@@ -43,7 +46,7 @@ def profile_path(runtime, family, backend=None):
     parent = Path(runtime) / ".tinystrata"
     if backend == "sycl":
         if family not in INTEL_PROFILES:
-            raise ValueError("Experimental Intel supports validated Qwen3.6/Tiel text only")
+            raise ValueError("Select a pinned experimental Intel text model with its own compatible runtime")
         return parent / INTEL_PROFILES[family][1]
     path = parent / PROFILES[family][1]
     if family == "qwen36" and path.is_file():
@@ -315,7 +318,7 @@ class Launcher:
         self.family = FAMILY_ALIASES.get(selected_family, selected_family)
         if self.backend == "sycl":
             if self.family not in INTEL_PROFILES:
-                raise ValueError("Experimental Intel supports validated Qwen3.6/Tiel text only")
+                raise ValueError("Select a pinned experimental Intel text model with its own compatible runtime")
             expected = INTEL_PROFILES[self.family][0]
             if self.intel_profile is not None and self.intel_profile not in ("generic", expected):
                 raise ValueError("The explicit Intel profile does not match the selected model family")
@@ -645,7 +648,7 @@ def main():
     parser.add_argument("--port", type=port_number, help="UI port (default: saved selection or 3000)")
     parser.add_argument("--model-family", choices=(*PROFILES, *FAMILY_ALIASES), help="model for a new API (default: saved selection or qwen36)")
     parser.add_argument("--backend", choices=("auto", "cuda", "hip", "sycl"),
-                        help="explicit sycl uses experimental Qwen3.6/Tiel text, separate Intel config files and ui-sycl history/settings (API 18085/UI 3005); default selection is unchanged")
+                        help="explicit sycl uses model-specific experimental text runtimes, separate Intel configs and ui-sycl history/settings (API 18085/UI 3005); an installed compatible runtime is required")
     parser.add_argument("--intel-profile", choices=("generic", *(profile[0] for profile in INTEL_PROFILES.values())), help="requested Intel tuning profile; must match --model-family and requires --backend sycl; does not certify hardware")
     parser.add_argument("--no-browser", action="store_true", help="do not open the browser")
     parser.add_argument("--no-api-start", action="store_true", help="require an existing healthy API; never start it or force model loading")

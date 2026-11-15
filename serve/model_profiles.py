@@ -29,8 +29,7 @@ _PROFILE_FILES = {
     "clover-35b-a3b-preview": ("config-clover.json", "config-clover-profile.json"),
     "tiel-coder-35b-a3b": ("config-tiel-coder.json", "config-tiel-coder-profile.json"),
 }
-_INTEL_PROFILE_FILES = {"qwen3.6-35b-a3b": "config-sycl.json",
-                        "tiel-coder-35b-a3b": "config-tiel-coder-sycl.json"}
+from serve.intel_models import MODEL_CONFIGS as _INTEL_PROFILE_FILES, QWEN_ENGINE_MODELS
 # TinyStrata engine ceilings, not automatically allocated KV capacities. Clover's
 # 256K capacity extends its official 128K limit; general long-context quality is unverified.
 _CONTEXT_LIMITS = {"qwen35moe": 262144, "lfm2moe": 131072, "gemma4": 262144, "clover_moe": 262144}
@@ -76,6 +75,9 @@ class ModelProfiles:
         if current_arch not in _MODELS.values():
             raise ValueError(f"Unsupported model profile architecture: {current_arch}")
         self.current_id = self._configured_model(cfg)
+        # The initial runtime belongs to this model/group for the API lifetime.
+        # current_id changes after a switch and must not reassign that ownership.
+        self._runtime_model = self.current_id
         parent = current_path.parent
         self._managed_work = (parent.parent.parent if parent.name.lower() == ".tinystrata"
                               and parent.parent.name.lower() == "runtime" else None)
@@ -97,7 +99,7 @@ class ModelProfiles:
             path = (current_path.parent / _INTEL_PROFILE_FILES[name] if self._intel else
                     self._profile_path(current_path.parent, arch, current_path, name))
             if path == current_path:
-                raise ValueError("Intel models require separate Qwen and Tiel configuration files")
+                raise ValueError("Intel models require separate configuration files")
             loaded = config.load(path) if path.is_file() else self._defaults(name, arch)
             self._check_arch(path, loaded, arch, name)
             self._profiles[name] = ModelProfile(name, arch, path, loaded)
@@ -135,7 +137,7 @@ class ModelProfiles:
     def _resolve_intel(name: str) -> str:
         selected = ModelProfiles.resolve(name)
         if selected not in _INTEL_PROFILE_FILES:
-            raise ValueError("Intel currently supports pinned Qwen3.6 and Tiel text models only")
+            raise ValueError("Intel requires a pinned experimental text model")
         return selected
 
     @classmethod
@@ -197,13 +199,17 @@ class ModelProfiles:
         elif thinking:
             result["enable_thinking"] = True
         if self._intel:
-            from serve.intel_backend import configure_backend, MODEL_PROFILES, TIEL_MODEL
-            if self._generic_intel and "--mtp" in args:
+            from serve.intel_backend import configure_backend, MODEL_PROFILES, TARGET_ONLY_MODELS
+            if (self._generic_intel or name in TARGET_ONLY_MODELS) and "--mtp" in args:
                 args[args.index("--mtp") + 1] = "0"
             result.update(intel_profile="generic" if self._generic_intel else MODEL_PROFILES[name], vision_mode="no",
-                          sampling=deepcopy(tinyconfig.TIEL_SAMPLING if name == TIEL_MODEL else tinyconfig.DEFAULT_SAMPLING))
-            if self._engine is not None:
+                          sampling=tinyconfig.migrate_generation_settings(result)[0]["sampling"])
+            share = name == self._runtime_model or {name, self._runtime_model} <= QWEN_ENGINE_MODELS
+            if self._engine is not None and share:
                 result["exe"] = str(self._engine)
+            elif not share:
+                result.pop("exe", None)
+                result.pop("lib_dirs", None)
             return configure_backend(result)
         result = tinyconfig.clover_vision_defaults(tinyconfig.clover_decode_defaults(result))
         if self._engine is not None:
@@ -240,7 +246,9 @@ class ModelProfiles:
             validate_config(cfg, allow_uninstalled=True)
             self._check_arch(profile.path, cfg, profile.arch, profile.id)
             source = deepcopy(cfg)
-            source.update(deepcopy(self._hardware))
+            shared_runtime = profile.id == self._runtime_model or {profile.id, self._runtime_model} <= QWEN_ENGINE_MODELS
+            source.update({key: deepcopy(value) for key, value in self._hardware.items()
+                           if shared_runtime or key not in ("exe", "lib_dirs")})
             source["model_name"] = profile.id
             if self._generic_intel:
                 source["intel_profile"] = "generic"

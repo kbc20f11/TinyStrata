@@ -25,7 +25,7 @@ param(
     [switch]$SelectBackend,
     # Optional offline override; otherwise use the pinned published runtime catalog.
     [string]$IntelRuntimeDirectory,
-    [ValidateSet('generic','b390-qwen36','b390-tiel-coder')][string]$IntelProfile = 'b390-qwen36',
+    [ValidateSet('generic','b390-qwen36','b390-tiel-coder','b390-gemma4','b390-lfm25','b390-clover')][string]$IntelProfile = 'b390-qwen36',
     [string]$HipDirectory,
     # An omitted value is empty under irm | iex and selects GPU auto-detection.
     [ValidatePattern('^(gfx[0-9a-f]+(;gfx[0-9a-f]+)*)?$')][string]$HipArchitectures,
@@ -591,13 +591,13 @@ function Test-TinyStrataInteractiveConsole {
 
 function Get-TinyStrataIntelRuntimeSelection {
     param([string]$Model, [string]$RequestedProfile, [object[]]$Controllers)
-    if ($Model -notin @('qwen3.6-35b-a3b','tiel-coder-35b-a3b')) { throw 'Unsupported Intel model identity.' }
+    if ($Model -notin @('qwen3.6-35b-a3b','tiel-coder-35b-a3b','gemma-4-26b-a4b-it','lfm2.5-24b-a2b','clover-35b-a3b-preview')) { throw 'Unsupported Intel model identity.' }
     if ($null -eq $Controllers) { $Controllers = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue) }
     $intel = @($Controllers | Where-Object { $_.PNPDeviceID -match '(?i)VEN_8086' })
     # WMI chooses a candidate package only. The installed binary must later
     # certify the actual selected SYCL device and its baseline capabilities.
     $knownB390 = $intel.Count -eq 1 -and $intel[0].PNPDeviceID -match '(?i)VEN_8086&DEV_B082(?:&|$)'
-    $fast = if ($Model -eq 'tiel-coder-35b-a3b') { 'b390-tiel-coder' } else { 'b390-qwen36' }
+    $fast = switch ($Model) { 'tiel-coder-35b-a3b' {'b390-tiel-coder'} 'gemma-4-26b-a4b-it' {'b390-gemma4'} 'lfm2.5-24b-a2b' {'b390-lfm25'} 'clover-35b-a3b-preview' {'b390-clover'} default {'b390-qwen36'} }
     if ($RequestedProfile -and $RequestedProfile -notin @('generic',$fast)) { throw 'Intel profile does not match the selected model.' }
     if ($RequestedProfile -and $RequestedProfile -ne 'generic' -and -not $knownB390) { throw 'B390 AOT tuning requires the known B390 device; select generic for another Intel GPU.' }
     if ($knownB390 -and $RequestedProfile -ne 'generic') { return [pscustomobject]@{Profile=$fast;AotTarget='intel_gpu_ptl_h'} }
@@ -611,7 +611,7 @@ function Select-TinyStrataBackend {
     if (-not (Test-TinyStrataInteractiveConsole)) {
         throw '-SelectBackend requires an interactive console. Use -Backend sycl (experimental Intel), cuda, hip or auto in unattended installs.'
     }
-    Write-Host 'Backend: [Enter/0] automatic (NVIDIA/AMD priority; Intel-only experimental candidate), [1] CUDA, [2] HIP, [3] Intel SYCL experimental Qwen3.6/Tiel text (B390 AOT or capability-checked generic GPU).'
+    Write-Host 'Backend: [Enter/0] automatic (NVIDIA/AMD priority; Intel-only experimental candidate), [1] CUDA, [2] HIP, [3] Intel SYCL experimental model-specific text runtime (B390 AOT or capability-checked generic GPU).'
     $choice = Read-Host 'Backend'
     switch ($choice.Trim()) { '' { return 'auto' } '0' { return 'auto' } '1' { return 'cuda' } '2' { return 'hip' } '3' { return 'sycl' } default { throw 'Unknown backend selection; no installation was prepared.' } }
 }
@@ -1531,9 +1531,12 @@ function Test-TinyStrataInferenceReady {
 function Get-TinyStrataModelFamily {
     param([string]$Name = 'qwen36', [string]$Backend = 'auto')
     if ($Backend -eq 'sycl') {
-        if ($Name -in @('qwen36','qwen3.6')) { return [pscustomobject]@{ Name='qwen36'; Model='qwen3.6-35b-a3b'; IntelProfile='b390-qwen36'; ConfigFile='config-sycl.json'; StateFile='server-state-sycl.json'; NativeFile='tinystrata-intel.exe'; Port=18085 } }
-        if ($Name -in @('tiel','tiel-coder')) { return [pscustomobject]@{ Name='tiel'; Model='tiel-coder-35b-a3b'; IntelProfile='b390-tiel-coder'; ConfigFile='config-tiel-coder-sycl.json'; StateFile='server-state-tiel-coder-sycl.json'; NativeFile='tinystrata-intel.exe'; Port=18085 } }
-        throw 'Experimental Intel installs support validated Qwen3.6/Tiel text only.'
+        if ($Name -in @('qwen36','qwen3.6')) { return [pscustomobject]@{ Name='qwen36'; Model='qwen3.6-35b-a3b'; Arch='qwen35moe'; IntelProfile='b390-qwen36'; ConfigFile='config-sycl.json'; StateFile='server-state-sycl.json'; NativeFile='tinystrata-intel.exe'; Port=18085 } }
+        if ($Name -in @('tiel','tiel-coder')) { return [pscustomobject]@{ Name='tiel'; Model='tiel-coder-35b-a3b'; Arch='qwen35moe'; IntelProfile='b390-tiel-coder'; ConfigFile='config-tiel-coder-sycl.json'; StateFile='server-state-tiel-coder-sycl.json'; NativeFile='tinystrata-intel.exe'; Port=18085 } }
+        if ($Name -in @('gemma4','gemma-4')) { return [pscustomobject]@{ Name='gemma4'; Model='gemma-4-26b-a4b-it'; Arch='gemma4'; IntelProfile='b390-gemma4'; ConfigFile='config-gemma4-sycl.json'; StateFile='server-state-gemma4-sycl.json'; NativeFile='tinystrata-intel.exe'; Port=18085 } }
+        if ($Name -in @('lfm2','lfm2.5')) { return [pscustomobject]@{ Name='lfm2'; Model='lfm2.5-24b-a2b'; Arch='lfm2moe'; IntelProfile='b390-lfm25'; ConfigFile='config-lfm2-sycl.json'; StateFile='server-state-lfm2-sycl.json'; NativeFile='tinystrata-intel.exe'; Port=18085 } }
+        if ($Name -eq 'clover') { return [pscustomobject]@{ Name='clover'; Model='clover-35b-a3b-preview'; Arch='clover_moe'; IntelProfile='b390-clover'; ConfigFile='config-clover-sycl.json'; StateFile='server-state-clover-sycl.json'; NativeFile='tinystrata-intel.exe'; Port=18085 } }
+        throw 'Select a pinned experimental Intel text model; a published model-specific runtime is required.'
     }
     switch ($Name) {
         { $_ -in @('qwen36', 'qwen3.6') } {
@@ -1752,7 +1755,7 @@ exit 0
     $shortcut.TargetPath = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $shortcut.Arguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $helperPath
     $shortcut.WorkingDirectory = $source
-    $shortcut.Description = if ($Backend -eq 'sycl') { 'Start experimental Intel Qwen3.6/Tiel; separate ui-sycl history/settings' } else { 'Start TinyStrata and open the chat UI' }
+    $shortcut.Description = if ($Backend -eq 'sycl') { 'Start experimental Intel text; model-specific runtime and separate ui-sycl history/settings' } else { 'Start TinyStrata and open the chat UI' }
     $shortcut.WindowStyle = 7
     $icon = Join-Path $source 'ui\web\terminal-logo.ico'
     $shortcut.IconLocation = if (Test-Path -LiteralPath $icon -PathType Leaf) { $icon + ',0' }
@@ -2430,7 +2433,7 @@ function Invoke-TinyStrataInstaller {
     $runtimeRoot = Join-Path $workRoot 'runtime'
     if ($SelectBackend) { $Backend = Select-TinyStrataBackend -Requested $Backend -Interactive $true }
     if ($IntelRuntimeDirectory -and $Backend -notin @('auto','sycl')) { throw '-IntelRuntimeDirectory requires an Intel backend selection.' }
-    if ($IntelProfile -notin @('generic','b390-qwen36','b390-tiel-coder')) { throw 'Unknown experimental Intel profile.' }
+    if ($IntelProfile -notin @('generic','b390-qwen36','b390-tiel-coder','b390-gemma4','b390-lfm25','b390-clover')) { throw 'Unknown experimental Intel profile.' }
     $portAutomatic = $ApiPort -eq 0
     $selectedFamily = if ($Backend -eq 'sycl') { Get-TinyStrataModelFamily -Name $Family -Backend sycl } else { Get-TinyStrataModelFamily -Name $Family }
     $configPath = Join-Path (Join-Path $runtimeRoot '.tinystrata') $selectedFamily.ConfigFile
@@ -2451,7 +2454,7 @@ function Invoke-TinyStrataInstaller {
         if ($IncludeUI -and (Test-Path -LiteralPath $intelSettings -PathType Leaf)) {
             try { $settings = Get-Content -LiteralPath $intelSettings -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
         }
-        $familyHint = if ($familyExplicitHere) { $Family } elseif ($settings -and $settings.model_family -in @('qwen36','tiel','tiel-coder')) { $settings.model_family } else { 'qwen36' }
+        $familyHint = if ($familyExplicitHere) { $Family } elseif ($settings -and $settings.model_family -in @('qwen36','qwen3.6','tiel','tiel-coder','gemma4','gemma-4','lfm2','lfm2.5','clover')) { $settings.model_family } else { 'qwen36' }
         $selectedFamily = Get-TinyStrataModelFamily -Name $familyHint -Backend sycl
         $profileExplicitHere = if ($PSBoundParameters.ContainsKey('IntelProfileExplicit')) { $IntelProfileExplicit } else { $PSBoundParameters.ContainsKey('IntelProfile') }
         $intelRuntimeSelection = Get-TinyStrataIntelRuntimeSelection -Model $selectedFamily.Model -RequestedProfile $(if ($profileExplicitHere) {$IntelProfile} else {''})
@@ -2483,7 +2486,7 @@ function Invoke-TinyStrataInstaller {
         if ($selectedBackend -eq 'sycl') {
             Write-Host "Experimental Intel $($selectedFamily.Model) text; requested profile $IntelProfile is not a hardware approval."
             Write-Host 'Use the pinned published runtime package, or an offline -IntelRuntimeDirectory, in an immutable native/sycl-* generation; no SDK/driver/PATH changes.'
-            Write-Host 'Dedicated config-sycl.json and ui-sycl history/settings; existing CUDA/HIP state stays separate.'
+            Write-Host 'Dedicated model-specific -sycl configuration and ui-sycl history/settings; existing CUDA/HIP state stays separate.'
         }
         Write-Host 'Plan: reuse installed components; prepare Python/dependencies; reuse or build the selected GPU engine; prepare its runtime; save configuration.'
         if ($selectedBackend -eq 'hip') { Write-Host 'AMD: use the private pinned ROCm 10.2.0a20260930 SDK (HIP 7.17) by default; -HipDirectory selects a custom SDK; Qwen/LFM select native FP8 when available, otherwise INT8; Gemma uses INT8.' }
@@ -2699,7 +2702,7 @@ function Invoke-TinyStrataInstaller {
         $prepared = Get-TinyStrataConfig -Path $candidateConfig
         if (-not $prepared -or $prepared.backend -ne $selectedBackend -or $prepared.exe -ne $selectedExe) { throw 'Prepared configuration does not match the selected native runtime.' }
         if ($selectedBackend -eq 'sycl' -and ($prepared.intel_profile -ne $IntelProfile -or $prepared.model_name -ne $selectedFamily.Model -or
-            $prepared.arch -ne 'qwen35moe' -or $prepared.vision_mode -ne 'no' -or $prepared.vision -or
+            $prepared.arch -ne $selectedFamily.Arch -or $prepared.vision_mode -ne 'no' -or $prepared.vision -or
             @($prepared.lib_dirs).Count -ne 1 -or [string]$prepared.lib_dirs[0] -ne (Split-Path -Parent $selectedExe))) {
             throw 'Prepared experimental Intel configuration must match its text model/profile and selected app-local runtime.'
         }

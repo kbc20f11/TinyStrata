@@ -19,6 +19,43 @@ def value(args, flag):
 
 
 class IntelBackendPolicy(unittest.TestCase):
+    def test_new_target_only_models_have_separate_baselines_and_preserve_user_policy(self):
+        for model in intel.TARGET_ONLY_MODELS:
+            for profile in ("generic", intel.MODEL_PROFILES[model]):
+                source = configuration(arch=intel.MODEL_ARCHES[model], model_name=model, intel_profile=profile,
+                                       sampling={"temperature": .37}, api_key="private", max_tokens=7654)
+                before = deepcopy(source)
+                cfg = intel.configure_backend(source)
+                args = intel.engine_args(cfg)
+                self.assertEqual(value(args, "--mtp"), "0")
+                self.assertEqual(value(args, "--kv-type"), "int8")
+                self.assertEqual(value(args, "--chunk"), "512")
+                self.assertEqual(value(args, "--max-context"), "8192")
+                self.assertNotIn("--mtp-stochastic", args)
+                self.assertNotIn("--verify-xmx", args)
+                self.assertEqual(source, before)
+                for key in ("sampling", "api_key", "max_tokens"):
+                    self.assertEqual(cfg[key], before[key])
+                if model == intel.CLOVER_MODEL:
+                    self.assertIn("--experimental-clover", args)
+                    self.assertEqual(value(args, "--clover-mode"), "causal")
+                    self.assertEqual(value(args, "--clover-draft"), "0")
+
+    def test_new_model_unsupported_settings_reject_without_mutation(self):
+        for model in intel.TARGET_ONLY_MODELS:
+            for extra in (("--mtp", "1"), ("--kv-type", "fp32"), ("--verify-graph",), ("--decode-dp4a",)):
+                cfg = configuration(*extra, arch=intel.MODEL_ARCHES[model], model_name=model,
+                                    intel_profile=intel.MODEL_PROFILES[model])
+                before = deepcopy(cfg)
+                with self.subTest(model=model, extra=extra), self.assertRaises(ValueError):
+                    intel.configure_backend(cfg)
+                self.assertEqual(cfg, before)
+        for model in (intel.GEMMA_MODEL, intel.LFM_MODEL):
+            with self.assertRaisesRegex(ValueError, "512"):
+                intel.configure_backend(configuration("--chunk", "513", arch=intel.MODEL_ARCHES[model], model_name=model))
+        with self.assertRaisesRegex(ValueError, "always uses thinking"):
+            intel.configure_backend(configuration(arch="lfm2moe", model_name=intel.LFM_MODEL, enable_thinking=False))
+
     def test_policy_helpers_do_not_launch_processes_or_load_runtime_dlls(self):
         with patch("subprocess.Popen", side_effect=AssertionError("No native process allowed")), \
              patch("ctypes.WinDLL", side_effect=AssertionError("No runtime DLL allowed"), create=True):
@@ -169,7 +206,8 @@ class IntelBackendPolicy(unittest.TestCase):
         self.assertEqual(value(intel.engine_args(result), "--draft-vocab"), "0")
 
     def test_b390_auto1024_preserves_both_explicit512_profiles(self):
-        for model, profile in intel.MODEL_PROFILES.items():
+        for model in (intel.QWEN_MODEL, intel.TIEL_MODEL):
+            profile = intel.MODEL_PROFILES[model]
             fields = {"model_name": model, "intel_profile": profile}
             auto = intel.configure_backend(configuration(**fields))
             self.assertEqual(value(auto["args"], "--chunk"), "auto")
@@ -213,6 +251,7 @@ class IntelBackendPolicy(unittest.TestCase):
 
     def test_unsupported_images_placement_and_state_are_rejected(self):
         for fields in ({"vision": {"exe": "encoder.exe"}}, {"images": {"enabled": True}}, {"vision_mode": "gpu"},
+                       {"draft_model": "cuda-assistant.gguf"}, {"assistant": "cuda-assistant.gguf"},
                        {"vision_mode": "cpu"}, {"layer_split": "auto"}, {"vram_elastic": True},
                        {"slot_save_path": "snapshots"}, {"parallel": 2}, {"replicas": 2},
                        {"expert_gpu_percent": 0}, {"expert_gpu_count": 8}, {"conversation_cache_mib": 0}, {"gpu": [0, 1]}):

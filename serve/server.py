@@ -3929,6 +3929,10 @@ class Service:
 
     def set_shared(self, defaults) -> dict:
         """The shared inference defaults every client gets for what it leaves out; {} / None = clients use their own again."""
+        if getattr(self, "backend", None) == "sycl" and isinstance(defaults, dict):
+            # Validate an explicit OFF before the generic always-on model
+            # migration can normalize it to ON and save a different choice.
+            thinking_api.template_kwargs(defaults, thinking_api.capabilities(self.model), True)
         self.shared = clean_shared_defaults(defaults, self.model)
         if self.shared_path:
             try:
@@ -4384,6 +4388,10 @@ class Service:
     def speculation_request_settings(self, req: dict | None = None) -> dict | None:
         """Validate inherited and explicit target-verified controls before request admission."""
         options = config.speculation_request_options(req)
+        if getattr(self, "backend", None) == "sycl":
+            if options:
+                raise ValueError(f"{next(iter(options))}: this Intel runtime does not support request speculation controls")
+            return None
         info = getattr(self.engine, "info", {}) or {}
         spawn = getattr(self.engine, "spawn", ())
         args = list(spawn[1]) if len(spawn) > 1 and isinstance(spawn[1], (tuple, list)) else []
@@ -4423,6 +4431,17 @@ class Service:
         arch = getattr(self.engine, "_tinystrata_arch", None)
         is_clover = arch == "clover_moe" or (arch is None and
                     (self.model == "clover-35b-a3b-preview" or any(arg.startswith("--clover-") for arg in args)))
+        if getattr(self, "backend", None) == "sycl":
+            if not is_clover:
+                if options:
+                    raise ValueError(f"{next(iter(options))}: this option requires the Intel Clover causal D0 route")
+                return None
+            allowed = {"clover_mode": "causal", "clover_draft": 0}
+            if any(key not in allowed or value != allowed[key] for key, value in options.items()):
+                raise ValueError("Intel Clover supports causal D0 only; draft, lookup and diffusion controls are unavailable")
+            # Do not inherit CUDA Clover block/acceptance defaults from its
+            # architecture or the mixed Qwen/Clover native capability report.
+            return allowed
         if not is_clover:
             if options:
                 raise ValueError(f"{next(iter(options))}: this option requires a Clover model")
@@ -6084,12 +6103,13 @@ def make_handler(svc: Service):
                     self._json(200, {"status": "switching", "model": control["model"], "target": control["target"],
                                      "phase": control["phase"], "loaded": False, "images": False,
                                      "max_context": 0, "api_key": bool(svc.api_key), "service": "strata",
-                                     **intel_health_fields(svc)})
+                                     **intel_health_fields(svc), **intel_feature_fields(svc)})
                     return
                 self._json(200, {"status": "ok", "max_context": svc.reported_ctx(), "model": svc.model,
                                  "images": svc.vision_available(), "api_key": bool(svc.api_key),
                                  "image_generation": svc.images is not None,
-                                 "loaded": svc.loaded(), "service": "strata", **intel_health_fields(svc)})
+                                 "loaded": svc.loaded(), "service": "strata", **intel_health_fields(svc),
+                                 **intel_feature_fields(svc)})
             elif path.startswith("/v1/images/files/"):
                 # response_format url: the name (32 random hex digits) is the access, as an OpenAI image URL is
                 f = svc.images.file(path[len("/v1/images/files/"):]) if svc.images is not None else None
@@ -6129,6 +6149,7 @@ def make_handler(svc: Service):
                                               "output_modalities": ["text"]}}
                     if (thinking := thinking_api.capabilities(svc.model)) is not None:
                         model["thinking"] = thinking
+                    model.update(intel_feature_fields(svc))
                     if not loaded and (svc.idle_unload_s or getattr(svc.engine, "unloaded", False)):
                         model["status"] = {"value": "unloaded"}   # like llama-server's router: listed, loads on use
                         loaded = True
@@ -6435,6 +6456,7 @@ def make_handler(svc: Service):
                      "chat_template_caps": svc.template.caps,
                      "modalities": {"vision": svc.vision_available()}, "models_autoload": hasattr(svc.engine, "restart"),
                      "is_sleeping": not svc.loaded()}
+            props.update(intel_feature_fields(svc))
             if getattr(svc.engine, "model_path", None):
                 props["model_path"] = svc.engine.model_path
             version = getattr(svc.engine, "info", {}).get("version")
@@ -7395,6 +7417,16 @@ def intel_health_fields(svc) -> dict:
     return {"backend": "sycl", "intel_profile": getattr(svc, "intel_profile", None), "experimental": True}
 
 
+def intel_feature_fields(svc) -> dict:
+    if getattr(svc, "backend", None) != "sycl":
+        return {}
+    from serve.intel_models import runtime_features
+    from serve.intel_backend import canonical_model
+    model = canonical_model({"model_name": svc.model,
+                             "arch": getattr(svc.engine, "_tinystrata_arch", None) or "qwen35moe"})
+    return {"features": runtime_features(model)}
+
+
 def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
     """Install the fixed GGUF and image projector before publishing inference readiness."""
     from serve.model_download import (FixedModelBundleDownloader, FixedModelDownloader,
@@ -7542,7 +7574,7 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
     if cfg.get("backend") == "sycl":
         svc.downloads = FixedModelDownloader(directory, on_ready=activate,
                     existing_paths=(existing,) if existing is not None else (),
-                    _manifest=manifest_for_arch("qwen35moe", cfg.get("model_name")))
+                    _manifest=manifest_for_arch(cfg.get("arch", "qwen35moe"), cfg.get("model_name")))
     elif cfg.get("arch") == "gemma4":
         projector = (cfg.get("vision") or {}).get("mmproj") or cfg.get("vision_mmproj")
         assistant = cfg.get("draft_model")

@@ -64,11 +64,27 @@ class IntelLaunch(unittest.TestCase):
             self.prepare(config=self.primary)
         self.assertEqual(self.primary.read_bytes(), self.original_bytes)
 
-    def test_unvalidated_family_rejects_before_save(self):
+    def test_wrong_family_profile_rejects_before_save(self):
         for family in ("gemma4", "lfm2", "clover"):
-            with self.subTest(family=family), self.assertRaisesRegex(ValueError, "Qwen3.6"):
+            with self.subTest(family=family), self.assertRaisesRegex(ValueError, "match its pinned model"):
                 self.prepare(model_family=family)
             self.assertFalse(self.primary.with_name("config-sycl.json").exists())
+        self.assertEqual(self.primary.read_bytes(), self.original_bytes)
+
+    def test_new_text_only_families_use_separate_configs_without_assistant_or_projector(self):
+        cases = (("gemma4", intel_backend.GEMMA_MODEL, "config-gemma4-sycl.json"),
+                 ("lfm2", intel_backend.LFM_MODEL, "config-lfm2-sycl.json"),
+                 ("clover", intel_backend.CLOVER_MODEL, "config-clover-sycl.json"))
+        for family, model, filename in cases:
+            cfg, path = self.prepare(model_family=family, intel_profile=intel_backend.MODEL_PROFILES[model])
+            self.assertEqual(path.name, filename)
+            self.assertEqual(cfg["model_name"], model)
+            self.assertEqual(config.value_of(cfg, "mtp"), 0)
+            self.assertEqual(cfg["vision_mode"], "no")
+            self.assertNotIn("vision", cfg)
+            self.assertNotIn("draft_model", cfg)
+            self.assertNotIn("--draft-model", cfg["args"])
+            self.assertTrue(cfg["model_bootstrap"])
         self.assertEqual(self.primary.read_bytes(), self.original_bytes)
 
     def test_tiel_uses_model_specific_config_sampling_and_profile(self):
@@ -100,6 +116,14 @@ class IntelLaunch(unittest.TestCase):
             self.assertEqual(actual[key], wanted[key])
         for key, value in wanted["sampling"].items():
             self.assertEqual(actual["sampling"][key], value)
+        self.assertEqual(self.primary.read_bytes(), self.original_bytes)
+
+    def test_legacy_saved_alias_keeps_canonical_intel_log_selection(self):
+        cfg, path = self.prepare()
+        cfg["model_name"] = "qwen36"
+        config.save(path, cfg)
+        actual, _ = self.prepare(config=path, backend="auto", intel_profile=None)
+        self.assertEqual(Path(actual["log"]).name, "engine-intel.log")
         self.assertEqual(self.primary.read_bytes(), self.original_bytes)
 
     def test_migration_does_not_erase_unsupported_intel_options(self):

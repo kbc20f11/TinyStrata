@@ -117,8 +117,12 @@ def prepare(a) -> tuple[dict, Path]:
             raise ValueError("--model-family does not match the local GGUF architecture")
         requested_arch = actual_arch
     config_path = getattr(a, "config", None)
+    if intel_requested:
+        from serve.intel_models import MODEL_CONFIGS, QWEN_MODEL, TIEL_MODEL
+        intel_model = TIEL_MODEL if tiel else {"lfm2moe": "lfm2.5-24b-a2b", "gemma4": "gemma-4-26b-a4b-it",
+                                             "clover_moe": "clover-35b-a3b-preview"}.get(requested_arch, QWEN_MODEL)
     path = (config_path or RUNTIME / ".tinystrata" / ("config-tiel-coder-sycl.json" if intel_requested and tiel else
-            "config-sycl.json" if intel_requested else "config-tiel-coder.json" if tiel else
+            MODEL_CONFIGS[intel_model] if intel_requested else "config-tiel-coder.json" if tiel else
             {"lfm2moe": "config-lfm2.json", "gemma4": "config-gemma4.json", "clover_moe": "config-clover.json"}
             .get(requested_arch, "config.json"))).expanduser().resolve()
     from serve.install_guard import assert_installation_ready
@@ -157,7 +161,7 @@ def prepare(a) -> tuple[dict, Path]:
     if (tiel and cfg.get("model_name") != "tiel-coder-35b-a3b") or (
             selected in ("qwen36", "qwen3.6") and cfg.get("model_name") == "tiel-coder-35b-a3b"):
         raise ValueError("This config belongs to another model; choose a separate --config path")
-    if fresh:
+    if fresh and cfg.get("backend") != "sycl":
         cfg = clover_vision_defaults(clover_decode_defaults(cfg))
     if cfg.get("arch") == "clover_moe":
         if getattr(a, "vision", None) is not None:
@@ -258,8 +262,9 @@ def prepare(a) -> tuple[dict, Path]:
         validate_intel_executable(cfg)
     if a.model and not model.is_file():
         raise ValueError(f"TinyStrata model not found: {model}")
-    cfg["log"] = str(path.parent / ("engine-intel-tiel.log" if cfg.get("backend") == "sycl" and cfg.get("model_name") == "tiel-coder-35b-a3b" else
-                                  "engine-intel.log" if cfg.get("backend") == "sycl" else "engine-tiel-coder.log" if cfg.get("model_name") == "tiel-coder-35b-a3b" else
+    from serve.intel_models import MODEL_LOGS
+    from serve.intel_backend import canonical_model
+    cfg["log"] = str(path.parent / (MODEL_LOGS[canonical_model(cfg)] if cfg.get("backend") == "sycl" else "engine-tiel-coder.log" if cfg.get("model_name") == "tiel-coder-35b-a3b" else
                     {"lfm2moe": "engine-lfm2.log", "gemma4": "engine-gemma4.log", "clover_moe": "engine-clover.log"}
                     .get(cfg.get("arch"), "engine.log")))
     if model.is_file():
@@ -286,8 +291,9 @@ def main() -> int:
     ap.add_argument("--draft-model", type=Path, help="existing Gemma4 QAT assistant GGUF for MTP")
     ap.add_argument("--exe", type=Path, help="built tinystrata executable")
     ap.add_argument("--backend", choices=("auto", "cuda", "hip", "sycl"), default="auto",
-                    help="GPU backend; sycl is experimental native Windows Intel Qwen3.6/Tiel text, with separate settings")
-    ap.add_argument("--intel-profile", choices=("generic", "b390-qwen36", "b390-tiel-coder"),
+                    help="GPU backend; experimental sycl text uses a separate model-specific config and runtime")
+    from serve.intel_models import MODEL_PROFILES
+    ap.add_argument("--intel-profile", choices=("generic", *MODEL_PROFILES.values()),
                     help="explicit model-specific Intel profile; B390 profiles select the tested execution options")
     ap.add_argument("--vision-exe", type=Path, help="built tinystrata-vision image encoder")
     ap.add_argument("--vision", choices=("gpu", "cpu", "no", "yes", "none"),

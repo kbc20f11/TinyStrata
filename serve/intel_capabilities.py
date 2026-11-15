@@ -20,13 +20,15 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+from serve.intel_models import (MODEL_PROFILES, MODEL_CONTRACTS, TARGET_ONLY_MODELS,
+                                QWEN_ENGINE_MODELS)
 
 
 QWEN_MODEL = "qwen3.6-35b-a3b"
 B390_PROFILE = "b390-qwen36"
 TIEL_MODEL = "tiel-coder-35b-a3b"
 TIEL_PROFILE = "b390-tiel-coder"
-_PROFILE_MODELS = {B390_PROFILE: QWEN_MODEL, TIEL_PROFILE: TIEL_MODEL}
+_PROFILE_MODELS = {profile: model for model, profile in MODEL_PROFILES.items()}
 _PATHS = ("scalar", "dp4a", "int8_xmx")
 _SHA256 = re.compile(r"^[a-fA-F0-9]{64}$")
 _IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
@@ -68,19 +70,21 @@ def _check_report(report):
         raise IntelCapabilityError("The executable does not identify the experimental sycl backend")
     if report.get("model_families") != []:
         raise IntelCapabilityError("Intel model_families must retain the explicit formal-adoption boundary")
-    if report.get("images") is not False or report.get("serve") is not True or report.get("mtp") is not True:
+    if report.get("images") is not False or report.get("serve") is not True or type(report.get("mtp")) is not bool:
         raise IntelCapabilityError("Intel capabilities must identify the experimental text/MTP server")
     kv = report.get("kv_types")
     if (not isinstance(kv, list) or not kv or any(item not in ("fp32", "int8") for item in kv) or
             len(set(kv)) != len(kv)):
         raise IntelCapabilityError("Invalid Intel KV capability list")
     depth = report.get("experimental_mtp_max_depth")
-    if type(depth) is not int or not 1 <= depth <= 7:
+    if type(depth) is not int or not 0 <= depth <= 7 or (depth == 0) != (report["mtp"] is False):
         raise IntelCapabilityError("Invalid Intel experimental MTP depth")
     if "capabilities_schema" not in report:
         # Partial new metadata must never silently downgrade into legacy policy.
-        if any(key in report for key in ("experimental_models", "experimental_profiles", "build", "weight_types")):
+        if any(key in report for key in ("experimental_models", "experimental_profiles", "build", "weight_types", "experimental_model_contracts")):
             raise IntelCapabilityError("Intel build metadata is missing capabilities_schema")
+        if report["mtp"] is not True:
+            raise IntelCapabilityError("Legacy Intel metadata requires the retained text/MTP server")
         return
     if type(report["capabilities_schema"]) is not int or report["capabilities_schema"] != 1:
         raise IntelCapabilityError("Unsupported Intel capabilities_schema")
@@ -104,8 +108,22 @@ def _check_report(report):
             build.get("aot_target") not in ("", "intel_gpu_ptl_h")):
         raise IntelCapabilityError("Invalid Intel compiled build metadata")
     for name, model in _PROFILE_MODELS.items():
-        if name in profiles and (profiles[name] != 1 or not build["mkl"] or not build["int8_xmx"] or model not in models):
-            raise IntelCapabilityError(f"The {name} contract requires its model and compiled MKL and INT8 XMX")
+        if name in profiles and (profiles[name] != 1 or not build["mkl"] or
+                model in QWEN_ENGINE_MODELS and not build["int8_xmx"] or model not in models):
+            features = "MKL and INT8 XMX" if model in QWEN_ENGINE_MODELS else "MKL"
+            raise IntelCapabilityError(f"The {name} contract requires its model and compiled {features}")
+    contracts = report.get("experimental_model_contracts", {})
+    if not isinstance(contracts, dict) or any(model not in models for model in contracts):
+        raise IntelCapabilityError("Intel experimental_model_contracts must describe declared model IDs")
+    for model in TARGET_ONLY_MODELS.intersection(models):
+        declared = contracts.get(model)
+        expected = MODEL_CONTRACTS[model]
+        if not isinstance(declared, dict) or set(declared) != set(expected):
+            raise IntelCapabilityError(f"The Intel build lacks the explicit target-only contract for {model}")
+        if any(type(declared[key]) is not type(value) or declared[key] != value for key, value in expected.items()):
+            raise IntelCapabilityError(f"Unsupported Intel model-specific capability contract for {model}")
+        if not set(declared["kv_types"]) <= set(kv):
+            raise IntelCapabilityError(f"The Intel build lacks the declared KV baseline for {model}")
     paths = report.get("weight_types")
     if not isinstance(paths, dict) or set(paths) != set(_PATHS):
         raise IntelCapabilityError("Intel weight_types must describe scalar, dp4a and int8_xmx paths")
@@ -144,6 +162,10 @@ def validate_capabilities(report: dict, *, model: str = QWEN_MODEL, profile: str
         return
     if model not in report["experimental_models"]:
         raise IntelCapabilityError(f"The Intel build does not declare experimental model {model}")
+    if model in QWEN_ENGINE_MODELS and (report["mtp"] is not True or report["experimental_mtp_max_depth"] < 1):
+        raise IntelCapabilityError("The retained Qwen/Tiel native contract requires MTP support")
+    if model not in (*QWEN_ENGINE_MODELS, *TARGET_ONLY_MODELS):
+        raise IntelCapabilityError("Unknown Intel model capability contract")
     if profile != "generic" and report["experimental_profiles"].get(profile) != 1:
         raise IntelCapabilityError(f"The Intel build does not declare experimental profile {profile} version 1")
     if profile in _PROFILE_MODELS and model != _PROFILE_MODELS[profile]:

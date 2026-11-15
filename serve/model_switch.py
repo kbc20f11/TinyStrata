@@ -205,6 +205,9 @@ class ModelSwitcher:
                               'thinking': thinking_api.capabilities(model),
                               'management': management,
                               'meta': {'n_ctx': context['allocated_tokens'] or 0}})
+                if self._intel:
+                    from serve.intel_models import runtime_features
+                    items[-1]['features'] = runtime_features(model)
             return items
 
     def _library_conflict(self):
@@ -547,7 +550,7 @@ class ModelSwitcher:
             self._open()
             self._phase = phase
 
-    def _validate_intel_runtime(self, model, configuration=None):
+    def _validate_intel_runtime(self, model, configuration=None, *, allow_missing=False):
         """Reject an incompatible build before jobs, profile saves or unloads."""
         if not getattr(self, '_intel', False):
             return
@@ -564,7 +567,9 @@ class ModelSwitcher:
         from serve.intel_backend import validate_config
         from serve.model_setup import validate_intel_executable
         validate_config(cfg, allow_uninstalled=True)
-        validate_intel_executable(cfg, allow_legacy=True)
+        proof = validate_intel_executable(cfg, allow_legacy=True)
+        if proof is None and not allow_missing:
+            raise ValueError('Install the selected model dedicated Intel runtime before switching')
 
     def _prepare(self, model, configuration=None) -> ModelBundle:
         api, svc = self.api, self.svc
@@ -908,7 +913,7 @@ class ModelSwitcher:
             if self._busy and start:
                 raise ModelControlError(409, 'a model switch is running')
             if start:
-                self._validate_intel_runtime(target)
+                self._validate_intel_runtime(target, allow_missing=True)
                 # Transfers can share a projector and its .part name. Keep one
                 # file job at a time without taking the inference FIFO.
                 if any(name != target and self._download_active(name) for name in self._downloads):

@@ -11,22 +11,24 @@ from __future__ import annotations
 from copy import deepcopy
 import os
 from collections.abc import Mapping
+from serve.intel_models import (QWEN_MODEL, TIEL_MODEL, GEMMA_MODEL, LFM_MODEL, CLOVER_MODEL,
+                                MODEL_PROFILES, MODEL_ARCHES, TARGET_ONLY_MODELS, QWEN_ENGINE_MODELS)
 
 
-QWEN_MODEL = "qwen3.6-35b-a3b"
 B390_PROFILE = "b390-qwen36"
-TIEL_MODEL = "tiel-coder-35b-a3b"
 TIEL_PROFILE = "b390-tiel-coder"
-MODEL_PROFILES = {QWEN_MODEL: B390_PROFILE, TIEL_MODEL: TIEL_PROFILE}
 MAX_CONTEXT = 32768
 _MODEL_NAMES = {QWEN_MODEL: QWEN_MODEL, "qwen36": QWEN_MODEL, "qwen3.6": QWEN_MODEL,
-                "qwen35moe": QWEN_MODEL, TIEL_MODEL: TIEL_MODEL, "tiel": TIEL_MODEL, "tiel-coder": TIEL_MODEL}
+                "qwen35moe": QWEN_MODEL, TIEL_MODEL: TIEL_MODEL, "tiel": TIEL_MODEL, "tiel-coder": TIEL_MODEL,
+                GEMMA_MODEL: GEMMA_MODEL, "gemma4": GEMMA_MODEL, "gemma-4": GEMMA_MODEL,
+                LFM_MODEL: LFM_MODEL, "lfm2": LFM_MODEL, "lfm2.5": LFM_MODEL, "lfm2moe": LFM_MODEL,
+                CLOVER_MODEL: CLOVER_MODEL, "clover": CLOVER_MODEL, "clover_moe": CLOVER_MODEL}
 _VALUES = {"--model", "--max-context", "--kv-type", "--chunk", "--mtp",
-           "--device", "--weight-memory", "--draft-vocab"}
+           "--device", "--weight-memory", "--draft-vocab", "--clover-mode", "--clover-draft"}
 _OPTIMIZATIONS = ("--prefill-mkl", "--decode-dp4a", "--verify-xmx", "--prefill-int8-xmx",
                   "--vocab-xmx", "--expert-xmx-layout", "--device-state",
                   "--dense-xmx-layout", "--dense-split-k")
-_SWITCHES = {*_OPTIMIZATIONS, "--mtp-stochastic", "--verify-graph", "--no-graph", "--profile", "--host-profile", "--experimental-tiel"}
+_SWITCHES = {*_OPTIMIZATIONS, "--mtp-stochastic", "--verify-graph", "--no-graph", "--profile", "--host-profile", "--experimental-tiel", "--experimental-clover", "--no-prefill-mkl"}
 
 
 def canonical_model(cfg: dict) -> str:
@@ -36,11 +38,11 @@ def canonical_model(cfg: dict) -> str:
     GGUF header; an API alias alone cannot establish that its weights match.
     """
     name = cfg.get("model_name")
-    if cfg.get("arch", "qwen35moe") != "qwen35moe" or (name is not None and not isinstance(name, str)):
-        raise ValueError("Intel text routes support pinned Qwen3.6 and Tiel Coder identities only")
+    if name is not None and not isinstance(name, str):
+        raise ValueError("Intel text routes require pinned model identities")
     selected = QWEN_MODEL if name is None else _MODEL_NAMES.get(name.strip().lower())
-    if selected is None:
-        raise ValueError("Intel text routes support pinned Qwen3.6 and Tiel Coder identities only")
+    if selected is None or cfg.get("arch", "qwen35moe") != MODEL_ARCHES[selected]:
+        raise ValueError("Intel model identities and architectures do not match a pinned text route")
     return selected
 
 
@@ -54,11 +56,11 @@ def supports_model(cfg: dict) -> bool:
 
 def _profile(cfg):
     profile = cfg.get("intel_profile", "generic")
-    if profile not in ("generic", B390_PROFILE, TIEL_PROFILE):
-        raise ValueError("intel_profile must be generic, b390-qwen36 or b390-tiel-coder (requested profile only)")
+    if profile not in ("generic", *MODEL_PROFILES.values()):
+        raise ValueError("Unknown Intel model-specific profile (requested profile only)")
     model = canonical_model(cfg)
     if profile != "generic" and MODEL_PROFILES[model] != profile:
-        raise ValueError("Intel profile must match its pinned model: Qwen3.6/b390-qwen36 or Tiel/b390-tiel-coder")
+        raise ValueError("Intel profile must match its pinned model")
     return profile
 
 
@@ -97,20 +99,24 @@ def context_tokens(cfg: dict) -> int:
     """Resolve UMA auto without discrete VRAM guesses; native budget checks follow.
 
     Keep the saved ``auto`` spelling intact. The requested B390 profile uses
-    the tested 8192 context; generic uses 4096. Never silently clamp an explicit
+    8192 context; retained Qwen/Tiel generic uses 4096 and new target-only
+    families use 8192. Never silently clamp an explicit
     context or infer capacity by adding shared GPU memory to system RAM.
     """
     values, _ = _options(cfg)
     profile = _profile(cfg)
     value = values.get("--max-context", "auto")
-    return (8192 if profile in MODEL_PROFILES.values() else 4096) if value == "auto" else _integer(value, "Intel context", 16, MAX_CONTEXT)
+    return (8192 if canonical_model(cfg) in TARGET_ONLY_MODELS or profile in MODEL_PROFILES.values() else 4096) if value == "auto" else _integer(value, "Intel context", 16, MAX_CONTEXT)
 
 
 def _chunk(cfg, values):
+    model = canonical_model(cfg)
     value = values.get("--chunk", "auto")
     if value in ("auto", "0"):
+        if model in TARGET_ONLY_MODELS:
+            return 512
         return 1024 if _profile(cfg) in MODEL_PROFILES.values() else 128
-    return _integer(value, "Intel chunk", 1, 1024)
+    return _integer(value, "Intel chunk", 1, 512 if model in (GEMMA_MODEL, LFM_MODEL) else 1024)
 
 
 def _kv(values):
@@ -125,9 +131,10 @@ def _profile_arguments(cfg):
     args = list(cfg.get("args", []))
     values, switches = _options(cfg)
     selected = _profile(cfg)
+    model = canonical_model(cfg)
     if "--mtp" not in values:
-        _put(args, "--mtp", "3" if selected in MODEL_PROFILES.values() else "0")
-    if selected in MODEL_PROFILES.values():
+        _put(args, "--mtp", "3" if model in QWEN_ENGINE_MODELS and selected in MODEL_PROFILES.values() else "0")
+    if model in QWEN_ENGINE_MODELS and selected in MODEL_PROFILES.values():
         for flag in _OPTIMIZATIONS:
             if flag not in switches:
                 args.append(flag)
@@ -139,6 +146,14 @@ def _profile_arguments(cfg):
                 _put(args, "--draft-vocab", 2048)
     if canonical_model(cfg) == TIEL_MODEL and "--experimental-tiel" not in switches:
         args.append("--experimental-tiel")
+    if model in TARGET_ONLY_MODELS and selected == MODEL_PROFILES[model] and not {"--prefill-mkl", "--no-prefill-mkl"}.intersection(switches):
+        args.append("--prefill-mkl")
+    if model == CLOVER_MODEL:
+        if "--experimental-clover" not in switches:
+            args.append("--experimental-clover")
+        for flag, default in (("--clover-mode", "causal"), ("--clover-draft", "0"), ("--draft-vocab", "0")):
+            if flag not in values:
+                _put(args, flag, default)
     return args
 
 
@@ -151,7 +166,7 @@ def validate_config(cfg: dict, *, allow_uninstalled: bool = False) -> None:
     if cfg.get("backend") not in (None, "sycl"):
         raise ValueError("The Intel helper requires an explicitly selected sycl backend")
     if not supports_model(cfg):
-        raise ValueError("Intel currently supports pinned Qwen3.6 and Tiel Coder text models only")
+        raise ValueError("Intel requires a pinned supported experimental text identity")
     profile = _profile(cfg)
     values, switches = _options({"args": _profile_arguments(cfg)})
     if not allow_uninstalled and (not isinstance(cfg.get("exe"), str) or not cfg["exe"]):
@@ -164,6 +179,8 @@ def validate_config(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         raise ValueError("--experimental-tiel is specific to the pinned Tiel profile")
     if cfg.get("vision") or cfg.get("images") or cfg.get("vision_mode") not in (None, "no", "none"):
         raise ValueError("Intel images are unsupported; select vision_mode=no")
+    if cfg.get("draft_model") or cfg.get("assistant"):
+        raise ValueError("Intel target-only text does not support an assistant model")
     for field in ("layer_split", "vram_elastic", "slot_save_path", "expert_profile_save", "split_skip_if_fits",
                   "expert_gpu_percent", "expert_gpu_count", "expert_vram", "expert_slots", "hybrid_rows", "hip_ordinal"):
         if field in cfg and cfg[field] is not None and cfg[field] is not False and cfg[field] != "":
@@ -195,12 +212,34 @@ def validate_config(cfg: dict, *, allow_uninstalled: bool = False) -> None:
     chunk = _chunk(cfg, values)
     kv = _kv(values)
     mtp = _integer(values.get("--mtp", "0"), "Intel MTP depth", 0, 7)
+    model = canonical_model(cfg)
+    if model in TARGET_ONLY_MODELS:
+        if mtp or kv != "int8":
+            raise ValueError("This Intel target-only text route requires MTP0 and actual INT8 KV")
+        allowed = {"--prefill-mkl"}
+        if model in (GEMMA_MODEL, LFM_MODEL):
+            allowed.add("--no-prefill-mkl")
+        if model == CLOVER_MODEL:
+            allowed.add("--experimental-clover")
+            if values.get("--clover-mode") != "causal" or values.get("--clover-draft") != "0" or values.get("--draft-vocab") != "0":
+                raise ValueError("Intel Clover supports causal D0 only")
+        elif any(flag in values for flag in ("--clover-mode", "--clover-draft", "--draft-vocab")):
+            raise ValueError("This Intel engine does not support Clover or draft options")
+        if switches - allowed:
+            raise ValueError("Unsupported options for this Intel target-only engine")
+        if {"--prefill-mkl", "--no-prefill-mkl"}.issubset(switches):
+            raise ValueError("Conflicting Intel prefill MKL options")
+        if model == LFM_MODEL:
+            from serve import thinking
+            thinking.template_kwargs({key: cfg[key] for key in ("enable_thinking", "reasoning_effort") if key in cfg}, thinking.capabilities(model), True)
+    elif any(flag in switches for flag in ("--no-prefill-mkl", "--experimental-clover")) or any(flag in values for flag in ("--clover-mode", "--clover-draft")):
+        raise ValueError("Model-specific Intel options do not match this engine")
     if mtp and chunk < max(4, mtp + 1):
         raise ValueError("Intel MTP needs chunk >= max(4, depth+1)")
     if values.get("--weight-memory", "host") not in ("host", "shared", "device"):
         raise ValueError("Intel weight-memory must be host, shared or device")
     optimizations = switches.intersection({*_OPTIMIZATIONS, "--mtp-stochastic", "--verify-graph"})
-    if profile not in MODEL_PROFILES.values() and (optimizations or values.get("--draft-vocab", "0") != "0"):
+    if model in QWEN_ENGINE_MODELS and profile not in MODEL_PROFILES.values() and (optimizations or values.get("--draft-vocab", "0") != "0"):
         raise ValueError("Intel optimized flags require the explicitly requested model-specific B390 profile")
     if "--mtp-stochastic" in switches and not mtp:
         raise ValueError("Intel --mtp-stochastic requires --mtp >= 1")
@@ -247,7 +286,7 @@ def configure_backend(cfg: dict, *, profile: str | None = None, explicit_kv: str
     args = new.setdefault("args", [])
     values, _ = _options(new)
     for flag, default in (("--max-context", "auto"), ("--kv-type", "auto"), ("--chunk", "auto"),
-                          ("--mtp", "3" if selected in MODEL_PROFILES.values() else "0"), ("--weight-memory", "host")):
+                          ("--mtp", "3" if canonical_model(new) in QWEN_ENGINE_MODELS and selected in MODEL_PROFILES.values() else "0"), ("--weight-memory", "host")):
         if flag not in values:
             _put(args, flag, default)
     if explicit_kv is not None:

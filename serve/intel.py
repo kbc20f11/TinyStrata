@@ -21,6 +21,9 @@ def main(argv=None, *, stop_event: threading.Event | None = None) -> int:
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--exe", type=Path, required=True)
     parser.add_argument("--lib-dir", type=Path, action="append", default=[])
+    from serve.intel_models import MODEL_PROFILES
+    parser.add_argument("--intel-profile", choices=("generic", *MODEL_PROFILES.values()), default=None)
+    parser.add_argument("--model-family", choices=("qwen36", "tiel", "gemma4", "lfm2", "clover"), default=None)
     parser.add_argument("--context", type=int, default=4096)
     parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS,
                         help="default output limit; omitted request limits fit the remaining context")
@@ -28,7 +31,7 @@ def main(argv=None, *, stop_event: threading.Event | None = None) -> int:
     parser.add_argument("--weight-memory", choices=("host", "shared", "device"), default="host")
     parser.add_argument("--device-state", action="store_true", help="candidate device USM for GPU-only state/scratch")
     parser.add_argument("--verify-graph", action="store_true", help="candidate MTP verification command graphs")
-    parser.add_argument("--kv-type", choices=("fp32", "int8"), default="fp32")
+    parser.add_argument("--kv-type", choices=("fp32", "int8"), default=None)
     parser.add_argument("--chunk", type=int, default=128)
     parser.add_argument("--mtp", type=int, choices=tuple(range(8)), default=0)
     parser.add_argument("--draft-vocab", type=int, default=0, help="candidate exact-MTP proposal vocabulary size, 0 or 64..4096")
@@ -78,12 +81,28 @@ def main(argv=None, *, stop_event: threading.Event | None = None) -> int:
         parser.error("The GGUF and Intel executable must already exist")
     from serve.gguf_reader import GGUFFile
     metadata = GGUFFile(args.model).metadata
-    if metadata.get("general.architecture") != "qwen35moe" or "qwen3.6" not in str(metadata.get("general.name", "")).lower():
-        parser.error("Only the initial Qwen3.6 model is enabled; other Intel models are unvalidated")
+    from serve.intel_models import (QWEN_MODEL, TIEL_MODEL, GEMMA_MODEL, LFM_MODEL, CLOVER_MODEL,
+                                    TARGET_ONLY_MODELS)
+    from serve.model_download import manifest_for_arch
+    arch, name = metadata.get("general.architecture"), str(metadata.get("general.name", ""))
+    selected = ({"gemma4": GEMMA_MODEL, "lfm2moe": LFM_MODEL, "clover_moe": CLOVER_MODEL}.get(arch) or
+                (QWEN_MODEL if arch == "qwen35moe" and "qwen3.6" in name.lower() else
+                 TIEL_MODEL if arch == "qwen35moe" and name == "Ornith-1.5-35B" else None))
+    if selected is None:
+        parser.error("The GGUF does not identify a pinned experimental Intel text family")
+    requested = {"qwen36": QWEN_MODEL, "tiel": TIEL_MODEL, "gemma4": GEMMA_MODEL,
+                 "lfm2": LFM_MODEL, "clover": CLOVER_MODEL}.get(args.model_family)
+    if requested is not None and requested != selected:
+        parser.error("--model-family does not match the actual GGUF identity")
+    if selected in TARGET_ONLY_MODELS or selected == TIEL_MODEL:
+        pinned = manifest_for_arch(arch, selected)
+        if args.model.name != pinned.filename or args.model.stat().st_size != pinned.size:
+            parser.error("The selected Intel family requires its pinned model artifact")
+    args.kv_type = args.kv_type or ("int8" if selected in TARGET_ONLY_MODELS else "fp32")
     from serve.tokenizer import Tokenizer, extract
     from serve.frontend import ChatTemplate
     from serve.server import Service, StrataEngine, serve
-    from serve.tinyconfig import DEFAULT_SAMPLING
+    from serve.tinyconfig import migrate_generation_settings
     work = args.work_dir.resolve()
     tokenizer_path = work / "tokenizer"
     # Model identity is explicit for this entry point; always extract the
@@ -98,7 +117,7 @@ def main(argv=None, *, stop_event: threading.Event | None = None) -> int:
     env.setdefault("ONEAPI_DEVICE_SELECTOR", "level_zero:gpu")
     env.setdefault("UR_LOADER_PRELOAD_FILTER", "1")
     env["PATH"] = os.pathsep.join(str(path.resolve()) for path in args.lib_dir) + os.pathsep + env.get("PATH", "")
-    engine = StrataEngine(str(args.exe.resolve()), ["--model", str(args.model.resolve()), "--serve",
+    native_args = (["--model", str(args.model.resolve()), "--serve",
         "--max-context", str(args.context), "--kv-type", args.kv_type, "--mtp", str(args.mtp), "--device", str(args.device),
         "--weight-memory", args.weight_memory, "--chunk", str(args.chunk)] + (["--prefill-xmx"] if args.prefill_xmx else [])
         + (["--prefill-mkl"] if args.prefill_mkl else []) + (["--prefill-npu"] if args.prefill_npu else []) + (["--decode-dp4a"] if args.decode_dp4a else [])
@@ -108,16 +127,30 @@ def main(argv=None, *, stop_event: threading.Event | None = None) -> int:
         + (["--device-state"] if args.device_state else []) + (["--verify-graph"] if args.verify_graph else [])
         + (["--dense-xmx-layout"] if args.dense_xmx_layout else [])
         + (["--dense-split-k"] if args.dense_split_k else [])
-        + (["--draft-vocab", str(args.draft_vocab)] if args.draft_vocab else []),
-        cwd=str(Path(__file__).resolve().parents[1]), log=str(work / "native.log"), env=env)
+        + (["--draft-vocab", str(args.draft_vocab)] if args.draft_vocab else []))
+    generation = {"arch": arch, "model_name": selected, "enable_thinking": True, "max_tokens": args.max_tokens}
+    if selected == TIEL_MODEL:
+        generation["reasoning_effort"] = "medium"
+    if selected in TARGET_ONLY_MODELS or selected == TIEL_MODEL or args.intel_profile is not None:
+        from serve.intel_backend import configure_backend, engine_args
+        from serve.model_setup import validate_intel_executable
+        cfg = configure_backend({**generation, "backend": "sycl", "vision_mode": "no",
+              "intel_profile": args.intel_profile or "generic", "cwd": str(root), "exe": str(args.exe.resolve()),
+              "lib_dirs": [str(path.resolve()) for path in args.lib_dir],
+              "args": [item for item in native_args if item != "--serve"]})
+        validate_intel_executable(cfg, allow_legacy=selected == QWEN_MODEL)
+        native_args = engine_args(cfg)
+        generation.update(backend="sycl", intel_profile=cfg["intel_profile"])
+    engine = StrataEngine(str(args.exe.resolve()), native_args,
+                         cwd=str(root), log=str(work / "native.log"), env=env)
     httpd = None
     stopping = stop_event if stop_event is not None else threading.Event()
     if threading.current_thread() is threading.main_thread():
         for event in (signal.SIGINT, signal.SIGTERM):
             signal.signal(event, lambda *_: stopping.set())
     try:
-        service = Service(engine, tokenizer, template, sampling_defaults=DEFAULT_SAMPLING,
-            generation_defaults={"arch": "qwen35moe", "enable_thinking": True, "max_tokens": args.max_tokens})
+        service = Service(engine, tokenizer, template, model_name=selected,
+            sampling_defaults=migrate_generation_settings(generation)[0]["sampling"], generation_defaults=generation)
         service.backend = "sycl"
         httpd = serve(service, "127.0.0.1", args.port)
         print(f"Experimental Intel text API: http://127.0.0.1:{args.port} ({args.kv_type} KV, MTP={args.mtp}, images off)", flush=True)
