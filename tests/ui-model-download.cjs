@@ -59,6 +59,7 @@ function fixture(saved=[]){
   tr:(key,en,values={})=>en.replace(/\{(\w+)\}/g,(_,k)=>values[k]),fmt:(v,d=0)=>Number(v).toFixed(d),
   store:{get:(key,d)=>storage[key]??d,set:(key,value)=>{storage[key]=JSON.parse(JSON.stringify(value));return true;}},
   turnBlocksUnload:()=>ctx.inflight||ctx.busy!==null,pageBusy:()=>ctx.busy!==null||ctx.resourceOperation!==null,
+  parksWhileBusy:()=>false,busyHint:()=> 'Generating reply',
   toast:(...args)=>toasts.push(args),paintLive(){},setPill(){},
   setTimeout:(fn,delay)=>{timers.set(++tid,{fn,delay});return tid;},clearTimeout:id=>timers.delete(id),
   headers:()=>({}),fetch:()=>{throw Error('Real fetch prohibited');},
@@ -203,6 +204,90 @@ async function workerRegressions(){
  events.get('activate')({waitUntil:task=>{activation=task;}});await activation;
  ok(sequence.join(',')==='skipWaiting,claim,unregister','retirement worker activates, claims old pages, then unregisters itself');
  ok(!events.has('fetch'),'retirement worker cannot continue returning cached health responses');
+}
+async function backgroundTransferRegressions(){
+ let f=fixture();f.t.install(IDS[1]);f.t.install(IDS[4]);
+ const reply={msg:{content:'already streaming'}};f.ctx.busy=reply;
+ await f.t.open(IDS[3]);const flow=f.t.flows.get(IDS[3]);await f.t.start(flow);f.t.dismiss();
+ ok(posts(f,'v1/model/download').length===1&&flow.stage==='downloading'&&f.ctx.busy===reply,'a background download can start without cancelling a streaming reply');
+ f.t.controls();
+ ok(f.element('composer-model').disabled&&f.element('send-btn').disabled,'a reply still locks model changes and sending according to the existing busy policy');
+ f.ctx.busy=null;f.t.controls();
+ ok(!f.element('input').disabled&&!f.element('send-btn').disabled&&!f.element('composer-model').disabled,'finishing a reply immediately unlocks chat and installed models while the transfer continues');
+ // A server may serialize new file jobs. That eligibility must not become an
+ // inference lock for a different already-complete model.
+ for(const row of f.t.catalog())row.management.can_download=false;
+ for(const stage of ['downloading','verifying','loading','recovering','cancelling']){
+  flow.stage=stage;flow.cancelRequested=stage==='cancelling';f.t.controls();f.t.library();
+  ok(!f.element('input').disabled&&!f.element('send-btn').disabled&&!f.element('composer-model').disabled,'background '+stage+' does not lock another complete model');
+  ok(!f.element('composer-model').options.some(o=>o.value===IDS[3]),'incomplete transfer target stays out of the picker during '+stage);
+  const target=f.element('model-library-list')._modelRows.get(IDS[3]);
+  ok(target.remove.disabled,'transferring model cannot be deleted during '+stage);
+ }
+ flow.stage='downloading';flow.cancelRequested=false;flow.requestBusy=true;f.t.controls();
+ ok(!f.element('input').disabled&&!f.element('composer-model').disabled,'an in-flight transfer request does not lock another complete model');
+ flow.requestBusy=false;f.element('composer-model').value=IDS[4];await f.element('composer-model').onchange();await drain();f.t.controls();
+ ok(posts(f,'v1/model/switch').length===1&&f.ctx.health.model===IDS[4]&&!f.t.state().switching,'another complete model can be selected while downloading');
+ ok(flow.stage==='downloading'&&posts(f,'v1/model/download').length===1,'switching an installed model neither restarts nor interrupts the transfer');
+ f.t.install(IDS[3]);await f.t.status(flow,{...f.backend.jobs[IDS[3]],state:'ready',can_cancel:false,progress:1});
+ ok(f.ctx.health.model===IDS[4]&&posts(f,'v1/model/switch').length===1,'download completion preserves the model selected during the transfer');
+ ok(f.element('composer-model').options.some(o=>o.value===IDS[3])&&!f.element('input').disabled,'completed model joins the picker without blocking the active chat');
+
+ f=fixture();await f.t.open(IDS[1]);const cancelled=f.t.flows.get(IDS[1]);await f.t.start(cancelled);f.t.dismiss();
+ f.ctx.busy=reply;await f.t.cancel(cancelled);
+ ok(posts(f,'v1/model/download/cancel').length===1&&f.ctx.busy===reply&&f.ctx.health.model===IDS[0],'cancelling a transfer leaves an active reply and model intact');
+ await f.t.status(cancelled,{...f.backend.jobs[IDS[1]],state:'cancelled',can_cancel:false});f.ctx.busy=null;f.t.controls();
+ ok(!f.element('input').disabled&&!f.element('send-btn').disabled&&!f.element('composer-model').disabled,'cancelled download leaves the complete active model usable');
+
+ f=fixture();f.t.install(IDS[1]);await f.t.open(IDS[3]);await f.t.start(f.t.flows.get(IDS[3]));f.t.dismiss();
+ const original=f.ctx.modelControl;let finishSwitch;
+ f.ctx.modelControl=(path,options={})=>path==='v1/model/switch'&&options.method==='POST'
+  ?new Promise(resolve=>{finishSwitch=()=>resolve(original(path,options));}):original(path,options);
+ const switching=f.t.switch(IDS[1]);f.t.controls();
+ ok(f.t.state().switching&&f.element('input').disabled&&f.element('send-btn').disabled&&f.element('composer-model').disabled,'a real pending switch still locks chat even while a background transfer exists');
+ finishSwitch();await switching;await drain();f.t.controls();
+ ok(!f.t.state().switching&&!f.element('input').disabled&&f.t.flows.get(IDS[3]).stage==='downloading','switch completion unlocks chat without waiting for the background download');
+}
+async function transferPermissionRefreshRegressions(){
+ const f=fixture();f.t.install(IDS[1]);f.t.useProductionRefresh();let reads=0;
+ const base=f.ctx.modelControl;
+ f.ctx.modelControl=(path,options)=>{
+  if(path!=='v1/models')return base(path,options);
+  reads++;
+  const filesBusy=Object.values(f.backend.jobs).some(job=>['downloading','verifying','loading'].includes(job.state));
+  return Promise.resolve({data:JSON.parse(JSON.stringify(f.t.catalog())).map(row=>({...row,
+   management:{...row.management,can_download:!filesBusy&&!row.installed,
+    can_delete:!filesBusy&&row.installed&&row.id!==f.backend.model,
+    delete_reason:filesBusy?'downloading':row.id===f.backend.model?'active':null}}))});
+ };
+ await f.t.open(IDS[3]);let flow=f.t.flows.get(IDS[3]);
+ ok(reads===0,'idle download confirmation does not refresh unchanged catalog permissions');
+ await f.t.start(flow);f.t.dismiss();await drain();
+ let rows=f.element('model-library-list')._modelRows;
+ ok(reads===1&&rows.get(IDS[1]).remove.disabled&&rows.get(IDS[2]).download.disabled,'starting a transfer refreshes authoritative delete and new-download eligibility once');
+ ok(!f.element('input').disabled&&!f.element('send-btn').disabled&&!f.element('composer-model').disabled,'catalog file-job restrictions do not lock chat or complete model selection');
+ for(let i=1;i<=10;i++){
+  Object.assign(f.backend.jobs[IDS[3]],{bytes_downloaded:i,progress:i/100});await f.t.poll(flow);
+ }
+ for(const state of ['verifying','loading','downloading']){
+  Object.assign(f.backend.jobs[IDS[3]],{state});await f.t.poll(flow);
+ }
+ ok(reads===1,'byte progress and busy-to-busy file stages do not fetch the catalog every tick');
+ await f.t.cancel(flow);
+ ok(reads===1,'a cancellation request cannot unlock file operations while the server still reports an active transfer');
+ Object.assign(f.backend.jobs[IDS[3]],{state:'cancelled',can_cancel:false});await f.t.poll(flow);await drain();
+ rows=f.element('model-library-list')._modelRows;
+ ok(reads===2&&!rows.get(IDS[1]).remove.disabled&&!rows.get(IDS[2]).download.disabled,'authoritative cancellation refreshes and releases file controls once');
+ await f.t.start(flow);await drain();
+ ok(reads===3&&rows.get(IDS[1]).remove.disabled,'resuming a cancelled transfer refreshes busy permissions once');
+ f.t.install(IDS[3]);Object.assign(f.backend.jobs[IDS[3]],{state:'ready',can_cancel:false,progress:1});await f.t.poll(flow);await drain();
+ ok(reads===4&&!rows.get(IDS[1]).remove.disabled&&f.element('composer-model').options.some(o=>o.value===IDS[3]),'completion retains one catalog refresh and adds the ready model');
+ ok(f.ctx.health.model===IDS[0]&&posts(f,'v1/model/switch').length===0,'permission refreshes never switch the active model');
+ await f.t.open(IDS[4]);flow=f.t.flows.get(IDS[4]);await f.t.start(flow);await drain();
+ ok(reads===5&&rows.get(IDS[1]).remove.disabled,'a subsequent transfer acquires visible file-job restrictions');
+ Object.assign(f.backend.jobs[IDS[4]],{state:'error',error:'disk full',can_cancel:false});await f.t.poll(flow);await drain();
+ ok(reads===6&&!rows.get(IDS[1]).remove.disabled&&!rows.get(IDS[2]).download.disabled,'terminal download errors refresh and release unrelated file controls');
+ ok(flow.stage==='error'&&!f.element('input').disabled&&f.ctx.health.model===IDS[0],'download error stays visible without disabling the complete active model');
 }
 (async()=>{
  const html=fs.readFileSync(path.join(webDirectory,'index.html'),'utf8');
@@ -360,6 +445,8 @@ async function workerRegressions(){
  ok(!f.element('model-download-dialog').open&&posts(f,'v1/model/download').length===0,'late confirmation response cannot reopen or start transfer');
  await workerRegressions();
  await externalSwitchRegressions();
+ await backgroundTransferRegressions();
+ await transferPermissionRefreshRegressions();
  f=fixture();f.ctx.resourceOperation='placement';f.t.controls();
  ok(f.element('composer-model').disabled&&f.element('composer-effort').disabled,'placement reload locks model and effort controls');
  ok(f.element('s-web-search').disabled&&f.element('s-apply').disabled,'resource operation keeps request settings stable');
