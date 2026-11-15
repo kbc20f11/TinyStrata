@@ -2,24 +2,26 @@
   "schema": "tinystrata-intel-review-measurements-v1",
   "date": "2026-11-15",
   "timezone": "Asia/Tokyo",
-  "draft": true,
-  "complete": false,
+  "draft": false,
+  "complete": true,
   "issue": "https://github.com/kbc20f11/TinyStrata/issues/11",
-  "scope": "Implementation review and required optimization candidates. Optional prompt/history lookup was excluded. No final shipping or new canonical completion is inferred from these screens.",
+  "scope": "Completed review implementation, measurement, shipping runtime, actual installer and published prerelease gates. This does not close the broader Intel Issue11 performance/model/hardware goals or assert completion of a later main push/issue comment.",
   "source": {
     "base_commit": "4ed2c8741a83078e78d01281e792456b55c4e026",
     "frozen_review_executable_sha256": "9e10bad5892730cbb4d6144f0f1609813dd51acd4fa2a702667e7c0f0ea54d8c",
-    "state": "Private review worktree: frozen9e10 screens and separate257d post-default validation. Final shipping builds and packages remain independently pending.",
+    "state": "Frozen9e10 development screens, separate257d default/tail validation, and independently built c36 shipping variants are preserved as different cohorts.",
     "first_control_sha256_missing_in_original_receipt": true,
     "post_default_validation_executable_sha256": "257d334fd7c060e3b12f4eb51bdde188a45aead864c4570473c2f0acc8b293b0",
     "tiel_support_default_gate_change": {
-      "state": "source gate adopted; final shipping fresh-build validation pending",
+      "state": "verified by fresh c36 shipping build and completed default-only Tiel canonical4-start benchmark",
       "scope": "B390 GPU draft-support default now covers Qwen and Tiel; target sampler stays CPU by default.",
       "measured_native_sha256": "257d334fd7c060e3b12f4eb51bdde188a45aead864c4570473c2f0acc8b293b0",
       "gate_change_was_after_this_validation_artifact": true,
       "kernel_arithmetic_changed": false,
-      "required_next_gate": "pending.final_shipping_native and pending.new_canonical_four_start_text_benchmark"
-    }
+      "required_next_gate": "completed: final_shipping_native and new_canonical_four_start_text_benchmark",
+      "shipping_executable_sha256": "86d46415d24eac4d00f18b55b9933284bc98e7d236fc0ed1a2248623869bc2df"
+    },
+    "runtime_source_commit": "c36a84a4657f27d4051c1b2d1b9e9f6050d75c55"
   },
   "private_evidence_roots": {
     "review": "intel-review-20261115",
@@ -92,7 +94,8 @@
       "FP32 order/proposal changes alter stochastic history and answer length; increased tok/s is not a proportional end-to-end latency gain.",
       "Qwen long control emits636 IDs; attention emits1477; NPU emits3101. Preserve actual wall time and final-answer correctness.",
       "Model loading is outside throughput. Standalone kernel timing is not a full-model speed result."
-    ]
+    ],
+    "canonical_20261115": "Same canonical emitted-token/native-time definition as20261114. Separate from seed2026 uncapped normal-answer development screens; fixed128-output generation is not a full-answer latency/quality evaluation."
   },
   "normal_qwen_matched_screens": {
     "evidence": {
@@ -2750,23 +2753,55 @@
       }
     },
     "final_shipping_native": {
-      "status": "pending",
-      "executable_sha256": null,
-      "staged_manifest_sha256": null,
-      "generic_executable_sha256": null,
-      "additional_validation_required": "Fresh build must verify the subsequent B390 Tiel support-default gate change; earlier257d explicit-override screens and GPU fixtures do not certify that newly compiled artifact."
+      "status": "complete",
+      "executable_sha256": "86d46415d24eac4d00f18b55b9933284bc98e7d236fc0ed1a2248623869bc2df",
+      "staged_manifest_sha256": "92d9b104b99e3814ce767cdd8a695e93ea0037da9caf390795fbd82309288197",
+      "generic_executable_sha256": "e675f4f0d33243c7c49d93e89ad041bebc8429ec98d9f2d316815dfa5abaab69",
+      "additional_validation_required": "none for the two c36 artifacts on the recorded B390; other hardware remains unvalidated",
+      "result": {
+        "section": "final_shipping_runtime"
+      }
     },
     "final_installer_and_runtime_release": {
-      "status": "pending",
-      "release_url": null,
-      "aot_artifact": null,
-      "generic_artifact": null,
-      "actual_installer_result": null
+      "status": "complete",
+      "release_url": "https://github.com/kbc20f11/TinyStrata/releases/tag/intel-windows-preview-20261115",
+      "aot_artifact": {
+        "name": "TinyStrata-intel-windows-x64-ptl-h-20261115.zip",
+        "bytes": 267580323,
+        "sha256": "bfc8737424ee613725129a1d37b6a8a7dea0920fa4eecfa8882fa6b034cb42bb",
+        "url": "https://github.com/kbc20f11/TinyStrata/releases/download/intel-windows-preview-20261115/TinyStrata-intel-windows-x64-ptl-h-20261115.zip",
+        "github_uploaded_state": "uploaded",
+        "github_digest_matches_local": true,
+        "root_manifest": true,
+        "no_models_or_user_state": true
+      },
+      "generic_artifact": {
+        "name": "TinyStrata-intel-windows-x64-generic-20261115.zip",
+        "bytes": 266954652,
+        "sha256": "4a7549b942939471b6120f1f9f226b8dbaba2c3e207af9c448f903da6302804e",
+        "url": "https://github.com/kbc20f11/TinyStrata/releases/download/intel-windows-preview-20261115/TinyStrata-intel-windows-x64-generic-20261115.zip",
+        "github_uploaded_state": "uploaded",
+        "github_digest_matches_local": true,
+        "root_manifest": true,
+        "no_models_or_user_state": true
+      },
+      "actual_installer_result": {
+        "section": "actual_shipping_installer_20261115",
+        "passed": true
+      },
+      "release_verified": true,
+      "release": {
+        "section": "final_shipping_runtime.published_release"
+      }
     },
     "new_canonical_four_start_text_benchmark": {
-      "status": "pending",
-      "qwen_result": null,
-      "tiel_result": null,
+      "status": "complete",
+      "qwen_result": {
+        "section": "canonical_text_benchmark_20261115.models.qwen"
+      },
+      "tiel_result": {
+        "section": "canonical_text_benchmark_20261115.models.tiel"
+      },
       "protocol": "tinystrata-bench-v1-intel-text",
       "standard": false,
       "starts_per_model": 4,
@@ -2834,22 +2869,18 @@
           ]
         },
         "subsequent_tiel_support_default_gate_change": {
-          "state": "source gate adopted; final shipping fresh-build validation pending",
+          "state": "verified by fresh c36 shipping build and completed default-only Tiel canonical4-start benchmark",
           "scope": "B390 GPU draft-support default now covers Qwen and Tiel; target sampler stays CPU by default.",
           "measured_native_sha256": "257d334fd7c060e3b12f4eb51bdde188a45aead864c4570473c2f0acc8b293b0",
           "gate_change_was_after_this_validation_artifact": true,
           "kernel_arithmetic_changed": false,
-          "required_next_gate": "pending.final_shipping_native and pending.new_canonical_four_start_text_benchmark"
+          "required_next_gate": "completed: final_shipping_native and new_canonical_four_start_text_benchmark",
+          "shipping_executable_sha256": "86d46415d24eac4d00f18b55b9933284bc98e7d236fc0ed1a2248623869bc2df"
         }
       }
     }
   },
-  "root_update_fields": [
-    "pending.final_shipping_native",
-    "pending.final_installer_and_runtime_release",
-    "pending.new_canonical_four_start_text_benchmark",
-    "draft/complete only after the remaining required final gates actually finish"
-  ],
+  "root_update_fields": [],
   "normal_tiel_matched_screens": {
     "source_native_executable_sha256": "257d334fd7c060e3b12f4eb51bdde188a45aead864c4570473c2f0acc8b293b0",
     "cohort": "V4 explicit control/treatment overrides; separate from historical9e10 Qwen cohort and formal benchmarks",
@@ -3089,5 +3120,508 @@
       "Baseline-to-attention rate changes are not proportional end-to-end latency gains because output work differs.",
       "Attention-only versus attention+support has identical output IDs in both cases, supporting the bounded component comparison."
     ]
+  },
+  "final_shipping_runtime": {
+    "status": "complete",
+    "evidence": {
+      "root": "review",
+      "path": "shipping-20261115-final/shipping-run.json",
+      "sha256": "e40b633a31b20ca352f9e0fe998ea87ab6d032965c284fc5c843788fe3d3dd08"
+    },
+    "runtime_source_commit": "c36a84a4657f27d4051c1b2d1b9e9f6050d75c55",
+    "source_clean_when_built": true,
+    "mkl": true,
+    "int8_xmx": true,
+    "npu_enabled": false,
+    "variants": [
+      {
+        "name": "ptl-h",
+        "aot_target": "intel_gpu_ptl_h",
+        "runtime_source_commit": "c36a84a4657f27d4051c1b2d1b9e9f6050d75c55",
+        "executable_sha256": "86d46415d24eac4d00f18b55b9933284bc98e7d236fc0ed1a2248623869bc2df",
+        "stage_manifest_sha256": "92d9b104b99e3814ce767cdd8a695e93ea0037da9caf390795fbd82309288197",
+        "runtime_and_license_payload_files": 65,
+        "archive": {
+          "name": "TinyStrata-intel-windows-x64-ptl-h-20261115.zip",
+          "bytes": 267580323,
+          "sha256": "bfc8737424ee613725129a1d37b6a8a7dea0920fa4eecfa8882fa6b034cb42bb",
+          "url": "https://github.com/kbc20f11/TinyStrata/releases/download/intel-windows-preview-20261115/TinyStrata-intel-windows-x64-ptl-h-20261115.zip",
+          "github_uploaded_state": "uploaded",
+          "github_digest_matches_local": true,
+          "root_manifest": true,
+          "no_models_or_user_state": true
+        }
+      },
+      {
+        "name": "generic",
+        "aot_target": "",
+        "runtime_source_commit": "c36a84a4657f27d4051c1b2d1b9e9f6050d75c55",
+        "executable_sha256": "e675f4f0d33243c7c49d93e89ad041bebc8429ec98d9f2d316815dfa5abaab69",
+        "stage_manifest_sha256": "772fd8a530864034c1d25ba62a5352bb0ca3032f2a5bca2fe7daf662ae2c41dd",
+        "runtime_and_license_payload_files": 65,
+        "archive": {
+          "name": "TinyStrata-intel-windows-x64-generic-20261115.zip",
+          "bytes": 266954652,
+          "sha256": "4a7549b942939471b6120f1f9f226b8dbaba2c3e207af9c448f903da6302804e",
+          "url": "https://github.com/kbc20f11/TinyStrata/releases/download/intel-windows-preview-20261115/TinyStrata-intel-windows-x64-generic-20261115.zip",
+          "github_uploaded_state": "uploaded",
+          "github_digest_matches_local": true,
+          "root_manifest": true,
+          "no_models_or_user_state": true
+        }
+      }
+    ],
+    "published_release": {
+      "url": "https://github.com/kbc20f11/TinyStrata/releases/tag/intel-windows-preview-20261115",
+      "tag": "intel-windows-preview-20261115",
+      "release_verified": true,
+      "draft": false,
+      "prerelease": true,
+      "assets": 2,
+      "server_asset_sizes_and_digests_match_local_archives": true,
+      "actual_remote_tag_commit": "c36a84a4657f27d4051c1b2d1b9e9f6050d75c55",
+      "tag_commit_provenance": "Root independently dereferenced the remote annotated tag; API target_commitish label is not used as commit proof.",
+      "evidence": {
+        "root": "review",
+        "path": "release-published.json",
+        "sha256": "4f31902e690ff4ff418b08304b217898298b806a554a7e5909284bc0329db365"
+      }
+    },
+    "generic_device_validation": {
+      "hardware": "Intel Arc B390 only; other Intel integrated/discrete GPUs not exercised",
+      "actual_capability_and_separate_uma_discrete_memory_policy": true,
+      "normal_answers": {
+        "evidence": {
+          "root": "review",
+          "path": "generic-shipping-qwen-baseline/result.json",
+          "sha256": "15d112bc0d73f60638f3919ed64e7d219916d9849e599271fd34a6a34ae75c45"
+        },
+        "passed": true,
+        "executable_sha256": "e675f4f0d33243c7c49d93e89ad041bebc8429ec98d9f2d316815dfa5abaab69",
+        "model": "qwen",
+        "records": [
+          {
+            "case": "short",
+            "passed": true,
+            "prompt_tokens": 84,
+            "output_tokens": 1268,
+            "prefill_tok_s": 32.955082222930145,
+            "decode_steps_tok_s": 34.59089765781947,
+            "first_token_seconds": 2.563000000000102,
+            "wall_seconds": 39.1880000000001,
+            "finish": "stop",
+            "thinking_closed": true,
+            "json_correct": true
+          },
+          {
+            "case": "long",
+            "passed": true,
+            "prompt_tokens": 16384,
+            "output_tokens": 636,
+            "prefill_tok_s": 274.8472646708367,
+            "decode_steps_tok_s": 26.740583535119463,
+            "first_token_seconds": 59.65599999999904,
+            "wall_seconds": 83.38999999999942,
+            "finish": "stop",
+            "thinking_closed": true,
+            "json_correct": true
+          }
+        ],
+        "model_identity_unchanged": true,
+        "cleanup_passed": true,
+        "interpretation": "Completed short/16K normal-thinking answers; the short prefill32.96tok/s remains below100. Not a formal benchmark or performance guarantee for another GPU."
+      },
+      "loaded_module_diagnostic": {
+        "evidence": {
+          "root": "review",
+          "path": "generic-shipping-loaded-modules/result.json",
+          "sha256": "d010eb41d8d4c53ca7386f65c06ff064fc2b0e9981984a2bdf650bfc0c532419"
+        },
+        "passed": true,
+        "compiler_sdk_dll_count": 0,
+        "stage_loaded_dll_count": 14,
+        "packaged_runtime_file_count": 65,
+        "cleanup_passed": true,
+        "scope": "one-token diagnostic after separately completed generic short/16K answers; loaded-module isolation, not quality/performance benchmark",
+        "system_driver_note": "UR enumeration can load system NPU/OpenVINO driver modules even though application NPU assistance is disabled; do not claim zero OpenVINO-named modules."
+      }
+    }
+  },
+  "canonical_text_benchmark_20261115": {
+    "status": "complete",
+    "evidence": {
+      "root": "review",
+      "path": "canonical-final-summary.json",
+      "sha256": "867ceda1f6b91421468a0bd65897ec9a07d89b5d80b92fb886ca23d6a8c1b4f3"
+    },
+    "successful_cohort": "canonical-shipping-20261115-ready2",
+    "runtime_source_commit": "c36a84a4657f27d4051c1b2d1b9e9f6050d75c55",
+    "executable_sha256": "86d46415d24eac4d00f18b55b9933284bc98e7d236fc0ed1a2248623869bc2df",
+    "protocol": {
+      "name": "tinystrata-bench-v1-intel-text",
+      "base": "tinystrata-bench-v1",
+      "standard": false,
+      "runs_per_model": 4,
+      "generation_passes_per_start": 2,
+      "text_cases_per_pass": 3,
+      "seed": 1234,
+      "context": 32768,
+      "chunk": 1024,
+      "kv": "int8",
+      "mtp": 3,
+      "draft_vocab": 2048,
+      "weight_memory": "host",
+      "device": 0,
+      "selected_experts": 8,
+      "warmup_output_tokens_per_start": 32,
+      "warmup_excluded": true,
+      "generation_output_tokens_per_request": 128,
+      "input_test_output_tokens_per_request": 32,
+      "image_case": "unsupported / N/A",
+      "kv_growth": "unsupported / fixed",
+      "independent_expert_cache": "UMA N/A",
+      "aggregation": "Sum emitted tokens / summed native decode milliseconds; sum input tokens / summed native prompt milliseconds. No mean of per-request rates."
+    },
+    "fresh_native_starts": 8,
+    "measured_requests": 64,
+    "resume_or_partial_results_reused": false,
+    "all_measured_reused_tokens_zero": true,
+    "all_measured_requests_checkpoint_disabled": true,
+    "configs_unchanged": true,
+    "config_hashes": {
+      "canonical-shipping-20261115-ready2/configs/config-sycl.json": "fa4d7ed0ec589ec5e690a5697f462c8d5bf32691ae7706309d1e0c6069c6b0e0",
+      "canonical-shipping-20261115-ready2/configs/config-tiel-coder-sycl.json": "fe5d8e235c6bcdd8b904103f9dede8a1a5cf2500555007ff4e4a4364065594a6"
+    },
+    "all_native_unloads_graceful": true,
+    "forced_fallback_count": 0,
+    "cleanup_scope_note": "Eight native engines were unloaded through /unload and reported loaded=false before runner cleanup. The unchanged runner then terminates any remaining private API/owned handles in its normal close procedure. forced_fallback=false specifically proves the native unload gate; this is not a claim that every API process exited without runner termination. Unrelated installer processes are excluded.",
+    "all_original_native_process_identities_absent_at_audit": true,
+    "models": {
+      "qwen": {
+        "evidence": {
+          "root": "review",
+          "path": "canonical-shipping-20261115-ready2/qwen/result.json",
+          "sha256": "e89a06a02ccae03dc85b527524e6a3812065eca0d62dc18944c77871b4537d62"
+        },
+        "complete": true,
+        "starts": 4,
+        "measured_requests": 32,
+        "aggregates": {
+          "generation": {
+            "tokens": 3072,
+            "milliseconds": 93422.666,
+            "tok_s": 32.88281240015137,
+            "requests": 24,
+            "historical_baseline_tok_s": 31.652712374708273,
+            "historical_baseline_tokens": 3072,
+            "historical_baseline_milliseconds": 97053.294,
+            "historical_change_percent": 3.8862389133703434
+          },
+          "input_4k": {
+            "tokens": 16384,
+            "milliseconds": 53347.064,
+            "tok_s": 307.1209317161297,
+            "requests": 4,
+            "historical_baseline_tok_s": 292.4028217943114,
+            "historical_baseline_tokens": 16384,
+            "historical_baseline_milliseconds": 56032.291,
+            "historical_change_percent": 5.033504749202322
+          },
+          "input_16k": {
+            "tokens": 65536,
+            "milliseconds": 239162.98500000002,
+            "tok_s": 274.022336692277,
+            "requests": 4,
+            "historical_baseline_tok_s": 264.32031301565195,
+            "historical_baseline_tokens": 65536,
+            "historical_baseline_milliseconds": 247941.595,
+            "historical_change_percent": 3.6705554582369793
+          }
+        },
+        "sampling": {
+          "temperature": 0.7,
+          "top_p": 0.95,
+          "top_k": 20,
+          "min_p": 0.0,
+          "presence_penalty": 1.5,
+          "repetition_penalty": 1.0,
+          "frequency_penalty": 0.0
+        },
+        "model_asset": {
+          "file": "Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf",
+          "size": 14069266720,
+          "sha256": "36f9ec0e4c775f6efd3a61c1ea76f0875128469c3d012e3d9e2495a90e7a7150"
+        }
+      },
+      "tiel": {
+        "evidence": {
+          "root": "review",
+          "path": "canonical-shipping-20261115-ready2/tiel/result.json",
+          "sha256": "510df0c08d04e54ae4e708c904a5bfabc62b9a3b9d97fb05b2f2f84aab446d79"
+        },
+        "complete": true,
+        "starts": 4,
+        "measured_requests": 32,
+        "aggregates": {
+          "generation": {
+            "tokens": 3072,
+            "milliseconds": 119197.538,
+            "tok_s": 25.772344391878296,
+            "requests": 24,
+            "historical_baseline_tok_s": 25.651442043159403,
+            "historical_baseline_tokens": 3072,
+            "historical_baseline_milliseconds": 119759.349,
+            "historical_change_percent": 0.4713276879930284
+          },
+          "input_4k": {
+            "tokens": 16384,
+            "milliseconds": 68952.692,
+            "tok_s": 237.61218778811423,
+            "requests": 4,
+            "historical_baseline_tok_s": 238.06852610139347,
+            "historical_baseline_tokens": 16384,
+            "historical_baseline_milliseconds": 68820.52100000001,
+            "historical_change_percent": -0.19168359663170875
+          },
+          "input_16k": {
+            "tokens": 65536,
+            "milliseconds": 300661.99199999997,
+            "tok_s": 217.97234683391576,
+            "requests": 4,
+            "historical_baseline_tok_s": 218.1170041834493,
+            "historical_baseline_tokens": 65536,
+            "historical_baseline_milliseconds": 300462.58999999997,
+            "historical_change_percent": -0.06632098679104637
+          }
+        },
+        "sampling": {
+          "temperature": 1.0,
+          "top_p": 0.95,
+          "top_k": 20,
+          "min_p": 0.0,
+          "presence_penalty": 0.0,
+          "frequency_penalty": 0.0,
+          "repetition_penalty": 1.0
+        },
+        "model_asset": {
+          "file": "Tiel-Coder-35B-A3B-MTP-UD-IQ3_XXS.gguf",
+          "size": 13600579424,
+          "sha256": "a4d8ffc7f030466c67db289543871a8f9e6d5340241b300c09fbaf16642273ca"
+        }
+      }
+    },
+    "comparison_limits": {
+      "comparison_type": "Historical before/after, not same-binary interleaved causal A/B.",
+      "same_explicit_conditions": [
+        "Unmodified canonical runner/cases/image hashes",
+        "4 fresh starts per model, 3 generation texts x 2 passes",
+        "seed1234 and identical model-specific sampling",
+        "same GGUF sizes and full SHA-256 receipts",
+        "same explicit native arguments including context32768/chunk1024/INT8/MTP3/draft2048/host weights/device0",
+        "all64 measured requests fresh prefixes (reused0), checkpoint disabled"
+      ],
+      "changed_conditions": [
+        "Native binary, source commit and adopted feature defaults differ from20261114 legacy baseline",
+        "Different measurement occasions; scheduling, cache/driver/thermal state are not controlled historical causal variables"
+      ],
+      "not_claimed": [
+        "Attribution of historical gains to any individual feature",
+        "General end-to-end full-answer speedup from an output-limited protocol",
+        "Full-answer quality or universal30tok/s acceptance from fixed128-output generation"
+      ],
+      "tiel_interpretation": "25.7723443919 vs legacy25.6514420432tok/s is a small historical generation difference. 4K and16K prefill are essentially flat/slightly lower. Tiel remains below30tok/s.",
+      "target_generation_tok_s": 30,
+      "target_met_for_formal_generation_only": {
+        "qwen": true,
+        "tiel": false
+      }
+    },
+    "initial_setup_failure": {
+      "evidence": {
+        "root": "review",
+        "path": "canonical-shipping-20261115/qwen/result.json",
+        "sha256": "2600cdacdee1ecd047476836a0989cfe684025d39ad11011d5dbfba44ac513ce"
+      },
+      "stderr": {
+        "root": "review",
+        "path": "canonical-shipping-20261115/qwen/qwen-1/api.stderr.log",
+        "sha256": "ae54e7bd7b66d4c0abfaa3ce6bd543caa0958b4209584c7cfb70f8fee2cce126"
+      },
+      "preserved": true,
+      "measured_requests": 0,
+      "native_model_inference_started": false,
+      "native_cpu_capabilities_probe_receipt_present": true,
+      "cause": "Private config omitted tokenizer. API argparse exited on missing default tokenizer before native serving/model inference. A separate fresh ready2 cohort used verified absolute existing caches; no measured run was stopped/resumed."
+    },
+    "tokenizer_preflight": {
+      "evidence": {
+        "root": "review",
+        "path": "canonical-shipping-20261115-ready2/tokenizer-preflight.json",
+        "sha256": "48fc362a1cf60881b4dca2d5cf19607e795ddd7752a375dc11d6c1511f196e1e"
+      },
+      "cpu_only": true,
+      "metadata_fields_per_model": 14,
+      "templates_and_token_ids_match_gguf": true,
+      "cache_hashes_unchanged_after_benchmark": true
+    }
+  },
+  "actual_shipping_installer_20261115": {
+    "status": "complete",
+    "passed": true,
+    "evidence": {
+      "root": "review",
+      "path": "final-installed-upgrade-c36-finish-retry/summary.json",
+      "sha256": "d36603b32311cd8e5036ec0e5fa9a0d103047949200e0930e26598dcd8364e68"
+    },
+    "result": {
+      "root": "review",
+      "path": "final-installed-upgrade-c36-finish-retry/result.json",
+      "sha256": "7246d0974f1e79ed050f228a9d0346c903efa56c30de575bbc6d93c3d5256be5"
+    },
+    "scope": "Actual shipping installer import plus recovered real Desktop/API/UI functional acceptance; separate from formal benchmark",
+    "runtime_source_commit": "c36a84a4657f27d4051c1b2d1b9e9f6050d75c55",
+    "generation": {
+      "executable_sha256": "86d46415d24eac4d00f18b55b9933284bc98e7d236fc0ed1a2248623869bc2df",
+      "imported_stage_manifest_sha256": "92d9b104b99e3814ce767cdd8a695e93ea0037da9caf390795fbd82309288197",
+      "runtime_and_license_payload_files": 65
+    },
+    "requests": [
+      {
+        "case": "qwen-turn1",
+        "model": "qwen3.6-35b-a3b",
+        "input_total": 84,
+        "fresh_input": 84,
+        "cache": 0,
+        "output": 2004,
+        "pp_tok_s": 101.9,
+        "tg_tok_s": 32.8,
+        "TTFT_seconds": 0.8590000000003783,
+        "six_facts_correct": true,
+        "thinking": true,
+        "finish": "stop",
+        "SSE_DONE": true,
+        "request_cap_omitted": true,
+        "stored_max_tokens": 32768
+      },
+      {
+        "case": "qwen-turn2-cache",
+        "model": "qwen3.6-35b-a3b",
+        "input_total": 166,
+        "fresh_input": 87,
+        "cache": 79,
+        "output": 1328,
+        "pp_tok_s": 112.5,
+        "tg_tok_s": 34.1,
+        "TTFT_seconds": 0.8119999999998981,
+        "six_facts_correct": true,
+        "thinking": true,
+        "finish": "stop",
+        "SSE_DONE": true,
+        "request_cap_omitted": true,
+        "stored_max_tokens": 32768
+      },
+      {
+        "case": "tiel-normal-medium",
+        "model": "tiel-coder-35b-a3b",
+        "input_total": 263,
+        "fresh_input": 263,
+        "cache": 0,
+        "output": 156,
+        "pp_tok_s": 137.9,
+        "tg_tok_s": 30.1,
+        "TTFT_seconds": 1.9529999999995198,
+        "six_facts_correct": true,
+        "thinking": true,
+        "finish": "stop",
+        "SSE_DONE": true,
+        "request_cap_omitted": true,
+        "stored_max_tokens": null
+      }
+    ],
+    "normal_request_output_cap_or_sampler_override_added": false,
+    "preservation": {
+      "config_fields_except_exe_and_lib_dirs": true,
+      "keys_sha_equal": true,
+      "gguf_path_size_mtime_unchanged": true,
+      "config_preimage_proof": "Qwen actual installer .bak plus original untouched Tiel recorded fullSHA. Private old-runtime-only reconstruction exactly matches recorded fullSHA; live config never patched.",
+      "ui_settings_and_history_scope": "Continuation-start through final Desktop restart only; original preimport full before-image unavailable and not claimed.",
+      "ui_settings_continuation_preserved": true,
+      "ui_history_continuation_preserved": true
+    },
+    "model_switch": {
+      "qwen_to_tiel_completed": true,
+      "requested_context": "auto",
+      "actual_allocated_context": 8192
+    },
+    "real_desktop_shortcut_restart": {
+      "executed": true,
+      "method": "Existing Explorer Desktop COM ShellExecute of actual installed .lnk; no direct child app launch",
+      "api_port": 18085,
+      "ui_port": 3005
+    },
+    "resident_compiler_sdk_dll_counts": {
+      "Qwen": 0,
+      "Tiel": 0,
+      "Qwen_after_Desktop": 0
+    },
+    "application_openvino_note": "No compiler-SDK reliance was observed; system NPU/OpenVINO driver modules are distinct from app-local NPU assistance. No all-modules OpenVINO-zero claim is made.",
+    "maximum_resident_models_final_window": 1,
+    "minimum_available_ram_bytes_final_window": 6571347968,
+    "ui": {
+      "monitor_screenshot": {
+        "root": "review",
+        "path": "final-installed-upgrade-c36-finish-retry/real-ui/ui-monitor.png"
+      },
+      "about_screenshot": {
+        "root": "review",
+        "path": "final-installed-upgrade-c36-finish-retry/real-ui/ui-about.png"
+      },
+      "visually_reviewed": true,
+      "shared_gpu_ram_gb": 14.6,
+      "shared_gpu_ram_overlaps_ram_note": true,
+      "request_columns": 8,
+      "vram_hit_hidden": true,
+      "recent_request_rows": "Empty after Desktop restart; no rendered generation-row rate claim.",
+      "cdp_passed": true,
+      "exceptions": 0,
+      "console_errors": 0,
+      "network_failures": 0,
+      "private_browser_helpers_natural_exit0": true
+    },
+    "final_installed_app_left_running": true,
+    "limitations_and_retained_failures": {
+      "initial_installer_exit_code_captured": false,
+      "installer_acceptance_proof": "Actual successful65-file import/config publish/Desktop/API/UI ready log and pinned installed generation receipt; initial installer process exit was not captured.",
+      "initial_eof_and_job_stop": "Initial private stdout EOF/job handling force-stopped an idle model before any generation. Preserved separately; not claimed as natural cleanup.",
+      "initial_failure_receipt": {
+        "root": "review",
+        "path": "final-installed-upgrade-c36/recovery-note.json"
+      },
+      "reinstalled_during_recovery": false,
+      "initial_ui_history_full_before_after_available": false,
+      "guard_false_failure": {
+        "root": "review",
+        "path": "final-installed-upgrade-c36-continuation/result.json",
+        "cause": "Three answers passed; guarded per-model download-status correctly returned503, which private harness initially treated as failure."
+      },
+      "redirector_race_false_failure": {
+        "root": "review",
+        "path": "final-installed-upgrade-c36-finish/result.json",
+        "cause": "Native unloaded and API/UI stopped; private stop check raced redirector natural exit. Ports were verified empty; final real Desktop restart passed."
+      },
+      "three_answer_metrics": {
+        "root": "review",
+        "path": "final-installed-upgrade-c36-continuation/metrics-after-three-full-answers-before-restart.json"
+      },
+      "metric_label_note": "Same-named finish-retry metrics were captured after recovered Desktop restart and are not used for the three earlier answers."
+    }
+  },
+  "completion_limits": {
+    "scope": "Review implementation/measurement/actual installer/runtime prerelease gates only.",
+    "broader_issue_complete": false,
+    "tiel_formal_generation_30_tok_s_reached": false,
+    "other_intel_hardware_validated": false,
+    "intel_images_gemma_lfm_clover_supported": false,
+    "main_push_and_issue_comment": "Parent will perform after committing these final metadata files; this artifact does not assert that those subsequent actions already happened."
   }
 }

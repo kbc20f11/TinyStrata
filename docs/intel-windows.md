@@ -2,6 +2,8 @@
 
 The installer now supports the validated **Arc B390 / Core Ultra X7 358H / 32 GB RAM** configuration through a prebuilt, hash-pinned Intel runtime. It supports experimental **Qwen3.6 and Tiel Coder text**, with model-specific profiles and separate settings. Images, Gemma, LFM and Clover remain unsupported on Intel; the broader [Issue #11](https://github.com/kbc20f11/TinyStrata/issues/11) remains open.
 
+The **2026-11-15 runtime release** and actual installed-app verification are complete. Its canonical generation/4K/16K rates are **32.88/307.12/274.02 tok/s for Qwen** and **25.77/237.61/217.97 for Tiel**. The [final results below](#shipping-runtime-and-installed-app-validation-2026-11-15) distinguish these measurements from the earlier milestones, disclose installer recovery limitations, and retain Tiel's unmet 30 tok/s goal.
+
 On 2026-11-14, the actual shipping installer prepared a fresh Python environment, imported 65 runtime/license files, created the Intel desktop shortcut and started the real API/UI on the B390-only PC. It used the local source checkout and existing verified GGUF rather than downloading a second model copy. Its normal Qwen request used 84 fresh input tokens and returned 1,268 tokens with thinking enabled: **107.2 tok/s prefill, 34.4 tok/s decode**, terminal stop and the correct six-field answer. No request output cap or sampler override was supplied. This earlier chunk512 checkpoint is retained separately. Real Qwen/Tiel switching, native unload/reload and live Monitor/About checks subsequently passed, preserving settings and keys with no compiler-SDK DLLs loaded.
 
 For ordinary installation, use the UI installer linked in the README. A local checkout accepts `install-ui.ps1 -Backend sycl`; a verified offline stage may instead be supplied with `-IntelRuntimeDirectory`. NVIDIA/AMD selection retains priority on mixed systems. Known B390 selects its PTL-H AOT package. Other Intel GPUs require a separately pinned generic SPIR-V package and a compatible baseline confirmed by the actual selected native device; an unavailable generic artifact never falls back to a PTL-H binary. This capability policy is separate from hardware/performance validation on another GPU. Runtime files and Microsoft VC++ release DLLs are app-local; the installer does not install an Intel SDK, replace a driver or edit global PATH.
@@ -253,15 +255,47 @@ Same-machine llama.cpp b12360 (`2d8a32502909ca065c41c4cf5f2fb1c427c047fc`) SYCL/
 Before adoption, finish larger-context/pressure and sustained-quality checks, batching/fusion and attention/kernel tuning, and ordinary install/update/backend-selection integration. Explicit INT8 KV and the staged text API/UI have the checks above; broader lifecycle and workload coverage remain open. The experimental MTP route needs broader acceptance/performance and quality evidence; images and other model families need their own ports. Issue #11 stays open.
 
 
-## Completed canonical Intel text measurements
+## Shipping runtime and installed-app validation (2026-11-15)
+
+The [published Intel Windows preview](https://github.com/kbc20f11/TinyStrata/releases/tag/intel-windows-preview-20261115) contains PTL-H and generic SPIR-V archives built from runtime source `c36a84a4657f27d4051c1b2d1b9e9f6050d75c55`. The remote annotated tag resolves to that commit. Both archives contain 65 runtime/license payload files and a root manifest, without models, user settings, keys or compiler SDK. GitHub's uploaded asset sizes and SHA-256 digests match the local archives:
+
+| Archive | Bytes | SHA-256 |
+|---|---:|---|
+| `TinyStrata-intel-windows-x64-ptl-h-20261115.zip` | 267580323 | `bfc8737424ee613725129a1d37b6a8a7dea0920fa4eecfa8882fa6b034cb42bb` |
+| `TinyStrata-intel-windows-x64-generic-20261115.zip` | 266954652 | `4a7549b942939471b6120f1f9f226b8dbaba2c3e207af9c448f903da6302804e` |
+
+The PTL-H executable is `86d46415d24eac4d00f18b55b9933284bc98e7d236fc0ed1a2248623869bc2df`; generic is `e675f4f0d33243c7c49d93e89ad041bebc8429ec98d9f2d316815dfa5abaab69`. Both include oneMKL/INT8 XMX and disable NPU assistance. Actual PTL-H devices use the measured long-context fused attention; validated B390 profiles use exact GPU draft-support ranking while target sampling stays on the CPU. The bounded turn checkpoint is enabled by default, with explicit disable retained. Other compatible Intel devices retain the baseline path and separate UMA/discrete memory admission.
+
+The generic executable completed short and 16K Qwen answers on this B390, with all six facts correct and natural native exit0. It measured prefill/decode **32.96/34.59** and **274.85/26.74 tok/s** respectively; the short prefill is below100 and is retained. A separate one-token loaded-module diagnostic found zero compiler-SDK DLLs and 14 DLLs from the 65-file stage. System NPU/OpenVINO driver modules can still appear during runtime enumeration; this is not application NPU assistance. Neither generic compatibility nor throughput has been tested on another Intel GPU.
+
+The actual installer imported the pinned PTL-H generation and published the runtime paths. Three normal-thinking requests completed without adding an output cap or sampler override: Qwen first turn **101.9/32.8 tok/s**, TTFT **0.859s**, 84 fresh input/2004 output tokens; Qwen next turn **112.5/34.1**, TTFT **0.812s**, 79 reused+87 fresh/1328 output; Tiel **137.9/30.1**, TTFT **1.953s**, 263 fresh/156 output. Each returned all six facts, terminal stop and SSE DONE. Qwen's existing saved32768 output limit was retained. These are individual installed-app answers, separate from the canonical aggregates.
+
+Real Qwen-to-Tiel switching and restart through the installed Desktop shortcut via Explorer passed. Compiler-SDK DLL counts were zero for each resident native engine. Monitor/About were visually checked: shared GPU RAM14.6GB was explicitly included in RAM, the request table had eight columns and hid VRAM hit rate, and CDP reported no exceptions, console errors or network failures. Recent request rows were empty after restart, so no rendered generation-row rate is claimed. The installed Qwen app remains running on API18085/UI3005.
+
+The first private installer harness stalled on stdout EOF and its job stop terminated an idle model before any request. The original installer exit code and complete preimport UI/history snapshot were not captured; those claims remain unavailable. Successful65-file import/publish/ready logs and installed hash receipts prove the actual import. Recovery used the installed Desktop shortcut without reinstalling. Explicit model settings and keys were checked against the installer's Qwen backup and the original Tiel hash; only `exe`/`lib_dirs` changed. UI settings/history preservation is established from continuation start through final restart. The later expected guard503 and redirector-exit race initially failed private checks; their failed evidence is retained alongside the final successful retry. No claim of all-process natural exit or all-modules OpenVINO absence is made. Full receipts and limitations are in the [review measurement JSON](../benchmark/results/intel-review-20261115.json).
+
+## Completed canonical Intel text measurements (2026-11-15)
+
+| Model | Generation tok/s | 4K prefill tok/s | 16K prefill tok/s |
+|---|---:|---:|---:|
+| Qwen3.6 | 32.88 | 307.12 | 274.02 |
+| Tiel Coder | 25.77 | 237.61 | 217.97 |
+
+The pinned PTL-H shipping executable completed four fresh starts per model, three generation texts twice per start, seed1234, context32768/chunk1024 and actual INT8 KV/MTP3. This remains `tinystrata-bench-v1-intel-text`, `standard:false`, images N/A. All64 measured requests had zero reused tokens and explicitly disabled checkpoints. Both private configuration hashes remained unchanged. Generation sums3072 emitted tokens over native decode time per model; prefill sums16384/65536 tokens over4K/16K native prompt time. It does not average individual rates or evaluate unrestricted full answers with the128-token generation cap.
+
+An initial private-config tokenizer omission caused API argument validation to fail before native serving/model inference; a CPU capabilities probe was recorded, but zero requests were measured. Its failed cohort remains intact. After CPU verification of the existing model-specific tokenizer caches, a separate fresh cohort ran Qwen4 then Tiel4 without stopping/resuming a measured run. All eight native unloads reported `loaded=false`, without forced fallback. The unchanged benchmark runner subsequently closes any remaining private API/owned handles; this is not an all-API natural-exit claim.
+
+Against the historical2026-11-14 values below, Qwen changes by+3.89%/+5.03%/+3.67%; Tiel by+0.47%/−0.19%/−0.07%. These are measurements on different occasions with a different binary and adopted defaults, not an isolated feature A/B. Tiel's generation gain is small and its4K/16K prefill is essentially flat. **Tiel's formal30tok/s generation target remains unmet**, as do broader long-context, model/image and other-hardware goals. Checkpoint TTFT improvements and uncapped normal-answer screens above remain separate evidence.
+
+## Historical canonical Intel text comparison (2026-11-14)
 
 | Model | Generation tok/s | 4K prefill tok/s | 16K prefill tok/s |
 |---|---:|---:|---:|
 | Qwen3.6 | 31.65 | 292.40 | 264.32 |
 | Tiel Coder | 25.65 | 238.07 | 218.12 |
 
-These are completed four-start, two-pass `tinystrata-bench-v1-intel-text` results, `standard: false`, with exact canonical text inputs, seed1234, INT8 KV/MTP3, private context32768 and chunk1024. Qwen uses the fixed-v1 sampler; Tiel uses its official sampler. Image is unsupported/N/A. Saved configurations remained unchanged.
+These earlier completed four-start, two-pass `tinystrata-bench-v1-intel-text` results are retained as the historical control, `standard: false`, with exact canonical text inputs, seed1234, INT8 KV/MTP3, private context32768 and chunk1024. Qwen uses the fixed-v1 sampler; Tiel uses its official sampler. Image is unsupported/N/A. Saved configurations remained unchanged.
 
-The completed earlier chunk512 Qwen control was generation30.84, 4K prefill159.60 and 16K prefill85.72 tok/s. The new auto chunk1024 uses FP32 oneMKL attention for full1024-token batches; explicit chunk512 remains a user choice. Native weights, selected experts and the runtime ZIP are unchanged.
+The still-earlier chunk512 Qwen control was generation30.84, 4K prefill159.60 and 16K prefill85.72 tok/s. That2026-11-14 chunk1024 update used FP32 oneMKL attention for full1024-token batches and retained the then-current runtime ZIP. The2026-11-15 release above is a different binary/package. Explicit chunk512 remains a user choice; GGUF weights and selected experts remain unchanged.
 
 The actual installed app, refreshed through its Desktop shortcut, returned the correct uncapped normal-thinking Qwen answer at111.0 prefill/35.3 generation tok/s (84 fresh input/1268 output tokens). Independent16K normal-thinking full-answer tests passed all six facts for both models: Qwen263.44/26.02 and Tiel212.82/25.52 tok/s. Long generation30 tok/s, the42.5 aspiration, and universal short-prefill100 are not achieved. Gemma/LFM/Clover/images remain unsupported on Intel; Issue #11 stays open.

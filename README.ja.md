@@ -84,14 +84,14 @@ Gemma は `run-api.bat --model-family gemma4`（既定ポート 18082）、LFM �
 
 </details>
 
-Intel B390の規定テキスト計測（`standard: false`、4回起動・各2回、context32768/chunk1024、INT8 KV/MTP3、画像未対応）:
+Intel B390の**2026-11-15配布版**による規定テキスト計測（`standard: false`、4回起動・各2回、seed1234、context32768/chunk1024、INT8 KV/MTP3、画像未対応）:
 
 | Model | Generation tok/s | 4K prefill tok/s | 16K prefill tok/s |
 |---|---:|---:|---:|
-| Qwen3.6 | 31.65 | 292.40 | 264.32 |
-| Tiel Coder | 25.65 | 238.07 | 218.12 |
+| Qwen3.6 | 32.88 | 307.12 | 274.02 |
+| Tiel Coder | 25.77 | 237.61 | 217.97 |
 
-[Conditions and limitations / 条件と制約](docs/intel-windows.md)
+Tielの生成30 tok/sは未達です。2026-11-14の歴史対照に対する生成の差は小さく、4K/16K入力処理はほぼ横ばいです。旧値は[レビュー測定記録](benchmark/results/intel-review-20261115.json)に分けて保存しており、測定時点の異なる差を個別の最適化の効果とは扱いません。[Conditions and limitations / 条件と制約](docs/intel-windows.md)も参照してください。
 
 ## インストール方法
 

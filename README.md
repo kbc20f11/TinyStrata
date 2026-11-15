@@ -84,14 +84,14 @@ Start Gemma with `run-api.bat --model-family gemma4` (default port 18082), or LF
 
 </details>
 
-Intel B390 experimental text benchmark (`standard: false`, four starts, two passes, context32768/chunk1024, INT8 KV/MTP3; images N/A):
+Intel B390 experimental text benchmark, **2026-11-15 shipping runtime** (`standard: false`, four starts, two passes, seed1234, context32768/chunk1024, INT8 KV/MTP3; images N/A):
 
 | Model | Generation tok/s | 4K prefill tok/s | 16K prefill tok/s |
 |---|---:|---:|---:|
-| Qwen3.6 | 31.65 | 292.40 | 264.32 |
-| Tiel Coder | 25.65 | 238.07 | 218.12 |
+| Qwen3.6 | 32.88 | 307.12 | 274.02 |
+| Tiel Coder | 25.77 | 237.61 | 217.97 |
 
-[Conditions and limitations / 条件と制約](docs/intel-windows.md)
+Tiel remains below 30 tok/s; its generation change from the historical 2026-11-14 result is small, with 4K/16K prefill essentially unchanged. The [review measurements](benchmark/results/intel-review-20261115.json) preserve that earlier comparison separately; different measurement occasions do not isolate an individual optimization's gain. [Conditions and limitations / 条件と制約](docs/intel-windows.md).
 
 ## Installation
 
