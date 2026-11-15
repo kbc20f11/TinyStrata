@@ -105,6 +105,9 @@ inline Footprint lfm(uint64_t c,const LfmSpec& s={}){
     attention(p,c,n,s.heads,s.dim,cells,s.mkl);if(s.mkl)gemm(p,1,n);
     if(s.q4_dp4a){p.allocation(512*8192,1);p.allocation(512*8192/32,4);p.allocation(1,4,true);
         p.allocation(2048,4);p.allocation(512,4);p.allocation(16,1);p.allocation(256,4);p.allocation(128,1);}
+    // One independent ordinary-host turn snapshot, plus exact bounded IDs.
+    // Device rollback state above is separate; this never charges WDDM.
+    p.host(add(mul(add(mul(30*2,s.width),s.width),4),mul(c,4)));
     p.host(16ull<<20);return p;
 }
 struct QwenSpec {
