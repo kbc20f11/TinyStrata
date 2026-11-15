@@ -84,7 +84,7 @@ Start Gemma with `run-api.bat --model-family gemma4` (default port 18082), or LF
 
 </details>
 
-Intel B390 experimental text benchmark, **2026-11-15 shipping runtime** (`standard: false`, four starts, two passes, seed1234, context32768/chunk1024, INT8 KV/MTP3; images N/A):
+Intel B390 experimental text benchmark, **earlier c36 runtime, retained as a historical control** (`standard: false`, four starts, two passes, seed1234, context32768/chunk1024, INT8 KV/MTP3; images N/A). The [current memory-aware-context runtime](docs/intel-windows.md) has separate normal full-answer checks:
 
 | Model | Generation tok/s | 4K prefill tok/s | 16K prefill tok/s |
 |---|---:|---:|---:|

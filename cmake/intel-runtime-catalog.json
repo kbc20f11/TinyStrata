@@ -1,82 +1,82 @@
 {
-  "schema": 1,
-  "backend": "sycl",
-  "experimental": true,
-  "availability": "published",
-  "supported_devices": [
-    {
-      "vendor_id": 32902,
-      "device_ids": [
-        45186
-      ],
-      "integrated": true,
-      "architecture": "panther_lake_xe3",
-      "profile": "b390-qwen36",
-      "aot_target": "intel_gpu_ptl_h"
-    },
-    {
-      "vendor_id": 32902,
-      "device_ids": [
-        45186
-      ],
-      "integrated": true,
-      "architecture": "panther_lake_xe3",
-      "profile": "b390-tiel-coder",
-      "aot_target": "intel_gpu_ptl_h"
-    }
-  ],
-  "artifacts": [
-    {
-      "id": "b390-qwen36-qwen-20261115-kv",
-      "profile": "b390-qwen36",
-      "model": "qwen3.6-35b-a3b",
-      "aot_target": "intel_gpu_ptl_h",
-      "experimental": true,
-      "source_commit": "ceb7bb4a8262a8599bdbc3d14763726b85438822",
-      "url": "https://github.com/kbc20f11/TinyStrata/releases/download/intel-windows-preview-20261115-kv/TinyStrata-intel-windows-x64-ptl-h-20261115.zip",
-      "bytes": 267580464,
-      "sha256": "1a5a166e7ec340e4df38f1110d710f3a8f19d347cf9de60674fa183d695d1dbe",
-      "manifest_sha256": "d9c31e28fa74917f80c7bf265259bdc325d8cb1c01acf31444be1e88478ab47d",
-      "executable_sha256": "7bce30ae1f63ee025c138a99ec448b87b48e0bb8c57b57468a20dee04d3d62f9"
-    },
-    {
-      "id": "b390-tiel-coder-tiel-20261115-kv",
-      "profile": "b390-tiel-coder",
-      "model": "tiel-coder-35b-a3b",
-      "aot_target": "intel_gpu_ptl_h",
-      "experimental": true,
-      "source_commit": "ceb7bb4a8262a8599bdbc3d14763726b85438822",
-      "url": "https://github.com/kbc20f11/TinyStrata/releases/download/intel-windows-preview-20261115-kv/TinyStrata-intel-windows-x64-ptl-h-20261115.zip",
-      "bytes": 267580464,
-      "sha256": "1a5a166e7ec340e4df38f1110d710f3a8f19d347cf9de60674fa183d695d1dbe",
-      "manifest_sha256": "d9c31e28fa74917f80c7bf265259bdc325d8cb1c01acf31444be1e88478ab47d",
-      "executable_sha256": "7bce30ae1f63ee025c138a99ec448b87b48e0bb8c57b57468a20dee04d3d62f9"
-    },
-    {
-      "id": "generic-qwen-20261115-kv",
-      "profile": "generic",
-      "model": "qwen3.6-35b-a3b",
-      "aot_target": "",
-      "experimental": true,
-      "source_commit": "ceb7bb4a8262a8599bdbc3d14763726b85438822",
-      "url": "https://github.com/kbc20f11/TinyStrata/releases/download/intel-windows-preview-20261115-kv/TinyStrata-intel-windows-x64-generic-20261115.zip",
-      "bytes": 266954917,
-      "sha256": "d2032601cacfa06e98594eb6453671497cb38bbae7afe31638d35284a2d89d51",
-      "manifest_sha256": "91d25f0b793afbcc4426edbed801b1810b8101cf6838a50434333ea37858a931",
-      "executable_sha256": "f1341a2e338c9ac4579b568e0450626c561c511fc15c9a3a8780b1c62e82f369"
-    },
-    {
-      "id": "generic-tiel-20261115-kv",
-      "profile": "generic",
-      "model": "tiel-coder-35b-a3b",
-      "aot_target": "",
-      "experimental": true,
-      "source_commit": "ceb7bb4a8262a8599bdbc3d14763726b85438822",
-      "url": "https://github.com/kbc20f11/TinyStrata/releases/download/intel-windows-preview-20261115-kv/TinyStrata-intel-windows-x64-generic-20261115.zip",
-      "bytes": 266954917,
-      "sha256": "d2032601cacfa06e98594eb6453671497cb38bbae7afe31638d35284a2d89d51",
-      "manifest_sha256": "91d25f0b793afbcc4426edbed801b1810b8101cf6838a50434333ea37858a931",
-      "executable_sha256": "f1341a2e338c9ac4579b568e0450626c561c511fc15c9a3a8780b1c62e82f369"
-    }
-  ]
+    "schema":  1,
+    "backend":  "sycl",
+    "experimental":  true,
+    "availability":  "published",
+    "supported_devices":  [
+                              {
+                                  "vendor_id":  32902,
+                                  "device_ids":  [
+                                                     45186
+                                                 ],
+                                  "integrated":  true,
+                                  "architecture":  "panther_lake_xe3",
+                                  "profile":  "b390-qwen36",
+                                  "aot_target":  "intel_gpu_ptl_h"
+                              },
+                              {
+                                  "vendor_id":  32902,
+                                  "device_ids":  [
+                                                     45186
+                                                 ],
+                                  "integrated":  true,
+                                  "architecture":  "panther_lake_xe3",
+                                  "profile":  "b390-tiel-coder",
+                                  "aot_target":  "intel_gpu_ptl_h"
+                              }
+                          ],
+    "artifacts":  [
+                      {
+                          "id":  "b390-qwen36-qwen3.6-35b-a3b-20261115",
+                          "profile":  "b390-qwen36",
+                          "model":  "qwen3.6-35b-a3b",
+                          "aot_target":  "intel_gpu_ptl_h",
+                          "experimental":  true,
+                          "source_commit":  "5700726bed0aac3b7f597f072f0983b06c0fd740",
+                          "url":  "https://github.com/kbc20f11/TinyStrata/releases/download/intel-context-preview-20261115/TinyStrata-intel-windows-x64-qwen-family-ptl-h-20261115.zip",
+                          "bytes":  267651004,
+                          "sha256":  "5da7e0830dffcb643d01ba6d3b9281165f4f55e9c083421eaab48d999db6f0cd",
+                          "manifest_sha256":  "6b0a316a6b4eb070b6530fa603937bead78ac39075c1eb3c587c7f338cc379ba",
+                          "executable_sha256":  "015843c0ff2f770d5a5d25cd1954160e76610736c8ebed522a25d8df432dc240"
+                      },
+                      {
+                          "id":  "b390-tiel-coder-tiel-coder-35b-a3b-20261115",
+                          "profile":  "b390-tiel-coder",
+                          "model":  "tiel-coder-35b-a3b",
+                          "aot_target":  "intel_gpu_ptl_h",
+                          "experimental":  true,
+                          "source_commit":  "5700726bed0aac3b7f597f072f0983b06c0fd740",
+                          "url":  "https://github.com/kbc20f11/TinyStrata/releases/download/intel-context-preview-20261115/TinyStrata-intel-windows-x64-qwen-family-ptl-h-20261115.zip",
+                          "bytes":  267651004,
+                          "sha256":  "5da7e0830dffcb643d01ba6d3b9281165f4f55e9c083421eaab48d999db6f0cd",
+                          "manifest_sha256":  "6b0a316a6b4eb070b6530fa603937bead78ac39075c1eb3c587c7f338cc379ba",
+                          "executable_sha256":  "015843c0ff2f770d5a5d25cd1954160e76610736c8ebed522a25d8df432dc240"
+                      },
+                      {
+                          "id":  "generic-qwen3.6-35b-a3b-20261115",
+                          "profile":  "generic",
+                          "model":  "qwen3.6-35b-a3b",
+                          "aot_target":  "",
+                          "experimental":  true,
+                          "source_commit":  "5700726bed0aac3b7f597f072f0983b06c0fd740",
+                          "url":  "https://github.com/kbc20f11/TinyStrata/releases/download/intel-context-preview-20261115/TinyStrata-intel-windows-x64-qwen-family-generic-20261115.zip",
+                          "bytes":  266988362,
+                          "sha256":  "37d02ee4df4ff4dc3455585bf63067e8ef246d6026358d1bc9779e01733936d0",
+                          "manifest_sha256":  "982970e03066ab7aea187af6b2c55005369f369b61ccb7dcc228b967f49b9147",
+                          "executable_sha256":  "7564f0f074cb81fe026aee9c80f9ca76c240091336248f253197d2d0d51e2f8e"
+                      },
+                      {
+                          "id":  "generic-tiel-coder-35b-a3b-20261115",
+                          "profile":  "generic",
+                          "model":  "tiel-coder-35b-a3b",
+                          "aot_target":  "",
+                          "experimental":  true,
+                          "source_commit":  "5700726bed0aac3b7f597f072f0983b06c0fd740",
+                          "url":  "https://github.com/kbc20f11/TinyStrata/releases/download/intel-context-preview-20261115/TinyStrata-intel-windows-x64-qwen-family-generic-20261115.zip",
+                          "bytes":  266988362,
+                          "sha256":  "37d02ee4df4ff4dc3455585bf63067e8ef246d6026358d1bc9779e01733936d0",
+                          "manifest_sha256":  "982970e03066ab7aea187af6b2c55005369f369b61ccb7dcc228b967f49b9147",
+                          "executable_sha256":  "7564f0f074cb81fe026aee9c80f9ca76c240091336248f253197d2d0d51e2f8e"
+                      }
+                  ]
 }

@@ -84,7 +84,7 @@ Gemma は `run-api.bat --model-family gemma4`（既定ポート 18082）、LFM �
 
 </details>
 
-Intel B390の**2026-11-15配布版**による規定テキスト計測（`standard: false`、4回起動・各2回、seed1234、context32768/chunk1024、INT8 KV/MTP3、画像未対応）:
+Intel B390の**旧c36版による履歴対照**として保持する規定テキスト計測（`standard: false`、4回起動・各2回、seed1234、context32768/chunk1024、INT8 KV/MTP3、画像未対応）。[現在のメモリーに応じた自動容量版](docs/intel-windows.md)の通常完答検証とは分けています:
 
 | Model | Generation tok/s | 4K prefill tok/s | 16K prefill tok/s |
 |---|---:|---:|---:|
