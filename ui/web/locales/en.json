@@ -684,7 +684,8 @@
   "metrics.sharedRam": "GPU shared RAM",
   "monitor.sharedRamNote": "Adapter total; included in RAM",
   "monitor.sharedRamHint": "Windows adapter-wide shared GPU memory usage includes other applications and overlaps physical RAM. It is not additional capacity or this model's memory usage.",
-  "placement.umaHint": "CPU and GPU share system RAM. Separate expert placement measurements are unavailable.",
+  "placement.umaHint": "Expert execution is fixed to GPU 100% / CPU 0% using shared system RAM. This is a policy, not GPU utilization or dedicated memory usage.",
+  "resources.fixedPolicy": "Fixed execution policy",
   "about.umaKv": "shared system RAM",
   "about.memoryTopology": "Memory",
   "about.umaMemory": "CPU/GPU share system RAM"

@@ -1181,11 +1181,22 @@ void sampling_option(Sampling& s, const std::string& field) {
 }
 int serve(Engine& engine, bool stochastic_mtp = false) {
     const auto device = engine.device_info();
-    std::printf("INFO backend=sycl experimental=1 kv=%s mtp=%d vision=0 memory_model=%s single_weight_store=1 device_vendor=%u device_id=%u device_integrated=%d device_architecture=%s adapter_luid=%s adapter_node_mask=%u\nREADY %d stop\n",
+    std::printf("INFO backend=sycl experimental=1 kv=%s mtp=%d vision=0 memory_model=%s single_weight_store=1 device_vendor=%u device_id=%u device_integrated=%d device_architecture=%s adapter_luid=%s adapter_node_mask=%u kv_used_tokens=%d\nREADY %d stop\n",
         engine.kv_type(), engine.mtp_depth(), device.integrated ? "uma" : "discrete", device.vendor_id, device.device_id, int(device.integrated),
         device.architecture.c_str(), device.adapter_luid.empty() ? "unknown" : device.adapter_luid.c_str(),
-        device.adapter_node_mask, engine.context());
+        device.adapter_node_mask, engine.consumed_tokens(), engine.context());
     std::fflush(stdout);
+    // Publish only committed model positions. Generated T tokens, transient MTP
+    // verification rows, and the allocated KV capacity are different quantities.
+    // The Python stdout pump already forwards dynamic INFO facts to /metrics.
+    int reported_position = engine.consumed_tokens();
+    const auto report_context_usage = [&] {
+        const int position = engine.consumed_tokens();
+        if (position == reported_position) return;
+        std::printf("INFO kv_used_tokens=%d\n", position);
+        std::fflush(stdout);
+        reported_position = position;
+    };
     strata::common::CommandInbox inbox;
     std::vector<int> live;
     if (engine.turn_checkpoint_enabled())
@@ -1239,6 +1250,7 @@ int serve(Engine& engine, bool stochastic_mtp = false) {
             engine.restore_turn(live, prompt);
             live.assign(engine.turn_prefix().begin(), engine.turn_prefix().end());
         } else if (reuse.source == turn_checkpoint::Source::reset) { engine.reset(); live.clear(); }
+        report_context_usage();
         const size_t reused = live.size();
         std::printf("RESUME %zu\n", reused);
         std::fflush(stdout);
@@ -1252,6 +1264,7 @@ int serve(Engine& engine, bool stochastic_mtp = false) {
             if (!logits) break;
             live.insert(live.end(), prompt.begin() + index, prompt.begin() + index + count);
             index += count;
+            report_context_usage();
             if (engine.turn_checkpoint_enabled() && checkpoint_requested && turn_at && index == turn_at && !inbox.cancelled().load())
                 engine.save_turn(live);
             const double elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
@@ -1310,6 +1323,9 @@ int serve(Engine& engine, bool stochastic_mtp = false) {
                     ++selected_row;
                     history.push_back(token); return token;
                 }, &inbox.cancelled(), propose);
+                // speculate() has committed its accepted prefix or rolled back
+                // an interrupted window before returning; never report inside it.
+                report_context_usage();
                 if (next.output.empty()) { finish = "cancel"; break; }
                 live.insert(live.end(), next.inputs.begin(), next.inputs.end());
                 ready = std::move(next.output);
@@ -1324,8 +1340,13 @@ int serve(Engine& engine, bool stochastic_mtp = false) {
             ++produced;
             history.push_back(token);
             if (engine.terminal(token)) { finish = "stop"; break; }
-            if (index + 1 < max_new) { logits = engine.step(token); live.push_back(token); }
+            if (index + 1 < max_new) {
+                logits = engine.step(token);
+                live.push_back(token);
+                report_context_usage();
+            }
         }
+        report_context_usage(); // Also covers cancelled/empty prefill and terminal output.
         const double decode_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - decode_start).count();
         engine.print_spec_stats();
         host_profile::print();

@@ -678,7 +678,8 @@
   "metrics.sharedRam": "GPU共有RAM",
   "monitor.sharedRamNote": "GPU全体の使用量・RAMに含まれます",
   "monitor.sharedRamHint": "Windowsが報告する、このGPU全体の共有メモリー使用量です。他のアプリも含み、物理RAMと重複します。追加の容量や、このモデルだけの使用量ではありません。",
-  "placement.umaHint": "CPUとGPUは同じシステムRAMを使います。エキスパート配置の個別の実測値は利用できません。",
+  "placement.umaHint": "共有システムRAMを使い、エキスパートの実行はGPU 100% / CPU 0%に固定されます。GPUの稼働率や専用メモリー使用量ではありません。",
+  "resources.fixedPolicy": "実行先は固定",
   "about.umaKv": "共有システムRAMに保持",
   "about.memoryTopology": "メモリー",
   "about.umaMemory": "CPUとGPUでシステムRAMを共有"

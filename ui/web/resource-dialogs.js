@@ -9,7 +9,7 @@
     compact: "Compact now", compactNote: "Summarize older exchanges while keeping recent turns. The full original history stays saved; summaries can omit details.",
     compactDisabled: "There are no older exchanges to summarize yet.", compacting: "Summarizing earlier conversation…", compacted: "Compacted: {before} → {after} tokens", summary: "View summary",
     placementTitle: "Expert placement", placementDescription: "Choose how much of this model’s expert weights to keep on the GPU. This is placement, not hardware utilization.",
-    actual: "Current placement", gpu: "GPU", cpu: "CPU", automatic: "Automatic", manual: "Custom", target: "GPU target", requested: "Requested: {pct}% GPU", autoRequested: "Automatic placement",
+    actual: "Current placement", fixedPolicy: "Fixed execution policy", gpu: "GPU", cpu: "CPU", automatic: "Automatic", manual: "Custom", target: "GPU target", requested: "Requested: {pct}% GPU", autoRequested: "Automatic placement",
     legacyBudget: "Existing memory limit: {n} GiB. Choose Automatic or Custom to replace it.",
     legacyPlacement: "Existing manual placement. Choose Automatic or Custom to replace it.",
     countDescription: "Choose how many experts across this model’s layers stay in GPU memory. The rest stay on the CPU side. Percentages show placement, not hardware utilization.",
@@ -76,12 +76,15 @@
     function render() {
       snapshot = get();
       const changed = dialog.open && String(snapshot.model || "") !== model;
-      const data = {...(kind === "kv" ? snapshot.kv : snapshot.placement), ...(cached || {})};
+      const fixed = kind === "placement" && snapshot.placement?.fixed === true;
+      // Live topology owns the policy. A settings read cached before a switch
+      // must not expose controls or discrete resident counts on shared memory.
+      const data = fixed ? {...snapshot.placement, adjustable: false} : {...(kind === "kv" ? snapshot.kv : snapshot.placement), ...(cached || {})};
       const busy = !!snapshot.busy || changed;
       find(".resource-dialog__model").textContent = model;
       find(`#${id}-title`).textContent = text(kind === "kv" ? "kvTitle" : "placementTitle");
-      countMode = kind === "placement" ? countGeometry(data) : null;
-      find(`#${id}-description`).textContent = text(kind === "kv" ? "kvDescription" : countMode ? "countDescription" : "placementDescription");
+      countMode = kind === "placement" && !fixed ? countGeometry(data) : null;
+      find(`#${id}-description`).textContent = fixed ? data.reason || text("fixedPolicy") : text(kind === "kv" ? "kvDescription" : countMode ? "countDescription" : "placementDescription");
       find("[data-kv]").hidden = kind !== "kv";
       find("[data-placement]").hidden = kind !== "placement";
       find("[data-dismiss]").setAttribute("aria-label", text("close"));
@@ -89,7 +92,8 @@
       find("[data-close]").textContent = text(pending && kind === "kv" ? "stop" : "close");
       find("[data-close]").disabled = stopping || pending && kind === "placement";
       find("[data-action]").textContent = text(pending ? kind === "kv" ? "compacting" : "applying" : kind === "kv" ? "compact" : "apply");
-      let reason = changed ? text("modelChanged") : busy ? text("busy") : data.reason || "";
+      find("[data-action]").hidden = fixed;
+      let reason = changed ? text("modelChanged") : busy ? text("busy") : fixed ? "" : data.reason || "";
       if (kind === "kv") {
         const sample = usage(data), donut = find(".resource-dialog__donut"), ring = find(".resource-dialog__ring-fill");
         donut.dataset.available = String(!!sample);
@@ -108,7 +112,7 @@
         summary.querySelector("summary").textContent = text("summary"); summary.querySelector("div").textContent = lastSummary;
       } else {
         const gpu = percent(data.gpuPct), cpu = percent(data.cpuPct);
-        find("[data-actual-label]").textContent = text("actual"); find("[data-gpu-label]").textContent = text("gpu"); find("[data-cpu-label]").textContent = text("cpu");
+        find("[data-actual-label]").textContent = text(fixed ? "fixedPolicy" : "actual"); find("[data-gpu-label]").textContent = text("gpu"); find("[data-cpu-label]").textContent = text("cpu");
         for (const [name, pct] of [["gpu", gpu], ["cpu", cpu]]) {
           const hasCount = countMode && pct != null && Number.isSafeInteger(data[name]);
           find(`[data-${name}-actual]`).textContent = hasCount ? number(data[name]) : pct == null ? "–" : number(pct, 1) + "%";
@@ -122,6 +126,7 @@
         const legacyGiB = finite(data.legacyBudgetGiB) && data.legacyBudgetGiB >= 0;
         const legacy = requested == null && (data.legacyBudget === true || legacyGiB || finite(data.legacyExpertSlots));
         find(".resource-dialog__requested").textContent = legacy ? legacyGiB ? text("legacyBudget", {n: number(data.legacyBudgetGiB, 2)}) : text("legacyPlacement") : requested == null ? text("autoRequested") : countMode ? text("requestedExperts", {count: number(requested), total: number(countMode.total), pct: number(requested / countMode.total * 100, 1)}) : text("requested", {pct: number(requested)});
+        for (const selector of [".resource-dialog__requested", ".resource-dialog__mode", ".resource-dialog__range", "[data-placement-note]"]) find(selector).hidden = fixed;
         if (!dirty && !pending) draft = requested;
         modeInputs[0].checked = draft == null && !(legacy && !dirty); modeInputs[1].checked = draft != null;
         find(".resource-dialog__mode legend").textContent = text("placementTitle");
@@ -131,12 +136,12 @@
         range.dataset.unit = countMode ? "experts" : "percent";
         if (draft != null) range.value = String(draft);
         else if (!dirty && !pending) range.value = String(countMode ? targetCount(data.gpu, countMode) ?? targetCount(countMode.total / 2, countMode) : targetPercent(gpu) ?? 50);
-        const disabled = pending || reading || busy || data.adjustable !== true;
+        const disabled = fixed || pending || reading || busy || data.adjustable !== true;
         modeInputs.forEach((input) => input.disabled = disabled); range.disabled = disabled || draft == null;
         numberInput.hidden = !countMode; numberInput.disabled = range.disabled;
         numberInput.max = String(countMode?.total || 100); numberInput.step = String(countMode?.step || 10);
         if (!numberEditing) numberInput.value = String(draft ?? range.value);
-        find("[data-count-step]").hidden = !countMode;
+        find("[data-count-step]").hidden = fixed || !countMode;
         find("[data-count-step]").textContent = countMode ? text("countStep", {n: number(countMode.step)}) : "";
         const targetText = draft == null ? text("automatic") : countMode ? text("expertTarget", {count: number(draft), total: number(countMode.total), pct: number(draft / countMode.total * 100, 1)}) : number(draft) + "%";
         range.setAttribute("aria-valuetext", targetText);
@@ -145,7 +150,7 @@
         if (ticks.length === 3) ticks.forEach((tick, index) => tick.textContent = countMode ? number(targetCount(countMode.total * index / 2, countMode)) : `${index * 50}%`);
         find("[data-placement-note]").textContent = text(countMode ? "countNote" : "placementNote");
         find("[data-action]").disabled = disabled || typeof options.onPlacement !== "function" || !dirty;
-        if (!reason && !reading && data.adjustable !== true) reason = text("placementDisabled");
+        if (!reason && !reading && !fixed && data.adjustable !== true) reason = text("placementDisabled");
       }
       const feedback = find(".resource-dialog__status"); feedback.textContent = statusText(); feedback.dataset.state = failureText ? "error" : pending || reading ? "working" : status?.key === "stopped" ? "neutral" : status ? "success" : "neutral";
       find(".resource-dialog__reason").textContent = reason; find(".resource-dialog__reason").hidden = !reason;

@@ -674,5 +674,7 @@
   "thinking.alwaysOn": "始终开启",
   "thinking.high": "高 (xhigh)",
   "models.selectModel": "选择模型",
-  "models.downloadFirst": "请先在模型管理中下载模型"
+  "models.downloadFirst": "请先在模型管理中下载模型",
+  "placement.umaHint": "专家使用共享系统内存，执行位置固定为 GPU 100% / CPU 0%。这是执行策略，并非 GPU 利用率或专用显存使用量。",
+  "resources.fixedPolicy": "固定执行策略"
 }

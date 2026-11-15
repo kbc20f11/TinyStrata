@@ -43,6 +43,7 @@
 !/tests/test_intel_options.py
 !/tests/test_intel_runtime_stage.py
 !/tests/test_intel_telemetry.py
+!/tests/test_intel_context_telemetry.py
 !/tests/test_intel_backend.py
 !/tests/test_intel_launch.py
 !/tests/test_intel_server_integration.py

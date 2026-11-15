@@ -2,6 +2,15 @@
 
 更新日: 2026-11-15
 
+## Intel UMAフッターの修正（2026-11-15）
+
+- ユーザー指定により、UMAのエキスパート表示はGPU 100% / CPU 0%の実行方針として固定し、配置操作を無効にする。稼働率・専用VRAM占有・実測した常駐Expert数とは扱わない。古い配置設定がsupported=trueでもUMA判定を優先し、直接呼び出しからの配置変更も防ぐ。CUDA/HIPの個別メモリー構成の操作は維持する
+- Intel nativeはconsumed_tokens()の確定位置をINFO kv_used_tokensへ通知する。prefill・通常decode・投機のcommit/rollback後・turn復元/reset・終了/cancelを対象とし、出力数や確保済み容量から推測しない。既存stdout pumpと/metricsがUIへ渡す
+- CPUの実stdout pump/Service.metrics検査、配置ダイアログ検査を通過。PlaywrightでUMAの代表メトリクスを用い、50%→73.2%→reset・unload・旧binaryで値なしの表示、古い配置設定より固定方針を優先、マウス/キーボード無効、配置API呼び出しなし、ライト/ダークのスクリーンショットを確認した。これはIntel実GPUでの確認ではない
+- 実Blackwellの通常APIを修正版UIから利用し、訂正と却下案を含む5,473入力トークンの資料から8項目を全て原資料と照合、12.7秒で生成完了。実KV 6,993 / 262,144と配置操作を確認した。設定・モデル・通常チャット履歴は変更していない
+- このPCにIntel GPU/oneAPI compilerがなくnative再build・実Intel検査は未実施。配布済みc36a84aにはこのKV通知がないため、UI更新だけで実KV表示が完成したとは扱わない。[Issue #18](https://github.com/kbc20f11/TinyStrata/issues/18)でPTL-H/generic binary再build・配布ZIP/catalog hash更新とB390での通常導入/UI再確認を継続する。検証記録はTinyStrata-work/intel-resource-footer-20261115
+- 未対応のGemma/LFM/CloverのIntelモデル追加計画は[Issue #19](https://github.com/kbc20f11/TinyStrata/issues/19)。作成したgoalは実装計画であり、これらの対応が完了した意味ではない
+
 ## Intelレビュー対応（2026-11-15）
 
 - **配布版の規定計測完走**: runtime source `c36a84a4657f27d4051c1b2d1b9e9f6050d75c55`、PTL-H exe `86d46415...`でQwen4→Tiel4をfresh一括実行。generation/4K/16KはQwen32.88/307.12/274.02、Tiel25.77/237.61/217.97 tok/s。全64測定reused0・checkpoint明示off・private設定hash不変・native正常unload8件。初回tokenizer未指定はAPI引数検証で失敗し測定0（CPU capabilities probeあり）として保存、別fresh cohortで完走し、測定の途中停止／再開はしていない。20261114比は歴史対照で単独因果を主張しない。Tiel生成差+0.47%は小さく、4K/16Kはほぼ横ばい、30tok/s未達。

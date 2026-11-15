@@ -47,6 +47,8 @@ class IntelNative(unittest.TestCase):
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         cls.lines = queue.Queue()
         cls.transcript = []
+        cls.kv_used_tokens = None
+        cls.kv_samples = []
         def read():
             for line in cls.proc.stdout:
                 cls.transcript.append(line.rstrip())
@@ -69,6 +71,11 @@ class IntelNative(unittest.TestCase):
         if line is None:
             cls.stderr.seek(0)
             raise AssertionError("Intel engine exited: " + cls.stderr.read().decode("utf-8", errors="replace")[-2000:])
+        if line.startswith("INFO "):
+            for field in line.split()[1:]:
+                if field.startswith("kv_used_tokens="):
+                    cls.kv_used_tokens = int(field.partition("=")[2])
+                    cls.kv_samples.append(cls.kv_used_tokens)
         return line
 
     @classmethod
@@ -122,10 +129,13 @@ class IntelNative(unittest.TestCase):
         return self.tokenizer.decode([token for token in ids if token != eos]).strip()
 
     def test_arithmetic_and_terminal(self):
-        ids, _, done = self.generate(self.prompt())
+        prompt = self.prompt()
+        ids, _, done = self.generate(prompt)
         self.assertEqual(self.text(ids), "5")
         self.assertEqual(done[5], "stop")
         self.assertEqual(int(done[1]), len(ids))
+        # The final sampled token (including EOS) has not been fed back into KV.
+        self.assertEqual(self.kv_used_tokens, len(prompt) + len(ids) - 1)
         self.assertLessEqual(int(done[6]), int(done[7]))
         if int(os.environ.get("TINYSTRATA_INTEL_MTP", "0")):
             self.assertGreater(int(done[7]), 0)
@@ -139,16 +149,22 @@ class IntelNative(unittest.TestCase):
         answer, reused, _ = self.generate(next_turn)
         self.assertGreaterEqual(reused, len(prompt))
         self.assertEqual(self.text(answer), "6")
-        answer, reused, _ = self.generate(self.prompt("What is 2 + 4? Answer with one number."))
+        samples_before_edit = len(self.kv_samples)
+        edited = self.prompt("What is 2 + 4? Answer with one number.")
+        answer, reused, _ = self.generate(edited)
         self.assertEqual(reused, 0)
         self.assertEqual(self.text(answer), "6")
+        self.assertIn(0, self.kv_samples[samples_before_edit:])
+        self.assertEqual(self.kv_used_tokens, len(edited) + len(answer) - 1)
 
     def test_invalid_requests_preserve_state(self):
         prompt = self.prompt()
         self.generate(prompt, 1)
+        self.assertEqual(self.kv_used_tokens, len(prompt))
         for command in ("GEN 1 99999999", "GENI 1 invalid 1", "GEN 1 mtp_auto=1 1", "GEN 1024 1,2"):
             self.send(command)
             self.assertTrue(self.next_line().startswith("ERR "), command)
+            self.assertEqual(self.kv_used_tokens, len(prompt))
         output, reused, _ = self.generate(prompt, 1)
         self.assertEqual(reused, len(prompt))
         self.assertEqual(self.text(output), "5")
@@ -166,6 +182,7 @@ class IntelNative(unittest.TestCase):
         self.assertEqual(done[5], "cancel")
         processed = int(done[8]) + int(done[14])
         self.assertLess(processed, len(prompt))
+        self.assertEqual(self.kv_used_tokens, processed)
         # The cancelled prefill skipped its output head. Reusing exactly that
         # prefix must calculate fresh logits, not use the preceding request's.
         cached, reused, done = self.generate(prompt[:processed], 1)

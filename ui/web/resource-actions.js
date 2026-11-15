@@ -16,11 +16,11 @@ function resourceChatRequest(rows) {
 function resourceSnapshot() {
   const unloaded = lastMetrics?.live?.state === "unloaded";
   const engine = placementSampleValid && !unloaded && !modelSwitching && !modelOp ? lastMetrics?.engine : null;
-  const kv = contextUsage(engine), placement = expertPlacement(engine);
+  const kv = contextUsage(engine), fixed = fixedExpertPlacement(lastMetrics), placement = expertPlacement(engine);
   const configured = resourcePlacementSettings.get(health.model);
   return {model: health.model, busy: modelOperationBusy(),
     kv: {used: kv?.used, total: kv?.total, canCompact: StrataContextCompaction.canCompact(messages, {checkpoint: chat?.compaction})},
-    placement: {gpuPct: placement?.gpuPct, cpuPct: placement?.cpuPct, gpu: placement?.gpu, cpu: placement?.cpu, total: placement?.total ?? configured?.expert_total,
+    placement: fixed ? {...fixed, reason: fixedExpertPlacementHint()} : {gpuPct: placement?.gpuPct, cpuPct: placement?.cpuPct, gpu: placement?.gpu, cpu: placement?.cpu, total: placement?.total ?? configured?.expert_total,
       requestedGpuPercent: configured?.gpu_percent ?? null, adjustable: configured?.supported === true,
       requestedGpuExperts: configured?.gpu_experts ?? null, countStep: configured?.count_step,
       legacyBudget: configured?.legacy_budget === true, legacyBudgetGiB: configured?.legacy_budget ? configured.expert_vram_gib : null,
@@ -41,6 +41,9 @@ async function readResourceKV({signal, model}) {
 }
 
 async function readResourcePlacement({signal, model}) {
+  if (model !== health.model) throw new Error(tr("resources.modelChanged", "The model changed. Reopen this dialog to continue."));
+  const fixed = fixedExpertPlacement(lastMetrics);
+  if (fixed) return {...fixed, reason: fixedExpertPlacementHint()};
   let value;
   try { value = await modelControl("v1/model/expert-placement", {signal}); }
   catch (error) {
@@ -49,6 +52,10 @@ async function readResourcePlacement({signal, model}) {
   }
   if (model !== health.model || value.placement?.model !== model)
     throw new Error(tr("resources.modelChanged", "The model changed. Reopen this dialog to continue."));
+  // A metrics refresh may have identified UMA while the settings read was in
+  // flight. A managed endpoint must not re-enable a discrete placement slider.
+  const currentFixed = fixedExpertPlacement(lastMetrics);
+  if (currentFixed) return {...currentFixed, reason: fixedExpertPlacementHint()};
   resourcePlacementSettings.set(model, value.placement);
   return {requestedGpuPercent: value.placement.gpu_percent, requestedGpuExperts: value.placement.gpu_experts,
     total: value.placement.expert_total, countStep: value.placement.count_step, adjustable: value.placement.supported === true,
@@ -89,6 +96,7 @@ async function compactResourceKV({signal, model, onProgress}) {
 }
 
 async function applyResourcePlacement({signal, model, gpuPercent, gpuExperts, onProgress}) {
+  if (fixedExpertPlacement(lastMetrics)) throw new Error(fixedExpertPlacementHint());
   if (modelOperationBusy() || model !== health.model) throw new Error(tr("resources.busy", "Wait for the current operation to finish."));
   resourceOperation = "placement"; placementSampleValid = false; setBusy(false);
   try {
@@ -117,5 +125,5 @@ function initResourceDialogs() {
   resourceDialogs = StrataResourceDialogs.create({getSnapshot: resourceSnapshot, readKV: readResourceKV, readPlacement: readResourcePlacement,
     onCompact: compactResourceKV, onPlacement: applyResourcePlacement, tr, format: fmt});
   $("chat-context").onclick = () => resourceDialogs.openKV($("chat-context"));
-  $("chat-placement").onclick = () => resourceDialogs.openPlacement($("chat-placement"));
+  $("chat-placement").onclick = () => { if (!fixedExpertPlacement(lastMetrics)) resourceDialogs.openPlacement($("chat-placement")); };
 }

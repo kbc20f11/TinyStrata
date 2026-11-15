@@ -273,11 +273,12 @@ button, input, textarea, select { -webkit-tap-highlight-color: transparent; }
   text-decoration: none;
 }
 .chat-context:hover,
-.chat-placement:hover { color: var(--st-ink); }
+.chat-placement:not(:disabled):hover { color: var(--st-ink); }
 .chat-context,
 .chat-placement { padding: 3px 6px; min-height: 28px; border: 1px solid transparent; border-radius: 0; background: transparent; cursor: pointer; }
 .chat-context:hover,
-.chat-placement:hover { background: var(--st-surface-2); border-color: var(--st-line); }
+.chat-placement:not(:disabled):hover { background: var(--st-surface-2); border-color: var(--st-line); }
+.chat-placement:disabled { cursor: default; opacity: 1; }
 .chat-context { gap: 7px; }
 .chat-context__label,
 .chat-placement__label { min-width: 0; font-family: var(--st-font); }

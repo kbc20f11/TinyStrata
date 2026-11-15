@@ -680,5 +680,7 @@
   "thinking.alwaysOn": "Siempre activado",
   "thinking.high": "Alto (xhigh)",
   "models.selectModel": "Seleccionar modelo",
-  "models.downloadFirst": "Descarga un modelo desde Modelos para empezar"
+  "models.downloadFirst": "Descarga un modelo desde Modelos para empezar",
+  "placement.umaHint": "Los expertos se ejecutan con RAM compartida del sistema, fijos en GPU 100% / CPU 0%. Es una política, no la utilización de la GPU ni el uso de memoria dedicada.",
+  "resources.fixedPolicy": "Política de ejecución fija"
 }

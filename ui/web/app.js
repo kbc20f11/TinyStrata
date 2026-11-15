@@ -510,22 +510,33 @@ function expertPlacement(eng) {
   const gpuPct = Math.round(1000 * gpu / total) / 10;
   return {total, gpu, cpu: total - gpu, gpuPct, cpuPct: Math.round((100 - gpuPct) * 10) / 10};
 }
+// UMA uses GPU execution over one shared RAM pool, not discrete expert-cache
+// residency. This fixed policy remains true while a model is unloaded; it is
+// not a sample of active GPU work and must never invent resident expert counts.
+function fixedExpertPlacement(m) {
+  return m && umaMemory(m.engine || {}, m.hardware_static || {}) ? {fixed: true, gpuPct: 100, cpuPct: 0, adjustable: false} : null;
+}
+function fixedExpertPlacementHint() {
+  return tr("placement.umaHint", "Expert execution is fixed to GPU 100% / CPU 0% using shared system RAM. This is a policy, not GPU utilization or dedicated memory usage.");
+}
 function renderPlacement(m) {
   const el = $("chat-placement"), live = m && m.live || {};
   const unloaded = live.state === "unloaded";
-  const uma = m && umaMemory(m.engine || {}, m.hardware_static || {});
-  // The discrete cache's slot counts do not measure CPU/GPU placement on UMA.
-  const sample = placementSampleValid && !modelSwitching && !modelOp && !unloaded && m && !uma ? expertPlacement(m.engine) : null;
+  const fixed = fixedExpertPlacement(m);
+  const sample = fixed || (placementSampleValid && !modelSwitching && !modelOp && !unloaded && m ? expertPlacement(m.engine) : null);
   const label = tr("placement.label", "Expert placement");
-  el.dataset.state = sample ? "ready" : "unknown";
+  el.dataset.state = fixed ? "fixed" : sample ? "ready" : "unknown";
+  el.disabled = !!fixed;
+  if (fixed) { el.setAttribute("aria-disabled", "true"); el.removeAttribute("aria-haspopup"); }
+  else { el.removeAttribute("aria-disabled"); el.setAttribute("aria-haspopup", "dialog"); }
   $("placement-track").hidden = !sample;
   $("placement-cpu").textContent = sample ? `${fmt(sample.cpuPct, 1)}%` : "–";
   $("placement-gpu").textContent = sample ? `${fmt(sample.gpuPct, 1)}%` : "–";
-  $("placement-cpu-bar").style.width = sample ? `${100 * sample.cpu / sample.total}%` : "0%";
-  $("placement-gpu-bar").style.width = sample ? `${100 * sample.gpu / sample.total}%` : "0%";
-  const note = uma ? tr("placement.umaHint", "CPU and GPU share system RAM. Separate expert placement measurements are unavailable.")
+  $("placement-cpu-bar").style.width = fixed ? "0%" : sample ? `${100 * sample.cpu / sample.total}%` : "0%";
+  $("placement-gpu-bar").style.width = fixed ? "100%" : sample ? `${100 * sample.gpu / sample.total}%` : "0%";
+  const note = fixed ? fixedExpertPlacementHint()
     : tr("placement.hint", "GPU shows the experts resident in VRAM; CPU shows the remainder on the RAM side. Shared weights, KV cache and the image encoder are excluded. This is placement, not hardware utilization.");
-  const detail = sample ? tr("placement.counts", "GPU {gpu} / {total} experts · CPU {cpu} / {total}",
+  const detail = fixed ? tr("resources.fixedPolicy", "Fixed execution policy") : sample ? tr("placement.counts", "GPU {gpu} / {total} experts · CPU {cpu} / {total}",
     {gpu: fmt(sample.gpu), cpu: fmt(sample.cpu), total: fmt(sample.total)})
     : modelSwitching ? tr("model.switching", "Switching model…")
     : unloaded ? tr("placement.unloaded", "Load a model to see its expert placement.")
