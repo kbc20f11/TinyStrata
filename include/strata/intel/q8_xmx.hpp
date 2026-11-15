@@ -10,7 +10,7 @@ inline bool q8_xmx_supports(int type) { return type == 14 || type == 18 || type 
 sycl::event q8_xmx_product(sycl::queue& q, int type, const uint8_t* weights,
     const int8_t* input, const float* input_scales, float* output, int rows, int width,
     ExpertPlan plan, bool separate, const uint32_t* iq2, const uint32_t* iq3, bool interleaved = false,
-    const uint32_t* iq3xxs = nullptr, const uint8_t* iq_signs = nullptr);
+    const uint32_t* iq3xxs = nullptr, const uint8_t* iq_signs = nullptr, bool large_prefill_packed = false);
 sycl::event q6_interleaved_product(sycl::queue& q, const uint8_t* weights, const int8_t* input,
     const float* scales, float* output, int rows, int width, int tokens);
 // Four K partitions; partial needs 4*tokens*rows floats, bounded to 1 MiB.
