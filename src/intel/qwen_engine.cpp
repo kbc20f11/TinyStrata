@@ -725,6 +725,13 @@ public:
         if (device_state_) std::fprintf(stderr, "Intel state_memory=device cpu_control_and_logits=shared\n");
         prefill_int8_xmx_ = prefill_int8_xmx;
         mtp_depth_ = mtp_depth;
+        bool measured_clover_runtime = false;
+#ifdef TINYSTRATA_INTEL_AOT_TARGET
+        measured_clover_runtime = std::string(TINYSTRATA_INTEL_AOT_TARGET) == "intel_gpu_ptl_h";
+#endif
+        clover_fused_t1_hint_ = experimental_clover && measured_clover_runtime &&
+            selected_device.vendor_id == 0x8086 && selected_device.device_id == 0xB082 &&
+            selected_device.integrated && selected_device.ptl_h_aot;
         if(const char* setting=experimental_clover?std::getenv("STRATA_INTEL_CLOVER_FUSED_T1"):nullptr){
             const std::string value(setting);
             if(value!="0"&&value!="1")throw std::runtime_error("STRATA_INTEL_CLOVER_FUSED_T1 requires0 or1");
