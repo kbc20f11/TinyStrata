@@ -1,5 +1,6 @@
 # TinyStrata の作業メモ
 
+- Write GitHub Issue comments and progress reports in English. The owner explicitly requested this on 2026-11-15; Japanese chat does not imply Japanese Issue posts.
 - KV形式、思考強度、ベンチの条件を説明・変更する前に、[開発メモ](docs/development-memory.md) と該当するREADME・実測記録を読む
 - 既に決まったモデル別の採用条件を忘れて再質問したり、Gemmaの制約を全モデルへ広げたりしない。後続のユーザー指示を優先する
 - 設定値 `auto` と実行時のKV形式を区別し、実測ログや `/metrics` で確認した値を書く
