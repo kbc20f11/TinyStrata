@@ -69,6 +69,25 @@ int main(){try{
         auto snapshot=q;snapshot.turn_checkpoint=false;
         check(p.host_only-cp::qwen(c,snapshot).host_only==30ull*(32*128*128+64*128*3)*4+2048*4*2+c*4);
     }
+    // Paired prefill retains one additional chunk bank, not another KV or
+    // compressed-weight arena. Sum actual float/control owner allocations.
+    for(uint64_t chunk:{1,128,1024})for(bool device_state:{false,true}){
+        auto single=q;single.chunk=chunk;single.device_state=device_state;
+        auto paired=single;paired.npu_pair=true;
+        const auto before=cp::qwen(32768,single),after=cp::qwen(32768,paired);
+        const uint64_t floats=chunk*(2048+2048+8192+4096+32+32)*sizeof(float);
+        const uint64_t controls=chunk*2*sizeof(int32_t);
+        check(after.device-before.device==floats+controls);
+        check(after.owned_device-before.owned_device==floats+controls);
+        check(after.host_visible-before.host_visible==(device_state?controls:floats+controls));
+        check(after.owned_host_visible-before.owned_host_visible==after.host_visible-before.host_visible);
+        check(after.host_only==before.host_only&&after.cache==before.cache);
+        check(after.uma_total()-before.uma_total()==floats+controls);
+        if(chunk==1024){check(floats==67371008);check(controls==8192);}
+        MemoryBudget exact{10*GiB,10*GiB,before.device,true,true};
+        check(cp::fits(exact,16*GiB,before));check(!cp::fits(exact,16*GiB,after));
+        exact.wddm_available=after.device;check(cp::fits(exact,16*GiB,after));
+    }
     // A remaining10GiB RAM/commit snapshot means6GiB after the existing OS
     // floor, once. All full model limits fit this synthetic UMA budget.
     MemoryBudget uma{10*GiB,10*GiB,12*GiB,true,true};

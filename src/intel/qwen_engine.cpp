@@ -30,6 +30,7 @@
 #include "strata/intel/gpu_support_policy.hpp"
 #include <cstdlib>
 #include <functional>
+#include <exception>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -48,6 +49,10 @@ namespace {
 namespace graph_api = sycl::ext::oneapi::experimental;
 struct LayerState { float* recurrent = nullptr; float* convolution = nullptr; float* key = nullptr; float* value = nullptr; Q8Kv q8; };
 struct VerifyInputs { float *qkv = nullptr, *conv = nullptr, *alpha = nullptr, *beta = nullptr; };
+struct PrefillBank {
+    float *x = nullptr, *h = nullptr, *qkv = nullptr, *z = nullptr, *alpha = nullptr, *beta = nullptr;
+    int32_t *tokens = nullptr, *positions = nullptr;
+};
 class Engine {
     sycl::queue q_;
     std::unique_ptr<WeightStore> weights_;
@@ -63,6 +68,11 @@ class Engine {
     bool npu_defer_qkv_ = false;
     size_t npu_deferred_qkv_calls_ = 0, npu_deferred_qkv_error_drains_ = 0;
 #endif
+    bool npu_pair_chunks_ = false, npu_pair_trace_ = false;
+    uint64_t npu_pair_attempts_ = 0, npu_pair_commits_ = 0, npu_pair_chunks_count_ = 0;
+    uint64_t npu_pair_cancels_ = 0, npu_pair_boundary_refusals_ = 0, npu_pair_cancel_pending_drains_ = 0;
+    uint64_t npu_pair_npu_calls_ = 0;
+    PrefillBank pair_bank_;
     std::vector<void*> allocations_;
     std::vector<LayerState> layers_, checkpoints_;
     std::vector<VerifyInputs> verify_inputs_;
@@ -185,8 +195,8 @@ class Engine {
         return it == weights_->metadata().end() ? fallback : it->second.num();
     }
 #if defined(TINYSTRATA_INTEL_NPU) && defined(TINYSTRATA_INTEL_MKL)
-    bool begin_deferred_qkv(const std::string& name, const float* input, float* output, int tokens) {
-        if (!npu_defer_qkv_ || !npu_ || !gemm_ || tokens < 128) return false;
+    bool begin_deferred_qkv(const std::string& name, const float* input, float* output, int tokens, bool paired = false) {
+        if ((!npu_defer_qkv_ && !paired) || !npu_ || !gemm_ || tokens < 128) return false;
         const auto& t = tensor(name);
         const int width = int(t.info.shape[0]);
         const int rows = t.info.shape.size() < 2 ? 1 : int(t.info.shape[1]);
@@ -329,6 +339,9 @@ class Engine {
 #endif
             throw;
         }
+        gdn_tail(prefix, state, tokens, layer);
+    }
+    void gdn_tail(const std::string& prefix, const LayerState& state, int tokens, size_t layer) {
         // The joined merge is ahead of every QKV consumer on the same
         // in-order queue. Persistent convolution/recurrent state starts below.
         const float *dt = f32(prefix + "ssm_dt.bias"), *ssm_a = f32(prefix + "ssm_a");
@@ -613,6 +626,24 @@ class Engine {
         }
         return true;
     }
+    PrefillBank current_bank() const {
+        return {x_, h_, qkv_, z_, alpha_, beta_, token_input_, position_input_};
+    }
+    void use_bank(const PrefillBank& bank) noexcept {
+        x_ = bank.x; h_ = bank.h; qkv_ = bank.qkv; z_ = bank.z;
+        alpha_ = bank.alpha; beta_ = bank.beta; token_input_ = bank.tokens; position_input_ = bank.positions;
+    }
+    struct BankGuard {
+        Engine& engine;
+        PrefillBank primary;
+        void restore() noexcept { engine.use_bank(primary); }
+        ~BankGuard() { restore(); }
+    };
+    void finish_layer(const std::string& prefix, int count) {
+        add(x_, mixer_, count * n_);
+        remember("rms_norm", rms_norm(q_, x_, f32(prefix + "post_attention_norm.weight"), h_, count, n_, epsilon_));
+        moe(prefix, count);
+    }
     void checkpoint(bool restore, bool hidden = true) {
         for (size_t i = 0; i < layers_.size(); ++i) if (layers_[i].recurrent) {
             const auto& state = layers_[i]; const auto& saved = checkpoints_[i];
@@ -781,13 +812,31 @@ public:
             if (value != "0" && value != "1") throw std::invalid_argument("STRATA_REVIEW_NPU_DEFER_QKV must be0 or1");
             npu_defer_qkv_ = value == "1";
         }
-        if (npu_defer_qkv_) {
+        if (const char* raw = std::getenv("STRATA_REVIEW_NPU_PAIR_CHUNKS"); raw && *raw) {
+            const std::string value(raw);
+            if (value != "0" && value != "1") throw std::invalid_argument("STRATA_REVIEW_NPU_PAIR_CHUNKS must be0 or1");
+            npu_pair_chunks_ = value == "1";
+        }
+        if (const char* raw = std::getenv("STRATA_REVIEW_NPU_PAIR_TRACE"); raw && *raw) {
+            const std::string value(raw);
+            if (value != "0" && value != "1") throw std::invalid_argument("STRATA_REVIEW_NPU_PAIR_TRACE must be0 or1");
+            npu_pair_trace_ = value == "1";
+        }
+        if (npu_pair_trace_ && !npu_pair_chunks_)
+            throw std::invalid_argument("PAIR_TRACE requires PAIR_CHUNKS=1; traced timings are diagnostic only");
+        if (npu_pair_chunks_ && chunk < 128)
+            throw std::invalid_argument("Paired chunks require chunk>=128");
+        if (npu_defer_qkv_ || npu_pair_chunks_) {
             if (experimental_tiel || experimental_clover)
-                throw std::invalid_argument("Deferred QKV is currently a Qwen3.6-only review candidate");
+                throw std::invalid_argument("Deferred/paired QKV is currently a Qwen3.6-only review candidate");
             const char* raw_mode = std::getenv("STRATA_REVIEW_NPU_SPLIT");
             const std::string mode = raw_mode ? raw_mode : "";
-            if (!prefill_mkl || (mode != "parallel" && mode != "remote"))
-                throw std::invalid_argument("Deferred QKV requires --prefill-mkl and parallel/remote NPU split");
+            if (!prefill_mkl)
+                throw std::invalid_argument("Deferred/paired QKV requires --prefill-mkl");
+            if (npu_defer_qkv_ && mode != "parallel" && mode != "remote")
+                throw std::invalid_argument("Deferred QKV requires parallel/remote NPU split");
+            if (npu_pair_chunks_ && (prefill_npu || raw_mode) && !npu_defer_qkv_)
+                throw std::invalid_argument("NPU paired chunks require DEFER_QKV=1; GPU-only pairing leaves NPU disabled");
         }
 #endif
         const auto selected_device = inspect_device(q_.get_device());
@@ -907,6 +956,7 @@ public:
             context_shape.dense_split=dense_split_k;context_shape.support=gpu_support_sampling_;context_shape.device_state=device_state_;
             context_shape.turn_checkpoint=turn_checkpoint_enabled_;context_shape.graph=use_graph&&!profiling;context_shape.verify_graph=verify_graph;
             context_shape.npu=prefill_npu;context_shape.npu_split=std::getenv("STRATA_REVIEW_NPU_SPLIT")!=nullptr;
+            context_shape.npu_pair=npu_pair_chunks_;
             const int context_limit=context_policy::model_limit(metadata_number("context_length",0),clover_?context_policy::lfm_limit:context_policy::full_limit);
             const auto chosen=context_policy::select(context,context_limit,remaining_memory,selected_device.max_allocation,
                 [&](uint64_t tokens){return context_policy::qwen(tokens,context_shape);});
@@ -967,6 +1017,16 @@ public:
                     }
                 }
             }
+            if (npu_pair_chunks_) {
+                pair_bank_.x = alloc<float>(size_t(chunk_) * n_);
+                pair_bank_.h = alloc<float>(size_t(chunk_) * n_);
+                pair_bank_.qkv = alloc<float>(size_t(chunk_) * (2 * hk_ + hv_) * 128);
+                pair_bank_.z = alloc<float>(size_t(chunk_) * hv_ * 128);
+                pair_bank_.alpha = alloc<float>(size_t(chunk_) * hv_);
+                pair_bank_.beta = alloc<float>(size_t(chunk_) * hv_);
+                pair_bank_.tokens = alloc<int32_t>(chunk_, true);
+                pair_bank_.positions = alloc<int32_t>(chunk_, true);
+            }
             q_.wait_and_throw();
 #ifdef TINYSTRATA_INTEL_NPU
             if (prefill_npu || std::getenv("STRATA_REVIEW_NPU_SPLIT")) {
@@ -1000,15 +1060,15 @@ public:
                     {npu_policy::Projection::gate, size_t(min_tokens), size_t(max_tokens), size_t(gate_rows)}});
                 npu_reuse_tensors_ = setting("STRATA_REVIEW_NPU_REUSE_TENSORS", 1, 1) != 0;
                 npu_profile_stages_ = setting("STRATA_REVIEW_NPU_PROFILE_STAGES", 0, 1) != 0;
-                if (npu_defer_qkv_ && (gate_rows != 0 ||
+                if ((npu_defer_qkv_ || npu_pair_chunks_) && (gate_rows != 0 ||
                     (npu_split_mode_ != "parallel" && npu_split_mode_ != "remote")))
-                    throw std::invalid_argument("Deferred QKV requires parallel/remote NPU split and gate_rows=0");
+                    throw std::invalid_argument("Deferred/paired QKV requires parallel/remote NPU split and gate_rows=0");
 #ifndef TINYSTRATA_INTEL_MKL
-                if (npu_defer_qkv_) throw std::invalid_argument("Deferred QKV requires oneMKL prefill support");
+                if (npu_defer_qkv_ || npu_pair_chunks_) throw std::invalid_argument("Deferred/paired QKV requires oneMKL prefill support");
 #endif
-                std::fprintf(stderr, "Intel NPU policy mode=%s qkv_rows=%d gate_rows=%d min_tokens=%d max_tokens=%d reuse_tensors=%d stage_profile=%d defer_qkv=%d\n",
+                std::fprintf(stderr, "Intel NPU policy mode=%s qkv_rows=%d gate_rows=%d min_tokens=%d max_tokens=%d reuse_tensors=%d stage_profile=%d defer_qkv=%d pair_chunks=%d pair_trace=%d\n",
                     npu_split_mode_.empty() ? "full" : npu_split_mode_.c_str(), qkv_rows, gate_rows,
-                    min_tokens, max_tokens, int(npu_reuse_tensors_), int(npu_profile_stages_), int(npu_defer_qkv_));
+                    min_tokens, max_tokens, int(npu_reuse_tensors_), int(npu_profile_stages_), int(npu_defer_qkv_), int(npu_pair_chunks_), int(npu_pair_trace_));
                 npu_ = std::make_unique<NpuProjection>(q_);
             }
 #endif
@@ -1025,6 +1085,7 @@ public:
                          mtp_depth_, memory == WeightMemory::Host ? "host" : memory == WeightMemory::Shared ? "shared" : "device");
             print_memory("engine_ready", device);
             context_policy::report(chosen,context_limit,remaining_memory,selected_device.max_allocation);
+            print_npu_pair_counters();
             if(clover_){std::printf("INFO clover_fused_t1_hint=%d\n",int(clover_fused_t1_hint_));std::fflush(stdout);}
         } catch (...) {
             try { q_.wait_and_throw(); } catch (...) {}
@@ -1049,6 +1110,151 @@ public:
     const float* step(int token, bool output_logits = true) { return step_many(&token, 1, output_logits); }
     int chunk() const { return chunk_; }
     DeviceInfo device_info() const { return inspect_device(q_.get_device()); }
+    void print_npu_pair_counters() const {
+        if (!npu_pair_chunks_) return;
+        std::printf("INFO npu_pair_enabled=1 npu_pair_attempts=%llu npu_pair_commits=%llu npu_pair_chunks=%llu npu_pair_cancels=%llu npu_pair_boundary_refusals=%llu npu_pair_cancel_pending_drains=%llu npu_pair_npu_calls=%llu\n",
+            static_cast<unsigned long long>(npu_pair_attempts_), static_cast<unsigned long long>(npu_pair_commits_),
+            static_cast<unsigned long long>(npu_pair_chunks_count_), static_cast<unsigned long long>(npu_pair_cancels_),
+            static_cast<unsigned long long>(npu_pair_boundary_refusals_), static_cast<unsigned long long>(npu_pair_cancel_pending_drains_),
+            static_cast<unsigned long long>(npu_pair_npu_calls_));
+        std::fflush(stdout);
+    }
+    bool can_pair_prompt(size_t index, size_t remaining, size_t turn_at, bool checkpoint_requested) {
+        if (!npu_pair_chunks_ || verifying_ || recording_ || clover_ || remaining < size_t(chunk_) * 2) return false;
+        const size_t pair_end = index + size_t(chunk_) * 2;
+        // end(A) is inside the pair: its snapshot cannot be published after B
+        // has already advanced shared recurrent state. Preserve that boundary.
+        if (turn_checkpoint_enabled_ && checkpoint_requested && index < turn_at && turn_at < pair_end) {
+            ++npu_pair_boundary_refusals_;
+            return false;
+        }
+        return true;
+    }
+    const float* step_pair(const int* tokens, bool output_logits, const std::atomic<bool>* cancelled) {
+#if defined(TINYSTRATA_INTEL_NPU) && defined(TINYSTRATA_INTEL_MKL)
+        const int count = chunk_, start = position_;
+        if (!npu_pair_chunks_ || verifying_ || recording_ || clover_ || !gemm_ ||
+            start + 2 * count > context_) throw std::runtime_error("Invalid paired prefill request");
+        for (int i = 0; i < 2 * count; ++i)
+            if (tokens[i] < 0 || tokens[i] >= vocabulary()) throw std::runtime_error("Paired token outside vocabulary");
+        if (cancelled && cancelled->load()) return nullptr;
+        if (mtp_depth_) repair_mtp();
+        BankGuard banks{*this, current_bank()};
+        checkpoint(false);
+        ++npu_pair_attempts_;
+        logits_valid_ = false;
+        const auto select = [&](bool second) {
+            use_bank(second ? pair_bank_ : banks.primary);
+            position_ = start + (second ? count : 0);
+        };
+        const auto rollback = [&] {
+            std::exception_ptr drain_error;
+            if (npu_ && npu_->split_pending()) {
+                ++npu_pair_cancel_pending_drains_;
+                try { npu_->finish_split(); ++npu_pair_npu_calls_; } catch (...) { drain_error = std::current_exception(); }
+            }
+            try { q_.wait_and_throw(); } catch (...) { if (!drain_error) drain_error = std::current_exception(); }
+            banks.restore(); position_ = start; logits_valid_ = false;
+            // No new logical position/live prefix was published. Discard KV
+            // tail rows by the restored extent, and restore all GDN/conv/hidden
+            // plus MTP last-norm from the one independent pre-pair checkpoint.
+            checkpoint(true); q_.wait_and_throw();
+            position_input_[0] = start;
+            if (drain_error) std::rethrow_exception(drain_error);
+        };
+        const auto abort_if_cancelled = [&] {
+            if (!cancelled || !cancelled->load()) return false;
+            ++npu_pair_cancels_; rollback(); print_npu_pair_counters(); return true;
+        };
+        const auto norm = [&](const std::string& prefix) {
+            remember("rms_norm", rms_norm(q_, x_, f32(prefix + "attn_norm.weight"), h_, count, n_, epsilon_));
+        };
+        const auto independent = [&](const std::string& prefix) {
+            matrix(prefix + "attn_gate.weight", h_, z_, count, false);
+            matrix(prefix + "ssm_alpha.weight", h_, alpha_, count);
+            matrix(prefix + "ssm_beta.weight", h_, beta_, count);
+        };
+        const auto begin = [&](const std::string& prefix) {
+            const bool pending = begin_deferred_qkv(prefix + "attn_qkv.weight", h_, qkv_, count, true);
+            if (!pending) matrix(prefix + "attn_qkv.weight", h_, qkv_, count, false);
+            return pending;
+        };
+        try {
+            const auto& embedding = tensor("token_embd.weight");
+            for (bool second : {false, true}) {
+                select(second);
+                std::copy_n(tokens + (second ? count : 0), count, token_input_);
+                for (int i = 0; i < count; ++i) position_input_[i] = position_ + i;
+                remember("embedding_lookup", embedding_lookup(q_, int(embedding.info.type), embedding.data, token_input_, x_, n_, count));
+            }
+            for (size_t layer = 0; layer < layers_.size(); ++layer) {
+                if (abort_if_cancelled()) return nullptr;
+                const std::string prefix = "blk." + std::to_string(layer) + ".";
+                const auto& state = layers_[layer];
+                if (state.key || state.q8.key) {
+                    // Entire attention and MoE work is submitted before the
+                    // bank switch; A's KV store/causal attention precedes B's.
+                    select(false); norm(prefix); attention(prefix, state, count); finish_layer(prefix, count);
+                    select(true); norm(prefix); attention(prefix, state, count); finish_layer(prefix, count);
+                    continue;
+                }
+                select(false); norm(prefix);
+                const bool first_pending = begin(prefix);
+                independent(prefix);
+                select(true); norm(prefix); independent(prefix);
+                if (first_pending) {
+                    const auto joined = npu_->finish_split(); ++npu_pair_npu_calls_;
+                    remember("npu_pair_first_join", joined);
+                }
+                // B's input-ready fence retires A's merge before the single
+                // NPU output slot can be overwritten. Only one request lives.
+                const bool second_pending = begin(prefix);
+                if (second_pending && npu_pair_trace_) {
+                    std::fprintf(stderr, "Intel NPU pair trace stage=second_pending position=%d layer=%zu\n", start, layer);
+                    std::fflush(stderr);
+                }
+                select(false); gdn_tail(prefix, state, count, layer); finish_layer(prefix, count);
+                if (abort_if_cancelled()) return nullptr;
+                if (second_pending) {
+                    const auto joined = npu_->finish_split(); ++npu_pair_npu_calls_;
+                    remember("npu_pair_second_join", joined);
+                }
+                select(true); gdn_tail(prefix, state, count, layer); finish_layer(prefix, count);
+            }
+            select(true);
+            if (output_logits) {
+                remember("rms_norm", rms_norm(q_, x_ + size_t(count - 1) * n_, f32("output_norm.weight"), h_, 1, n_, epsilon_));
+                matrix("output.weight", h_, logits_);
+            }
+            q_.wait_and_throw();
+            if (abort_if_cancelled()) return nullptr;
+            if (mtp_depth_) {
+                // Preserve the original chunk-shaped warmup and carry A's
+                // last normalized hidden into B, never a combined 2T warmup.
+                select(false); warm_mtp(tokens, count);
+                select(true); warm_mtp(tokens + count, count);
+            }
+            if (abort_if_cancelled()) return nullptr;
+            collect_profile(); check_numeric_flags();
+            if (output_logits) for (int i = 0; i < vocabulary(); ++i)
+                if (!std::isfinite(logits_[i])) throw std::runtime_error("Non-finite paired logits");
+            q_.memcpy(banks.primary.x, pair_bank_.x, size_t(count) * n_ * sizeof(float)).wait_and_throw();
+            banks.restore(); position_ = start + 2 * count;
+            last_hidden_row_ = count - 1; logits_valid_ = output_logits;
+            ++npu_pair_commits_; npu_pair_chunks_count_ += 2;
+            print_npu_pair_counters();
+            return logits_;
+        } catch (...) {
+            const auto original = std::current_exception();
+            try { rollback(); } catch (const std::exception& error) { std::fprintf(stderr, "Intel NPU pair rollback failed: %s\n", error.what()); }
+            print_npu_pair_counters();
+            std::rethrow_exception(original);
+        }
+#else
+        (void)tokens; (void)output_logits; (void)cancelled;
+        throw std::runtime_error("Paired prefill requires NPU and oneMKL build support");
+#endif
+    }
     const float* step_many(const int* tokens, int count, bool output_logits = true, const std::atomic<bool>* cancelled = nullptr) {
         const auto& g = weights_->geometry();
         if (count < 1 || count > chunk_ || position_ + count > context_) throw std::runtime_error("Intel chunk/context limit reached");
@@ -1429,11 +1635,13 @@ int serve(Engine& engine, bool stochastic_mtp = false) {
         std::fflush(stdout);
         const float* logits = nullptr;
         for (size_t index = reused; index < prompt.size() && !inbox.cancelled().load();) {
-            size_t end = std::min(index + size_t(engine.chunk()), prompt.size());
-            if (engine.turn_checkpoint_enabled() && checkpoint_requested && index < turn_at && turn_at < end)
+            const bool paired = engine.can_pair_prompt(index, prompt.size() - index, turn_at, checkpoint_requested);
+            size_t end = paired ? index + size_t(engine.chunk()) * 2 : std::min(index + size_t(engine.chunk()), prompt.size());
+            if (!paired && engine.turn_checkpoint_enabled() && checkpoint_requested && index < turn_at && turn_at < end)
                 end = turn_at;
             const int count = int(end - index);
-            logits = engine.step_many(prompt.data() + index, count, index + count == prompt.size(), &inbox.cancelled());
+            logits = paired ? engine.step_pair(prompt.data() + index, end == prompt.size(), &inbox.cancelled())
+                            : engine.step_many(prompt.data() + index, count, end == prompt.size(), &inbox.cancelled());
             if (!logits) break;
             live.insert(live.end(), prompt.begin() + index, prompt.begin() + index + count);
             index += count;
@@ -1520,6 +1728,7 @@ int serve(Engine& engine, bool stochastic_mtp = false) {
             }
         }
         report_context_usage(); // Also covers cancelled/empty prefill and terminal output.
+        engine.print_npu_pair_counters();
         const double decode_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - decode_start).count();
         engine.print_spec_stats();
         host_profile::print();

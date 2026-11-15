@@ -113,7 +113,7 @@ inline Footprint lfm(uint64_t c,const LfmSpec& s={}){
 struct QwenSpec {
     uint64_t chunk=128,vocabulary=248320,draft_vocabulary=0,verify_capacity=8;
     bool int8=false,mtp=false,mkl=false,dp4a=false,dense_split=false,support=false;
-    bool device_state=false,turn_checkpoint=true,graph=true,verify_graph=false,npu=false,npu_split=false;
+    bool device_state=false,turn_checkpoint=true,graph=true,verify_graph=false,npu=false,npu_split=false,npu_pair=false;
 };
 inline Footprint qwen(uint64_t c,const QwenSpec& s={}){
     Footprint p;const auto n=s.chunk;const bool shared=!s.device_state;
@@ -140,6 +140,12 @@ inline Footprint qwen(uint64_t c,const QwenSpec& s={}){
         if(s.draft_vocabulary)control(s.draft_vocabulary);
         control(mul(s.verify_capacity,s.vocabulary));a(mul(s.verify_capacity,2048),4,2);
         a(mul(s.verify_capacity,8192),4,60);a(mul(s.verify_capacity,32),4,60);
+    }
+    if(s.npu_pair){
+        // One extra chunk bank: residual/normalized input, QKV, gate,
+        // alpha and beta. Controls remain shared even with device state.
+        a(mul(n,2048),4,2);a(mul(n,8192));a(mul(n,4096));a(mul(n,32),4,2);
+        control(n);control(n);
     }
     p.own();
     if(s.support){control(s.vocabulary);control(65536);control(2);control(8192);control(s.vocabulary);control(s.vocabulary);}

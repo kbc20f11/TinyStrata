@@ -4,8 +4,10 @@
 #include "strata/artifact/gguf_reader.hpp"
 #include <oneapi/mkl/blas.hpp>
 #include <algorithm>
+#include <cstdlib>
 #include <cstdio>
 #include <stdexcept>
+#include <string_view>
 
 namespace strata::intel {
 struct PrefillGemm::Impl {
@@ -14,9 +16,15 @@ struct PrefillGemm::Impl {
     float* output = nullptr;
     float* scores = nullptr;
     size_t score_elements;
+    bool q6_tile = true;
     static constexpr size_t weight_elements = 8192 * 2048, input_elements = 1024 * 8192, output_elements = 1024 * 2048;
     explicit Impl(sycl::queue& queue, int context, int max_tokens) : q(queue), score_elements(size_t(context) * max_tokens) {
         if (context < 1 || context > context_policy::full_limit || max_tokens < 1 || max_tokens > 1024) throw std::invalid_argument("Invalid GEMM attention scratch shape");
+        if (const char* raw = std::getenv("STRATA_REVIEW_INTEL_PREFILL_Q6_TILE")) {
+            const std::string_view value(raw);
+            if (value != "0" && value != "1") throw std::invalid_argument("STRATA_REVIEW_INTEL_PREFILL_Q6_TILE must be 0 or 1");
+            q6_tile = value == "1";
+        }
         try {
             weights = sycl::malloc_device<sycl::half>(weight_elements, q);
             input = sycl::malloc_device<sycl::half>(input_elements, q);
@@ -32,6 +40,7 @@ struct PrefillGemm::Impl {
         }
         std::fprintf(stderr, "Intel prefill_gemm=oneMKL FP16_multiplicands=1 FP32_output=1 bounded_scratch_bytes=%zu\n",
             (weight_elements + input_elements) * sizeof(sycl::half) + (output_elements + score_elements) * sizeof(float));
+        std::fprintf(stderr, "Intel prefill_q6_tile=%d\n", int(q6_tile));
     }
     ~Impl() {
         try { q.wait_and_throw(); } catch (...) {}
@@ -75,7 +84,35 @@ sycl::event PrefillGemm::dense_interleaved_q6(const uint8_t* weights, const floa
     if (rows % 16 || width % 256) throw std::invalid_argument("Interleaved dense GEMM needs complete tiles");
     if (output_stride != 0 && output_stride < rows) throw std::invalid_argument("Invalid dense GEMM output stride");
     sycl::half* decoded = p.weights;
-    auto w = p.q.parallel_for(sycl::range<1>(size_t(rows) * width), [=](sycl::id<1> id) {
+    sycl::event w;
+    if (p.q6_tile && reinterpret_cast<uintptr_t>(weights) % alignof(uint32_t) == 0) {
+        w = p.q.submit([&](sycl::handler& handler) {
+            // One compressed 16-row/256-column tile, including Q6 padding.
+            // The decoded storage and GEMM arithmetic remain unchanged.
+            constexpr size_t words = 53 * 16, workgroup = 128;
+            sycl::local_accessor<uint32_t, 1> tile(sycl::range<1>(words), handler);
+            handler.parallel_for(sycl::nd_range<1>(size_t(rows / 16) * (width / 256) * workgroup, workgroup),
+                [=](sycl::nd_item<1> item) [[sycl::reqd_sub_group_size(16)]] {
+                const size_t group = item.get_group_linear_id(), local = item.get_local_linear_id();
+                const auto* source = reinterpret_cast<const uint32_t*>(weights) + group * words;
+                for (size_t i = local; i < words; i += workgroup) tile[i] = source[i];
+                item.barrier(sycl::access::fence_space::local_space);
+                const size_t row_lane = local % 16, column_lane = local / 16;
+                const size_t row = (group / (width / 256)) * 16 + row_lane, block = group % (width / 256);
+                const auto byte = [=](size_t offset) { return uint8_t(tile[(offset / 4) * 16 + row_lane] >> (8 * (offset % 4))); };
+                const float delta = float(sycl::bit_cast<sycl::half>(uint16_t(tile[52 * 16 + row_lane])));
+                #pragma unroll
+                for (int iteration = 0; iteration < 32; ++iteration) {
+                    const size_t col = column_lane + size_t(iteration) * 8;
+                    const size_t segment = col / 128, part = (col % 128) / 32, lane = col % 32;
+                    const int low = (byte(segment * 64 + (part % 2) * 32 + lane) >> (part >= 2 ? 4 : 0)) & 15;
+                    const int high = (byte(128 + segment * 32 + lane) >> (2 * part)) & 3;
+                    const int scale = int8_t(byte(192 + segment * 8 + part * 2 + lane / 16));
+                    decoded[(block * 256 + col) * rows + row] = sycl::half(delta * float(scale) * float((low | (high << 4)) - 32));
+                }
+            });
+        });
+    } else w = p.q.parallel_for(sycl::range<1>(size_t(rows) * width), [=](sycl::id<1> id) {
         // Enumerate adjacent output rows for coalesced reads and writes. The
         // FP16 values are unchanged; GEMM consumes their transposed storage.
         const size_t row = id[0] % rows, col = id[0] / rows;
