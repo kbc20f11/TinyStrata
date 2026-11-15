@@ -20,7 +20,8 @@ int main(int argc, char** argv) {
     try {
         strata::paths::Utf8Arguments arguments(argc, argv); argc=arguments.argc(); argv=arguments.argv();
         const bool sweep=argc==3 && std::strcmp(argv[2],"--sweep")==0;
-        if (argc != 2 && !sweep) throw std::runtime_error("Usage: intel_npu_split_test projection-fixture.bin [--sweep]");
+        const bool probe=argc==3 && std::strcmp(argv[2],"--probe")==0;
+        if (argc != 2 && !sweep && !probe) throw std::runtime_error("Usage: intel_npu_split_test projection-fixture.bin [--sweep|--probe]");
         std::ifstream f(strata::paths::native_path(argv[1]),std::ios::binary);
         int rows=0,width=0;
         f.read(reinterpret_cast<char*>(&rows),4); f.read(reinterpret_cast<char*>(&width),4);
@@ -39,9 +40,9 @@ int main(int argc, char** argv) {
         for (size_t i=0;i<1024ull*width;++i) x[i]=std::sin(float(i%1987)*.013f)*.3f;
         strata::intel::PrefillGemm gpu(q,1,1024);
         strata::intel::NpuProjection npu(q);
-        const auto tokens_to_test=sweep?std::vector<int>{128,256,512,1024}:std::vector<int>{128,257,1024};
-        const auto rows_to_test=sweep?std::vector<int>{rows/16,rows/8,rows/4,rows/2}:std::vector<int>{1024};
-        for (bool interleaved : {false,true}) for (int tokens : tokens_to_test) for(int npu_rows:rows_to_test) for(bool reuse:(sweep?std::vector<bool>{false,true}:std::vector<bool>{true})) {
+        const auto tokens_to_test=probe?std::vector<int>{128}:sweep?std::vector<int>{128,256,512,1024}:std::vector<int>{128,257,1024};
+        const auto rows_to_test=probe?std::vector<int>{rows/16,rows/8}:sweep?std::vector<int>{rows/16,rows/8,rows/4,rows/2}:std::vector<int>{1024};
+        for (bool interleaved : (probe?std::vector<bool>{false}:std::vector<bool>{false,true})) for (int tokens : tokens_to_test) for(int npu_rows:rows_to_test) for(bool reuse:((sweep||probe)?std::vector<bool>{false,true}:std::vector<bool>{true})) {
             auto dense=[&](){ return interleaved?gpu.dense_interleaved_q6(packed,x,a,rows,width,tokens):gpu.dense(14,w,x,a,rows,width,tokens); };
             for (size_t i=size_t(tokens)*rows;i<size_t(tokens)*rows+32;++i) a[i]=b[i]=12345.f;
             dense().wait_and_throw();
@@ -65,7 +66,16 @@ int main(int argc, char** argv) {
                         if(r==0) for(size_t i=0;i<size_t(tokens)*rows;++i) {
                             const double error=std::abs(double(b[i])-a[i]);
                             const double rounding=std::abs(double(float(sycl::half(a[i])))-a[i]);
-                            if(!std::isfinite(b[i]) || error>(i%rows<size_t(npu_rows)?rounding+1e-3*(1+std::abs(a[i])):2e-4*(1+std::abs(a[i]))))throw std::runtime_error("Serial/parallel output mismatch");
+                            if(!std::isfinite(b[i]) || error>(i%rows<size_t(npu_rows)?rounding+1e-3*(1+std::abs(a[i])):2e-4*(1+std::abs(a[i])))) {
+                                const int row=int(i%rows),token=int(i/rows);double expected=0,alias512=0;
+                                for(int col=0;col<width;++col) {
+                                    const double xv=float(sycl::half(x[size_t(token)*width+col]));
+                                    expected+=xv*float(sycl::half(strata::intel::quant::value<14>(w+size_t(row)*(width/256)*210,col)));
+                                    alias512+=xv*float(sycl::half(strata::intel::quant::value<14>(w+size_t(row%512)*(width/256)*210,col)));
+                                }
+                                std::fprintf(stderr,"NPU mismatch index=%zu token=%d row=%d npu_rows=%d remote=%d parallel=%d reuse=%d got=%.12g gpu=%.12g fp64=%.12g alias_first512_fp64=%.12g delta=%.12g\n",i,token,row,npu_rows,int(remote),int(overlap),int(reuse),double(b[i]),double(a[i]),expected,alias512,error);
+                                throw std::runtime_error("Serial/parallel output mismatch");
+                            }
                         }
                     }
                 }

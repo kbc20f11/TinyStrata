@@ -34,18 +34,18 @@ struct NpuProjection::Impl {
     sycl::event timing_gpu_begin, timing_gpu_compute, timing_gpu_gather, timing_merge;
     size_t calls = 0;
     double wall_ms = 0;
-    sycl::half* split_weights = nullptr;
     float* split_gpu_output = nullptr;
     static constexpr size_t split_cache_elements = 64 * 1024 * 1024;
     size_t split_cache_used = 0, split_calls = 0, split_hits = 0;
     double split_compile_ms = 0, split_prepare_ms = 0, split_wait_ms = 0;
-    ov::Tensor split_remote_input, split_remote_output, split_remote_weights;
+    ov::Tensor split_remote_input, split_remote_output;
     size_t split_gpu_done_npu_pending = 0;
     std::map<std::tuple<const uint8_t*, int, int, int>, sycl::half*> split_cache;
     explicit Impl(sycl::queue& queue) : q(queue) {
-        const auto devices = core.get_available_devices();
-        if (std::none_of(devices.begin(), devices.end(), [](const std::string& name) { return name.rfind("NPU", 0) == 0; }))
-            throw std::runtime_error("--prefill-npu requires an available Intel NPU; CPU fallback is disabled");
+        // Query only the explicitly requested NPU. Enumerating every OV device
+        // also initialized its OpenCL GPU plugin and loaded an SDK ICD.
+        try { (void)core.get_property("NPU",ov::device::full_name); }
+        catch(const std::exception&) { throw std::runtime_error("--prefill-npu requires an available Intel NPU; CPU fallback is disabled"); }
         try {
             weights = sycl::malloc_host<sycl::half>(weight_elements, q);
             input = sycl::aligned_alloc_host<sycl::half>(4096, activation_elements, q);
@@ -64,8 +64,12 @@ struct NpuProjection::Impl {
         try { q.wait_and_throw(); } catch (...) {}
         const size_t shapes = graphs.size();
         graphs.clear();
-        split_remote_input = {}; split_remote_output = {}; split_remote_weights = {};
-        if (split_weights) sycl::free(split_weights, q);
+        split_remote_input = {}; split_remote_output = {};
+        // Requests/tensor views above retire before the independently aligned
+        // slice owners. CPU_VA never receives an interior cache-arena pointer.
+        for(const auto& entry:split_cache) {
+            try {sycl::free(entry.second,q);} catch(const std::exception& error){std::fprintf(stderr,"NPU slice release: %s\n",error.what());}
+        }
         if (split_gpu_output) sycl::free(split_gpu_output, q);
         for (void* buffer : {static_cast<void*>(output), static_cast<void*>(input), static_cast<void*>(weights)}) {
             try { sycl::free(buffer, q); } catch (const std::exception& error) { std::fprintf(stderr, "NPU scratch release: %s\n", error.what()); }
@@ -145,19 +149,9 @@ bool NpuProjection::run_split(PrefillGemm& gpu, int type, const uint8_t* weights
     ++p.counters.eligible;
     const auto graph_key=std::make_tuple(npu_rows,width,tokens);
     if (!p.graphs.count(graph_key) && p.graphs.size()>=p.graph_limit) {++p.counters.graph_capacity_skips;return false;}
-    if (!p.split_weights) {
-        auto* weights_buffer = sycl::aligned_alloc_host<sycl::half>(4096, p.split_cache_elements, p.q);
-        float* output_buffer = nullptr;
-        try {
-            output_buffer = sycl::malloc_device<float>(p.activation_elements, p.q);
-            if (!weights_buffer || !output_buffer) throw std::runtime_error("NPU split scratch allocation failed");
-        } catch (...) {
-            if (weights_buffer) sycl::free(weights_buffer, p.q);
-            if (output_buffer) sycl::free(output_buffer, p.q);
-            throw;
-        }
-        p.split_weights = weights_buffer;
-        p.split_gpu_output = output_buffer;
+    if (!p.split_gpu_output) {
+        p.split_gpu_output=sycl::malloc_device<float>(p.activation_elements,p.q);
+        if(!p.split_gpu_output) throw std::runtime_error("NPU split scratch allocation failed");
     }
     const auto key = std::make_tuple(weights, type + (interleaved ? 1000 : 0), npu_rows, width);
     const size_t elements = size_t(npu_rows) * width;
@@ -178,9 +172,23 @@ bool NpuProjection::run_split(PrefillGemm& gpu, int type, const uint8_t* weights
     }
     started = std::chrono::steady_clock::now();
     sycl::half* prepared = nullptr;
+    struct SliceDeleter {
+        sycl::queue* queue;
+        void operator()(sycl::half* ptr) const noexcept {
+            if(!ptr)return;
+            try {queue->wait_and_throw();} catch(...) {}
+            try {sycl::free(ptr,*queue);} catch(...) {}
+        }
+    };
+    std::unique_ptr<sycl::half,SliceDeleter> pending_slice(nullptr,SliceDeleter{&p.q});
     sycl::event weight_ready;
     if (found == p.split_cache.end()) {
-        prepared = p.split_weights + p.split_cache_used;
+        // The observed NPU CPU_VA import aliases interior pointers to the
+        // registered base. Each cached slab instead owns an aligned BASE;
+        // the total first-fit capacity remains the same 128MiB, no extra copy.
+        prepared=sycl::aligned_alloc_host<sycl::half>(4096,elements,p.q);
+        if(!prepared)throw std::runtime_error("NPU cached slice allocation failed");
+        pending_slice.reset(prepared);
         if (!interleaved) weight_ready=dequantize_half(p.q, type, weights, prepared, elements);
         else weight_ready=p.q.parallel_for(sycl::range<1>(elements), [=](sycl::id<1> id) {
             const size_t row = id[0] / width, col = id[0] % width;
@@ -209,6 +217,7 @@ bool NpuProjection::run_split(PrefillGemm& gpu, int type, const uint8_t* weights
     if (found == p.split_cache.end()) {
         p.split_cache.emplace(key, prepared);
         p.split_cache_used += elements;
+        pending_slice.release();
     }
     const ov::Shape xshape{size_t(tokens), size_t(width)}, wshape{size_t(npu_rows), size_t(width)}, yshape{size_t(tokens), size_t(npu_rows)};
     started=std::chrono::steady_clock::now();
@@ -223,10 +232,8 @@ bool NpuProjection::run_split(PrefillGemm& gpu, int type, const uint8_t* weights
         if (!p.split_remote_input) {
             auto input_region = context.create_tensor(ov::element::f16, {p.activation_elements}, p.input, kind);
             auto output_region = context.create_tensor(ov::element::f32, {p.activation_elements}, p.output, kind);
-            auto weights_region = context.create_tensor(ov::element::f16, {p.split_cache_elements}, p.split_weights, kind);
             p.split_remote_input = std::move(input_region);
             p.split_remote_output = std::move(output_region);
-            p.split_remote_weights = std::move(weights_region);
         }
         if(!reuse) {
             if(!options.reuse_tensors || !graph.remote_input) {
@@ -313,7 +320,7 @@ NpuSplitCounters NpuProjection::split_counters() const {return impl_->counters;}
 NpuMemoryUsage NpuProjection::memory_usage() const {
     const auto& p=*impl_;NpuMemoryUsage result;
     result.host_usm_bytes=p.weight_elements*sizeof(sycl::half)+p.activation_elements*(sizeof(sycl::half)+sizeof(float));
-    if(p.split_weights){result.fp16_cache_capacity_bytes=p.split_cache_elements*sizeof(sycl::half);result.host_usm_bytes+=result.fp16_cache_capacity_bytes;result.device_usm_bytes=p.activation_elements*sizeof(float);}
+    if(p.split_gpu_output){result.fp16_cache_capacity_bytes=p.split_cache_elements*sizeof(sycl::half);result.host_usm_bytes+=p.split_cache_used*sizeof(sycl::half);result.device_usm_bytes=p.activation_elements*sizeof(float);}
     result.fp16_cache_used_bytes=p.split_cache_used*sizeof(sycl::half);result.compiled_graphs=p.graphs.size();
     for(const auto& item:p.graphs) result.tensor_bindings+=2+item.second.host_weights.size()+item.second.remote_weights.size()+(item.second.remote_input?2:0);
     return result;
