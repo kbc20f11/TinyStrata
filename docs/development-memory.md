@@ -2,9 +2,16 @@
 
 ## Intel Gemma decode PV分割（2026-11-15）
 
-- Gemma caller専用の `TINYSTRATA_INTEL_GEMMA_SPLIT_PV=1` で有効化する。既定は無効、明示`0`は無効。共有attentionを利用するLFM等はconstructor既定falseを保つ。T1かつ可視spanが1024以上の場合だけ256key単位のFP32 PV部分和と結合を使用し、QK・softmax・可視key・INT8 KV・全expert・全語彙は変更しない。
+- Gemma caller専用。実device8086:B082・integrated・PTL-HかつPTL-H AOT runtimeの組合せだけ既定で有効にする。`TINYSTRATA_INTEL_GEMMA_SPLIT_PV=0` は明示無効、`1` は明示有効。それ以外のruntime/deviceでは既定無効、共有attentionを利用するLFM等のconstructor既定falseも保つ。T1かつ可視spanが1024以上の場合だけ256key単位のFP32 PV部分和と結合を使用し、QK・softmax・可視key・INT8 KV・全expert・全語彙は変更しない。
 - `GemmaSpec.pv_split` は `heads*ceil(context/256)*full_dim*4` bytesをengine-owned計数後のauxへ一度だけ計上する。32Kで4MiB、256Kで32MiB。既存KV等のowned計数と混在させない。
 - 同じPV実装の独立23形状GPU検査は731987チェック、FP64最大絶対誤差6.31250441074e-6、canary・128K/256K・lateSWAwrap・largepositionを通過した。比較binaryの4K入力64tokenでは対照9.43→PVのみ12.32tok/s。通常short/4K/16Kの8factsとcode3入力も通過した。この抽出commitの最終配布binaryは別途確認する。Q6 head試作コードは含めない。
+
+## Intel LFM/Cloverの選択した高速化（2026-11-15）
+
+- LFMのQ4_K FP32 block処理は元のFP32入力・FMA順序・4/64 expertを保持する。独立GPU40比較と実shape検査はbit一致。通常short/4K/16K/codeの最終出力IDも対照と全一致し、生成は23.66/15.44/7.64/24.58 tok/s。追加scratchは0。測定済みB390/PTL-H AOTの組合せのみ既定有効、`STRATA_INTEL_LFM_Q4_FP32_BLOCKS=0` で対照へ戻せる。他device/runtimeへ速度を一般化しない。
+- CloverはB390で実測したD0/INT8、全8 expert、chunk1024と専用の既存XMX/DP4A/state flagsを選ぶ。T1 fused attentionのgraph可視下限は前bucket上端+1とし、dynamic位置によるmaskは保持する。verify経路はhint0、profilingは従来経路。独立11graph replayと通常32768/20000 contextの長文・短文resetを通過、追加配列0。B390/PTL-H AOTだけ既定有効、`STRATA_INTEL_CLOVER_FUSED_T1=0` は明示無効。Qwen/Tielはこの環境変数を読まない。
+- Clover同binaryの長文は対照PP196.84/TG16.49、候補PP198.38/TG17.72 tok/s。ただし正常出力は593/649 tokensで異なるため、同一仕事量の速度向上率とは扱わない。候補の32768/20000 contextでは649出力IDが全一致した。
+- 上記は私有candidateの数値・通常完答確認。新3familyの最終shipping再build、規定4fresh starts、実installer/API/UIと公開catalogの確認は別gateであり、これらの数値を別binaryの計測として転記しない。Gemma Q6 FP32 head、Gemma Q4 DP4A、LFM bulk checkpoint/decode DP4Aは併用比較でも最良候補を超えず採用しない。失敗/遅い候補も最終結果へ残す。
 
 
 更新日: 2026-11-15
