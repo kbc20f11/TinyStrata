@@ -1,5 +1,12 @@
 # 開発メモ
 
+## Intel Gemma decode PV分割（2026-11-15）
+
+- Gemma caller専用の `TINYSTRATA_INTEL_GEMMA_SPLIT_PV=1` で有効化する。既定は無効、明示`0`は無効。共有attentionを利用するLFM等はconstructor既定falseを保つ。T1かつ可視spanが1024以上の場合だけ256key単位のFP32 PV部分和と結合を使用し、QK・softmax・可視key・INT8 KV・全expert・全語彙は変更しない。
+- `GemmaSpec.pv_split` は `heads*ceil(context/256)*full_dim*4` bytesをengine-owned計数後のauxへ一度だけ計上する。32Kで4MiB、256Kで32MiB。既存KV等のowned計数と混在させない。
+- 同じPV実装の独立23形状GPU検査は731987チェック、FP64最大絶対誤差6.31250441074e-6、canary・128K/256K・lateSWAwrap・largepositionを通過した。比較binaryの4K入力64tokenでは対照9.43→PVのみ12.32tok/s。通常short/4K/16Kの8factsとcode3入力も通過した。この抽出commitの最終配布binaryは別途確認する。Q6 head試作コードは含めない。
+
+
 更新日: 2026-11-15
 
 ## Intel UMAフッターの修正（2026-11-15）

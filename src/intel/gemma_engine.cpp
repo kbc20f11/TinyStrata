@@ -17,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <limits>
 #include <random>
@@ -38,7 +39,7 @@ class GemmaEngine {
     std::unique_ptr<PrefillGemm> gemm_;
 #endif
     int context_,chunk_,position_=0;
-    bool logits_valid_=false;
+    bool logits_valid_=false,pv_split_=false;
     float *residual_=nullptr,*norm_=nullptr,*query_raw_=nullptr,*key_raw_=nullptr,*value_raw_=nullptr;
     float *query_=nullptr,*key_=nullptr,*value_=nullptr,*attended_=nullptr,*attention_out_=nullptr;
     float *dense_gate_=nullptr,*dense_up_=nullptr,*dense_hidden_=nullptr,*dense_out_=nullptr,*dense_norm_=nullptr;
@@ -87,12 +88,17 @@ public:
     GemmaEngine(const std::string& path,unsigned device,int context,int chunk,WeightMemory memory,bool prefill_mkl)
         :queue_(select_device(device),sycl::property::queue::in_order{}),device_(inspect_device(queue_.get_device())),context_(context),chunk_(chunk){
         if(context<0||context>context_policy::full_limit||chunk<1||chunk>512)throw std::runtime_error("Gemma context must be auto or1..262144; chunk1..512 required");
+        if(const char* value=std::getenv("TINYSTRATA_INTEL_GEMMA_SPLIT_PV")){
+            const std::string mode(value);
+            if(!mode.empty()&&mode!="0"&&mode!="1")throw std::runtime_error("Gemma PV candidate accepts only0/1");
+            pv_split_=mode=="1";
+        }
         try{
             ExecutionRequest loading;
             weights_=WeightStore::load_validated(queue_,path,memory,[&](const strata::GgufModel& m){geometry_=GemmaGeometry::validate(m);});
             const auto& g=geometry_;const size_t n=size_t(chunk_);
             context_policy::GemmaSpec context_shape;
-            context_shape.chunk=chunk_;context_shape.mkl=prefill_mkl;
+            context_shape.chunk=chunk_;context_shape.mkl=prefill_mkl;context_shape.pv_split=pv_split_;
             const auto remaining=memory_budget(device_);
             const auto chosen=context_policy::select(context,g.model_context,remaining,device_.max_allocation,
                 [&](uint64_t tokens){return context_policy::gemma(tokens,context_shape);});
@@ -115,7 +121,9 @@ public:
             const size_t max_tiles=(n*g.picks+3)/4+g.experts;owners_=allocate<int32_t>(max_tiles);offsets_=allocate<int32_t>(max_tiles);tiles_=allocate<int32_t>(1);
             if(actual_allocations_.device!=chosen.bytes.owned_device||actual_allocations_.host_visible!=chosen.bytes.owned_host_visible||actual_allocations_.largest>chosen.bytes.largest)
                 throw std::logic_error("Gemma context planner differs from actual engine allocations");
-            attention_=std::make_unique<GemmaAttention>(queue_,context_,chunk_,g.heads,g.full_dim,cache_elements,prefill_mkl);
+            attention_=std::make_unique<GemmaAttention>(queue_,context_,chunk_,g.heads,g.full_dim,cache_elements,prefill_mkl,pv_split_);
+            std::fprintf(stderr,"Intel Gemma split_pv=%d decode_only=1 min_visible=1024 key_tile=256 scratch_bytes=%llu\n",int(pv_split_),
+                (unsigned long long)(pv_split_?uint64_t(g.heads)*((context_+255)/256)*g.full_dim*sizeof(float):0));
 #ifdef TINYSTRATA_INTEL_MKL
             if(prefill_mkl)gemm_=std::make_unique<PrefillGemm>(queue_,1,chunk_);
 #endif

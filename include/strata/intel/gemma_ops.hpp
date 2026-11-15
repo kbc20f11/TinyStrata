@@ -19,7 +19,8 @@ sycl::event gemma_route(sycl::queue&,const float* logits,const float* expert_sca
 class GemmaAttention {
     struct Impl;std::unique_ptr<Impl> impl_;
 public:
-    GemmaAttention(sycl::queue&,int context,int tokens,int heads,int max_dim,size_t max_cache_elements,bool prefill_mkl);
+    // Only the explicit Gemma caller enables PV; all other callers keep false.
+    GemmaAttention(sycl::queue&,int context,int tokens,int heads,int max_dim,size_t max_cache_elements,bool prefill_mkl,bool split_pv=false);
     ~GemmaAttention();
     sycl::event run(const float* queries,GemmaKv,float* output,int heads,int position,int tokens,float scale=1.f);
 };

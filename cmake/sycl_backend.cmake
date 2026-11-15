@@ -117,6 +117,8 @@ target_link_libraries(tinystrata-intel-gemma4 PRIVATE tinystrata_intel strata_na
 add_executable(intel_gemma_ops_test EXCLUDE_FROM_ALL tests/intel-gemma-ops.cpp)
 target_link_libraries(intel_gemma_ops_test PRIVATE tinystrata_intel strata_native_paths)
 target_include_directories(intel_gemma_ops_test PRIVATE third_party/ggml)
+add_executable(intel_gemma_attention_split_test EXCLUDE_FROM_ALL tests/intel-gemma-attention-split.cpp)
+target_link_libraries(intel_gemma_attention_split_test PRIVATE tinystrata_intel)
 if(TINYSTRATA_INTEL_MKL)
   add_executable(intel_gemma_dense_tiling_test EXCLUDE_FROM_ALL tests/intel-gemma-dense-tiling.cpp)
   target_link_libraries(intel_gemma_dense_tiling_test PRIVATE tinystrata_intel)

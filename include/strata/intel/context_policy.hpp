@@ -57,7 +57,7 @@ inline void q8_cache(Footprint& p,uint64_t cells,bool shared=false,uint64_t copi
 struct GemmaSpec {
     uint64_t chunk=512,width=2816,vocabulary=262144,heads=16,full_dim=512,swa_dim=256;
     uint64_t dense_ff=2112,experts=128,picks=8,expert_ff=704,window=1024;
-    bool mkl=true;
+    bool mkl=true,pv_split=false;
 };
 inline Footprint gemma(uint64_t c,const GemmaSpec& s={}){
     Footprint p;const auto n=s.chunk;
@@ -78,7 +78,9 @@ inline Footprint gemma(uint64_t c,const GemmaSpec& s={}){
     p.allocation(tiles,4,false,2);p.allocation(1,4);
     p.own();
     const auto expansion=std::max(mul(mul(sliding,8),s.swa_dim),mul(mul(c,2),s.full_dim));
-    attention(p,c,n,s.heads,s.full_dim,expansion,s.mkl);if(s.mkl)gemm(p,1,n);
+    attention(p,c,n,s.heads,s.full_dim,expansion,s.mkl);
+    if(s.pv_split)p.allocation(mul(mul(s.heads,add(c,255)/256),s.full_dim),4);
+    if(s.mkl)gemm(p,1,n);
     p.host(16ull<<20); // bounded sampler/history/metadata work; not another OS floor
     return p;
 }
