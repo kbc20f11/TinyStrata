@@ -202,10 +202,11 @@ void print_memory(const char* stage, const DeviceInfo& d) {
         int(m.wddm_known), (unsigned long long)m.wddm_available, (unsigned long long)allocation_budget(m),
         (unsigned long long)process.WorkingSetSize, (unsigned long long)process.PrivateUsage);
     std::fflush(stdout);
-    std::fprintf(stderr, "memory_pools stage=%s model=%s host_budget=%llu device_budget=%llu nonlocal_known=%d nonlocal_available=%llu\n",
+    std::fprintf(stderr, "memory_pools stage=%s model=%s host_budget=%llu device_budget=%llu nonlocal_known=%d nonlocal_available=%llu wddm_known=%d wddm_remaining=%llu wddm_reserve_bytes=%llu\n",
         stage, d.integrated ? "uma" : "discrete", (unsigned long long)allocation_budget(m, MemoryPool::Host),
         (unsigned long long)allocation_budget(m, MemoryPool::Device), int(m.wddm_nonlocal_known),
-        (unsigned long long)m.wddm_nonlocal_available);
+        (unsigned long long)m.wddm_nonlocal_available, int(m.wddm_known),
+        (unsigned long long)m.wddm_available, (unsigned long long)wddm_headroom(m));
     std::fflush(stdout);
 }
 } // namespace strata::intel
