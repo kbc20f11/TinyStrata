@@ -746,8 +746,16 @@ void quant_reference(sycl::queue& q, const char* path) {
             for (int t = 0; t < tokens; ++t) for (int r = 0; r < rows; ++r) for (int c = 0; c < width; ++c)
                 half_reference[size_t(t) * rows + r] += double(float(sycl::half(expected_weights[size_t(r) * width + c]))) *
                     float(sycl::half(batch_x.data[size_t(t) * width + c]));
-            strata::intel::quantized_matmul_xmx(q, type, raw.data, batch_x.data, batch_y.data, rows, width, tokens).wait_and_throw();
-            compare((label + "_xmx_half_fp64_dot").c_str(), batch_y.data, half_reference, 5e-5);
+            if(strata::intel::xmx_weight_type_supported(type)) {
+                strata::intel::quantized_matmul_xmx(q, type, raw.data, batch_x.data, batch_y.data, rows, width, tokens).wait_and_throw();
+                compare((label + "_xmx_half_fp64_dot").c_str(), batch_y.data, half_reference, 5e-5);
+            } else {
+                bool refused=false;
+                try { strata::intel::quantized_matmul_xmx(q,type,raw.data,batch_x.data,batch_y.data,rows,width,tokens).wait_and_throw(); }
+                catch(const std::invalid_argument&){refused=true;}
+                if(!refused)throw std::runtime_error("Unsupported XMX weight type was admitted");
+                std::printf("%s_xmx_explicit_unsupported_rejection result=passed\n",label.c_str());
+            }
 #ifdef TINYSTRATA_INTEL_MKL
             gemm.dense(type, raw.data, batch_x.data, batch_y.data, rows, width, tokens).wait_and_throw();
             compare((label + "_mkl_half_fp64_dot").c_str(), batch_y.data, half_reference, 5e-5);
@@ -878,9 +886,17 @@ void quant_reference(sycl::queue& q, const char* path) {
                 }
                 plan.tile_width = 8;
                 strata::intel::plan_experts(q, ids.data, plan);
-                strata::intel::selected_matmul_xmx(q, type, expert_raw.data, plan, separate ? expert_x.data : batch_x.data,
-                    expert_y.data, rows, width, separate).wait_and_throw();
-                compare((label + (separate ? "_xmx_grouped_down" : "_xmx_grouped_gate")).c_str(), expert_y.data, half_reference, 5e-5);
+                if(strata::intel::xmx_weight_type_supported(type)) {
+                    strata::intel::selected_matmul_xmx(q, type, expert_raw.data, plan, separate ? expert_x.data : batch_x.data,
+                        expert_y.data, rows, width, separate).wait_and_throw();
+                    compare((label + (separate ? "_xmx_grouped_down" : "_xmx_grouped_gate")).c_str(), expert_y.data, half_reference, 5e-5);
+                } else {
+                    bool refused=false;
+                    try {strata::intel::selected_matmul_xmx(q,type,expert_raw.data,plan,separate?expert_x.data:batch_x.data,expert_y.data,rows,width,separate).wait_and_throw();}
+                    catch(const std::invalid_argument&){refused=true;}
+                    if(!refused)throw std::runtime_error("Unsupported grouped XMX type was admitted");
+                    std::printf("%s_xmx_grouped_explicit_unsupported_rejection result=passed\n",label.c_str());
+                }
 #ifdef TINYSTRATA_INTEL_MKL
                 gemm.selected(type, expert_raw.data, size_t(bytes), plan, separate ? expert_x.data : batch_x.data,
                     expert_y.data, rows, width, separate).wait_and_throw();

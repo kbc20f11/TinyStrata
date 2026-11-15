@@ -1,5 +1,6 @@
 #include "strata/intel/prefill_gemm.hpp"
 #include "strata/intel/q6_interleave.hpp"
+#include "strata/artifact/gguf_reader.hpp"
 #include <oneapi/mkl/blas.hpp>
 #include <algorithm>
 #include <cstdio>
@@ -41,20 +42,30 @@ struct PrefillGemm::Impl {
             size_t(tokens) * width > input_elements || (selected && size_t(tokens) * rows > output_elements))
             throw std::invalid_argument("Intel GEMM exceeds bounded scratch");
     }
-    sycl::event gemm(float* destination, int rows, int width, int tokens, const std::vector<sycl::event>& dependencies, bool transposed_storage = false) {
+    sycl::event gemm(float* destination, int rows, int width, int tokens, const std::vector<sycl::event>& dependencies, bool transposed_storage = false, int output_stride = 0) {
         return oneapi::mkl::blas::row_major::gemm(q, oneapi::mkl::transpose::nontrans,
             transposed_storage ? oneapi::mkl::transpose::nontrans : oneapi::mkl::transpose::trans,
-            tokens, rows, width, 1.f, input, width, weights, transposed_storage ? rows : width, 0.f, destination, rows, oneapi::mkl::blas::compute_mode::standard, dependencies);
+            tokens, rows, width, 1.f, input, width, weights, transposed_storage ? rows : width, 0.f, destination, output_stride ? output_stride : rows, oneapi::mkl::blas::compute_mode::standard, dependencies);
     }
 };
 PrefillGemm::PrefillGemm(sycl::queue& q, int context, int max_tokens) : impl_(std::make_unique<Impl>(q, context, max_tokens)) {}
 PrefillGemm::~PrefillGemm() = default;
 sycl::event PrefillGemm::dense(int type, const uint8_t* weights, const float* input, float* output, int rows, int width, int tokens) {
     auto& p = *impl_;
-    p.validate(rows, width, tokens, false);
-    auto w = dequantize_half(p.q, type, weights, p.weights, size_t(rows) * width);
-    auto x = convert_half(p.q, input, p.input, size_t(tokens) * width);
-    return p.gemm(output, rows, width, tokens, {w,x});
+    if(rows<1||width<1||tokens<1||size_t(tokens)*width>p.input_elements||size_t(width)>p.weight_elements)
+        throw std::invalid_argument("Intel dense GEMM exceeds bounded scratch");
+    int block=0,bytes=0;
+    if(!strata::block_geometry(uint32_t(type),block,bytes)||width%block)throw std::invalid_argument("Invalid dense GEMM weight format");
+    const size_t row_bytes=size_t(width/block)*bytes;
+    const int tile=int(p.weight_elements/size_t(width));
+    auto x=convert_half(p.q,input,p.input,size_t(tokens)*width);
+    sycl::event last;
+    for(int first=0;first<rows;first+=tile){
+        const int count=std::min(tile,rows-first);
+        auto w=dequantize_half(p.q,type,weights+size_t(first)*row_bytes,p.weights,size_t(count)*width);
+        last=p.gemm(output+first,count,width,tokens,{w,x},false,rows);
+    }
+    return last;
 }
 sycl::event PrefillGemm::dense_interleaved_q6(const uint8_t* weights, const float* input, float* output, int rows, int width, int tokens) {
     auto& p = *impl_;
@@ -91,10 +102,21 @@ sycl::event PrefillGemm::selected(int type, const uint8_t* weights, size_t exper
         throw std::invalid_argument("Invalid interleaved expert GEMM layout/scratch");
     // Read only the small device-generated counts, once per projection. The
     // token/expert lists and all gathered/scattered activations stay on GPU.
-    p.q.wait_and_throw();
+    if(plan.experts<1||plan.experts>512||!plan.counts)throw std::invalid_argument("Invalid expert count control");
+    std::vector<int32_t> count_readback;
+    const int32_t* counts=plan.counts;
+    const auto count_kind=sycl::get_pointer_type(plan.counts,p.q.get_context());
+    if(count_kind==sycl::usm::alloc::device){
+        count_readback.resize(size_t(plan.experts));
+        p.q.memcpy(count_readback.data(),plan.counts,size_t(plan.experts)*sizeof(int32_t)).wait_and_throw();
+        counts=count_readback.data();
+    } else {
+        if(count_kind==sycl::usm::alloc::unknown)throw std::invalid_argument("Expert counts require USM in the GEMM context");
+        p.q.wait_and_throw(); // Preserve the established host/shared-USM path.
+    }
     sycl::event last;
     for (int expert = 0; expert < plan.experts; ++expert) {
-        const int count = plan.counts[expert];
+        const int count = counts[expert];
         if (!count) continue;
         if (count < 0 || count > plan.tokens) throw std::runtime_error("Invalid expert token count");
         const uint8_t* source = weights + size_t(expert) * expert_bytes;

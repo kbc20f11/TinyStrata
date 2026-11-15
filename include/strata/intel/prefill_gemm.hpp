@@ -12,6 +12,8 @@ public:
                       int rows, int width, int tokens);
     sycl::event dense_interleaved_q6(const uint8_t* weights, const float* input, float* output,
                       int rows, int width, int tokens);
+    // Counts may be device, host or shared USM. Only a bounded counts array is
+    // read back for device USM; slots/weights/activations remain on the GPU.
     sycl::event selected(int type, const uint8_t* weights, size_t expert_bytes, ExpertPlan plan,
                          const float* input, float* output, int rows, int width, bool separate_inputs,
                          bool interleaved = false);

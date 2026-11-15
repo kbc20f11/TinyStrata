@@ -13,6 +13,7 @@ void require_in_order(const sycl::queue& queue) {
 template<int Type> constexpr size_t row_bytes(size_t width) {
     if constexpr (Type == 0) return width * 4;
     if constexpr (Type == 1 || Type == 30) return width * 2;
+    if constexpr (Type == 2) return width / 32 * 18;
     if constexpr (Type == 8) return width / 32 * 34;
     if constexpr (Type == 14) return width / 256 * 210;
     if constexpr (Type == 18) return width / 256 * 98;
@@ -85,7 +86,7 @@ template<int Type> sycl::event selected(sycl::queue& q, const uint8_t* w, const 
     return packed_product<Type, 1>(q, w, input, output, rows, width, tokens, ids, picks, separate_inputs);
 }
 void validate_quantized_shape(int type, size_t width) {
-    const size_t block = type == 0 || type == 1 || type == 30 ? 1 : type == 8 ? 32 : 256;
+    const size_t block = type == 0 || type == 1 || type == 30 ? 1 : type == 2 || type == 8 ? 32 : 256;
     if (!width || width % block) throw std::invalid_argument("Invalid quantized row width");
 }
 template<int Type> sycl::event grouped_product(sycl::queue& q, const uint8_t* w, ExpertPlan plan,
@@ -131,7 +132,7 @@ template<int Type> sycl::event grouped_product(sycl::queue& q, const uint8_t* w,
 }
 #define TINYSTRATA_INTEL_DISPATCH(call) \
     switch (type) { \
-        case 0: return call(0); case 1: return call(1); case 30: return call(30); \
+        case 0: return call(0); case 1: return call(1); case 2: return call(2); case 30: return call(30); \
         case 8: return call(8); case 10: return call(10); case 11: return call(11); \
         case 14: return call(14); case 18: return call(18); case 21: return call(21); case 22: return call(22); case 23: return call(23); \
         default: throw std::invalid_argument("GGUF type is not implemented by the initial Intel kernels"); }

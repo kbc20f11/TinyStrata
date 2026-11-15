@@ -101,6 +101,17 @@ WeightStore::~WeightStore() {
     }
 }
 std::unique_ptr<WeightStore> WeightStore::load(sycl::queue queue, const std::string& gguf, WeightMemory kind, bool interleave_output, bool interleave_experts, bool interleave_dense, bool interleave_split_output, bool allow_experimental_tiel) {
+    return load_impl(std::move(queue), gguf, kind, interleave_output, interleave_experts,
+        interleave_dense, interleave_split_output, allow_experimental_tiel, {});
+}
+std::unique_ptr<WeightStore> WeightStore::load_validated(sycl::queue queue, const std::string& gguf,
+    WeightMemory kind, const std::function<void(const strata::GgufModel&)>& admission) {
+    if (!admission) throw std::invalid_argument("A family-specific weight admission is required");
+    return load_impl(std::move(queue), gguf, kind, false, false, false, false, false, admission);
+}
+std::unique_ptr<WeightStore> WeightStore::load_impl(sycl::queue queue, const std::string& gguf, WeightMemory kind,
+    bool interleave_output, bool interleave_experts, bool interleave_dense, bool interleave_split_output,
+    bool allow_experimental_tiel, const std::function<void(const strata::GgufModel&)>& admission) {
     if (!queue.has_property<sycl::property::queue::in_order>()) throw std::invalid_argument("Weight loading requires an in-order queue");
     const auto device = inspect_device(queue.get_device());
     if (const char* limitation = baseline_limitation(device.capabilities)) throw std::runtime_error(limitation);
@@ -120,6 +131,8 @@ std::unique_ptr<WeightStore> WeightStore::load(sycl::queue queue, const std::str
     };
     {
         strata::GgufModel model(paths);
+        if (admission) admission(model);
+        else {
         const auto* architecture = model.meta().get("general.architecture");
         if (!architecture || architecture->s != "qwen35moe") throw std::runtime_error("The initial Intel weight loader accepts qwen35moe only");
         const auto* name = model.meta().get("general.name");
@@ -139,6 +152,7 @@ std::unique_ptr<WeightStore> WeightStore::load(sycl::queue queue, const std::str
                 throw std::runtime_error("Experimental Tiel requires the pinned single-file IQ3_XXS artifact size");
             check_experimental_tiel(model, store->geometry_);
             std::fprintf(stderr, "Intel experimental_tiel=1 metadata_geometry_quant_layout_checked=1\n");
+        }
         }
         store->metadata_ = model.meta().metadata();
         // Keep each layer's expert trio in one layout. Mixed GGUF quantization

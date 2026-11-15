@@ -46,6 +46,9 @@ sycl::event selected_matmul(sycl::queue& queue, int type, const uint8_t* weights
                             ExpertPlan plan, const float* input, float* output,
                             int rows, int width, bool separate_inputs);
 // Candidate XMX path: unchanged GGUF storage, FP16 multiplicands, FP32 sums.
+inline bool xmx_weight_type_supported(int type) {
+    return type==0||type==1||type==30||type==8||type==10||type==11||type==14||type==18||type==21||type==22||type==23;
+}
 sycl::event quantized_matmul_xmx(sycl::queue& queue, int type, const uint8_t* weights,
                                  const float* input, float* output, int rows, int width, int tokens);
 sycl::event selected_matmul_xmx(sycl::queue& queue, int type, const uint8_t* weights,

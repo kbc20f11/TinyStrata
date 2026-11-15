@@ -10,11 +10,16 @@
 namespace strata::intel::quant {
 inline float half(uint16_t value) { return float(sycl::bit_cast<sycl::half>(value)); }
 template<int Type> inline float value(const uint8_t* row, size_t col) {
-    static_assert(Type == 0 || Type == 1 || Type == 30 || Type == 8 || Type == 10 || Type == 11 ||
+    static_assert(Type == 0 || Type == 1 || Type == 2 || Type == 30 || Type == 8 || Type == 10 || Type == 11 ||
                   Type == 14 || Type == 18 || Type == 21 || Type == 22 || Type == 23, "Unsupported Intel GGUF block type");
     if constexpr (Type == 0) return reinterpret_cast<const float*>(row)[col];
     if constexpr (Type == 1) return half(reinterpret_cast<const uint16_t*>(row)[col]);
     if constexpr (Type == 30) return sycl::bit_cast<float>(uint32_t(reinterpret_cast<const uint16_t*>(row)[col]) << 16);
+    if constexpr (Type == 2) {
+        const auto& b = reinterpret_cast<const block_q4_0*>(row)[col / 32];
+        const size_t i = col % 32;
+        return half(b.d) * (int((b.qs[i % 16] >> (i >= 16 ? 4 : 0)) & 15) - 8);
+    }
     if constexpr (Type == 8) {
         const auto& b = reinterpret_cast<const block_q8_0*>(row)[col / 32];
         return half(b.d) * b.qs[col % 32];

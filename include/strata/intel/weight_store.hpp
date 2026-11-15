@@ -3,6 +3,7 @@
 #include "strata/artifact/gguf_reader.hpp"
 #include <map>
 #include <memory>
+#include <functional>
 
 namespace strata::intel {
 enum class WeightMemory { Host, Shared, Device };
@@ -21,6 +22,12 @@ public:
     static std::unique_ptr<WeightStore> load(sycl::queue queue, const std::string& gguf,
                                             WeightMemory kind = WeightMemory::Host, bool interleave_output = false, bool interleave_experts = false, bool interleave_dense = false, bool interleave_split_output = false,
                                             bool allow_experimental_tiel = false);
+    // Family-specific admission runs over metadata and the complete tensor
+    // directory before allocating an arena. This entry does not apply Qwen's
+    // recurrent geometry/layout rules to an unrelated architecture. geometry()
+    // remains the Qwen API; other families keep their validated own geometry.
+    static std::unique_ptr<WeightStore> load_validated(sycl::queue queue, const std::string& gguf,
+        WeightMemory kind, const std::function<void(const strata::GgufModel&)>& admission);
     ~WeightStore();
     WeightStore(const WeightStore&) = delete;
     const std::map<std::string, ResidentTensor>& tensors() const { return tensors_; }
@@ -29,6 +36,10 @@ public:
     uint64_t upload_bytes() const { return upload_bytes_; }
     const strata::core::ModelGeometry& geometry() const { return geometry_; }
 private:
+    static std::unique_ptr<WeightStore> load_impl(sycl::queue queue, const std::string& gguf,
+        WeightMemory kind, bool interleave_output, bool interleave_experts, bool interleave_dense,
+        bool interleave_split_output, bool allow_experimental_tiel,
+        const std::function<void(const strata::GgufModel&)>& admission);
     explicit WeightStore(sycl::queue queue) : queue_(std::move(queue)) {}
     sycl::queue queue_;
     uint8_t* arena_ = nullptr;
