@@ -325,7 +325,7 @@ The KV cache stays in VRAM; system RAM holds Expert data for this offload mechan
 
 ## Automatic settings — Qwen3.6
 
-The following CUDA/HIP settings choose KV/Attention and context capacity automatically. You do not need to select an 8 GB, 12 GB or 16 GB recipe. The experimental Intel B390 profiles instead use one shared RAM pool, actual INT8 KV, preallocated context `auto` = 8192, and chunk `auto` = 1024; explicit settings are preserved. Intel context is currently limited to 32768. See the [Intel guide](docs/intel-windows.md).
+The following CUDA/HIP settings choose KV/Attention and context capacity automatically. You do not need to select an 8 GB, 12 GB or 16 GB recipe. Intel context `auto` selects the largest capacity that fits KV and workspace after loading weights, in 2,048-token steps, using remaining physical RAM, commit and WDDM budgets. Model limits are 262,144 for Qwen/Tiel/Gemma and 131,072 for LFM/Clover. Shared GPU memory is the same RAM pool and is counted once, with 4 GiB of OS headroom. Explicit settings are preserved; an oversized request fails rather than silently shrinking. See the [Intel guide](docs/intel-windows.md).
 
 For Qwen3.6 and LFM2.5, an RTX 3060 selects INT8. Supported RTX 40/50-series and AMD RDNA 4 environments select native FP8 automatically; the engine checks the compiled kernels and GPU capabilities as well as the hardware generation. If native FP8 is unavailable, automatic mode uses INT8. Gemma uses INT8 by default on both NVIDIA and AMD. This chooses a supported path without running a speed or quality benchmark at startup.
 
