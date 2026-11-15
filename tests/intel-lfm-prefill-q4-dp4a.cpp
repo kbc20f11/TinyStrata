@@ -128,7 +128,7 @@ void policy(){
     for(const char* invalid:{"","true","01","2","1 ","-1"}){bool rejected=false;try{lfm_q4_candidate_flag(invalid,"test");}catch(const std::invalid_argument&){rejected=true;}need(rejected,"Invalid candidate value accepted");}
     for(int type:{0,2,8,10,11,12,14,18,21})for(int tokens:{1,2,8,15,16,17,63,104,128,129,512})
         need(lfm_q4_prefill_dp4a_shape(type,tokens)==(type==12&&tokens>=16&&tokens<=128),"Prefill shape boundary differs");
-    need(DecodeDp4a::supports(12),"Q4 DP4A compiled support missing");
+    need(!DecodeDp4a::supports(12)&&DecodeDp4a::supports(12,true),"Q4 DP4A requires explicit model opt-in");
 #ifdef TINYSTRATA_INTEL_INT8_XMX
     need(!q8_xmx_supports(12),"Q4_K INT8 XMX must remain unsupported");
 #endif

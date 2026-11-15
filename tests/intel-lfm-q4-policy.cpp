@@ -1,6 +1,7 @@
 // CPU-only integration policy/ledger gate; no queue/model/device selection.
 #include "strata/intel/lfm_q4_policy.hpp"
 #include "strata/intel/lfm_ops.hpp"
+#include "strata/intel/decode_dp4a.hpp"
 #include "strata/intel/context_policy.hpp"
 #include <cstdio>
 #include <limits>
@@ -8,6 +9,9 @@ namespace si=strata::intel;
 namespace cp=si::context_policy;
 namespace{int checks=0;void need(bool value){++checks;if(!value)throw std::runtime_error("LFM Q4 integration policy check "+std::to_string(checks));}}
 int main(){try{
+    for(int type:{8,10,11,14,18,21,22,23})need(si::DecodeDp4a::supports(type)&&si::DecodeDp4a::supports(type,true));
+    need(!si::DecodeDp4a::supports(12)&&!si::DecodeDp4a::supports(12,false)&&si::DecodeDp4a::supports(12,true));
+    for(int type:{-1,0,2,99})need(!si::DecodeDp4a::supports(type)&&!si::DecodeDp4a::supports(type,true));
     need(!si::lfm_q4_candidate_flag(nullptr,"test"));need(!si::lfm_q4_candidate_flag("0","test"));need(si::lfm_q4_candidate_flag("1","test"));
     for(const char* bad:{"","2","01","true","1 ","-1"}){bool rejected=false;try{si::lfm_q4_candidate_flag(bad,"test");}catch(const std::invalid_argument&){rejected=true;}need(rejected);}
     for(bool fp32:{false,true})for(bool decode:{false,true}){bool rejected=false;try{si::lfm_q4_validate_modes(fp32,decode);}catch(const std::invalid_argument&){rejected=true;}need(rejected==(fp32&&decode));}
