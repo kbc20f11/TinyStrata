@@ -1,5 +1,6 @@
 #include "strata/intel/weight_store.hpp"
 #include "strata/intel/q6_interleave.hpp"
+#include "strata/intel/clover_causal.hpp"
 #include "strata/common/utf8_path.hpp"
 #include "strata/core/family_layout.hpp"
 #include <windows.h>
@@ -100,18 +101,19 @@ WeightStore::~WeightStore() {
         catch (const std::exception& error) { std::fprintf(stderr, "Intel weight release failed: %s\n", error.what()); }
     }
 }
-std::unique_ptr<WeightStore> WeightStore::load(sycl::queue queue, const std::string& gguf, WeightMemory kind, bool interleave_output, bool interleave_experts, bool interleave_dense, bool interleave_split_output, bool allow_experimental_tiel) {
+std::unique_ptr<WeightStore> WeightStore::load(sycl::queue queue, const std::string& gguf, WeightMemory kind, bool interleave_output, bool interleave_experts, bool interleave_dense, bool interleave_split_output, bool allow_experimental_tiel, bool allow_experimental_clover) {
     return load_impl(std::move(queue), gguf, kind, interleave_output, interleave_experts,
-        interleave_dense, interleave_split_output, allow_experimental_tiel, {});
+        interleave_dense, interleave_split_output, allow_experimental_tiel, allow_experimental_clover, {});
 }
 std::unique_ptr<WeightStore> WeightStore::load_validated(sycl::queue queue, const std::string& gguf,
     WeightMemory kind, const std::function<void(const strata::GgufModel&)>& admission) {
     if (!admission) throw std::invalid_argument("A family-specific weight admission is required");
-    return load_impl(std::move(queue), gguf, kind, false, false, false, false, false, admission);
+    return load_impl(std::move(queue), gguf, kind, false, false, false, false, false, false, admission);
 }
 std::unique_ptr<WeightStore> WeightStore::load_impl(sycl::queue queue, const std::string& gguf, WeightMemory kind,
     bool interleave_output, bool interleave_experts, bool interleave_dense, bool interleave_split_output,
-    bool allow_experimental_tiel, const std::function<void(const strata::GgufModel&)>& admission) {
+    bool allow_experimental_tiel, bool allow_experimental_clover,
+    const std::function<void(const strata::GgufModel&)>& admission) {
     if (!queue.has_property<sycl::property::queue::in_order>()) throw std::invalid_argument("Weight loading requires an in-order queue");
     const auto device = inspect_device(queue.get_device());
     if (const char* limitation = baseline_limitation(device.capabilities)) throw std::runtime_error(limitation);
@@ -125,6 +127,7 @@ std::unique_ptr<WeightStore> WeightStore::load_impl(sycl::queue queue, const std
     for (const auto& path : paths) files.push_back(std::make_unique<File>(path));
     auto store = std::unique_ptr<WeightStore>(new WeightStore(queue));
     std::vector<PlannedTensor> plan;
+    bool clover = false;
     size_t packed_expert_tensors = 0, original_expert_tensors = 0, packed_dense_tensors = 0;
     const auto is_expert = [](const std::string& name) {
         return name.ends_with(".ffn_gate_exps.weight") || name.ends_with(".ffn_up_exps.weight") || name.ends_with(".ffn_down_exps.weight");
@@ -134,19 +137,49 @@ std::unique_ptr<WeightStore> WeightStore::load_impl(sycl::queue queue, const std
         if (admission) admission(model);
         else {
         const auto* architecture = model.meta().get("general.architecture");
-        if (!architecture || architecture->s != "qwen35moe") throw std::runtime_error("The initial Intel weight loader accepts qwen35moe only");
+        clover = architecture && architecture->s == "clover_moe";
+        if (!architecture || (architecture->s != "qwen35moe" && !clover))
+            throw std::runtime_error("Intel Qwen-family weights require qwen35moe or explicitly selected Clover");
+        if (clover != allow_experimental_clover || (clover && allow_experimental_tiel))
+            throw std::runtime_error("Clover requires its own --experimental-clover selection, separate from Qwen/Tiel");
         const auto* name = model.meta().get("general.name");
         const bool qwen = name && name->s.find("Qwen3.6") != std::string::npos;
-        if (!qwen && !allow_experimental_tiel)
+        if (!qwen && !clover && !allow_experimental_tiel)
             throw std::runtime_error("The initial Intel route is enabled only for Qwen3.6; Tiel and other models are unvalidated");
-        const auto error = strata::check_architecture_qwen35moe(model.meta());
+        const auto error = strata::check_engine_architecture(model.meta());
         if (!error.empty()) throw std::runtime_error("Qwen GGUF: " + error);
         int64_t top_k = 0;
         std::string layout_error;
         if (!strata::core::geometry_from_gguf(model.meta(), store->geometry_, top_k, layout_error) ||
             !strata::core::check_gguf_layout(model, store->geometry_, layout_error))
             throw std::runtime_error("Qwen GGUF layout: " + layout_error);
-        if (!qwen) {
+        if (clover) {
+            LARGE_INTEGER size;
+            if (model.size() != 1 || !GetFileSizeEx(files[0]->handle, &size) || size.QuadPart != 15515157952LL)
+                throw std::runtime_error("Experimental Clover requires the pinned single-file AD-IQ3_S-IQ3_XXS artifact");
+            const auto& g = store->geometry_;
+            if (g.n_layers != 40 || g.n_embd != 2048 || g.head_dim != 256 || g.n_head != 16 || g.n_head_kv != 2 ||
+                g.n_expert != 256 || g.n_expert_used != 8 || g.n_ff != 512 || g.n_ff_shexp != 512 ||
+                g.full_attention_interval != 4 || g.ssm_d_conv != 4 || g.ssm_state_size != 128 ||
+                g.ssm_k_heads != 16 || g.ssm_v_heads != 32 || g.n_vocab != 248320 || g.n_mtp_layers != 0)
+                throw std::runtime_error("Experimental Clover geometry differs from the causal baseline");
+            const auto number = [&](const char* key, double expected) {
+                const auto* item = model.meta().get(key);
+                return item && item->is_num() && item->num() == expected;
+            };
+            if (!number("tokenizer.ggml.eos_token_id", strata::qwen35::clover_decode::kEndOfTurn) ||
+                !number("tokenizer.ggml.bos_token_id", strata::qwen35::clover_decode::kEndOfText) ||
+                !number("general.quantization_version", 2) || !number("general.file_type", 23))
+                throw std::runtime_error("Experimental Clover terminal/tokenizer identity differs");
+            const auto text = [&](const char* key, const char* expected) {
+                const auto* item = model.meta().get(key);
+                return item && item->type == strata::MetaType::STRING && item->s == expected;
+            };
+            if (!text("general.name", "Clover-35B-A3B-Preview") || !text("tokenizer.ggml.model", "gpt2") ||
+                !text("tokenizer.ggml.pre", "qwen35"))
+                throw std::runtime_error("Experimental Clover metadata differs from the pinned artifact");
+            std::fprintf(stderr, "Intel experimental_clover=1 causal_D0=1 single_weight_store=1\n");
+        } else if (!qwen) {
             LARGE_INTEGER size;
             if (model.size() != 1 || !GetFileSizeEx(files[0]->handle, &size) || size.QuadPart != 13600579424LL)
                 throw std::runtime_error("Experimental Tiel requires the pinned single-file IQ3_XXS artifact size");
@@ -170,6 +203,8 @@ std::unique_ptr<WeightStore> WeightStore::load_impl(sycl::queue queue, const std
         for (size_t shard = 0; shard < model.size(); ++shard) {
             for (const auto& tensor : model.shard(shard).tensors()) {
                 if (!model.in_bounds(tensor, shard)) throw std::runtime_error("Invalid tensor payload: " + tensor.name);
+                if (clover && int(tensor.type) != clover_causal::tensor_type(tensor.name))
+                    throw std::runtime_error("Clover tensor quantization differs from the pinned artifact: " + tensor.name);
                 const auto bytes = strata::tensor_payload_bytes(tensor);
                 const auto layer = expert_layers.find(tensor.name.substr(0, tensor.name.rfind(".ffn_")));
                 const bool expert = interleave_experts && is_expert(tensor.name) && layer != expert_layers.end() && layer->second.first == 3 && layer->second.second;
@@ -266,6 +301,10 @@ std::unique_ptr<WeightStore> WeightStore::load_impl(sycl::queue queue, const std
             DWORD received = 0;
             if (!ReadFile(files[tensor.shard]->handle, destination, count, &received, nullptr) || received != count)
                 throw std::runtime_error("Short tensor read: " + tensor.tensor.name);
+            if (clover && tensor.tensor.name.ends_with(".ssm_a")) {
+                if (first || count != 32 * sizeof(float)) throw std::runtime_error("Unexpected Clover A_log tensor size");
+                clover_causal::convert_a_log(std::span<float>(reinterpret_cast<float*>(destination), 32));
+            }
             for (uint64_t local = 0; local < count; local += sample_stride)
                 expected += uint64_t(destination[local]) * (first + local + 1);
             if (first + count == tensor.bytes) expected += uint64_t(destination[count - 1]) * tensor.bytes;

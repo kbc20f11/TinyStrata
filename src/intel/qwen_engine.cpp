@@ -1,4 +1,4 @@
-// Initial causal Qwen3.6 driver for the optional Windows SYCL backend.
+// Causal Qwen3.6/Tiel and opt-in Clover D0 driver for Windows SYCL.
 // Model/layer semantics follow src/qwen35/q36_engine.cu (Strata/TinyStrata,
 // MIT; LICENSE and NOTICE). Optional arithmetic/MTP candidates are explicit;
 // compressed weights and FP32 recurrent/KV state are retained. No image route.
@@ -9,6 +9,7 @@
 #include "strata/intel/kv_q8.hpp"
 #include "strata/intel/execution_request.hpp"
 #include "strata/intel/turn_checkpoint.hpp"
+#include "strata/intel/clover_causal.hpp"
 #ifdef TINYSTRATA_INTEL_MKL
 #include "strata/intel/prefill_gemm.hpp"
 #endif
@@ -122,6 +123,7 @@ class Engine {
     int position_ = 0;
     int terminal_token_ = -1;
     bool logits_valid_ = false;
+    bool clover_ = false;
     // One independent host snapshot; never alias speculative/cancellation
     // scratch. KV rows remain resident and are guarded by both exact prefixes.
     struct TurnSnapshot {
@@ -167,7 +169,7 @@ class Engine {
         return reinterpret_cast<const float*>(t.data);
     }
     double metadata_number(const std::string& name, double fallback) const {
-        const auto it = weights_->metadata().find("qwen35moe." + name);
+        const auto it = weights_->metadata().find(std::string(clover_ ? "clover_moe." : "qwen35moe.") + name);
         return it == weights_->metadata().end() ? fallback : it->second.num();
     }
     void matrix(const std::string& name, const float* input, float* output, int tokens = 1) {
@@ -684,7 +686,7 @@ class Engine {
         }
     }
 public:
-    Engine(const std::string& path, int context, unsigned device_index, WeightMemory memory = WeightMemory::Host, int chunk = 128, bool use_graph = true, bool profiling = false, bool prefill_xmx = false, bool prefill_npu = false, bool prefill_mkl = false, bool decode_dp4a = false, int mtp_depth = 0, bool verify_xmx = false, bool kv_int8 = false, bool prefill_int8_xmx = false, bool vocab_xmx = false, bool verify_mkl_attention = false, bool expert_layout = false, bool device_state = false, bool verify_graph = false, bool dense_layout = false, bool dense_split_k = false, int draft_vocab_limit = 0, bool experimental_tiel = false) :
+    Engine(const std::string& path, int context, unsigned device_index, WeightMemory memory = WeightMemory::Host, int chunk = 128, bool use_graph = true, bool profiling = false, bool prefill_xmx = false, bool prefill_npu = false, bool prefill_mkl = false, bool decode_dp4a = false, int mtp_depth = 0, bool verify_xmx = false, bool kv_int8 = false, bool prefill_int8_xmx = false, bool vocab_xmx = false, bool verify_mkl_attention = false, bool expert_layout = false, bool device_state = false, bool verify_graph = false, bool dense_layout = false, bool dense_split_k = false, int draft_vocab_limit = 0, bool experimental_tiel = false, bool experimental_clover = false) :
         q_(select_device(device_index), [](sycl::exception_list errors) { for (const auto& error : errors) std::rethrow_exception(error); },
            profiling ? sycl::property_list{sycl::property::queue::in_order{}, sycl::property::queue::enable_profiling{}}
                      : sycl::property_list{sycl::property::queue::in_order{}}), profiling_(profiling), prefill_xmx_(prefill_xmx), context_(context), chunk_(chunk) {
@@ -747,7 +749,9 @@ public:
             ExecutionRequest loading;
             if (draft_vocab_limit && (!mtp_depth || !vocab_xmx || draft_vocab_limit < 64 || draft_vocab_limit > 4096))
                 throw std::runtime_error("--draft-vocab requires MTP, --vocab-xmx and a limit in 64..4096");
-            weights_ = WeightStore::load(q_, path, memory, vocab_xmx, expert_layout, dense_layout, dense_split_k, experimental_tiel);
+            if (experimental_clover) clover_causal::validate_launch(kv_int8, mtp_depth, draft_vocab_limit, false, prefill_npu);
+            weights_ = WeightStore::load(q_, path, memory, vocab_xmx, expert_layout, dense_layout, dense_split_k, experimental_tiel, experimental_clover);
+            clover_ = weights_->geometry().family == strata::ModelFamily::CloverMoe;
             if (expert_layout) std::fprintf(stderr, "Intel expert_layout=interleaved16 Q8_activations=1 single_weight_store=1\n");
             if (vocab_xmx) std::fprintf(stderr, "Intel vocabulary=interleaved_Q6_K XMX unchanged_quantization=1 single_weight_store=1\n");
             const auto& g = weights_->geometry();
@@ -1032,7 +1036,8 @@ public:
         if (draft_vocab_limit_) std::fprintf(stderr, "draft_vocab_limit=%d draft_vocab_updates=%llu draft_vocab_prepare_ms=%.3f target_full_vocabulary=1\n",
             draft_vocab_limit_, static_cast<unsigned long long>(draft_vocab_updates_), draft_vocab_prepare_ms_);
     }
-    bool terminal(int token) const { return token == terminal_token_; }
+    bool clover() const { return clover_; }
+    bool terminal(int token) const { return clover_ ? clover_causal::terminal(token) : token == terminal_token_; }
     int context() const { return context_; }
     const float* logits() {
         if (!logits_valid_) {
@@ -1149,6 +1154,17 @@ using sampling_policy::Sampling;
 using sampling_policy::sampling_distribution;
 using sampling_policy::sample;
 
+Sampling model_sampling(bool clover) {
+    Sampling result;
+    if (clover) {
+        result.clover = true;
+        result.top_k = 64;
+        result.repeat = 1.05f;
+        result.presence = .9f;
+    }
+    return result;
+}
+
 float real_option(const std::string& text) {
     size_t end = 0;
     const float value = std::stof(text, &end);
@@ -1158,6 +1174,10 @@ float real_option(const std::string& text) {
 void sampling_option(Sampling& s, const std::string& field) {
     const auto equals = field.find('=');
     const std::string key = field.substr(0, equals), text = field.substr(equals + 1);
+    if (key == "clover_mode" && s.clover) {
+        if (text != "causal") throw std::runtime_error("Intel Clover supports causal D0 only");
+        return;
+    }
     const float value = real_option(text);
     if (key == "temperature" && value >= 0) s.temperature = value;
     else if (key == "top_p" && value > 0 && value <= 1) s.top_p = value;
@@ -1171,7 +1191,8 @@ void sampling_option(Sampling& s, const std::string& field) {
         size_t end = 0;
         if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos) throw std::runtime_error("Invalid random seed");
         s.seed = std::stoull(text, &end);
-    } else if ((key == "mtp_auto" || key == "lookup_draft") && value == 0) {
+    } else if ((key == "mtp_auto" || key == "lookup_draft" ||
+                (s.clover && (key == "clover_draft" || key == "clover_lookup"))) && value == 0) {
         // Explicitly disabled. Nonzero speculation remains unsupported.
     } else if (key == "ckpt" || key == "turn_at") {
         // Turn reuse hints. Only exact prefixes can restore the bounded,
@@ -1181,8 +1202,8 @@ void sampling_option(Sampling& s, const std::string& field) {
 }
 int serve(Engine& engine, bool stochastic_mtp = false) {
     const auto device = engine.device_info();
-    std::printf("INFO backend=sycl experimental=1 kv=%s mtp=%d vision=0 memory_model=%s single_weight_store=1 device_vendor=%u device_id=%u device_integrated=%d device_architecture=%s adapter_luid=%s adapter_node_mask=%u kv_used_tokens=%d\nREADY %d stop\n",
-        engine.kv_type(), engine.mtp_depth(), device.integrated ? "uma" : "discrete", device.vendor_id, device.device_id, int(device.integrated),
+    std::printf("INFO backend=sycl experimental=1 model_family=%s kv=%s mtp=%d vision=0 memory_model=%s single_weight_store=1 device_vendor=%u device_id=%u device_integrated=%d device_architecture=%s adapter_luid=%s adapter_node_mask=%u kv_used_tokens=%d\nREADY %d stop\n",
+        engine.clover() ? "clover_moe" : "qwen35moe", engine.kv_type(), engine.mtp_depth(), device.integrated ? "uma" : "discrete", device.vendor_id, device.device_id, int(device.integrated),
         device.architecture.c_str(), device.adapter_luid.empty() ? "unknown" : device.adapter_luid.c_str(),
         device.adapter_node_mask, engine.consumed_tokens(), engine.context());
     std::fflush(stdout);
@@ -1207,7 +1228,7 @@ int serve(Engine& engine, bool stochastic_mtp = false) {
         if (line == "QUIT") return 0;
         if (line.empty()) continue;
         std::vector<int> prompt;
-        Sampling sampling;
+        Sampling sampling = model_sampling(engine.clover());
         int max_new = 0;
         size_t turn_at = 0;
         bool checkpoint_requested = true;
@@ -1276,7 +1297,7 @@ int serve(Engine& engine, bool stochastic_mtp = false) {
         const size_t fresh = live.size() - reused;
         int produced = 0;
         const char* finish = "length";
-        std::vector<int> history(prompt);
+        std::vector<int> history = clover_causal::request_history(engine.clover(), prompt);
         const uint64_t generation_seed = sampling.seed ? sampling.seed : std::random_device{}();
         std::mt19937_64 random(generation_seed), draft_random(generation_seed ^ 0x9e3779b97f4a7c15ull);
         if (inbox.cancelled().load()) finish = "cancel";
@@ -1401,12 +1422,16 @@ int main(int argc, char** argv) {
         }
         std::string path, token_list, token_file, dump_path;
         int count = 32, context = 4096, device = 0, chunk = 128, mtp_depth = 0, draft_vocab = 0;
-        bool serve = false, use_graph = true, profiling = false, prefill_xmx = false, prefill_npu = false, prefill_mkl = false, decode_dp4a = false, verify_xmx = false, kv_int8 = false, prefill_int8_xmx = false, vocab_xmx = false, verify_mkl_attention = false, stochastic_mtp = false, expert_layout = false, device_state = false, verify_graph = false, dense_layout = false, dense_split_k = false, experimental_tiel = false;
+        bool serve = false, use_graph = true, profiling = false, prefill_xmx = false, prefill_npu = false, prefill_mkl = false, decode_dp4a = false, verify_xmx = false, kv_int8 = false, prefill_int8_xmx = false, vocab_xmx = false, verify_mkl_attention = false, stochastic_mtp = false, expert_layout = false, device_state = false, verify_graph = false, dense_layout = false, dense_split_k = false, experimental_tiel = false, experimental_clover = false, explicit_kv = false;
+        std::string clover_mode = "causal";
+        int clover_drafts = 0;
+        bool clover_options = false;
         strata::intel::WeightMemory memory = strata::intel::WeightMemory::Host;
         for (int i = 1; i < argc; ++i) {
             const std::string option(argv[i]);
             if (option == "--serve") { serve = true; continue; }
             if (option == "--experimental-tiel") { experimental_tiel = true; continue; }
+            if (option == "--experimental-clover") { experimental_clover = true; continue; }
             if (option == "--decode-dp4a") { decode_dp4a = true; continue; }
             if (option == "--verify-xmx") { verify_xmx = true; continue; }
             if (option == "--prefill-int8-xmx") { prefill_int8_xmx = true; continue; }
@@ -1425,7 +1450,7 @@ int main(int argc, char** argv) {
             if (option == "--host-profile") { strata::intel::host_profile::enabled = true; continue; }
             if (option == "--no-graph") { use_graph = false; continue; }
             if (option == "--help") {
-                std::puts("tinystrata-intel --model MODEL [--serve | --tokens IDS | --tokens-file FILE] [--n N] [--max-context N] [--device N] [--chunk 1..1024] [--mtp 0..7] [--kv-type fp32|int8] [--draft-vocab 0|64..4096] [--dump-full-logits FILE] [--experimental-tiel] [--host-profile]\ntinystrata-intel --device-info [--device N]\nExperimental text driver. KV defaults to FP32; MTP and draft vocabulary selection default to 0 (off); images are unsupported. A nonzero draft vocabulary requires --serve --mtp-stochastic --mtp --vocab-xmx. --host-profile enables host phase wall timers without changing decode graphs. --experimental-tiel selects the separately pinned Ornith IQ3_XXS artifact.");
+                std::puts("tinystrata-intel --model MODEL [--serve | --tokens IDS | --tokens-file FILE] [--n N] [--max-context N] [--device N] [--chunk 1..1024] [--mtp 0..7] [--kv-type fp32|int8] [--draft-vocab 0|64..4096] [--dump-full-logits FILE] [--experimental-tiel | --experimental-clover] [--host-profile]\ntinystrata-intel --device-info [--device N]\nExperimental text driver. Qwen/Tiel KV defaults to FP32; MTP and draft vocabulary selection default to 0 (off); images are unsupported. A nonzero draft vocabulary requires --serve --mtp-stochastic --mtp --vocab-xmx. --host-profile enables host phase wall timers without changing decode graphs. --experimental-tiel selects the separately pinned Ornith IQ3_XXS artifact. --experimental-clover selects the pinned Clover AD-IQ3_S-IQ3_XXS artifact with INT8 KV and causal D0 only (--clover-mode causal --clover-draft 0). It preserves Clover response-only penalties and stopping ramps; Qwen MTP and Clover images remain disabled.");
                 return 0;
             }
             if (option == "--capabilities") {
@@ -1442,11 +1467,11 @@ int main(int argc, char** argv) {
                 constexpr const char* xmx_types = "[]";
 #endif
 #if defined(TINYSTRATA_INTEL_MKL) && defined(TINYSTRATA_INTEL_INT8_XMX)
-                constexpr const char* profiles = "{\"b390-qwen36\":1,\"b390-tiel-coder\":1}";
-                constexpr const char* models = "[\"qwen3.6-35b-a3b\",\"tiel-coder-35b-a3b\"]";
+                constexpr const char* profiles = "{\"b390-qwen36\":1,\"b390-tiel-coder\":1,\"b390-clover-causal\":1}";
+                constexpr const char* models = "[\"qwen3.6-35b-a3b\",\"tiel-coder-35b-a3b\",\"clover-35b-a3b-preview\"]";
 #else
                 constexpr const char* profiles = "{}";
-                constexpr const char* models = "[\"qwen3.6-35b-a3b\"]";
+                constexpr const char* models = "[\"qwen3.6-35b-a3b\",\"clover-35b-a3b-preview\"]";
 #endif
 #ifdef TINYSTRATA_INTEL_AOT_TARGET
                 constexpr const char* aot_target = TINYSTRATA_INTEL_AOT_TARGET;
@@ -1455,6 +1480,7 @@ int main(int argc, char** argv) {
 #endif
                 std::printf("{\"backend\":\"sycl\",\"experimental\":true,\"model_families\":[],\"kv_types\":[\"fp32\",\"int8\"],\"images\":false,\"mtp\":true,\"experimental_mtp_max_depth\":7,\"serve\":true,"
                             "\"capabilities_schema\":1,\"experimental_models\":%s,\"experimental_profiles\":%s,"
+                            "\"experimental_model_features\":{\"clover-35b-a3b-preview\":{\"causal_d0\":true,\"mtp\":false,\"kv_types\":[\"int8\"],\"images\":false}},"
                             "\"build\":{\"mkl\":%s,\"int8_xmx\":%s,\"aot_target\":\"%s\"},"
                             "\"weight_types\":{\"scalar\":[0,1,8,10,11,14,18,21,22,23,30],\"dp4a\":[8,10,11,14,18,21,22,23],\"int8_xmx\":%s}}\n",
                             models, profiles, mkl, int8_xmx, aot_target, xmx_types);
@@ -1480,20 +1506,29 @@ int main(int argc, char** argv) {
                 const std::string kind(argv[++i]);
                 if (kind != "fp32" && kind != "int8") throw std::runtime_error("Intel supports explicit --kv-type fp32 or int8");
                 kv_int8 = kind == "int8";
+                explicit_kv = true;
             }
+            else if (option == "--clover-mode") { clover_mode = argv[++i]; clover_options = true; }
+            else if (option == "--clover-draft") { clover_drafts = strata::intel::number(argv[++i], 31); clover_options = true; }
             else if (option == "--draft-vocab") draft_vocab = strata::intel::number(argv[++i], 4096);
             else if (option == "--mtp") mtp_depth = strata::intel::number(argv[++i], 7);
             else if (option == "--batch") { if (strata::intel::number(argv[++i], 16) != 1) throw std::runtime_error("The initial Intel route serves one request at a time"); }
             else throw std::runtime_error("Unsupported Intel option: " + option);
         }
         if (path.empty()) throw std::runtime_error("--gguf is required");
+        if (experimental_clover) {
+            if (experimental_tiel) throw std::runtime_error("Clover and Tiel require separate model selections");
+            if (!explicit_kv) kv_int8 = true;
+            strata::intel::clover_causal::validate_launch(kv_int8, mtp_depth, draft_vocab, stochastic_mtp,
+                                                        prefill_npu, clover_mode, clover_drafts);
+        } else if (clover_options) throw std::runtime_error("Clover options require --experimental-clover");
         if (draft_vocab && (!serve || !stochastic_mtp || !mtp_depth || !vocab_xmx || draft_vocab < 64))
             throw std::runtime_error("--draft-vocab requires --serve, --mtp-stochastic, --mtp, --vocab-xmx and 64..4096 rows");
         if (stochastic_mtp && (!serve || !mtp_depth)) throw std::runtime_error("--mtp-stochastic requires --serve and --mtp >= 1");
         if (serve) {
             if (!token_list.empty() || !token_file.empty() || !dump_path.empty()) throw std::runtime_error("Token CLI options cannot accompany --serve");
             std::optional<strata::intel::ExecutionRequest> loading(std::in_place);
-            strata::intel::Engine engine(path, context, unsigned(device), memory, chunk, use_graph, profiling, prefill_xmx, prefill_npu, prefill_mkl, decode_dp4a, mtp_depth, verify_xmx, kv_int8, prefill_int8_xmx, vocab_xmx, verify_mkl_attention, expert_layout, device_state, verify_graph, dense_layout, dense_split_k, draft_vocab, experimental_tiel);
+            strata::intel::Engine engine(path, context, unsigned(device), memory, chunk, use_graph, profiling, prefill_xmx, prefill_npu, prefill_mkl, decode_dp4a, mtp_depth, verify_xmx, kv_int8, prefill_int8_xmx, vocab_xmx, verify_mkl_attention, expert_layout, device_state, verify_graph, dense_layout, dense_split_k, draft_vocab, experimental_tiel, experimental_clover);
             loading.reset();
             return strata::intel::serve(engine, stochastic_mtp);
         }
@@ -1506,7 +1541,7 @@ int main(int argc, char** argv) {
         auto tokens = strata::intel::parse_tokens(token_list);
         if (tokens.size() + size_t(count) > size_t(context)) throw std::runtime_error("Prompt and requested output exceed --context");
         strata::intel::ExecutionRequest active_request;
-        strata::intel::Engine engine(path, context, unsigned(device), memory, chunk, use_graph, profiling, prefill_xmx, prefill_npu, prefill_mkl, decode_dp4a, mtp_depth, verify_xmx, kv_int8, prefill_int8_xmx, vocab_xmx, verify_mkl_attention, expert_layout, device_state, verify_graph, dense_layout, dense_split_k, draft_vocab, experimental_tiel);
+        strata::intel::Engine engine(path, context, unsigned(device), memory, chunk, use_graph, profiling, prefill_xmx, prefill_npu, prefill_mkl, decode_dp4a, mtp_depth, verify_xmx, kv_int8, prefill_int8_xmx, vocab_xmx, verify_mkl_attention, expert_layout, device_state, verify_graph, dense_layout, dense_split_k, draft_vocab, experimental_tiel, experimental_clover);
         const float* logits = nullptr;
         const auto start = std::chrono::steady_clock::now();
         for (size_t index = 0; index < tokens.size();) {
@@ -1538,13 +1573,21 @@ int main(int argc, char** argv) {
                 auto next = engine.speculate(ready.back(), count - produced, greedy);
                 decode_steps += int(next.output.size()); ready = std::move(next.output);
             }
-        } else for (int index = 0; index < count; ++index) {
-            const int token = int(std::max_element(logits, logits + engine.vocabulary()) - logits);
+        } else {
+          const auto sampling = strata::intel::model_sampling(engine.clover());
+          std::vector<int> response;
+          std::mt19937_64 random(0);
+          for (int index = 0; index < count; ++index) {
+            const int token = engine.clover()
+                ? strata::intel::sample(logits, engine.vocabulary(), sampling, response, random)
+                : int(std::max_element(logits, logits + engine.vocabulary()) - logits);
             std::printf("TOKEN %d\n", token);
             std::fflush(stdout);
             ++produced;
+            response.push_back(token);
             if (engine.terminal(token)) break;
             if (index + 1 < count) { logits = engine.step(token); ++decode_steps; }
+          }
         }
         const auto end = std::chrono::steady_clock::now();
         engine.print_spec_stats();

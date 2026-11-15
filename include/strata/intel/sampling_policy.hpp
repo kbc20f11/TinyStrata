@@ -1,6 +1,7 @@
 #pragma once
 #include "strata/intel/speculative_distribution.hpp"
 #include "strata/intel/host_profile.hpp"
+#include "strata/qwen35/clover_decode.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -15,6 +16,7 @@ struct Sampling {
     float temperature = 0, top_p = 1, min_p = 0, repeat = 1, frequency = 0, presence = 0;
     int top_k = 20, last_n = 0;
     uint64_t seed = 0;
+    bool clover = false;
 };
 
 // A compact draft supplies sorted unique real token IDs, one per logit. A null
@@ -30,7 +32,14 @@ inline speculative_distribution::Distribution sampling_distribution(const float*
     auto phase_end = hp::now();
     hp::add(compact ? hp::DraftCopy : hp::TargetCopy, phase_start, phase_end);
     phase_start = phase_end;
-    if (s.last_n && (s.repeat != 1 || s.frequency != 0 || s.presence != 0)) {
+    if (s.clover) {
+        if (token_ids) throw std::invalid_argument("Clover D0 requires full target vocabulary");
+        strata::qwen35::clover_decode::PenaltyOptions controls;
+        controls.presence = s.presence;
+        controls.frequency = s.frequency;
+        controls.repetition = s.repeat;
+        strata::qwen35::clover_decode::apply_penalties(values, history, controls);
+    } else if (s.last_n && (s.repeat != 1 || s.frequency != 0 || s.presence != 0)) {
         std::map<int, int> counts;
         const size_t first = s.last_n < 0 || size_t(s.last_n) >= history.size() ? 0 : history.size() - size_t(s.last_n);
         for (size_t i = first; i < history.size(); ++i) ++counts[history[i]];
