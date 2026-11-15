@@ -141,7 +141,7 @@ try {
     $installerAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $repository 'install.ps1'), [ref]$tokens, [ref]$parseErrors)
     Assert-Intel ($parseErrors.Count -eq 0) 'installer parses under PowerShell 5.1'
     foreach ($name in @('Invoke-TinyStrataInstaller','Get-TinyStrataBackend','Get-TinyStrataConfig','Get-TinyStrataModelFamily',
-        'Enter-TinyStrataInstallationGuard','Exit-TinyStrataInstallationGuard','Remove-TinyStrataNativeGeneration','Initialize-TinyStrataDesktopShortcut','Assert-TinyStrataIntelCapabilities','Assert-TinyStrataIntelManagedDeviceSelection','Get-TinyStrataIntelRuntimeSelection','Select-TinyStrataBackend','Test-TinyStrataInteractiveConsole','Get-VerifiedDownload')) {
+        'Enter-TinyStrataInstallationGuard','Exit-TinyStrataInstallationGuard','Remove-TinyStrataNativeGeneration','Initialize-TinyStrataDesktopShortcut','Assert-TinyStrataIntelCapabilities','Assert-TinyStrataIntelManagedDeviceSelection','Test-TinyStrataIntelRuntimeCurrent','Get-TinyStrataIntelRuntimeSelection','Select-TinyStrataBackend','Test-TinyStrataInteractiveConsole','Get-VerifiedDownload')) {
         $definition = $installerAst.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
         Invoke-Expression $definition.Extent.Text
     }
@@ -228,6 +228,7 @@ try {
         param($Uri,$Destination)
         Assert-Intel ($Uri -eq 'https://github.com/kbc20f11/TinyStrata/releases/download/fixture/runtime.zip') 'download URL comes only from the pinned catalog'
         $script:fixtureDownloadCount++
+        if ($script:fixtureDownloadFail) { throw 'fixture download failed before publication' }
         [IO.File]::Copy($script:fixtureRuntimeZip,$Destination,$false)
     }
     $receipt=Receive-TinyStrataIntelRuntime -CatalogPath $catalogFile -CacheRoot (Join-Path $fixtureRoot 'download-cache')
@@ -338,6 +339,7 @@ exec(compile(Path(code_path).read_text(encoding="utf-8-sig"), "shipping-installe
                 experimental_mtp_max_depth=7;serve=$true;capabilities_schema=1;experimental_models=@('qwen3.6-35b-a3b','tiel-coder-35b-a3b');
                 experimental_profiles=@{'b390-qwen36'=1;'b390-tiel-coder'=1};build=@{mkl=$true;int8_xmx=$true;aot_target='intel_gpu_ptl_h'};
                 weight_types=@{scalar=@(0,1,8,10,11,14,18,21,22,23,30);dp4a=@(8,10,11,14,18,21,22,23);int8_xmx=@(14,18,21,22)}}
+            if ($args[5] -eq 'generic') { $report.build.aot_target='' }
             switch ($script:capabilityMode) {
                 'mkl-on-xmx-off' { $report.build.int8_xmx=$false; $report.experimental_profiles=@{}; $report.weight_types.int8_xmx=@() }
                 'profile-missing' { $report.experimental_profiles=@{} }
@@ -348,7 +350,8 @@ exec(compile(Path(code_path).read_text(encoding="utf-8-sig"), "shipping-installe
                 'legacy-tiel' {foreach($key in @('capabilities_schema','experimental_models','experimental_profiles','build','weight_types')){$report.Remove($key)}}
                 'package-target-mismatch' {$report.build.aot_target=''}
             }
-            $device=[ordered]@{schema=1;backend='sycl';device_index=0;vendor_id=32902;device_id=45186;integrated=$true;architecture='panther_lake_xe3';adapter_luid='00000000:00001234';adapter_node_mask=1}
+            $device=[ordered]@{schema=1;backend='sycl';device_index=0;vendor_id=32902;device_id=45186;integrated=$true;architecture='panther_lake_xe3';adapter_luid='00000000:00001234';adapter_node_mask=1;
+                capabilities=@{baseline=$true;max_work_group=256;local_memory=65536}}
             switch($script:capabilityMode){
                 'discrete' {$device.integrated=$false}
                 'unknown-device' {$device.device_id=12345}
@@ -390,11 +393,12 @@ exec(compile(Path(code_path).read_text(encoding="utf-8-sig"), "shipping-installe
         Copy-Item -LiteralPath (Join-Path $repository 'cmake\install-intel-runtime.ps1') -Destination (Join-Path $source 'cmake\install-intel-runtime.ps1')
         Copy-Item -LiteralPath (Join-Path $repository 'cmake\intel-runtime-package.ps1') -Destination (Join-Path $source 'cmake\intel-runtime-package.ps1')
         Copy-Item -LiteralPath (Join-Path $repository 'cmake\intel-runtime-catalog.json') -Destination (Join-Path $source 'cmake\intel-runtime-catalog.json')
-        if($fromPackage){
-            $fixtureCatalog=$publicCatalog|ConvertTo-Json -Depth 8|ConvertFrom-Json
-            if($scenario -eq 'package-bad-sha'){$fixtureCatalog.artifacts[0].sha256='0'*64}
-            Write-IntelFixture $source 'cmake\intel-runtime-catalog.json' ($fixtureCatalog|ConvertTo-Json -Depth 8)
-        }
+        $fixtureCatalog=$publicCatalog|ConvertTo-Json -Depth 8|ConvertFrom-Json
+        $tielArtifact=$artifact|Select-Object *
+        $tielArtifact.id='fixture-tiel';$tielArtifact.profile='b390-tiel-coder';$tielArtifact.model='tiel-coder-35b-a3b'
+        $fixtureCatalog.artifacts+=@($tielArtifact)
+        if($scenario -eq 'package-bad-sha'){$fixtureCatalog.artifacts[0].sha256='0'*64}
+        Write-IntelFixture $source 'cmake\intel-runtime-catalog.json' ($fixtureCatalog|ConvertTo-Json -Depth 8)
         $oldDirectory = Join-Path $work 'native\sycl-00000000000000000000000000000000'
         Write-IntelFixture $oldDirectory 'keep.txt' 'previous generation'
         $configRoot = Join-Path $work 'runtime\.tinystrata'
@@ -446,6 +450,116 @@ exec(compile(Path(code_path).read_text(encoding="utf-8-sig"), "shipping-installe
             }
         }
     }
+    # Exercise the actual no-Update installer path with complete private ZIPs,
+    # installed manifests and independent config/settings/history sentinels.
+    # Only HTTP, native inspection, configure and OS-process boundaries are fake.
+    $newStage=Join-Path $fixtureRoot 'new-runtime-stage'
+    $newManifest=New-IntelFixtureStage $newStage
+    Write-IntelFixture $newStage 'tinystrata-intel.exe' 'fixture new committed-KV runtime'
+    $newManifest.Files[0].Bytes=(Get-Item -LiteralPath (Join-Path $newStage 'tinystrata-intel.exe')).Length
+    $newManifest.Files[0].Sha256=(Get-FileHash -LiteralPath (Join-Path $newStage 'tinystrata-intel.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+    Write-IntelManifest $newStage $newManifest
+    $newZip=Join-Path $fixtureRoot 'new-runtime.zip'
+    [IO.Compression.ZipFile]::CreateFromDirectory($newStage,$newZip)
+    $newArtifact=$artifact|Select-Object *
+    $newArtifact.bytes=(Get-Item -LiteralPath $newZip).Length
+    $newArtifact.sha256=(Get-FileHash -LiteralPath $newZip -Algorithm SHA256).Hash.ToLowerInvariant()
+    $newArtifact.manifest_sha256=(Get-FileHash -LiteralPath (Join-Path $newStage '.tinystrata-intel-runtime.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+    $newArtifact.executable_sha256=$newManifest.Files[0].Sha256
+    $sameExeStage=Join-Path $fixtureRoot 'same-exe-old-license-stage'
+    [IO.Directory]::CreateDirectory($sameExeStage)|Out-Null
+    # Copy literal children because the stage path may itself contain brackets.
+    foreach($child in @(Get-ChildItem -LiteralPath $newStage -Force)){Copy-Item -LiteralPath $child.FullName -Destination $sameExeStage -Recurse -Force}
+    $sameExeManifest=Get-Content -LiteralPath (Join-Path $sameExeStage '.tinystrata-intel-runtime.json') -Raw|ConvertFrom-Json
+    Write-IntelFixture $sameExeStage 'licenses/TinyStrata/NOTICE' 'older package license inventory, same executable'
+    $notice=@($sameExeManifest.Files|Where-Object {$_.RelativePath -eq 'licenses/TinyStrata/NOTICE'})[0]
+    $notice.Bytes=(Get-Item -LiteralPath (Join-Path $sameExeStage $notice.RelativePath)).Length
+    $notice.Sha256=(Get-FileHash -LiteralPath (Join-Path $sameExeStage $notice.RelativePath) -Algorithm SHA256).Hash.ToLowerInvariant()
+    Write-IntelManifest $sameExeStage $sameExeManifest
+    function Test-TinyStrataSourceRevision {param($Directory,$Revision) return $true}
+    foreach($case in @('qwen-stale','qwen-current','tiel-stale','tiel-current','generic-qwen-stale','generic-qwen-current',
+        'generic-tiel-stale','generic-tiel-current','same-exe-old-manifest','corrupt-exe','corrupt-manifest','download-failure','explicit-offline','running-stale','running-current','unsupported-catalog')) {
+        $family=if($case -like '*tiel*'){'tiel'}else{'qwen36'}
+        $spec=Get-TinyStrataModelFamily -Name $family -Backend sycl
+        $profile=if($case -like 'generic-*'){'generic'}else{$spec.IntelProfile}
+        $work=Join-Path $fixtureRoot ('freshness-'+$case);$source=Join-Path $fixtureRoot ('freshness-source-'+$case)
+        $script:transactionWork=$work;$script:capabilityMode='success';$script:failConfigure=$false
+        $script:configureCallCount=0;$script:probeCallCount=0;$script:fixtureDownloadFail=$false
+        [IO.Directory]::CreateDirectory((Join-Path $source 'cmake'))|Out-Null
+        foreach($helper in @('install-intel-runtime.ps1','intel-runtime-package.ps1')){Copy-Item -LiteralPath (Join-Path $repository ('cmake\'+$helper)) -Destination (Join-Path $source ('cmake\'+$helper))}
+        $freshCatalog=$publicCatalog|ConvertTo-Json -Depth 8|ConvertFrom-Json
+        $selectedArtifact=$newArtifact|Select-Object *
+        $selectedArtifact.profile=$profile;$selectedArtifact.model=$spec.Model;$selectedArtifact.aot_target=if($profile -eq 'generic'){''}else{'intel_gpu_ptl_h'}
+        $freshCatalog.artifacts=@($selectedArtifact)
+        if($case -eq 'unsupported-catalog'){$freshCatalog.artifacts=@()}
+        Write-IntelFixture $source 'cmake\intel-runtime-catalog.json' ($freshCatalog|ConvertTo-Json -Depth 8)
+        $initialStage=if($case -like '*-current'){$newStage}elseif($case -eq 'same-exe-old-manifest'){$sameExeStage}else{$stage}
+        $savedDirectory=Join-Path $work 'native\sycl-11111111111111111111111111111111'
+        $saved=Install-TinyStrataIntelRuntime -StageDirectory $initialStage -Destination $savedDirectory
+        $cfg=[ordered]@{backend='sycl';intel_profile=$profile;model_name=$spec.Model;arch='qwen35moe';vision_mode='no';
+            exe=$saved.Exe;lib_dirs=@($savedDirectory);api_key='fixture-retained-secret';args=@('--model','fixture.gguf','--max-context','8192');
+            sampling=@{temperature=0.7;top_p=0.8};enable_thinking=$true;default_max_tokens=4096}
+        $configRoot=Join-Path $work 'runtime\.tinystrata';$configPath=Join-Path $configRoot $spec.ConfigFile
+        Write-IntelFixture $configRoot $spec.ConfigFile ($cfg|ConvertTo-Json -Depth 8)
+        $peer=if($family -eq 'tiel'){'config-sycl.json'}else{'config-tiel-coder-sycl.json'}
+        foreach($file in @(('runtime\.tinystrata\'+$peer),'runtime\.tinystrata\config.json','runtime\ui-sycl\settings.json','runtime\ui-sycl\chat-history.sqlite3','model-files\retained.gguf')){
+            Write-IntelFixture $work $file ('retained sentinel '+$file)
+        }
+        $protected=@{};foreach($file in @(('runtime\.tinystrata\'+$peer),'runtime\.tinystrata\config.json','runtime\ui-sycl\settings.json','runtime\ui-sycl\chat-history.sqlite3','model-files\retained.gguf')){
+            $protected[$file]=(Get-FileHash -LiteralPath (Join-Path $work $file) -Algorithm SHA256).Hash
+        }
+        $before=(Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash
+        if($case -eq 'corrupt-exe'){Write-IntelFixture $savedDirectory 'tinystrata-intel.exe' 'damaged executable'}
+        if($case -eq 'corrupt-manifest'){Write-IntelFixture $savedDirectory '.tinystrata-intel-runtime.json' '{invalid json'}
+        $script:fixtureRuntimeZip=$newZip;$downloadsBefore=$script:fixtureDownloadCount
+        $script:fixtureDownloadFail=$case -eq 'download-failure'
+        # Check the real configure/finally path with an inherited token and an
+        # empty value too. Empty and absent differ on current PowerShell/.NET.
+        if($case -eq 'tiel-current'){[Environment]::SetEnvironmentVariable('TINYSTRATA_INSTALLER_TRANSACTION','fixture-inherited-owner','Process')}
+        if($case -eq 'qwen-current'){[Environment]::SetEnvironmentVariable('TINYSTRATA_INSTALLER_TRANSACTION','','Process')}
+        $transactionBefore=[Environment]::GetEnvironmentVariable('TINYSTRATA_INSTALLER_TRANSACTION','Process')
+        $extra=if($case -eq 'explicit-offline'){@{IntelRuntimeDirectory=$stage}}else{@{}}
+        if($case -like 'running-*'){
+            function Get-TinyStrataSavedProcess {param($StatePath,$ConfigPath,$SourcePath,$ApiPort) return [pscustomobject]@{Id=123}}
+        }
+        # Covers the exact branch that clears RefreshSource for an already
+        # current source revision, as well as ordinary no-Update calls.
+        if($case -eq 'qwen-stale'){$extra.RefreshSource=$true;$extra.Revision='a'*40}
+        $failed=$false
+        try{Invoke-TinyStrataInstaller -SourceDirectory $source -WorkingDirectory $work -Backend sycl -Family $family -IntelProfile $profile -DoNotStart $true -DoNotDownload $true @extra}
+        catch{
+            if($case -notin @('download-failure','running-stale','unsupported-catalog')){throw}
+            $failed=$true
+            if($case -eq 'running-stale'){Assert-Intel ($_.Exception.Message -match 'Stop this installation.*rerun') 'running stale package gives an actionable update instruction'}
+        }finally{
+            function Get-TinyStrataSavedProcess {param($StatePath,$ConfigPath,$SourcePath,$ApiPort) return $null}
+        }
+        Assert-Intel ($failed -eq ($case -in @('download-failure','running-stale','unsupported-catalog'))) ('freshness transaction result: '+$case)
+        $after=Get-Content -LiteralPath $configPath -Raw|ConvertFrom-Json
+        if($failed){
+            Assert-Intel ((Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash -eq $before -and @(Get-ChildItem -LiteralPath (Join-Path $work 'native') -Directory).Count -eq 1) 'failed refresh preserves the prior config and generation'
+            Assert-Intel ($script:configureCallCount -eq 0 -and $script:probeCallCount -eq 0) 'failed download never reaches native/configure boundaries'
+            if($case -in @('running-stale','unsupported-catalog')){Assert-Intel ($script:fixtureDownloadCount -eq $downloadsBefore) 'running or unsupported package is refused before any download'}
+        }elseif($case -eq 'running-current'){
+            Assert-Intel ((Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash -eq $before -and $script:fixtureDownloadCount -eq $downloadsBefore) 'current running package is reused without rewriting settings or downloading'
+            Assert-Intel ($script:configureCallCount -eq 0 -and $script:probeCallCount -eq 0) 'current running package is not reprobed/reconfigured'
+        }else{
+            $expectedHash=if($case -eq 'explicit-offline'){$artifact.executable_sha256}else{$newArtifact.executable_sha256}
+            Assert-Intel ((Get-FileHash -LiteralPath $after.exe -Algorithm SHA256).Hash -eq $expectedHash) ('selected runtime hash matches its intended package: '+$case)
+            $expectedDownloads=if($case -like '*-current' -or $case -eq 'explicit-offline'){0}else{1}
+            Assert-Intel ($script:fixtureDownloadCount-$downloadsBefore -eq $expectedDownloads) ('unchanged package reuses; stale package refreshes: '+$case)
+            Assert-Intel (($after.exe -eq $saved.Exe) -eq ($case -like '*-current')) ('immutable generation selection: '+$case)
+            foreach($key in @($cfg.Keys|Where-Object {$_ -notin @('exe','lib_dirs')})){
+                Assert-Intel (($after.$key|ConvertTo-Json -Depth 8 -Compress) -ceq ($cfg[$key]|ConvertTo-Json -Depth 8 -Compress)) ('saved model policy/key retained: '+$key)
+            }
+        }
+        foreach($file in $protected.Keys){Assert-Intel ((Get-FileHash -LiteralPath (Join-Path $work $file) -Algorithm SHA256).Hash -eq $protected[$file]) ('other model/settings/history/GGUF bytes retained: '+$file)}
+        Assert-Intel (-not (Test-Path -LiteralPath (Join-Path $work '.tinystrata-installing.json'))) 'refresh releases its installation guard'
+        Assert-Intel ([Environment]::GetEnvironmentVariable('TINYSTRATA_INSTALLER_TRANSACTION','Process') -ceq $transactionBefore) ('refresh preserves the exact inherited transaction value or absence: '+$case)
+        if($null -eq $originalToken){Remove-Item -LiteralPath Env:\TINYSTRATA_INSTALLER_TRANSACTION -ErrorAction SilentlyContinue}
+        else{[Environment]::SetEnvironmentVariable('TINYSTRATA_INSTALLER_TRANSACTION',$originalToken,'Process')}
+    }
+    $script:fixtureDownloadFail=$false
     Assert-Intel ([Environment]::GetEnvironmentVariable('TINYSTRATA_INSTALLER_TRANSACTION','Process') -ceq $originalToken) 'installer transaction environment is restored'
     # Exercise launcher logic in an isolated interpreter with mocked process and
     # HTTP boundaries. It never listens, opens a browser or executes a model.
@@ -597,7 +711,8 @@ unittest.main()
     if ($LASTEXITCODE -ne 0) { throw 'Focused Intel UI launcher fixtures failed.' }
     Write-Host "Intel installer runtime fixtures passed ($checks checks)."
 } finally {
-    [Environment]::SetEnvironmentVariable('TINYSTRATA_INSTALLER_TRANSACTION',$originalToken,'Process')
+    if($null -eq $originalToken){Remove-Item -LiteralPath Env:\TINYSTRATA_INSTALLER_TRANSACTION -ErrorAction SilentlyContinue}
+    else{[Environment]::SetEnvironmentVariable('TINYSTRATA_INSTALLER_TRANSACTION',$originalToken,'Process')}
     $resolved = [IO.Path]::GetFullPath($fixtureRoot)
     $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
     if ($resolved.StartsWith($tempRoot,[StringComparison]::OrdinalIgnoreCase) -and (Split-Path -Leaf $resolved) -like 'tinystrata-intel-install-*') {
