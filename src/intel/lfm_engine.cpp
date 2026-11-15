@@ -121,7 +121,10 @@ public:
             throw std::runtime_error("STRATA_INTEL_LFM_Q4_FP32_BLOCKS requires0 or1");
         q4_fp32_blocks_=q4_blocks?std::string(q4_blocks)=="1":measured_runtime&&measured_device;
         q4_dp4a_enabled_=lfm_q4_candidate_flag(std::getenv("STRATA_INTEL_LFM_Q4_DP4A"),"STRATA_INTEL_LFM_Q4_DP4A");
-        prefill_q4_dp4a_enabled_=lfm_q4_candidate_flag(std::getenv("STRATA_INTEL_LFM_PREFILL_Q4_DP4A"),"STRATA_INTEL_LFM_PREFILL_Q4_DP4A");
+        const char* prefill_q4=std::getenv("STRATA_INTEL_LFM_PREFILL_Q4_DP4A");
+        prefill_q4_dp4a_enabled_=prefill_q4
+            ?lfm_q4_candidate_flag(prefill_q4,"STRATA_INTEL_LFM_PREFILL_Q4_DP4A")
+            :measured_runtime&&measured_device;
         lfm_q4_validate_modes(q4_fp32_blocks_,q4_dp4a_enabled_);
         const bool q4_auxiliary=q4_dp4a_enabled_||prefill_q4_dp4a_enabled_;
         if(q4_auxiliary&&!device_.capabilities.esimd)throw std::runtime_error("LFM Q4 DP4A candidate requires Intel ESIMD");
