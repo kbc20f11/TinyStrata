@@ -60,6 +60,8 @@ class Engine {
     npu_policy::SharePolicy npu_share_;
     std::string npu_split_mode_;
     bool npu_reuse_tensors_ = true, npu_profile_stages_ = false, npu_split_requested_ = false;
+    bool npu_defer_qkv_ = false;
+    size_t npu_deferred_qkv_calls_ = 0, npu_deferred_qkv_error_drains_ = 0;
 #endif
     std::vector<void*> allocations_;
     std::vector<LayerState> layers_, checkpoints_;
@@ -182,14 +184,47 @@ class Engine {
         const auto it = weights_->metadata().find(std::string(clover_ ? "clover_moe." : "qwen35moe.") + name);
         return it == weights_->metadata().end() ? fallback : it->second.num();
     }
-    void matrix(const std::string& name, const float* input, float* output, int tokens = 1) {
+#if defined(TINYSTRATA_INTEL_NPU) && defined(TINYSTRATA_INTEL_MKL)
+    bool begin_deferred_qkv(const std::string& name, const float* input, float* output, int tokens) {
+        if (!npu_defer_qkv_ || !npu_ || !gemm_ || tokens < 128) return false;
+        const auto& t = tensor(name);
+        const int width = int(t.info.shape[0]);
+        const int rows = t.info.shape.size() < 2 ? 1 : int(t.info.shape[1]);
+        const auto partition = npu_share_.select({npu_policy::Projection::qkv, int(t.info.type),
+            size_t(rows), size_t(width), size_t(tokens)});
+        if (!partition.offloaded()) return false;
+        NpuSplitOptions options;
+        options.parallel = true;
+        options.remote = npu_split_mode_ == "remote";
+        options.interleaved = t.layout == WeightLayout::Q6Interleaved16;
+        options.reuse_tensors = npu_reuse_tensors_;
+        options.profile_stages = npu_profile_stages_;
+        sycl::event gpu_completion;
+        const bool pending = npu_->begin_split(*gemm_, int(t.info.type), t.data, input, output,
+            rows, width, tokens, int(partition.npu_rows), options, gpu_completion);
+        if (pending) remember("npu_deferred_qkv_gpu", gpu_completion);
+        return pending;
+    }
+    void drain_deferred_qkv_on_error() noexcept {
+        // No rollback, buffer reuse or release may race an outstanding NPU
+        // write or the already-submitted GPU projection/remainder work.
+        try { if (npu_ && npu_->split_pending()) npu_->finish_split(); }
+        catch (const std::exception& error) { std::fprintf(stderr, "Intel NPU deferred join during error: %s\n", error.what()); }
+        catch (...) { std::fprintf(stderr, "Intel NPU deferred join during error: unknown exception\n"); }
+        try { q_.wait_and_throw(); }
+        catch (const std::exception& error) { std::fprintf(stderr, "Intel NPU deferred GPU drain during error: %s\n", error.what()); }
+        catch (...) { std::fprintf(stderr, "Intel NPU deferred GPU drain during error: unknown exception\n"); }
+        ++npu_deferred_qkv_error_drains_;
+    }
+#endif
+    void matrix(const std::string& name, const float* input, float* output, int tokens = 1, bool allow_npu = true) {
         const auto& t = tensor(name);
         const int width = int(t.info.shape[0]);
         const int rows = t.info.shape.size() < 2 ? 1 : int(t.info.shape[1]);
 #ifdef TINYSTRATA_INTEL_NPU
         const char* split_mode = npu_split_requested_ ? npu_split_mode_.c_str() : nullptr;
 #ifdef TINYSTRATA_INTEL_MKL
-        if (npu_ && gemm_ && split_mode && *split_mode && tokens >= 128 &&
+        if (allow_npu && npu_ && gemm_ && split_mode && *split_mode && tokens >= 128 &&
             (name.find("attn_qkv.weight") != std::string::npos || name.find("attn_gate.weight") != std::string::npos)) {
             const auto projection = name.find("attn_qkv.weight") != std::string::npos
                 ? npu_policy::Projection::qkv : npu_policy::Projection::gate;
@@ -237,7 +272,7 @@ class Engine {
             return;
         }
 #ifdef TINYSTRATA_INTEL_NPU
-        if (npu_ && !split_mode && tokens >= 128 && t.info.type != 0) {
+        if (allow_npu && npu_ && !split_mode && tokens >= 128 && t.info.type != 0) {
             remember("npu_output_copy", npu_->run(int(t.info.type), t.data, input, output, rows, width, tokens));
             return;
         }
@@ -265,10 +300,37 @@ class Engine {
         return gdn_recurrence_tiled(q_, state, qkv, alpha, beta, output, hk_, hv_, tokens);
     }
     void gdn(const std::string& prefix, const LayerState& state, int tokens, size_t layer) {
-        matrix(prefix + "attn_qkv.weight", h_, qkv_, tokens);
-        matrix(prefix + "attn_gate.weight", h_, z_, tokens);
-        matrix(prefix + "ssm_alpha.weight", h_, alpha_, tokens);
-        matrix(prefix + "ssm_beta.weight", h_, beta_, tokens);
+        bool deferred_qkv = false;
+        bool allow_qkv_npu = true;
+        try {
+#if defined(TINYSTRATA_INTEL_NPU) && defined(TINYSTRATA_INTEL_MKL)
+            allow_qkv_npu = !npu_defer_qkv_;
+            deferred_qkv = begin_deferred_qkv(prefix + "attn_qkv.weight", h_, qkv_, tokens);
+#endif
+            // A refused async admission falls back once to the full GPU path;
+            // do not count/attempt the same NPU slice again via matrix().
+            if (!deferred_qkv) matrix(prefix + "attn_qkv.weight", h_, qkv_, tokens, allow_qkv_npu);
+            // These projections read the same immutable normalized input and
+            // write disjoint buffers. Submit them before waiting for QKV's NPU
+            // prefix. gate_rows=0 is required when this candidate is enabled.
+            matrix(prefix + "attn_gate.weight", h_, z_, tokens);
+            matrix(prefix + "ssm_alpha.weight", h_, alpha_, tokens);
+            matrix(prefix + "ssm_beta.weight", h_, beta_, tokens);
+#if defined(TINYSTRATA_INTEL_NPU) && defined(TINYSTRATA_INTEL_MKL)
+            if (deferred_qkv) {
+                const auto joined = npu_->finish_split();
+                remember("npu_split_join", joined);
+                ++npu_deferred_qkv_calls_;
+            }
+#endif
+        } catch (...) {
+#if defined(TINYSTRATA_INTEL_NPU) && defined(TINYSTRATA_INTEL_MKL)
+            if (deferred_qkv || (npu_ && npu_->split_pending())) drain_deferred_qkv_on_error();
+#endif
+            throw;
+        }
+        // The joined merge is ahead of every QKV consumer on the same
+        // in-order queue. Persistent convolution/recurrent state starts below.
         const float *dt = f32(prefix + "ssm_dt.bias"), *ssm_a = f32(prefix + "ssm_a");
         float *alpha = alpha_, *beta = beta_;
         const int hv = hv_, hk = hk_, channels = (2 * hk + hv) * 128;
@@ -713,6 +775,21 @@ public:
         q_(select_device(device_index), [](sycl::exception_list errors) { for (const auto& error : errors) std::rethrow_exception(error); },
            profiling ? sycl::property_list{sycl::property::queue::in_order{}, sycl::property::queue::enable_profiling{}}
                      : sycl::property_list{sycl::property::queue::in_order{}}), profiling_(profiling), prefill_xmx_(prefill_xmx), context_(context), chunk_(chunk) {
+#ifdef TINYSTRATA_INTEL_NPU
+        if (const char* raw = std::getenv("STRATA_REVIEW_NPU_DEFER_QKV"); raw && *raw) {
+            const std::string value(raw);
+            if (value != "0" && value != "1") throw std::invalid_argument("STRATA_REVIEW_NPU_DEFER_QKV must be0 or1");
+            npu_defer_qkv_ = value == "1";
+        }
+        if (npu_defer_qkv_) {
+            if (experimental_tiel || experimental_clover)
+                throw std::invalid_argument("Deferred QKV is currently a Qwen3.6-only review candidate");
+            const char* raw_mode = std::getenv("STRATA_REVIEW_NPU_SPLIT");
+            const std::string mode = raw_mode ? raw_mode : "";
+            if (!prefill_mkl || (mode != "parallel" && mode != "remote"))
+                throw std::invalid_argument("Deferred QKV requires --prefill-mkl and parallel/remote NPU split");
+        }
+#endif
         const auto selected_device = inspect_device(q_.get_device());
         if (const char* limitation = baseline_limitation(selected_device.capabilities)) throw std::runtime_error(limitation);
 #ifdef TINYSTRATA_INTEL_AOT_TARGET
@@ -923,9 +1000,15 @@ public:
                     {npu_policy::Projection::gate, size_t(min_tokens), size_t(max_tokens), size_t(gate_rows)}});
                 npu_reuse_tensors_ = setting("STRATA_REVIEW_NPU_REUSE_TENSORS", 1, 1) != 0;
                 npu_profile_stages_ = setting("STRATA_REVIEW_NPU_PROFILE_STAGES", 0, 1) != 0;
-                std::fprintf(stderr, "Intel NPU policy mode=%s qkv_rows=%d gate_rows=%d min_tokens=%d max_tokens=%d reuse_tensors=%d stage_profile=%d\n",
+                if (npu_defer_qkv_ && (gate_rows != 0 ||
+                    (npu_split_mode_ != "parallel" && npu_split_mode_ != "remote")))
+                    throw std::invalid_argument("Deferred QKV requires parallel/remote NPU split and gate_rows=0");
+#ifndef TINYSTRATA_INTEL_MKL
+                if (npu_defer_qkv_) throw std::invalid_argument("Deferred QKV requires oneMKL prefill support");
+#endif
+                std::fprintf(stderr, "Intel NPU policy mode=%s qkv_rows=%d gate_rows=%d min_tokens=%d max_tokens=%d reuse_tensors=%d stage_profile=%d defer_qkv=%d\n",
                     npu_split_mode_.empty() ? "full" : npu_split_mode_.c_str(), qkv_rows, gate_rows,
-                    min_tokens, max_tokens, int(npu_reuse_tensors_), int(npu_profile_stages_));
+                    min_tokens, max_tokens, int(npu_reuse_tensors_), int(npu_profile_stages_), int(npu_defer_qkv_));
                 npu_ = std::make_unique<NpuProjection>(q_);
             }
 #endif
@@ -952,6 +1035,11 @@ public:
         }
     }
     ~Engine() {
+#if defined(TINYSTRATA_INTEL_NPU) && defined(TINYSTRATA_INTEL_MKL)
+        if (npu_ && npu_->split_pending()) drain_deferred_qkv_on_error();
+        if (npu_defer_qkv_) std::fprintf(stderr, "Intel NPU deferred_qkv calls=%zu error_drains=%zu\n",
+            npu_deferred_qkv_calls_, npu_deferred_qkv_error_drains_);
+#endif
         try { q_.wait_and_throw(); } catch (...) {}
         decode_graph_.reset();
         verify_graphs_.clear();
@@ -986,6 +1074,11 @@ public:
         collect_profile();
         check_numeric_flags();
         if (cancelled && (!complete || cancelled->load())) {
+#if defined(TINYSTRATA_INTEL_NPU) && defined(TINYSTRATA_INTEL_MKL)
+            // Normally gdn() already joined; keep rollback safe if a future
+            // cancellation path returns with an outstanding request.
+            if (npu_ && npu_->split_pending()) npu_->finish_split().wait_and_throw();
+#endif
             checkpoint(true);
             q_.wait_and_throw();
             return nullptr;

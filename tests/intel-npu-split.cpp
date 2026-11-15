@@ -21,9 +21,10 @@ int main(int argc, char** argv) {
         strata::paths::Utf8Arguments arguments(argc, argv); argc=arguments.argc(); argv=arguments.argv();
         const bool sweep=argc==3 && std::strcmp(argv[2],"--sweep")==0;
         const bool probe=argc==3 && std::strcmp(argv[2],"--probe")==0;
-        const bool unprofiled=argc==3 && std::strcmp(argv[2],"--focus-unprofiled")==0;
+        const bool remote_first=argc==3 && std::strcmp(argv[2],"--remote-first")==0;
+        const bool unprofiled=remote_first || argc==3 && std::strcmp(argv[2],"--focus-unprofiled")==0;
         const bool focus=argc==3 && (std::strcmp(argv[2],"--focus")==0 || unprofiled);
-        if (argc != 2 && !sweep && !probe && !focus) throw std::runtime_error("Usage: intel_npu_split_test projection-fixture.bin [--sweep|--probe|--focus]");
+        if (argc != 2 && !sweep && !probe && !focus && !remote_first) throw std::runtime_error("Usage: intel_npu_split_test projection-fixture.bin [--sweep|--probe|--focus]");
         std::ifstream f(strata::paths::native_path(argv[1]),std::ios::binary);
         int rows=0,width=0;
         f.read(reinterpret_cast<char*>(&rows),4); f.read(reinterpret_cast<char*>(&width),4);
@@ -44,13 +45,13 @@ int main(int argc, char** argv) {
         for (size_t i=0;i<1024ull*width;++i) x[i]=std::sin(float(i%1987)*.013f)*.3f;
         strata::intel::PrefillGemm gpu(q,1,1024);
         strata::intel::NpuProjection npu(q);
-        const auto tokens_to_test=probe?std::vector<int>{128}:focus?std::vector<int>{256,512,1024}:sweep?std::vector<int>{128,256,512,1024}:std::vector<int>{128,257,1024};
-        const auto rows_to_test=probe?std::vector<int>{rows/16,rows/8}:focus?std::vector<int>{rows==8192?1024:256,rows/2}:sweep?std::vector<int>{rows/16,rows/8,rows/4,rows/2}:std::vector<int>{1024};
-        for (bool interleaved : (probe?std::vector<bool>{false}:focus?std::vector<bool>{true}:std::vector<bool>{false,true})) for (int tokens : tokens_to_test) for(int npu_rows:rows_to_test) for(bool reuse:((sweep||probe)?std::vector<bool>{false,true}:std::vector<bool>{true})) {
+        const auto tokens_to_test=remote_first?std::vector<int>{1024,1005}:probe?std::vector<int>{128}:focus?std::vector<int>{256,512,1024}:sweep?std::vector<int>{128,256,512,1024}:std::vector<int>{128,257,1024};
+        const auto rows_to_test=remote_first?std::vector<int>{1024}:probe?std::vector<int>{rows/16,rows/8}:focus?std::vector<int>{rows==8192?1024:256,rows/2}:sweep?std::vector<int>{rows/16,rows/8,rows/4,rows/2}:std::vector<int>{1024};
+        for (bool interleaved : (remote_first?std::vector<bool>{true,false}:probe?std::vector<bool>{false}:focus?std::vector<bool>{true}:std::vector<bool>{false,true})) for (int tokens : tokens_to_test) for(int npu_rows:rows_to_test) for(bool reuse:((sweep||probe)?std::vector<bool>{false,true}:std::vector<bool>{true})) {
             auto dense=[&](){ return interleaved?gpu.dense_interleaved_q6(packed,x,a,rows,width,tokens):gpu.dense(14,w,x,a,rows,width,tokens); };
             for (size_t i=size_t(tokens)*rows;i<size_t(tokens)*rows+32;++i) a[i]=b[i]=12345.f;
             dense().wait_and_throw();
-            for (bool remote : {false,true}) {
+            for (bool remote : (remote_first?std::vector<bool>{true,false}:std::vector<bool>{false,true})) {
                 std::vector<double> full,serial,parallel;
                 std::vector<strata::intel::NpuSplitTiming> stages;
                 double maxerr=0; bool finite=true;

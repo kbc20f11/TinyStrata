@@ -16,6 +16,7 @@ struct NpuSplitTiming {
     double prepare_wait_ms = 0, tensor_bind_ms = 0, npu_submit_ms = 0;
     double gpu_submit_ms = 0, npu_wait_ms = 0, npu_host_span_ms = 0, host_ms = 0;
     double gpu_status_query_ms = 0;
+    double begin_host_ms = 0, deferred_gap_ms = 0;
     // Profiling-only prior-work fence perturbs scheduling; not a speedup claim.
     double prior_gpu_drain_ms = -1, weight_decode_gpu_ms = -1, input_convert_gpu_ms = -1;
     // GPU timestamps include conversion/dequantization in the remainder span.
@@ -52,6 +53,13 @@ public:
     bool run_split(PrefillGemm& gpu, int type, const uint8_t* weights, const float* input,
                    float* output, int rows, int width, int tokens, int npu_rows,
                    const NpuSplitOptions& options, sycl::event& completion);
+    // Exactly one pending request. GPUcompletion covers only the GPU suffix;
+    // the caller must join before consuming the NPU prefix or changing input.
+    bool begin_split(PrefillGemm& gpu, int type, const uint8_t* weights, const float* input,
+                     float* output, int rows, int width, int tokens, int npu_rows,
+                     const NpuSplitOptions& options, sycl::event& GPUcompletion);
+    sycl::event finish_split();
+    bool split_pending() const noexcept;
     // Does not synchronize. Query immediately after completion.wait() in a
     // profiling micro; normal callers need not collect device stage timings.
     NpuSplitTiming last_split_timing() const;
