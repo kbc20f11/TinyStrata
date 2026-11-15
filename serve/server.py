@@ -7411,19 +7411,23 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
     directory = Path(cfg.get("download_dir") or Path(config_path).parent / "model-files")
     if not directory.is_absolute():
         directory = Path(cfg.get("cwd") or ROOT) / directory
+    owned_download = None
 
     def activate(path: Path, projector: Path | None = None, assistant: Path | None = None):
-        if svc.stopping.is_set() or getattr(svc.downloads, "closed", False):
+        if svc.stopping.is_set() or getattr(owned_download, "closed", False):
             raise RuntimeError("the API is stopping")
         if svc.models is not None:
             original = svc.models.profiles.current_id
-            if svc.models.active_id != original:
-                # This manager can outlive its initial model selection. An
-                # inactive download prepares files only, never the live Service.
-                svc.models.profiles.prepare(original, model_path=path, projector=projector, projector_verified=True,
-                                            **({"assistant": assistant, "assistant_verified": True}
-                                               if assistant is not None else {}))
-                return
+            with svc.models.download_activation(original) as live:
+                if not live:
+                    # A selected or already admitted switch owns the runtime.
+                    # Completion of the old download must never steal it back.
+                    svc.models.prepare_download(original, path, projector, assistant)
+                    return
+                return activate_current(path, projector, assistant)
+        return activate_current(path, projector, assistant)
+
+    def activate_current(path: Path, projector: Path | None = None, assistant: Path | None = None):
         # Reuse an already complete installation, without another resident model.
         # A text-only installation is upgraded only when images are requested.
         if not isinstance(svc.engine, UnavailableEngine):
@@ -7502,7 +7506,7 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
                 if image_candidate is not None and candidate.info.get("vision") != 1:
                     raise ValueError("the native engine does not support image embeddings; rebuild TinyStrata")
                 with svc.install_lock:
-                    if svc.stopping.is_set() or getattr(svc.downloads, "closed", False):
+                    if svc.stopping.is_set() or getattr(owned_download, "closed", False):
                         raise RuntimeError("the API stopped while the model was loading")
                     # Persist ordinary startup only once native loading really
                     # succeeds. DLL/OOM failures must retain the control API on
@@ -7522,6 +7526,9 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
                     svc.last_request_at = time.time()
                     cfg.clear()
                     cfg.update(updated)
+                    if svc.models is not None:
+                        with svc.models._lock:
+                            svc.models.profiles.update(svc.models.profiles.current_id, updated)
                     svc.model_available = True
             except BaseException:
                 candidate.close()
@@ -7561,7 +7568,8 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
                                                    projector_paths=(Path(projector),) if projector else (),
                                                    _manifests=(manifest_for_arch(cfg.get("arch", "qwen35moe"), cfg.get("model_name")),
                                                                projector_for_arch(cfg.get("arch", "qwen35moe"), cfg.get("model_name"))))
-    return svc.downloads
+    owned_download = svc.downloads
+    return owned_download
 
 
 def main() -> int:

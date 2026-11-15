@@ -1583,8 +1583,17 @@ function downloadFailure(flow, error) {
 async function acceptDownloadStatus(flow, job, {confirmation = false} = {}) {
   if (modelDownloads.get(flow.target) !== flow) return;
   if (!job || job.model_id !== flow.target || !["idle", "downloading", "verifying", "loading", "ready", "cancelled", "error"].includes(job.state)) throw new Error("Invalid model download status");
+  const fileStages = ["downloading", "verifying", "loading"];
+  const permissionsChanged = fileStages.includes(flow.job?.state) !== fileStages.includes(job.state);
+  const refreshCatalog = permissionsChanged || (!confirmation && job.state === "ready");
+  // File-job permissions change at transfer boundaries. Keep the catalog
+  // authoritative without fetching it on every byte-progress update.
+  if (refreshCatalog) modelCatalogEpoch++;
   flow.job = job;
-  if (confirmation) { renderModelDownload(); return; }
+  if (confirmation) {
+    if (refreshCatalog) await refreshModelCatalog();
+    renderModelDownload(); return;
+  }
   flow.error = "";
   flow.stage = flow.cancelRequested && ["downloading", "verifying"].includes(job.state) ? "cancelling" : job.state;
   if (job.state === "error") downloadFailure(flow, new Error(job.error || tr("model.downloadFailed", "The model download failed.")));
@@ -1592,8 +1601,6 @@ async function acceptDownloadStatus(flow, job, {confirmation = false} = {}) {
     flow.autoSwitch = false;
     saveModelDownloads();
   } else if (job.state === "ready") {
-    modelCatalogEpoch++;
-    await refreshModelCatalog();
     flow.autoSwitch = false;
     saveModelDownloads();
   } else if (job.state === "idle") {
@@ -1601,6 +1608,7 @@ async function acceptDownloadStatus(flow, job, {confirmation = false} = {}) {
     // silently turn into a new download request.
     flow.stage = "confirm";
   } else scheduleModelDownload(flow);
+  if (refreshCatalog) await refreshModelCatalog();
   renderModelDownload();
   syncComposerControls();
 }

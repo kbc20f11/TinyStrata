@@ -92,12 +92,7 @@ class ModelSwitcher:
 
     def status(self) -> dict:
         with self._lock:
-            downloading = False
-            for manager in self._downloads.values():
-                running = getattr(manager, 'running', False)
-                if (running() if callable(running) else running) or manager.status().get('state') in ('downloading', 'verifying', 'loading'):
-                    downloading = True
-                    break
+            downloading = self._download_active()
             return {'state': self._state, 'phase': self._phase, 'model': self.active_id,
                     'target': self._target, 'loaded': self.svc.loaded(), 'error': self._error,
                     'context': self.context_info(),
@@ -182,6 +177,7 @@ class ModelSwitcher:
             rows = self.profiles.list()
             peers = tuple(self.profiles.get(row['id']) for row in rows)
             conflict = self._library_conflict()
+            download_conflict = self._busy or self._download_active()
             for row in rows:
                 model = row['id']
                 active = model == self.active_id
@@ -195,7 +191,7 @@ class ModelSwitcher:
                     management.update(can_delete=False, delete_reason='active')
                 elif conflict and management['can_delete']:
                     management.update(can_delete=False, delete_reason=conflict)
-                if conflict:
+                if download_conflict:
                     management['can_download'] = False
                 images = self.svc.vision_available() if active else row['vision']
                 items.append({'id': model, 'arch': row['arch'], 'installed': row['installed'],
@@ -212,10 +208,63 @@ class ModelSwitcher:
     def _library_conflict(self):
         if self._busy or self._requests:
             return 'busy'
-        if any(manager.status().get('state') in ('downloading', 'verifying', 'loading') or
-               getattr(manager, 'running', False) is True for manager in self._downloads.values()):
+        if self._download_active():
             return 'downloading'
         return None
+
+    def _download_active(self, model=None):
+        """Include verification, activation and worker cleanup, scoped to a target if supplied."""
+        managers = self._downloads.values() if model is None else (self._downloads.get(model),)
+        for manager in managers:
+            if manager is None:
+                continue
+            running = getattr(manager, 'running', False)
+            if (running() if callable(running) else running) or manager.status().get('state') in ('downloading', 'verifying', 'loading'):
+                return True
+        return False
+
+    def prepare_download(self, model, path, projector=None, assistant=None):
+        """Prepare files/profile only, serialized with switches and profile publication."""
+        with self._lock:
+            self._open(allow_update=True)  # Finish already accepted work during an update's drain.
+            profile = self.profiles.get(model)
+            if getattr(self, '_intel', False):
+                self._validate_intel_runtime(model)
+            extra = {'assistant': assistant, 'assistant_verified': True} if profile.arch == 'gemma4' else {}
+            return self.profiles.prepare(model, model_path=path, projector=projector,
+                                         projector_verified=True, **extra)
+
+    @contextmanager
+    def download_activation(self, model):
+        """Reserve live bootstrap activation, or leave an inactive download as files only.
+
+        Do not hold the controller lock while waiting for the generation FIFO.
+        Reserving before native/tokenizer work prevents a switch from passing an
+        early active-id check and then being overwritten by a stale callback.
+        """
+        with self._lock:
+            self._open(allow_update=True)
+            activate = model == self.active_id and not self._busy
+            if activate:
+                self._busy, self._state, self._phase = True, 'switching', 'preparing'
+                self._target, self._error, self._rollback = model, None, None
+                self._started, self._finished = time.time(), None
+        try:
+            yield activate
+        except BaseException as error:
+            if activate:
+                with self._lock:
+                    self._state, self._phase, self._error = 'error', 'error', str(error)
+            raise
+        else:
+            if activate:
+                with self._lock:
+                    self._state, self._phase = 'ready', 'ready'
+        finally:
+            if activate:
+                with self._lock:
+                    self._busy = False
+                    self._finished = time.time()
 
     def delete(self, model):
         """Remove only an inactive model's explicit managed artifact manifest."""
@@ -277,9 +326,8 @@ class ModelSwitcher:
                 return self.status()
             if self._requests:
                 raise ModelControlError(409, 'a request is preparing, running or queued; retry after it finishes')
-            if any(d.status().get('state') in ('downloading', 'verifying', 'loading')
-                   for d in self._downloads.values()):
-                raise ModelControlError(409, 'a model download or activation is running; wait for it first')
+            if self._download_active(target):
+                raise ModelControlError(409, 'the selected model is still downloading or being prepared; wait for it first')
             self._validate_intel_runtime(target)
             # Also cover non-HTTP work such as idle unload and session actions.
             if not self.svc.fifo.acquire(blocking=False):
@@ -458,8 +506,8 @@ class ModelSwitcher:
                 raise ModelControlError(409, 'a model reload or switch is in progress')
             if self._requests:
                 raise ModelControlError(409, 'a request is preparing, running or queued; retry after it finishes')
-            if any(d.status().get('state') in ('downloading', 'verifying', 'loading') for d in self._downloads.values()):
-                raise ModelControlError(409, 'a model download or activation is running; wait for it first')
+            if self._download_active(self.active_id):
+                raise ModelControlError(409, 'the active model is still downloading or being prepared; wait for it first')
             if not self.svc.fifo.acquire(blocking=False):
                 raise ModelControlError(409, 'the model is busy')
             self.svc.fifo.release()
@@ -512,7 +560,8 @@ class ModelSwitcher:
         api, svc = self.api, self.svc
         self._validate_intel_runtime(model, configuration)
         if configuration is None:
-            cfg = self.profiles.prepare(model)
+            with self._lock:
+                cfg = self.profiles.prepare(model)
         else:
             # A same-model reconfiguration is already prepared/installed. Do
             # not persist its new settings before the candidate reaches READY.
@@ -810,9 +859,7 @@ class ModelSwitcher:
         def prepared(path, projector=None, assistant=None):
             # Inactive download completion only prepares its profile. The
             # selected model and native processes are changed by start().
-            self._validate_intel_runtime(model)
-            extra = {'assistant': assistant, 'assistant_verified': True} if profile.arch == 'gemma4' else {}
-            self.profiles.prepare(model, model_path=path, projector=projector, projector_verified=True, **extra)
+            self.prepare_download(model, path, projector, assistant)
 
         if cfg.get('backend') == 'sycl':
             manager = FixedModelDownloader(directory, on_ready=prepared,
@@ -848,10 +895,14 @@ class ModelSwitcher:
         with self._lock:
             self._open()
             target = self.profiles.resolve(model) if model is not None else self.active_id
-            if self._busy and (start or cancel):
+            if self._busy and start:
                 raise ModelControlError(409, 'a model switch is running')
             if start:
                 self._validate_intel_runtime(target)
+                # Transfers can share a projector and its .part name. Keep one
+                # file job at a time without taking the inference FIFO.
+                if any(name != target and self._download_active(name) for name in self._downloads):
+                    raise ModelControlError(409, 'another model download is running; wait for it first')
             manager = self._downloader(target)
             result = manager.cancel() if cancel else manager.start() if start else manager.status()
             return {**result, 'model_id': target, 'active': target == self.active_id}
