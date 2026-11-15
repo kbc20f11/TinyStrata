@@ -12,6 +12,7 @@ struct LfmGeometry {
     int dense_layers=2,dense_ff=11776,experts=64,picks=4,expert_ff=1536,model_context=131072;
     float epsilon=1e-5f,rope_base=1e7f;
     bool normalize=true;float expert_scale=0;
+    std::vector<int> terminal_tokens={124900,124895};
     bool attention(int layer) const { return layer%4==2; }
     uint64_t cache_bytes(int context) const { return 10ull*context*kv_heads*dim*2*34/32; }
     static LfmGeometry validate(const strata::GgufModel& model) {
@@ -30,6 +31,14 @@ struct LfmGeometry {
         number("lfm2moe.expert_count",64);number("lfm2moe.expert_used_count",4);number("lfm2moe.expert_feed_forward_length",1536);
         number("lfm2moe.leading_dense_block_count",2);number("lfm2moe.expert_gating_func",2);number("lfm2moe.shortconv.l_cache",3);
         number("tokenizer.ggml.bos_token_id",124894);number("tokenizer.ggml.eos_token_id",124900);
+        // The complete mapped vocabulary is required: metadata arrays expose
+        // only a small sample. LFM has both ChatML EOS and end-of-text stops.
+        if(meta.token_id("<|im_end|>")!=124900||meta.token_id("<|startoftext|>")!=124894||meta.token_id("<|endoftext|>")!=124895)
+            fail("full vocabulary terminal/BOS identity differs");
+        for(const char* key:{"tokenizer.ggml.eot_token_id","tokenizer.ggml.eom_token_id"})if(const auto* v=meta.get(key)){
+            if(!v->is_num()||v->num()<0||v->num()>=128000||v->num()!=std::floor(v->num()))fail("invalid optional stop token");
+            g.terminal_tokens.push_back(int(v->num()));
+        }
         const auto* kv=meta.get("lfm2moe.attention.head_count_kv");
         if(!kv||kv->type!=strata::MetaType::ARRAY||kv->items.size()!=40)fail("missing per-layer key-head pattern");
         for(int l=0;l<40;++l)if(!kv->items[l].is_num()||kv->items[l].num()!=(g.attention(l)?8:0))fail("unexpected attention/shortconv layer pattern");

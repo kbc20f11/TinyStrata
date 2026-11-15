@@ -138,7 +138,7 @@ public:
     ~LfmEngine(){release();}
     const DeviceInfo& device_info()const{return device_;}
     int context()const{return context_;}int chunk()const{return chunk_;}int consumed()const{return position_;}int vocabulary()const{return geometry_.vocabulary;}
-    bool terminal(int token)const{return token==124900;}
+    bool terminal(int token)const{return std::find(geometry_.terminal_tokens.begin(),geometry_.terminal_tokens.end(),token)!=geometry_.terminal_tokens.end();}
     void reset(){for(auto& s:states_)if(s.convolution)q_.memset(s.convolution,0,size_t(2*geometry_.width)*sizeof(float));q_.wait_and_throw();position_=0;logits_valid_=false;}
     const float* logits(){if(!position_)throw std::runtime_error("No committed LFM prompt");if(!logits_valid_){output_head();q_.wait_and_throw();check_logits();logits_valid_=true;}return logits_;}
     const float* step_many(const int* tokens,int count,bool final=true,const std::atomic<bool>* cancelled=nullptr){
