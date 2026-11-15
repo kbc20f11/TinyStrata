@@ -4,6 +4,7 @@
 // compressed weights and FP32 recurrent/KV state are retained. No image route.
 #include "strata/intel/weight_store.hpp"
 #include "strata/intel/context_policy.hpp"
+#include "strata/intel/graph_visibility.hpp"
 #include "strata/intel/qwen_ops.hpp"
 #include "strata/intel/decode_dp4a.hpp"
 #include "strata/intel/q8_xmx.hpp"
@@ -97,6 +98,8 @@ class Engine {
     bool device_state_ = false;
     bool verify_graph_enabled_ = false;
     int recording_extent_ = 128;
+    int recording_minimum_visible_ = 0;
+    bool clover_fused_t1_hint_ = false;
     std::string profile_phase_;
     std::vector<std::pair<std::string, sycl::event>> profile_events_;
     std::map<std::string, double> profile_ms_;
@@ -301,8 +304,10 @@ class Engine {
     void attention_row(const LayerState& state, int token, int extent) {
         sycl::event stages[3];
         const size_t offset = size_t(token) * heads_ * 256;
+        const int visible_hint = clover_ && clover_fused_t1_hint_
+            ? (recording_ ? recording_minimum_visible_ : position_ + token + 1) : 0;
         const auto event = kv_int8_ ? decode_attention_q8(q_, query_ + offset, query_gate_ + offset, state.q8, scores_,
-            attention_partial_, attention_ + offset, heads_, position_input_ + token, extent, profiling_ ? stages : nullptr)
+            attention_partial_, attention_ + offset, heads_, position_input_ + token, extent, profiling_ ? stages : nullptr, 1, visible_hint)
             : decode_attention(q_, query_ + offset, query_gate_ + offset, state.key, state.value, scores_,
                 attention_partial_, attention_ + offset, heads_, kv_heads_, context_, position_input_ + token, extent, profiling_ ? stages : nullptr);
         remember("decode_attention_join", event);
@@ -647,6 +652,8 @@ class Engine {
         try {
             recording_ = true;
             recording_extent_ = graph_extent_;
+            recording_minimum_visible_ = clover_ && clover_fused_t1_hint_
+                ? graph_minimum_visible(context_,graph_extent_) : 0;
             graph.begin_recording(q_);
             recording = true;
             enqueue(1, true);
@@ -670,7 +677,7 @@ class Engine {
         graph_api::command_graph<graph_api::graph_state::modifiable> graph(q_.get_context(), q_.get_device());
         bool recording = false;
         try {
-            recording_ = true; recording_extent_ = extent;
+            recording_ = true; recording_extent_ = extent; recording_minimum_visible_ = 0;
             graph.begin_recording(q_); recording = true;
             enqueue(count, true);
             graph.end_recording(q_); recording = false;
@@ -718,6 +725,11 @@ public:
         if (device_state_) std::fprintf(stderr, "Intel state_memory=device cpu_control_and_logits=shared\n");
         prefill_int8_xmx_ = prefill_int8_xmx;
         mtp_depth_ = mtp_depth;
+        if(const char* setting=std::getenv("STRATA_INTEL_CLOVER_FUSED_T1")){
+            const std::string value(setting);
+            if(value!="0"&&value!="1")throw std::runtime_error("STRATA_INTEL_CLOVER_FUSED_T1 requires0 or1");
+            clover_fused_t1_hint_=experimental_clover&&value=="1";
+        }
         draft_vocab_limit_ = draft_vocab_limit;
         const char* turn_setting = std::getenv("TINYSTRATA_INTEL_TURN_CHECKPOINT");
         turn_checkpoint_enabled_ = turn_checkpoint::enabled(turn_setting);
@@ -879,6 +891,7 @@ public:
                          mtp_depth_, memory == WeightMemory::Host ? "host" : memory == WeightMemory::Shared ? "shared" : "device");
             print_memory("engine_ready", device);
             context_policy::report(chosen,context_limit,remaining_memory,selected_device.max_allocation);
+            if(clover_){std::printf("INFO clover_fused_t1_hint=%d\n",int(clover_fused_t1_hint_));std::fflush(stdout);}
         } catch (...) {
             try { q_.wait_and_throw(); } catch (...) {}
             decode_graph_.reset();
