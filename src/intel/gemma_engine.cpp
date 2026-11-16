@@ -1,9 +1,10 @@
-// Native Gemma4 target-only causal text engine. Model formulas are the existing
+// Native Gemma4 target-only text/vision engine. Model formulas are the existing
 // TinyStrata Gemma engine's formulas (MIT; LICENSE/NOTICE), not Qwen aliases.
 #include "strata/intel/gemma_model.hpp"
 #include "strata/intel/context_policy.hpp"
 #include "strata/intel/gemma_ops.hpp"
 #include "strata/intel/gemma_turn_snapshot.hpp"
+#include "strata/intel/gemma_vision.hpp"
 #include "strata/intel/weight_store.hpp"
 #include "strata/intel/qwen_ops.hpp"
 #include "strata/intel/execution_request.hpp"
@@ -40,8 +41,9 @@ class GemmaEngine {
 #ifdef TINYSTRATA_INTEL_MKL
     std::unique_ptr<PrefillGemm> gemm_;
 #endif
-    int context_,chunk_,position_=0;
-    bool logits_valid_=false,pv_split_=false;
+    int context_,chunk_,workspace_=0,position_=0;
+    bool logits_valid_=false,pv_split_=false,vision_=false;
+    std::shared_ptr<const gemma_vision::Input> pictures_;
     float *residual_=nullptr,*norm_=nullptr,*query_raw_=nullptr,*key_raw_=nullptr,*value_raw_=nullptr;
     float *query_=nullptr,*key_=nullptr,*value_=nullptr,*attended_=nullptr,*attention_out_=nullptr;
     float *dense_gate_=nullptr,*dense_up_=nullptr,*dense_hidden_=nullptr,*dense_out_=nullptr,*dense_norm_=nullptr;
@@ -65,17 +67,28 @@ class GemmaEngine {
     void matrix(const std::string& name,const float* input,float* output,int tokens){
         const auto& t=tensor(name);if(t.info.shape.size()!=2)throw std::runtime_error("Gemma dense matrix rank differs");
         const int rows=int(t.info.shape[1]),width=int(t.info.shape[0]);
+        if(tokens>chunk_){for(int first=0;first<tokens;first+=chunk_)matrix(name,input+size_t(first)*width,output+size_t(first)*rows,std::min(chunk_,tokens-first));return;}
 #ifdef TINYSTRATA_INTEL_MKL
         if(gemm_&&tokens>=16&&t.info.type!=0){gemm_->dense(int(t.info.type),t.data,input,output,rows,width,tokens);return;}
 #endif
         quantized_matmul(queue_,int(t.info.type),t.data,input,output,rows,width,tokens);
     }
-    void expert_matrix(const ResidentTensor& t,ExpertPlan plan,const float* input,float* output,int rows,int width,bool separate,int tokens){
+    void expert_matrix(const ResidentTensor& t,ExpertPlan plan,const float* input,float* output,int rows,int width,bool separate,int tokens,const int32_t* ids=nullptr){
+        if(!ids)ids=ids_;
+        if(tokens>chunk_){
+            for(int first=0;first<tokens;first+=chunk_){
+                const int n=std::min(chunk_,tokens-first);auto sub=plan;sub.tokens=n;
+                if(n>=16)plan_experts(queue_,ids+size_t(first)*geometry_.picks,sub);
+                expert_matrix(t,sub,input+size_t(first)*(separate?geometry_.picks:1)*width,
+                    output+size_t(first)*geometry_.picks*rows,rows,width,separate,n,ids+size_t(first)*geometry_.picks);
+            }
+            return;
+        }
 #ifdef TINYSTRATA_INTEL_MKL
         if(gemm_&&tokens>=16){gemm_->selected(int(t.info.type),t.data,t.bytes/geometry_.experts,plan,input,output,rows,width,separate);return;}
 #endif
         if(tokens>=16)selected_matmul(queue_,int(t.info.type),t.data,plan,input,output,rows,width,separate);
-        else selected_matvec(queue_,int(t.info.type),t.data,ids_,geometry_.picks,input,output,rows,width,separate,tokens);
+        else selected_matvec(queue_,int(t.info.type),t.data,ids,geometry_.picks,input,output,rows,width,separate,tokens);
     }
     void add(const float* input,float* destination,size_t count){queue_.parallel_for(sycl::range<1>(count),[=](sycl::id<1> i){destination[i]+=input[i];});}
     void release() noexcept {
@@ -87,8 +100,8 @@ class GemmaEngine {
         for(auto* p:allocations_)try{sycl::free(p,queue_);}catch(...){}allocations_.clear();weights_.reset();
     }
 public:
-    GemmaEngine(const std::string& path,unsigned device,int context,int chunk,WeightMemory memory,bool prefill_mkl)
-        :queue_(select_device(device),sycl::property::queue::in_order{}),device_(inspect_device(queue_.get_device())),context_(context),chunk_(chunk){
+    GemmaEngine(const std::string& path,unsigned device,int context,int chunk,WeightMemory memory,bool prefill_mkl,bool vision=false)
+        :queue_(select_device(device),sycl::property::queue::in_order{}),device_(inspect_device(queue_.get_device())),context_(context),chunk_(chunk),vision_(vision){
         if(context<0||context>context_policy::full_limit||chunk<1||chunk>512)throw std::runtime_error("Gemma context must be auto or1..262144; chunk1..512 required");
         bool measured_runtime=false;
 #ifdef TINYSTRATA_INTEL_AOT_TARGET
@@ -103,20 +116,21 @@ public:
         try{
             ExecutionRequest loading;
             weights_=WeightStore::load_validated(queue_,path,memory,[&](const strata::GgufModel& m){geometry_=GemmaGeometry::validate(m);});
-            const auto& g=geometry_;const size_t n=size_t(chunk_);
+            const auto& g=geometry_;
             context_policy::GemmaSpec context_shape;
-            context_shape.chunk=chunk_;context_shape.mkl=prefill_mkl;context_shape.pv_split=pv_split_;
+            context_shape.chunk=chunk_;context_shape.mkl=prefill_mkl;context_shape.pv_split=pv_split_;context_shape.vision=vision_;
             const auto remaining=memory_budget(device_);
             const auto chosen=context_policy::select(context,g.model_context,remaining,device_.max_allocation,
                 [&](uint64_t tokens){return context_policy::gemma(tokens,context_shape);});
             context_=chosen.tokens;
+            workspace_=int(gemma_vision::workspace(chunk_,context_,vision_));const size_t n=size_t(workspace_);
             size_t cache_elements=0;
-            for(int l=0;l<g.layers;++l)cache_elements=std::max(cache_elements,g.capacity(l,context_,chunk_)*g.kv_heads[l]*g.dim(l));
+            for(int l=0;l<g.layers;++l)cache_elements=std::max(cache_elements,g.capacity(l,context_,workspace_)*g.kv_heads[l]*g.dim(l));
             cache_.resize(g.layers);
-            for(int l=0;l<g.layers;++l){auto& c=cache_[l];c.capacity=int(g.capacity(l,context_,chunk_));c.heads=g.kv_heads[l];c.dim=g.dim(l);c.window=g.sliding[l]?g.window:0;
+            for(int l=0;l<g.layers;++l){auto& c=cache_[l];c.capacity=int(g.capacity(l,context_,workspace_));c.heads=g.kv_heads[l];c.dim=g.dim(l);c.window=g.sliding[l]?g.window:0;
                 const size_t cells=size_t(c.capacity)*c.heads*c.dim;c.key=allocate<int8_t>(cells);c.value=allocate<int8_t>(cells);c.key_scale=allocate<sycl::half>(cells/32);c.value_scale=allocate<sycl::half>(cells/32);}
             turn_=std::make_unique<GemmaTurnSnapshot>(cache_);
-            if(turn_->bytes()!=gemma_prefix::snapshot_bytes(std::min(size_t(context_),size_t(g.window+chunk_)),8,g.swa_dim,25))
+            if(turn_->bytes()!=gemma_prefix::snapshot_bytes(std::min(size_t(context_),size_t(g.window+workspace_)),8,g.swa_dim,25))
                 throw std::logic_error("Gemma turn snapshot differs from admitted host footprint");
             actual_allocations_.host(turn_->bytes());
             std::printf("INFO gemma_turn_checkpoint=1 turn_snapshot_host_bytes=%zu\n",turn_->bytes());std::fflush(stdout);
@@ -131,7 +145,7 @@ public:
             input_ids_=allocate<int32_t>(n,true);quant_error_=allocate<int32_t>(1,true);logits_=allocate<float>(g.vocabulary,true);
             counts_=allocate<int32_t>(g.experts);slots_=allocate<int32_t>(n*g.experts);
             const size_t max_tiles=(n*g.picks+3)/4+g.experts;owners_=allocate<int32_t>(max_tiles);offsets_=allocate<int32_t>(max_tiles);tiles_=allocate<int32_t>(1);
-            if(actual_allocations_.device!=chosen.bytes.owned_device||actual_allocations_.host_visible!=chosen.bytes.owned_host_visible||actual_allocations_.largest>chosen.bytes.largest||actual_allocations_.host_only!=chosen.bytes.host_only-(16ull<<20))
+            if(actual_allocations_.device!=chosen.bytes.owned_device||actual_allocations_.host_visible!=chosen.bytes.owned_host_visible||actual_allocations_.largest>chosen.bytes.largest||actual_allocations_.host_only!=chosen.bytes.host_only-(16ull<<20)-(vision_?gemma_vision::host_reservation(context_,g.width):0))
                 throw std::logic_error("Gemma context planner differs from actual engine allocations");
             attention_=std::make_unique<GemmaAttention>(queue_,context_,chunk_,g.heads,g.full_dim,cache_elements,prefill_mkl,pv_split_);
             std::fprintf(stderr,"Intel Gemma split_pv=%d decode_only=1 min_visible=1024 key_tile=256 scratch_bytes=%llu\n",int(pv_split_),
@@ -144,11 +158,14 @@ public:
             std::fprintf(stderr,"Intel Gemma terminal_ids=");for(int id:stops_)std::fprintf(stderr,"%d,",id);std::fprintf(stderr," full_vocabulary_lookup=1\n");
             std::fprintf(stderr,"Intel Gemma4 target_only=1 layers=%d width=%d SWA_window=%d full_dim=%d swa_dim=%d experts=%d picks=%d KV=int8 cache_bytes=%llu single_weight_store=1\n",g.layers,g.width,g.window,g.full_dim,g.swa_dim,g.experts,g.picks,(unsigned long long)g.cache_bytes(context_,chunk_));
             context_policy::report(chosen,g.model_context,remaining,device_.max_allocation);
+            std::printf("INFO gemma_image_workspace=%d gemma_image_payload_host_reserve=%llu\n",workspace_,(unsigned long long)(vision_?gemma_vision::host_reservation(context_,g.width):0));std::fflush(stdout);
         }catch(...){release();throw;}
     }
     ~GemmaEngine(){release();}
     const DeviceInfo& device_info() const{return device_;}
     int context() const{return context_;}int chunk() const{return chunk_;}int consumed() const{return position_;}int vocabulary() const{return geometry_.vocabulary;}
+    int width() const{return geometry_.width;}bool vision_enabled()const{return vision_;}
+    void images(std::shared_ptr<const gemma_vision::Input> input){queue_.wait_and_throw();pictures_=std::move(input);}
     bool terminal(int token) const{return std::find(stops_.begin(),stops_.end(),token)!=stops_.end();}
     bool logits_valid()const{return logits_valid_;}
     bool turn_valid()const{return turn_->valid();}
@@ -164,13 +181,20 @@ public:
     }
     const float* logits(){if(!logits_valid_)throw std::runtime_error("Gemma logits are not available");return logits_;}
     const float* step_many(const int* tokens,int count,bool final=true,const std::atomic<bool>* cancelled=nullptr){
-        if(count<1||count>chunk_||position_+count>context_)throw std::runtime_error("Gemma step exceeds context/chunk");
+        const auto* picture=pictures_?gemma_vision::image_at(*pictures_,size_t(position_)):nullptr;
+        if(count<1||count>workspace_||position_+count>context_||(count>chunk_&&(!picture||picture->cell!=size_t(position_)||picture->rows!=size_t(count))))throw std::runtime_error("Gemma step exceeds context/chunk or splits a picture");
+        if(pictures_)for(const auto& im:pictures_->images)if(im.cell<size_t(position_+count)&&im.cell+im.rows>size_t(position_)&&
+            (!picture||im.cell!=size_t(position_)||im.rows!=size_t(count)))throw std::runtime_error("Gemma image must occupy one complete evaluation");
         for(int i=0;i<count;++i)if(tokens[i]<0||tokens[i]>=vocabulary())throw std::runtime_error("Gemma token outside vocabulary");
         if(cancelled&&cancelled->load())return nullptr;
         const auto& g=geometry_;const int width=g.width,picks=g.picks,ff=g.expert_ff,heads=g.heads;const size_t all=size_t(count)*width;
         std::copy_n(tokens,count,input_ids_);*quant_error_=0;logits_valid_=false;
-        const auto& table=tensor("token_embd.weight");embedding_lookup(queue_,int(table.info.type),table.data,input_ids_,residual_,width,count);
-        float* residual=residual_;const float embed=std::sqrt(float(width));queue_.parallel_for(sycl::range<1>(all),[=](sycl::id<1> i){residual[i]*=embed;});
+        const auto& table=tensor("token_embd.weight");float* residual=residual_;
+        if(picture)queue_.memcpy(residual_,pictures_->embeddings.data()+picture->offset,all*sizeof(float));
+        else{
+            embedding_lookup(queue_,int(table.info.type),table.data,input_ids_,residual_,width,count);
+            const float embed=std::sqrt(float(width));queue_.parallel_for(sycl::range<1>(all),[=](sycl::id<1> i){residual[i]*=embed;});
+        }
         for(int l=0;l<g.layers;++l){
             if(cancelled&&cancelled->load()){queue_.wait_and_throw();reset();return nullptr;}
             const std::string p="blk."+std::to_string(l)+".";const int dim=g.dim(l),kv=g.kv_heads[l];
@@ -183,7 +207,7 @@ public:
             gemma_head_norm_rope(queue_,key_raw_,f32(p+"attn_k_norm.weight"),key_,kv,dim,g.rotation(l),position_,count,g.epsilon,g.base(l),frequency);
             gemma_head_norm_rope(queue_,raw_value,nullptr,value_,kv,dim,0,position_,count,g.epsilon,1.f);
             gemma_store_q8(queue_,key_,value_,cache_[l],position_,count,quant_error_);
-            attention_->run(query_,cache_[l],attended_,heads,position_,count);matrix(p+"attn_output.weight",attended_,attention_out_,count);
+            attention_->run(query_,cache_[l],attended_,heads,position_,count,1.f,picture!=nullptr);matrix(p+"attn_output.weight",attended_,attention_out_,count);
             rms_norm(queue_,attention_out_,f32(p+"post_attention_norm.weight"),norm_,count,width,g.epsilon);add(norm_,residual_,all);
             // Router, dense MLP and routed FFN read differently normalized
             // copies of this same post-attention residual.
@@ -195,7 +219,7 @@ public:
             gemma_geglu(queue_,dense_gate_,dense_up_,dense_hidden_,size_t(count)*g.dense_ff);matrix(p+"ffn_down.weight",dense_hidden_,dense_out_,count);
             rms_norm(queue_,dense_out_,f32(p+"post_ffw_norm_1.weight"),dense_norm_,count,width,g.epsilon);
             rms_norm(queue_,residual_,f32(p+"pre_ffw_norm_2.weight"),norm_,count,width,g.epsilon);
-            ExpertPlan plan{counts_,slots_,owners_,offsets_,tiles_,g.experts,count,picks};if(count>=16)plan_experts(queue_,ids_,plan);
+            ExpertPlan plan{counts_,slots_,owners_,offsets_,tiles_,g.experts,count,picks};if(count>=16&&count<=chunk_)plan_experts(queue_,ids_,plan);
             expert_matrix(tensor(p+"ffn_gate_up_exps.weight"),plan,norm_,expert_gu_,2*ff,width,false,count);
             gemma_geglu_packed(queue_,expert_gu_,expert_hidden_,ff,count*picks);
             expert_matrix(tensor(p+"ffn_down_exps.weight"),plan,expert_hidden_,expert_down_,width,ff,true,count);
@@ -242,37 +266,59 @@ void option(sampling_policy::Sampling& s,const std::string& text){
 }
 int serve(GemmaEngine& e){
     const auto& d=e.device_info();
-    std::printf("INFO backend=sycl experimental=1 model=gemma-4-26b-a4b-it family=gemma4 kv=int8 mtp=0 vision=0 memory_model=%s single_weight_store=1 expert_gpu_percent=100 expert_cpu_percent=0 device_vendor=%u device_id=%u device_integrated=%d device_architecture=%s adapter_luid=%s adapter_node_mask=%u kv_used_tokens=0\nREADY %d stop\n",d.integrated?"uma":"discrete",d.vendor_id,d.device_id,int(d.integrated),d.architecture.c_str(),d.adapter_luid.empty()?"unknown":d.adapter_luid.c_str(),d.adapter_node_mask,e.context());std::fflush(stdout);
+    std::printf("INFO backend=sycl experimental=1 model=gemma-4-26b-a4b-it family=gemma4 kv=int8 mtp=0 vision=%d memory_model=%s single_weight_store=1 expert_gpu_percent=100 expert_cpu_percent=0 device_vendor=%u device_id=%u device_integrated=%d device_architecture=%s adapter_luid=%s adapter_node_mask=%u kv_used_tokens=0\nREADY %d stop\n",int(e.vision_enabled()),d.integrated?"uma":"discrete",d.vendor_id,d.device_id,int(d.integrated),d.architecture.c_str(),d.adapter_luid.empty()?"unknown":d.adapter_luid.c_str(),d.adapter_node_mask,e.context());std::fflush(stdout);
     strata::common::CommandInbox inbox;std::string line;std::vector<int> live,saved;
+    auto live_pictures=std::make_shared<const gemma_vision::Input>();auto saved_pictures=live_pictures;
     int reported_position=0;
     const auto report_position=[&]{if(reported_position!=e.consumed()){reported_position=e.consumed();std::printf("INFO kv_used_tokens=%d\n",reported_position);std::fflush(stdout);}};
     while(inbox.next(line)){
         if(line=="QUIT")return 0;if(line.empty())continue;
         std::vector<int> prompt;int count=0;sampling_policy::Sampling sampling;
         bool checkpoint=true,seen_checkpoint=false,seen_turn=false;size_t turn_at=0;
+        const bool geni=line.rfind("GENI ",0)==0;int image_pad=-1;bool seen_pad=false;
+        auto next_pictures=std::make_shared<gemma_vision::Input>();
         try{
-            if(line.rfind("GEN ",0)!=0)throw std::runtime_error("Gemma target-only route supports text GEN only");
-            std::istringstream in(line.substr(4));std::string field,ids;
+            if(!geni&&line.rfind("GEN ",0)!=0)throw std::runtime_error("Gemma route expects GEN or GENI");
+            if(geni&&!e.vision_enabled())throw std::runtime_error("Gemma images require --vision");
+            std::istringstream in(line.substr(geni?5:4));std::string field,ids;
             if(!(in>>field))throw std::runtime_error("Missing output count");count=integer(field,e.context());
             while(in>>field){if(ids.empty()&&field.find('=')!=std::string::npos){
                 if(field.rfind("ckpt=",0)==0){if(seen_checkpoint)throw std::runtime_error("Duplicate Gemma ckpt option");checkpoint=integer(field.substr(5),1)!=0;seen_checkpoint=true;}
                 else if(field.rfind("turn_at=",0)==0){if(seen_turn)throw std::runtime_error("Duplicate Gemma turn_at option");turn_at=size_t(integer(field.substr(8),e.context()));seen_turn=true;}
+                else if(field.rfind("image_pad=",0)==0){if(seen_pad)throw std::runtime_error("Duplicate Gemma image_pad option");image_pad=integer(field.substr(10),e.vocabulary()-1);seen_pad=true;}
+                else if(field.rfind("img_keys=",0)==0){const auto keys=field.substr(9);if(keys.empty()||keys.size()>8192||keys.find_first_not_of("0123456789abcdef,")!=std::string::npos)throw std::runtime_error("Invalid Gemma image cache keys");}
                 else option(sampling,field);
             }else{if(!ids.empty())ids+=' ';ids+=field;}}
+            std::string file;
+            if(geni){
+                const auto split=ids.find_last_of(" \t");if(split==std::string::npos||!seen_pad)throw std::runtime_error("GENI requires image_pad, embeddings file and token IDs");
+                file=ids.substr(0,split);ids=ids.substr(split+1);
+                while(!file.empty()&&(file.back()==' '||file.back()=='\t'))file.pop_back();
+                if(file.size()>=2&&file.front()=='"'&&file.back()=='"')file=file.substr(1,file.size()-2);
+            }else if(seen_pad)throw std::runtime_error("image_pad requires GENI");
             prompt=parse_tokens(ids);if(count<1||prompt.size()+size_t(count)>size_t(e.context()))throw std::runtime_error("Gemma request exceeds context");
             for(int id:prompt)if(id>=e.vocabulary())throw std::runtime_error("Gemma token outside vocabulary");
             turn_at=gemma_prefix::turn_boundary(turn_at,prompt.size());
+            if(geni){std::string error;if(!gemma_vision::load(file,prompt,e.width(),e.context(),image_pad,*next_pictures,error))throw std::runtime_error(error);}
+            if(!gemma_vision::whole_prefix(*next_pictures,turn_at))throw std::runtime_error("Gemma turn_at cannot split a picture");
         }catch(const std::exception& error){std::printf("ERROR %s\n",error.what());std::fflush(stdout);continue;}
         ExecutionRequest active;const auto start=std::chrono::steady_clock::now();
         if(live.size()!=size_t(e.consumed()))throw std::logic_error("Gemma committed history/position mismatch");
-        const auto reuse=gemma_prefix::choose(live,prompt,saved,size_t(e.consumed()),e.logits_valid(),e.turn_valid(),checkpoint);
+        auto reuse=gemma_prefix::choose(live,prompt,saved,size_t(e.consumed()),e.logits_valid(),e.turn_valid(),checkpoint);
+        const auto& reused_pictures=reuse.source==gemma_prefix::Source::saved_turn?saved_pictures:live_pictures;
+        if(!gemma_vision::same_prefix(*reused_pictures,*next_pictures,reuse.tokens,e.width()))reuse={};
         if(reuse.source==gemma_prefix::Source::reset){e.reset();live.clear();saved.clear();}
         else if(reuse.source==gemma_prefix::Source::saved_turn){e.restore_turn();live=saved;}
         else if(reuse.source==gemma_prefix::Source::replay_last){e.rewind_one();live.resize(reuse.tokens);}
+        // Exact image bytes, positions and whole-image boundaries have been
+        // compared before state mutation. Rebind saved/live metadata to this
+        // request's one payload; the old/new validation peak is bounded at two.
+        if(!saved.empty()&&(!gemma_prefix::prefix(saved,prompt)||!gemma_vision::same_prefix(*saved_pictures,*next_pictures,saved.size(),e.width()))){e.invalidate_turn();saved.clear();}
+        saved_pictures=next_pictures;live_pictures=next_pictures;e.images(next_pictures);
         const size_t reused=reuse.tokens;
         report_position();std::printf("RESUME %zu\n",reused);std::fflush(stdout);
         size_t consumed=reused;const float* logits=nullptr;
-        for(;consumed<prompt.size()&&!inbox.cancelled().load();){const int n=int(std::min(size_t(e.chunk()),prompt.size()-consumed));
+        for(;consumed<prompt.size()&&!inbox.cancelled().load();){const int n=int(gemma_vision::next_count(*next_pictures,consumed,prompt.size()-consumed,e.chunk()));
             const size_t before=consumed;
             logits=e.step_many(prompt.data()+consumed,n,consumed+n==prompt.size(),&inbox.cancelled());if(!logits)break;consumed+=n;
             live.insert(live.end(),prompt.begin()+before,prompt.begin()+consumed);
@@ -309,7 +355,7 @@ int main(int argc,char** argv){
     try{
         strata::paths::Utf8Arguments arguments(argc,argv);argc=arguments.argc();argv=arguments.argv();
         if(strata::intel::print_device_report_if_requested(argc,argv))return 0;
-        std::string model,tokens,token_file,dump;unsigned device=0;int context=0,chunk=512;bool server=false;
+        std::string model,tokens,token_file,dump;unsigned device=0;int context=0,chunk=512;bool server=false,vision=false;
 #ifdef TINYSTRATA_INTEL_MKL
         bool mkl=true;
 #else
@@ -317,7 +363,7 @@ int main(int argc,char** argv){
 #endif
         auto memory=strata::intel::WeightMemory::Host;
         for(int i=1;i<argc;++i){const std::string option=argv[i];
-            if(option=="--help"){std::puts("tinystrata-intel-gemma4 --model TARGET.gguf [--serve | --tokens IDS | --tokens-file FILE] [--dump FILE] [--max-context auto|N] [--chunk N] [--kv-type int8] [--mtp 0] [--prefill-mkl | --no-prefill-mkl] [--device N] [--weight-memory host|shared|device]\nExperimental target-only causal text path. Gemma INT8 KV is the default; assistant/speculation/FP8/images are not implemented by this executable.");return 0;}
+            if(option=="--help"){std::puts("tinystrata-intel-gemma4 --model TARGET.gguf [--serve | --tokens IDS | --tokens-file FILE] [--dump FILE] [--max-context auto|N] [--chunk N] [--kv-type int8] [--mtp 0] [--vision] [--prefill-mkl | --no-prefill-mkl] [--device N] [--weight-memory host|shared|device]\nExperimental target-only text/vision path. --vision enables GENI/SVE1 image inputs with whole-picture SWA attention. Gemma INT8 KV is the default; assistant/speculation/FP8 are not implemented by this executable.");return 0;}
             if(option=="--capabilities"){
 #ifdef TINYSTRATA_INTEL_MKL
                 constexpr const char* mkl="true";
@@ -336,11 +382,11 @@ int main(int argc,char** argv){
 #endif
                 std::printf("{\"backend\":\"sycl\",\"experimental\":true,\"model_families\":[],"
                     "\"experimental_models\":[\"gemma-4-26b-a4b-it\"],\"experimental_profiles\":{\"b390-gemma4\":1,\"gemma4-target-only\":1},"
-                    "\"experimental_model_contracts\":{\"gemma-4-26b-a4b-it\":{\"version\":1,\"architecture\":\"gemma4\",\"kv_types\":[\"int8\"],\"mtp\":false,\"experimental_mtp_max_depth\":0,\"images\":false,\"thinking\":\"on_off\",\"mode\":\"target_only\",\"context_max\":262144}},"
-                    "\"kv_types\":[\"int8\"],\"images\":false,\"mtp\":false,\"experimental_mtp_max_depth\":0,\"serve\":true,\"capabilities_schema\":1,\"context_auto\":true,\"max_context\":262144,\"target_only\":true,"
+                    "\"experimental_model_contracts\":{\"gemma-4-26b-a4b-it\":{\"version\":2,\"architecture\":\"gemma4\",\"kv_types\":[\"int8\"],\"mtp\":false,\"experimental_mtp_max_depth\":0,\"images\":true,\"thinking\":\"on_off\",\"mode\":\"target_only\",\"context_max\":262144}},"
+                    "\"kv_types\":[\"int8\"],\"images\":true,\"mtp\":false,\"experimental_mtp_max_depth\":0,\"serve\":true,\"capabilities_schema\":1,\"image_protocol\":\"geni_sve1\",\"vision_contract_version\":1,\"context_auto\":true,\"max_context\":262144,\"target_only\":true,"
                     "\"build\":{\"mkl\":%s,\"int8_xmx\":%s,\"aot_target\":\"%s\"},"
                     "\"weight_types\":{\"scalar\":[0,2,14],\"dp4a\":[],\"int8_xmx\":[]}}\n",mkl,int8_xmx,aot);return 0;}
-            if(option=="--serve"){server=true;continue;}if(option=="--prefill-mkl"){mkl=true;continue;}if(option=="--no-prefill-mkl"){mkl=false;continue;}
+            if(option=="--serve"){server=true;continue;}if(option=="--vision"){vision=true;continue;}if(option=="--prefill-mkl"){mkl=true;continue;}if(option=="--no-prefill-mkl"){mkl=false;continue;}
             if(i+1>=argc)throw std::runtime_error("Missing value for "+option);const std::string value=argv[++i];
             if(option=="--model")model=value;else if(option=="--tokens")tokens=value;else if(option=="--tokens-file")token_file=value;else if(option=="--dump")dump=value;
             else if(option=="--device")device=unsigned(strata::intel::integer(value,1024));
@@ -351,7 +397,7 @@ int main(int argc,char** argv){
             else throw std::runtime_error("Unknown Gemma option "+option);
         }
         if(model.empty())throw std::runtime_error("--model is required");if(server&&(!tokens.empty()||!token_file.empty()||!dump.empty()))throw std::runtime_error("CLI token options cannot accompany --serve");
-        strata::intel::GemmaEngine engine(model,device,context,chunk,memory,mkl);
+        strata::intel::GemmaEngine engine(model,device,context,chunk,memory,mkl,vision);
         if(server)return strata::intel::serve(engine);
         if(!token_file.empty()){std::ifstream f(strata::paths::native_path(token_file));if(!f)throw std::runtime_error("Cannot read token file");std::ostringstream s;s<<f.rdbuf();tokens=s.str();}
         const auto ids=strata::intel::parse_tokens(tokens);strata::intel::ExecutionRequest active;

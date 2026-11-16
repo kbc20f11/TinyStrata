@@ -1,5 +1,6 @@
 // Gemma formulas follow src/gemma4/{gemma4.cpp,kernels.cu} (MIT; NOTICE).
 #include "strata/intel/gemma_ops.hpp"
+#include "strata/intel/gemma_vision.hpp"
 #ifdef TINYSTRATA_INTEL_MKL
 #include <oneapi/mkl/blas.hpp>
 #endif
@@ -126,9 +127,9 @@ struct GemmaAttention::Impl {
         }catch(...){for(auto* p:allocations)sycl::free(p,q);throw;}
     }
     ~Impl(){try{q.wait_and_throw();}catch(...){}for(auto* p:allocations)try{sycl::free(p,q);}catch(...){} }
-    sycl::event normalize(float* score,int rows,int stride,int position,int first,int window){
+    sycl::event normalize(float* score,int rows,int stride,int position,int first,int window,int whole_end=-1){
         return q.parallel_for(sycl::nd_range<1>(size_t(rows)*128,128),[=](sycl::nd_item<1> it){
-            const size_t row=it.get_group_linear_id(),lane=it.get_local_linear_id();const int end=position+int(row),low=window?sycl::max(0,end-window+1):0;
+            const size_t row=it.get_group_linear_id(),lane=it.get_local_linear_id();const int own=position+int(row),end=whole_end<0?own:whole_end,low=window?sycl::max(0,own-window+1):0;
             float maximum=-INFINITY;for(int col=int(lane);col<stride;col+=128)if(first+col>=low&&first+col<=end)maximum=sycl::fmax(maximum,score[row*stride+col]);
             maximum=sycl::reduce_over_group(it.get_group(),maximum,sycl::maximum<float>());
             float total=0;for(int col=int(lane);col<stride;col+=128)if(first+col>=low&&first+col<=end)total+=sycl::exp(score[row*stride+col]-maximum);
@@ -139,13 +140,16 @@ struct GemmaAttention::Impl {
 };
 GemmaAttention::GemmaAttention(sycl::queue& q,int c,int t,int h,int d,size_t e,bool m,bool split):impl_(std::make_unique<Impl>(q,c,t,h,d,e,m,split)){}
 GemmaAttention::~GemmaAttention()=default;
-sycl::event GemmaAttention::run(const float* query,GemmaKv c,float* output,int heads,int position,int tokens,float scale){
+sycl::event GemmaAttention::run(const float* query,GemmaKv c,float* output,int heads,int position,int tokens,float scale,bool whole_image){
     auto& p=*impl_;auto& q=p.q;cache_shape(c);
-    if(heads<1||heads>p.heads||heads%c.heads||c.dim>p.dim||tokens<1||tokens>p.tokens||position<0||position+tokens>p.context||!std::isfinite(scale)||!(scale>0))
+    if(heads<1||heads>p.heads||heads%c.heads||c.dim>p.dim||tokens<1||
+       (tokens>p.tokens&&(!whole_image||tokens>gemma_vision::max_image_rows))||position<0||position+tokens>p.context||!std::isfinite(scale)||!(scale>0))
         throw std::invalid_argument("Invalid Gemma attention extent");
     const int first=c.window?std::max(0,position-c.window+1):0,span=position+tokens-first;
     if(span>c.capacity)throw std::invalid_argument("Gemma ring no longer holds this causal chunk");
     float* scores=p.scores;
+    const bool sees_all=whole_image&&c.window>0;
+    const int image_end=sees_all?position+tokens-1:-1;
 #ifdef TINYSTRATA_INTEL_MKL
     if(p.mkl&&tokens>=16){
         const size_t count=size_t(c.heads)*span*c.dim;if(count>p.cache_elements)throw std::runtime_error("Gemma KV expansion exceeds its bound");
@@ -156,14 +160,15 @@ sycl::event GemmaAttention::run(const float* query,GemmaKv c,float* output,int h
             keys[id]=float(c.key[source])*float(c.key_scale[source/32]);values[id]=float(c.value[source])*float(c.value_scale[source/32]);
         });
         sycl::event last;
-        for(int head=0;head<heads;++head){
+        for(int begin=0;begin<tokens;begin+=p.tokens)for(int head=0;head<heads;++head){
+            const int n=std::min(p.tokens,tokens-begin);
             const int kv=head/(heads/c.heads);
             oneapi::mkl::blas::row_major::gemm(q,oneapi::mkl::transpose::nontrans,oneapi::mkl::transpose::trans,
-                tokens,span,c.dim,scale,query+head*c.dim,heads*c.dim,keys+size_t(kv)*span*c.dim,c.dim,0.f,scores,span);
-            p.normalize(scores,tokens,span,position,first,c.window);
+                n,span,c.dim,scale,query+(size_t(begin)*heads+head)*c.dim,heads*c.dim,keys+size_t(kv)*span*c.dim,c.dim,0.f,scores,span);
+            p.normalize(scores,n,span,position+begin,first,c.window,image_end);
             auto pv=oneapi::mkl::blas::row_major::gemm(q,oneapi::mkl::transpose::nontrans,oneapi::mkl::transpose::nontrans,
-                tokens,c.dim,span,1.f,scores,span,values+size_t(kv)*span*c.dim,c.dim,0.f,temporary,c.dim);
-            last=q.submit([&](sycl::handler& h){h.depends_on(pv);h.parallel_for(sycl::range<1>(size_t(tokens)*c.dim),[=](sycl::id<1> i){output[(i[0]/c.dim*heads+head)*c.dim+i[0]%c.dim]=temporary[i];});});
+                n,c.dim,span,1.f,scores,span,values+size_t(kv)*span*c.dim,c.dim,0.f,temporary,c.dim);
+            last=q.submit([&](sycl::handler& h){h.depends_on(pv);h.parallel_for(sycl::range<1>(size_t(n)*c.dim),[=](sycl::id<1> i){output[((size_t(begin)+i[0]/c.dim)*heads+head)*c.dim+i[0]%c.dim]=temporary[i];});});
         }
         return last;
     }
@@ -181,7 +186,7 @@ sycl::event GemmaAttention::run(const float* query,GemmaKv c,float* output,int h
             sum=sycl::reduce_over_group(sg,sum,sycl::plus<float>());if(lane==0)scores[entry]=sum*scale;
         });
         q.parallel_for(sycl::nd_range<1>(size_t(n)*heads*128,128),[=](sycl::nd_item<1> it){
-            const size_t row=it.get_group_linear_id(),token=row/heads,lane=it.get_local_linear_id();const int end=base+int(token),low=c.window?sycl::max(0,end-c.window+1):0;
+            const size_t row=it.get_group_linear_id(),token=row/heads,lane=it.get_local_linear_id();const int own=base+int(token),end=sees_all?image_end:own,low=c.window?sycl::max(0,own-c.window+1):0;
             float maximum=-INFINITY;for(int col=int(lane);col<span;col+=128)if(first+col>=low&&first+col<=end)maximum=sycl::fmax(maximum,scores[row*span+col]);
             maximum=sycl::reduce_over_group(it.get_group(),maximum,sycl::maximum<float>());
             float sum=0;for(int col=int(lane);col<span;col+=128)if(first+col>=low&&first+col<=end)sum+=sycl::exp(scores[row*span+col]-maximum);
