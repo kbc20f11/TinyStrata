@@ -26,6 +26,10 @@ inline int admit_metadata(int width, double rotation, bool image_rope, int vocab
         throw std::runtime_error("Intel vision requires 2048-wide Qwen image input, a real image-pad token and 11/11/10 M-RoPE");
     return pad;
 }
+inline bool valid_image_keys(const std::string& keys) {
+    return !keys.empty() && keys.size() <= 8192 && keys.front() != ',' && keys.back() != ',' &&
+        keys.find(",,") == std::string::npos && keys.find_first_not_of("0123456789abcdef,") == std::string::npos;
+}
 
 // Validate the total size before the shared SVE1 reader allocates any rows.
 // Old and incoming inputs must coexist until exact image-prefix comparison.

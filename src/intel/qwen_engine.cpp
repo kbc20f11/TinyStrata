@@ -1277,6 +1277,10 @@ float real_option(const std::string& text) {
 void sampling_option(Sampling& s, const std::string& field) {
     const auto equals = field.find('=');
     const std::string key = field.substr(0, equals), text = field.substr(equals + 1);
+    if (key == "img_keys") {
+        if (!qwen_vision::valid_image_keys(text)) throw std::runtime_error("Invalid Intel image cache keys");
+        return; // Hints only: exact SVE1 bytes/grids/positions decide prefix identity.
+    }
     if (key == "clover_mode" && s.clover) {
         if (text != "causal") throw std::runtime_error("Intel Clover supports causal D0 only");
         return;

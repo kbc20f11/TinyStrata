@@ -25,6 +25,9 @@ static void record(std::ofstream& f,int rows,int nx,int ny,int width,float first
     for(int i=0;i<rows*width;++i){const float x=first+float(i)/16;f.write(reinterpret_cast<const char*>(&x),4);}
 }
 int main() try {
+    check(v::valid_image_keys("9abcdef012345678,0123456789abcdef"));
+    for(const auto& invalid:std::vector<std::string>{"",",a","a,","a,,b","a b","aG",std::string(8193,'a')})
+        check(!v::valid_image_keys(invalid));
     check(v::admit_metadata(2048,64,true,248320,77,88)==77);
     check(v::admit_metadata(2048,64,true,248320,-1,88)==88);
     for(int invalid=0;invalid<7;++invalid){bool refused=false;
