@@ -92,7 +92,7 @@ class VisionPolicy(unittest.TestCase):
         new,_=tinyconfig.migrate_settings(custom);self.assertEqual(new['vision_mode'],'no')
 
     def test_fresh_profiles_enable_only_clover_images(self):
-        profiles=object.__new__(ModelProfiles);profiles._engine=None;profiles._hardware={'backend':'hip'}
+        profiles=object.__new__(ModelProfiles);profiles._engine=None;profiles._hardware={'backend':'hip'};profiles._intel=False
         cfg=profiles._defaults('clover-35b-a3b-preview','clover_moe')
         self.assertEqual(cfg['vision_mode'],'gpu');self.assertEqual(config.value_of(cfg,'clover_draft'),0)
         self.assertEqual(config.value_of(cfg,'clover_mode'),'causal')

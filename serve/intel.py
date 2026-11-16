@@ -1,7 +1,8 @@
-"""Explicit experimental Intel causal-text entry point using the normal API.
+"""Explicit experimental Intel entry point using the normal API.
 
 This does not migrate existing profiles or select Intel automatically. Model
-switching, images and persistent conversation snapshots are not enabled.
+switching and persistent conversation snapshots are not enabled.
+Image input is opt-in and requires the matching Intel image encoder/projector.
 MTP is a separate experimental opt-in and defaults to zero.
 """
 from __future__ import annotations
@@ -28,6 +29,9 @@ def main(argv=None, *, stop_event: threading.Event | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--exe", type=Path, required=True)
+    parser.add_argument("--vision-mode", choices=("no", "gpu", "cpu"), default="no")
+    parser.add_argument("--vision-exe", type=Path)
+    parser.add_argument("--mmproj", type=Path)
     parser.add_argument("--lib-dir", type=Path, action="append", default=[])
     from serve.intel_models import MODEL_PROFILES
     parser.add_argument("--intel-profile", choices=("generic", *MODEL_PROFILES.values()), default=None)
@@ -88,6 +92,9 @@ def main(argv=None, *, stop_event: threading.Event | None = None) -> int:
         parser.error("--verify-mkl-attention requires --prefill-mkl and chunk >= 64")
     if not args.model.is_file() or not args.exe.is_file():
         parser.error("The GGUF and Intel executable must already exist")
+    if args.vision_mode != "no" and (args.vision_exe is None or args.mmproj is None or
+            not args.vision_exe.is_file() or not args.mmproj.is_file()):
+        parser.error("Image input requires existing --vision-exe and --mmproj files")
     from serve.gguf_reader import GGUFFile
     metadata = GGUFFile(args.model).metadata
     from serve.intel_models import (QWEN_MODEL, TIEL_MODEL, GEMMA_MODEL, LFM_MODEL, CLOVER_MODEL,
@@ -123,7 +130,7 @@ def main(argv=None, *, stop_event: threading.Event | None = None) -> int:
                               requested_context=args.context)
     from serve.tokenizer import Tokenizer, extract
     from serve.frontend import ChatTemplate
-    from serve.server import Service, StrataEngine, serve
+    from serve.server import Service, StrataEngine, Vision, vision_config, vision_env, serve
     from serve.tinyconfig import migrate_generation_settings
     work = args.work_dir.resolve()
     tokenizer_path = work / "tokenizer"
@@ -153,29 +160,43 @@ def main(argv=None, *, stop_event: threading.Event | None = None) -> int:
     generation = {"arch": arch, "model_name": selected, "enable_thinking": True, "max_tokens": args.max_tokens}
     if selected == TIEL_MODEL:
         generation["reasoning_effort"] = "medium"
-    if selected in TARGET_ONLY_MODELS or selected == TIEL_MODEL or args.intel_profile is not None:
+    if selected in TARGET_ONLY_MODELS or selected == TIEL_MODEL or args.intel_profile is not None or args.vision_mode != "no":
         from serve.intel_backend import configure_backend, engine_args
         from serve.model_setup import validate_intel_executable
-        cfg = configure_backend({**generation, "backend": "sycl", "vision_mode": "no",
+        cfg = configure_backend({**generation, "backend": "sycl", "vision_mode": args.vision_mode,
               "intel_profile": args.intel_profile or "generic", "cwd": str(root), "exe": str(args.exe.resolve()),
               "lib_dirs": [str(path.resolve()) for path in args.lib_dir],
               "args": [item for item in native_args if item != "--serve"]})
         validate_intel_executable(cfg, allow_legacy=selected == QWEN_MODEL)
+        if args.vision_mode != "no":
+            from serve.model_setup import configure_vision
+            cfg.update(vision_exe=str(args.vision_exe.resolve()),
+                       download_dir=str(args.mmproj.resolve().parent))
+            cfg = configure_vision(cfg, args.model.resolve(), projector=args.mmproj.resolve())
+            if not cfg.get("vision"):
+                parser.error("The projector or Intel image runtime did not pass validation")
         native_args = engine_args(cfg)
-        generation.update(backend="sycl", intel_profile=cfg["intel_profile"])
-    engine = StrataEngine(str(args.exe.resolve()), native_args,
-                         cwd=str(root), log=str(work / "native.log"), env=env)
-    httpd = None
+        generation.update(cfg)
+    engine = vision = httpd = service = None
     stopping = stop_event if stop_event is not None else threading.Event()
     if threading.current_thread() is threading.main_thread():
         for event in (signal.SIGINT, signal.SIGTERM):
             signal.signal(event, lambda *_: stopping.set())
     try:
-        service = Service(engine, tokenizer, template, model_name=selected,
+        if args.vision_mode != "no":
+            vision = Vision(vision_config(generation, env), env=vision_env(generation, env),
+                            log=open(work / "vision.log", "a", encoding="utf-8"))
+            template = ChatTemplate(tokenizer_path / "chat_template.jinja",
+                                    clover_vision=arch == "clover_moe")
+        engine = StrataEngine(str(args.exe.resolve()), native_args,
+                             cwd=str(root), log=str(work / "native.log"), env=env)
+        if vision is not None and engine.info.get("vision") != 1:
+            raise RuntimeError("The Intel engine did not enable its image input contract")
+        service = Service(engine, tokenizer, template, model_name=selected, vision=vision,
             sampling_defaults=migrate_generation_settings(generation)[0]["sampling"], generation_defaults=generation)
         service.backend = "sycl"
         httpd = serve(service, "127.0.0.1", args.port)
-        print(f"Experimental Intel text API: http://127.0.0.1:{args.port} ({args.kv_type} KV, MTP={args.mtp}, images off)", flush=True)
+        print(f"Experimental Intel API: http://127.0.0.1:{args.port} ({args.kv_type} KV, MTP={args.mtp}, vision={args.vision_mode})", flush=True)
         stopping.wait()
     finally:
         if httpd is not None:
@@ -184,9 +205,12 @@ def main(argv=None, *, stop_event: threading.Event | None = None) -> int:
             httpd.server_close()
             if getattr(service, "telemetry", None) is not None:
                 service.telemetry.close()
-        if engine.alive():
+        if engine is not None and engine.alive():
             engine._send("STOP")
-        engine.close()
+        if engine is not None:
+            engine.close()
+        if vision is not None:
+            vision.shutdown()
     return 0
 
 

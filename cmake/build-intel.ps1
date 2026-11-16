@@ -8,6 +8,7 @@ param(
     [string]$AotTarget = '',
     [switch]$MklPrefill,
     [switch]$Int8Xmx,
+    [switch]$Vision,
     [switch]$Inspect
 )
 $ErrorActionPreference = 'Stop'
@@ -31,6 +32,7 @@ $configureArguments = @('-S', $sourceDirectory, '-B', $BuildDirectory, '-G', 'Ni
 # Always pass the value, including empty, so reusing a build directory without
 # -AotTarget restores generic SPIR-V instead of keeping an old cache choice.
 $configureArguments += "-DTINYSTRATA_INTEL_AOT_TARGET=$AotTarget"
+$configureArguments += "-DTINYSTRATA_VISION=$($Vision.IsPresent.ToString().ToUpperInvariant())"
 if ($AotTarget) {
     $oclocCommand = Get-Command ocloc.exe -ErrorAction SilentlyContinue
     if (-not $oclocCommand) {
