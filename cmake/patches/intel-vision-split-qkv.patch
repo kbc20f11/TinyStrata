@@ -1,6 +1,16 @@
 --- a/tools/mtmd/models/qwen3vl.cpp
 +++ b/tools/mtmd/models/qwen3vl.cpp
-@@ -79,33 +79,77 @@
+@@ -57,4 +57,9 @@
+     ggml_set_name(positions, "positions");
+     ggml_set_input(positions);
++#if defined(TINYSTRATA_VISION_SPLIT_QKV) && TINYSTRATA_VISION_SPLIT_QKV
++    // Keep the small persistent position leaf before transient image buffers,
++    // so the freed raw-image and im2col ranges can coalesce during ViT layers.
++    ggml_build_forward_order(gf, positions);
++#endif
+
+     // pre-layernorm
+@@ -79,33 +84,77 @@
          // self-attention
          {
 +            ggml_tensor * Qcur;
