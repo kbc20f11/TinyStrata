@@ -6,7 +6,7 @@
 
 **NVIDIA Ampere 世代以降（CUDA）と AMD RDNA 4（HIP/ROCm）に対応しています。**
 
-Windowsの **Intel Arc B390 / 32 GB共有メモリー**には、Qwen3.6とTiel Coderのテキスト推論を実験対応しています。Intel版の画像入力・Gemma・LFM・Cloverは未対応です。[導入方法と実測・制約](docs/intel-windows.md)を参照してください。
+Experimental Intel Arc B390 / 32 GB shared-RAM support includes Qwen3.6, Tiel Coder, Gemma 4, LFM2.5 and causal Clover D0. Qwen/Tiel/Gemma/Clover image input requires an image-capable runtime and `-Vision gpu`; LFM remains text-only. The encoder warms before automatic KV allocation, preserving the 4 GiB system and 768 MiB WDDM reserves. Image input reduces the available context capacity. See the [validation status](https://github.com/kbc20f11/TinyStrata/issues/19).
 
 **AMD構成の映像出力制限:** AMD内蔵GPUと別体のRadeonを併用して推論する場合は、**Windowsを起動する前からRadeon側にモニターを接続してください**。内蔵GPU・マザーボード側の映像出力は当面使用しないでください。他ユーザーからPC全体が再起動する報告があり、検証機でも再現しました。起動後の接続変更だけでは再発を防げませんでした。原因は未特定です。[Issue #10](https://github.com/kbc20f11/TinyStrata/issues/10) を参照してください。
 
