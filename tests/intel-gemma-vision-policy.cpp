@@ -40,9 +40,17 @@ int main(int argc,char** argv){try{
     std::vector<int> large(1122,42);large.front()=7;large.back()=8;write(file,1120,1120,1,4);
     check(gv::load(path,large,4,4096,42,input,error));check(gv::next_count(input,1,1121,512)==1120);
     check(!gv::whole_prefix(input,513)&&gv::whole_prefix(input,1121));
+    // Unequal records used to geometrically grow the payload past its ledger.
+    {std::ofstream f(file,std::ios::binary);for(int rows:{1,3,5}){
+        const int32_t header[]={0x31455653,rows,rows,1,4};std::vector<float> values(size_t(rows)*4,1.f);
+        f.write(reinterpret_cast<const char*>(header),sizeof header);f.write(reinterpret_cast<const char*>(values.data()),std::streamsize(values.size()*4));}}
+    std::vector<int> multi={7,42,8,42,42,42,9,42,42,42,42,42,10};
+    check(gv::load(path,multi,4,4096,42,input,error));
+    check(input.embeddings.size()==36&&input.embeddings.capacity()==36);
+    check(input.images.size()==3&&input.images.capacity()==9);
     check(gv::workspace(512,32768,false)==512&&gv::workspace(512,32768,true)==1120&&gv::workspace(512,128,true)==512);
-    check(gv::host_reservation(262144,2816)==512ull*1024*1024);
-    check(gv::host_reservation(4096,2816)==2ull*4096*2816*4);
+    check(gv::host_reservation(262144,2816)==512ull*1024*1024+2*gv::max_images*sizeof(gv::Image));
+    check(gv::host_reservation(4096,2816)==2ull*4096*2816*4+2*gv::max_images*sizeof(gv::Image));
     cp::GemmaSpec text,vision;vision.vision=true;
     for(uint64_t context:{2048ull,4096ull,32768ull}){
         const auto a=cp::gemma(context,text),b=cp::gemma(context,vision);

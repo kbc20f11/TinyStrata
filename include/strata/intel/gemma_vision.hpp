@@ -12,17 +12,20 @@
 
 namespace strata::intel::gemma_vision {
 inline constexpr int max_image_rows = 1120;
+inline constexpr size_t max_images = 64;
 inline constexpr uint64_t payload_limit = 256ull << 20;
+struct Image {size_t cell=0,rows=0,offset=0;};
 // The old validated payload remains alive while a new request is checked.
 // After exact prefix comparison the live/saved views share the new owner.
 inline uint64_t host_reservation(uint64_t context,uint64_t width) {
     const uint64_t rows = width && context <= UINT64_MAX / width / 4 ? context * width * 4 : UINT64_MAX;
-    return 2 * std::min(payload_limit,rows);
+    const uint64_t payload = std::min(payload_limit,rows);
+    const uint64_t metadata = std::min(uint64_t(max_images),width ? payload / width / sizeof(float) : 0) * sizeof(Image);
+    return 2 * (payload + metadata);
 }
 inline uint64_t workspace(uint64_t chunk,uint64_t context,bool vision) {
     return vision ? std::max(chunk,std::min(context,uint64_t(max_image_rows))) : chunk;
 }
-struct Image {size_t cell=0,rows=0,offset=0;};
 struct Input {std::vector<float> embeddings;std::vector<Image> images;};
 inline const Image* image_at(const Input& input,size_t cell) {
     for(const auto& im:input.images)if(cell>=im.cell&&cell-im.cell<im.rows)return &im;
@@ -68,11 +71,15 @@ inline bool load(const std::string& path,const std::vector<int>& ids,int width,i
        pads>payload_limit/sizeof(float)/size_t(width)) {error="Gemma image prompt exceeds its bounded payload/context";return false;}
     std::ifstream file(strata::paths::native_path(path),std::ios::binary);
     if(!file){error="Cannot open Gemma image embeddings file";return false;}
+    // Reserve once from the validated complete prompt. Incremental vector
+    // growth can temporarily retain a third payload beyond the host ledger.
+    next.embeddings.reserve(pads*size_t(width));
+    next.images.reserve(std::min(max_images,pads));
     size_t cursor=0,remaining=pads;
     while(file.peek()!=std::char_traits<char>::eof()) {
         int32_t header[5]{};file.read(reinterpret_cast<char*>(header),sizeof header);
         if(!file||header[0]!=0x31455653||header[1]<1||header[1]>max_image_rows||header[2]!=header[1]||header[3]!=1||
-           header[4]!=width||size_t(header[1])>remaining||next.images.size()>=64){error="Invalid Gemma SVE1 image geometry";return false;}
+           header[4]!=width||size_t(header[1])>remaining||next.images.size()>=max_images){error="Invalid Gemma SVE1 image geometry";return false;}
         while(cursor<ids.size()&&ids[cursor]!=pad)++cursor;
         const size_t rows=size_t(header[1]);
         if(cursor>ids.size()||rows>ids.size()-cursor||!std::all_of(ids.begin()+cursor,ids.begin()+cursor+rows,[&](int id){return id==pad;})){
