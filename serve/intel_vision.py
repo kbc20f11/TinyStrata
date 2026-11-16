@@ -34,6 +34,8 @@ def prepare_encoder(cfg, vision, env):
     from serve.intel_backend import engine_args
 
     selected = deepcopy(vision)
+    # This is transient producer proof, never a user-supplied profile assertion.
+    selected.pop("count_dimensions", None)
     base = Path(cfg.get("cwd") or os.getcwd())
     for key in ("exe", "mmproj", "model"):
         value = selected.get(key)
@@ -62,4 +64,6 @@ def prepare_encoder(cfg, vision, env):
         raise ValueError("The selected Intel GPU has no valid Windows adapter identity for the image encoder")
     selected.update(backend="sycl", device_luid=luid, elastic=False,
                     input_protocol=report.get("input_protocol", "enc"), language_device=device)
+    selected["count_dimensions"] = (report.get("count_dimensions") is True and
+        report.get("llama_base_commit") == "3cf03257f219afbe7334045ff7c6a06ac68c627d")
     return selected

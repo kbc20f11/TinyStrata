@@ -2388,6 +2388,9 @@ class Vision:
         self.gpu = bool(cfg.get("gpu"))
         self.backend = cfg.get("backend")
         self.input_protocol = cfg.get("input_protocol", "enc")
+        self.count_dimensions_enabled = self.backend == "sycl" and cfg.get("count_dimensions") is True
+        self._count_pending = None
+        self._dimension_counts = {}
         if self.gpu:
             args.append("--gpu")
         if cfg.get("device_luid"):
@@ -2399,6 +2402,7 @@ class Vision:
         self.max_tokens = int(cfg.get("max_tokens") or 0)
         if cfg.get("min_tokens"):                       # #767: mtmd's image_min_tokens (a hand-edited key)
             args += ["--min-tokens", str(cfg["min_tokens"])]
+        self.min_tokens = int(cfg.get("min_tokens") or 0)
         self.dir = self.work_dir()
         self.spawn = (args, log, env)                   # to start it again after an unload
         self.proc = None
@@ -2468,6 +2472,7 @@ class Vision:
                 pass
             raise RuntimeError(vision_start_error(line, log, exit_code=code, log_start=log_start, strays=strays))
         self.stopped = False
+        self._count_pending = None
 
     READY_GRACE_S = 2.0
     STRAY_KEEP = 20
@@ -2559,6 +2564,94 @@ class Vision:
 
     def alive(self) -> bool:
         return self.proc is not None and not self.stopped and self.proc.poll() is None
+
+    @staticmethod
+    def inline_dimensions(source: str | bytes) -> tuple[int, int] | None:
+        """Read inline image headers only; never fetch, open a path or decode pixels."""
+        try:
+            if isinstance(source, bytes):
+                data = source
+            elif (isinstance(source, str) and source.startswith("data:image/") and
+                  ";base64," in source and len(source) <= IMAGE_URL_MAX * 2):
+                data = base64.b64decode(source.split(";base64,", 1)[1], validate=True)
+            else:
+                return None
+            if not data or len(data) > IMAGE_URL_MAX:
+                return None
+            import io
+            from PIL import Image
+            with Image.open(io.BytesIO(data)) as image:
+                # These formats pass through normalize(). Unsupported conversions
+                # retain the old conservative cap instead of guessing their shape.
+                if image.format not in ("PNG", "JPEG", "GIF", "BMP"):
+                    return None
+                width, height = image.size
+            if (type(width) is not int or type(height) is not int or
+                    not 0 < width <= 65536 or not 0 < height <= 65536):
+                return None
+            return width, height
+        except Exception:  # an unreadable or unsupported header retains the cap
+            return None
+
+    def _finish_dimension_count(self, timeout=0):
+        """Consume a COUNT reply before another command can use the same pipe."""
+        pending = self._count_pending
+        if pending is None:
+            return None
+        proc, reply = pending
+        if proc is not self.proc:
+            self._count_pending = None
+            return None
+        try:
+            line = reply.get(timeout=timeout)
+        except queue.Empty:
+            return None
+        self._count_pending = None
+        return line
+
+    def count_tokens(self, source: str | bytes) -> int | None:
+        """Ask the already-ready Intel producer for exact shape metadata only.
+
+        Busy, older, unloaded and unsupported encoders keep the previous upper
+        bound. A late reply stays isolated until consumed; counting never starts
+        or kills an encoder, writes an image file or enters an encode graph.
+        """
+        if not self.count_dimensions_enabled or not self.alive():
+            return None
+        dimensions = self.inline_dimensions(source)
+        if dimensions is None or not self.lock.acquire(blocking=False):
+            return None
+        try:
+            self._finish_dimension_count()
+            if self._count_pending is not None or not self.alive():
+                return None
+            key = (*dimensions, self.max_tokens, self.min_tokens)
+            if key in self._dimension_counts:
+                return self._dimension_counts[key]
+            proc, reply = self.proc, queue.Queue(maxsize=1)
+            proc.stdin.write(f"COUNT\t{dimensions[0]}\t{dimensions[1]}\n")
+            proc.stdin.flush()
+            def read():
+                try:
+                    reply.put(proc.stdout.readline())
+                except (OSError, ValueError):
+                    reply.put("")
+            self._count_pending = (proc, reply)
+            threading.Thread(target=read, daemon=True).start()
+            line = self._finish_dimension_count(timeout=2)
+            match = re.fullmatch(r"TOKENS ([1-9][0-9]*) ([1-9][0-9]*) ([1-9][0-9]*)\s*", line or "")
+            if match:
+                count, nx, ny = map(int, match.groups())
+                if nx * ny == count and count <= (self.max_tokens or 4096):
+                    self._dimension_counts[key] = count
+                    if len(self._dimension_counts) > 64:
+                        del self._dimension_counts[next(iter(self._dimension_counts))]
+                    return count
+            return None
+        except (OSError, ValueError):
+            return None
+        finally:
+            self.lock.release()
 
     def unload(self):
         """Stop the encoder process (its VRAM or RAM goes back); the encoded images stay cached on disk."""
@@ -2682,6 +2775,9 @@ class Vision:
         data = self.normalize(source if isinstance(source, bytes) else self.load(source))
         key = hashlib.sha256(data).hexdigest()[:32]
         with self.lock:
+            self._finish_dimension_count(timeout=2)
+            if self._count_pending is not None:
+                raise ValueError("the image encoder is still completing a token count; retry shortly")
             if key in self.cache:
                 self.cache[key] = self.cache.pop(key)                  # most recently used last
                 return self.cache[key]
@@ -4274,9 +4370,9 @@ class Service:
     def chat_token_count(self, req: dict) -> dict:
         """Count the chat prompt without loading, entering the GPU turn or changing cached state.
 
-        Text uses the generation path's template and tokenizer. Images use the
-        encoder's enforced upper bound, including Gemma's added boundary tokens;
-        no image is opened or encoded just to decide whether to compact a chat.
+        Text uses the generation path's template and tokenizer. Inline images
+        can query a ready Intel producer's CPU-only dimensions protocol; other
+        images retain its enforced upper bound, including Gemma boundary tokens.
         """
         requested_model = req.get("model")
         if self.models is not None:
@@ -4317,6 +4413,7 @@ class Service:
             ids += self.tok.encode(prefill, parse_special=True)
         images = images_of(messages)
         count = len(ids)
+        counted_images = 0
         if images:
             if not self.vision_available():
                 raise ValueError(self.vision_off_reason())
@@ -4337,9 +4434,19 @@ class Service:
             if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
                 limit = 1120 if gemma else 4096  # tinystrata_vision.cpp's enforced default
             boundaries = len([one("<|image>"), one("<image|>")]) if gemma else 0
-            count += len(images) * (limit + boundaries - 1)
+            for image in images:
+                rows = None
+                if self.intel_context() and not gemma and callable(getattr(self.vision, "count_tokens", None)):
+                    rows = self.vision.count_tokens(image)
+                if type(rows) is int and 0 < rows <= limit:
+                    counted_images += 1
+                else:
+                    rows = limit
+                count += rows + boundaries - 1
         result = {"prompt_tokens": count, "max_context": self.reported_ctx(),
-                  "exact": not images, "images_estimated": len(images), "model": self.model}
+                  "exact": len(images) == counted_images, "images_estimated": len(images) - counted_images, "model": self.model}
+        if counted_images:
+            result["images_counted"] = counted_images
         if self.intel_context() and not result["max_context"]:
             result.update(backend="sycl", context_pending=True)
         return result

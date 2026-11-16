@@ -69,6 +69,15 @@ class IntelVisionStartup(unittest.TestCase):
             self.assertEqual(selected["backend"], "cpu")
             self.assertEqual(query.call_count, 1)
 
+    def test_dimension_count_requires_actual_pinned_encoder_capability(self):
+        for advertised, pin, expected in ((True, "3cf03257f219afbe7334045ff7c6a06ac68c627d", True),
+                (False, "3cf03257f219afbe7334045ff7c6a06ac68c627d", False), (True, "unknown", False)):
+            caps = self.capabilities() | {"count_dimensions":advertised,"llama_base_commit":pin}
+            with self.subTest(advertised=advertised,pin=pin), \
+                 patch("serve.intel_vision._report", side_effect=[caps,self.device()]):
+                selected = prepare_encoder(self.config(), {"exe":"v.exe","gpu":True,"count_dimensions":True}, {})
+            self.assertIs(selected["count_dimensions"], expected)
+
 
 class IntelProjectorReuse(unittest.TestCase):
     def test_local_projector_is_pinned_and_explicit_selection_is_retained(self):
