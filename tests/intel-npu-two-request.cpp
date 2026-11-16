@@ -129,17 +129,37 @@ int main(int argc,char** argv){try{
     for(int token=0;token<128;++token)for(int row=0;row<npu_rows;++row)check(out0.data[size_t(token)*rows+row]==poison&&out1.data[size_t(token)*rows+row]==poison,"Abandoned request prefix was merged");
     for(size_t i=size_t(128)*rows;i<output_elements+32;++i)check(out0.data[i]==poison&&out1.data[i]==poison,"Abandoned request canary changed");
     {
-        // Preserve the legacy full operator's previous-output-copy retirement
-        // on an out-of-order queue; split admission itself requires in-order.
-        sycl::queue unordered(q.get_context(),q.get_device());NpuProjection legacy(unordered);
+        // Actually exercise back-to-back full projections with two different
+        // inputs on the supported ordered queue, without awaiting copy A
+        // before starting B. The converted-input wait must retire copy A.
+        NpuProjection legacy(q);
+        for(float* output:{ref0.data,ref1.data,out0.data,out1.data}){
+            std::fill(output,output+size_t(128)*64,NAN);std::fill(output+size_t(128)*64,output+size_t(128)*64+32,poison);
+        }
         legacy.run(14,raw,x0.data,ref0.data,64,width,128).wait_and_throw();
         legacy.run(14,raw,x1.data,ref1.data,64,width,128).wait_and_throw();
+        check(std::memcmp(ref0.data,ref1.data,size_t(128)*64*4)!=0,"Distinct full-projection inputs did not produce distinct references");
         const auto first=legacy.run(14,raw,x0.data,out0.data,64,width,128);
         const auto second=legacy.run(14,raw,x1.data,out1.data,64,width,128);
         auto first_copy=first;first_copy.wait_and_throw();auto second_copy=second;second_copy.wait_and_throw();
-        check(std::memcmp(ref0.data,out0.data,size_t(128)*64*4)==0&&std::memcmp(ref1.data,out1.data,size_t(128)*64*4)==0,"Out-of-order full operator output-copy race");
+        check(std::memcmp(ref0.data,out0.data,size_t(128)*64*4)==0&&std::memcmp(ref1.data,out1.data,size_t(128)*64*4)==0,"Ordered full operator output-copy race");
+        for(size_t i=0;i<size_t(128)*64;++i)check(std::isfinite(out0.data[i])&&std::isfinite(out1.data[i]),"Nonfinite ordered full-projection output");
+        for(size_t i=size_t(128)*64;i<size_t(128)*64+32;++i)check(ref0.data[i]==poison&&ref1.data[i]==poison&&out0.data[i]==poison&&out1.data[i]==poison,"Full-projection copy canary changed");
+    }
+    {
+        // The conversion/dequantization operators do not support unordered
+        // queues. Refuse before compiling a graph or submitting any work.
+        sycl::queue unordered(q.get_context(),q.get_device());NpuProjection legacy(unordered);
+        std::fill(out0.data,out0.data+size_t(128)*64+32,poison);std::fill(out1.data,out1.data+size_t(128)*64+32,poison);
+        for(unsigned bank=0;bank<2;++bank){bool rejected=false;
+            try{legacy.run(14,raw,bank?x1.data:x0.data,bank?out1.data:out0.data,64,width,128);}
+            catch(const std::invalid_argument& error){rejected=std::string(error.what()).find("in-order")!=std::string::npos;}
+            check(rejected,"Unsupported unordered full projection was not explicitly rejected");
+        }
+        check(legacy.memory_usage().compiled_graphs==0&&legacy.pending_split_count()==0,"Unordered rejection compiled or started work");
+        for(size_t i=0;i<size_t(128)*64+32;++i)check(out0.data[i]==poison&&out1.data[i]==poison,"Unordered rejected call changed output/canary");
     }
     check(hash(compressed.data,raw_bytes+q6_interleaved_bytes(rows,width))==weight_hash&&hash(x0.data,size_t(capacity)*width*4)==input0_hash&&hash(x1.data,size_t(capacity)*width*4)==input1_hash,"Fixture inputs/weights mutated");
-    std::printf("{\"passed\":true,\"cases\":%d,\"request_slots\":2,\"max_pending_requests\":2,\"independent_content_inputs\":true,\"recycle_with_other_pending\":true,\"changed_shapes\":true,\"abandoned_both_drained\":true,\"out_of_order_full_retirement\":true,\"readonly\":true,\"hardware_parallel_execution_claim\":false}\n",cases);
+    std::printf("{\"passed\":true,\"cases\":%d,\"request_slots\":2,\"max_pending_requests\":2,\"independent_content_inputs\":true,\"recycle_with_other_pending\":true,\"changed_shapes\":true,\"abandoned_both_drained\":true,\"ordered_full_retirement\":true,\"out_of_order_rejected_before_work\":true,\"readonly\":true,\"hardware_parallel_execution_claim\":false}\n",cases);
     return 0;
 }catch(const std::exception& error){std::fprintf(stderr,"NPU two-request fixture: %s\n",error.what());return 1;}}

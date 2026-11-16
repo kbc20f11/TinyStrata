@@ -145,6 +145,8 @@ sycl::event NpuProjection::run(int type, const uint8_t* weights, const float* in
     auto& p = *impl_;
     auto& s=p.slots[0];
     if(p.pending_count())throw std::logic_error("NPU split must be joined before another projection");
+    if(!p.q.has_property<sycl::property::queue::in_order>())
+        throw std::invalid_argument("Intel NPU full projection requires an in-order queue");
     if (rows < 1 || width < 1 || tokens < 1 || size_t(rows) * width > p.weight_elements ||
         size_t(tokens) * width > p.activation_elements || size_t(tokens) * rows > p.activation_elements)
         throw std::invalid_argument("Intel NPU projection exceeds bounded scratch");
@@ -154,9 +156,8 @@ sycl::event NpuProjection::run(int type, const uint8_t* weights, const float* in
     auto weight_ready = dequantize_half(p.q, type, weights, p.weights, size_t(rows) * width);
     auto input_ready = convert_half(p.q, input, s.input, size_t(tokens) * width);
     weight_ready.wait_and_throw(); input_ready.wait_and_throw();
-    // The full operator also permits out-of-order callers. Preserve its old
-    // retirement fence before infer can overwrite the shared output buffer.
-    if(!p.q.has_property<sycl::property::queue::in_order>()) p.q.wait_and_throw();
+    // On the supported in-order queue these readiness events also retire the
+    // previous output copy before inference overwrites this shared bank.
     binding.request.set_input_tensor(0, binding.host_input);
     binding.request.set_input_tensor(1, ov::Tensor(ov::element::f16, {size_t(rows),size_t(width)}, p.weights));
     binding.request.set_output_tensor(binding.host_output);
