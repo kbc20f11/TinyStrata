@@ -164,7 +164,7 @@ int vision_main(int argc, char** argv) {
 #elif defined(TINYSTRATA_VISION_HIP)
         std::puts("{\"cuda\":false,\"hip\":true,\"backend\":\"hip\"}");
 #elif defined(TINYSTRATA_VISION_SYCL)
-        std::printf("{\"cuda\":false,\"hip\":false,\"sycl\":true,\"cpu\":false,\"backend\":\"sycl\",\"device_luid\":true,\"warmup_before_ready\":true,\"input_protocol\":\"enc-tabs\",%s}\n", strata::vision::source_metadata_json);
+        std::printf("{\"cuda\":false,\"hip\":false,\"sycl\":true,\"cpu\":false,\"backend\":\"sycl\",\"device_luid\":true,\"warmup_before_ready\":true,\"input_protocol\":\"enc-tabs\",\"count_dimensions\":true,%s}\n", strata::vision::source_metadata_json);
 #else
         std::puts("{\"cuda\":false,\"hip\":false,\"backend\":\"cpu\"}");
 #endif
@@ -441,6 +441,44 @@ int vision_main(int argc, char** argv) {
     while (std::getline(std::cin, line)) {
         while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
         if (line == "QUIT") break;
+        if (line.substr(0, 5) == "COUNT") {
+            uint32_t width = 0, height = 0;
+            if (!strata::vision::parse_count(line, width, height)) {
+                std::printf("ERR expected: COUNT followed by tab-separated positive image dimensions\n");
+                std::fflush(stdout); continue;
+            }
+            // Pinned MTMD explicitly supports null-data bitmaps as token-count
+            // placeholders. Tokenization performs CPU geometry preprocessing;
+            // no pixels, output embeddings, or GPU graph are allocated/evaluated.
+            mtmd_bitmap* bitmap = mtmd_bitmap_init(width, height, nullptr);
+            mtmd_input_chunks* counted = mtmd_input_chunks_init();
+            std::string error;
+            size_t n = 0; int nx = 0, ny = 0;
+            try {
+                const std::string marker = mtmd_default_marker();
+                const mtmd_input_text text{marker.c_str(), marker.size(), false, true};
+                const mtmd_bitmap* bitmaps[1] = {bitmap};
+                if (!bitmap || !counted || mtmd_tokenize(ctx, counted, &text, bitmaps, 1) != 0) error = "image dimensions could not be preprocessed";
+                for (size_t i = 0; error.empty() && i < mtmd_input_chunks_size(counted); ++i) {
+                    const auto* chunk = mtmd_input_chunks_get(counted, i);
+                    if (mtmd_input_chunk_get_type(chunk) != MTMD_INPUT_CHUNK_TYPE_IMAGE) continue;
+                    if (n != 0) { error = "dimensions produced more than one image chunk"; break; }
+                    n = mtmd_input_chunk_get_n_tokens(chunk);
+                    if (n == 0 || n > size_t(token_limit)) { error = "image dimensions exceed vision capacity"; break; }
+                    const auto* tokens = mtmd_input_chunk_get_tokens_image(chunk);
+                    const auto last = mtmd_image_tokens_get_decoder_pos(tokens, 0, n - 1);
+                    nx = gemma ? int(n) : int(last.x) + 1; ny = gemma ? 1 : int(last.y) + 1;
+                    if (int64_t(nx) * ny != int64_t(n) ||
+                        (gemma && (last.x != uint32_t(n - 1) || last.y != uint32_t(n - 1)))) error = "image decoder positions do not match the model";
+                }
+                if (error.empty() && n == 0) error = "dimensions produced no image chunk";
+            } catch (const std::exception&) { error = "image dimensions could not be counted"; }
+            if (counted) mtmd_input_chunks_free(counted);
+            if (bitmap) mtmd_bitmap_free(bitmap);
+            if (error.empty()) std::printf("TOKENS %zu %d %d\n", n, nx, ny);
+            else std::printf("ERR %s\n", error.c_str());
+            std::fflush(stdout); continue;
+        }
         std::string img, out;
         if (!strata::vision::parse_enc(line, img, out)) { std::printf("ERR expected: ENC <image> <output>, or tab-separated ENC fields\n"); std::fflush(stdout); continue; }
         const auto t0 = std::chrono::steady_clock::now();
