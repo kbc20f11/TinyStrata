@@ -9,6 +9,30 @@ function(tinystrata_intel_vision_write_lf destination contents)
   configure_file("${_template}" "${destination}" @ONLY NEWLINE_STYLE LF)
 endfunction()
 
+function(tinystrata_intel_vision_graph_memory root)
+  tinystrata_intel_vision_patch_copy("${root}" "tools/mtmd/clip.cpp"
+    "${PROJECT_SOURCE_DIR}/cmake/patches/intel-vision-token-ffn.patch"
+    f50b204fa1bd4138c53d041663bbaf1472bab3af3407b95a8023429eb14e51ce
+    ed7ce038f0a45b10efc3ec661aa7ca16eac259526dcec6bfe5838aa931f9a8fb
+    8aae33a4dbfbce47c270f1d91e24830514af1705227ed70481169806dbd4e5ff)
+  tinystrata_intel_vision_patch_copy("${root}" "tools/mtmd/models/qwen3vl.cpp"
+    "${PROJECT_SOURCE_DIR}/cmake/patches/intel-vision-split-qkv.patch"
+    5a248956cc965ec1229538585f66a0010fa03a5d5dd164bd495c522ecede0c7b
+    1f174049c66072340b1433acb8cdcf1f9850eabaf8d145d5fcfcc07c2eba3dce
+    1b8cb0884990a22d023adbc15a421a69430f8ee94c0303bc565054914006c1f4)
+  set(_copy_root "${CMAKE_BINARY_DIR}/intel-vision-patched/tools/mtmd")
+  get_target_property(_sources mtmd SOURCES)
+  foreach(_relative clip.cpp models/qwen3vl.cpp)
+    list(REMOVE_ITEM _sources "${_relative}" "${root}/tools/mtmd/${_relative}")
+    list(APPEND _sources "${_copy_root}/${_relative}")
+  endforeach()
+  set_property(TARGET mtmd PROPERTY SOURCES "${_sources}")
+  set_property(SOURCE "${_copy_root}/clip.cpp" TARGET_DIRECTORY mtmd
+    APPEND PROPERTY COMPILE_DEFINITIONS TINYSTRATA_VISION_TOKEN_FFN=256)
+  set_property(SOURCE "${_copy_root}/models/qwen3vl.cpp" TARGET_DIRECTORY mtmd
+    APPEND PROPERTY COMPILE_DEFINITIONS TINYSTRATA_VISION_SPLIT_QKV=1)
+endfunction()
+
 function(tinystrata_intel_vision_patch_copy root relative patch base_sha patched_sha patch_sha)
   # Check canonical text and patch bytes, independent of Git's Windows EOL
   # policy. Only the build-owned copies are normalized to LF.
