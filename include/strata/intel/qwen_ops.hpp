@@ -9,6 +9,12 @@ static_assert(sizeof(Q8Block) == 34, "GGUF Q8_0 block layout");
 // operations require one in-order queue and GPU-addressable USM allocations.
 sycl::event rms_norm(sycl::queue& queue, const float* x, const float* weights,
                      float* y, int rows, int width, float epsilon);
+// Elementwise SiLU(gate)*up permits output==gate; each cell is consumed first.
+sycl::event silu_mul(sycl::queue& queue,const float* gate,const float* up,float* output,size_t count);
+// Causal convolution consumes each channel's current raw input before writing
+// that same cell, so output==input is valid. History remains a separate arena.
+sycl::event conv_step_many(sycl::queue& queue,const float* input,float* history,const float* weights,
+                           float* output,int key_heads,int value_heads,int tokens,float epsilon);
 sycl::event q8_matvec(sycl::queue& queue, const Q8Block* weights, const float* x,
                       float* y, int rows, int width);
 sycl::event quantized_matvec(sycl::queue& queue, int type, const uint8_t* weights,

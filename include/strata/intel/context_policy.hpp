@@ -117,9 +117,10 @@ struct QwenSpec {
     uint64_t chunk=128,vocabulary=248320,draft_vocabulary=0,verify_capacity=8;
     bool int8=false,mtp=false,mkl=false,dp4a=false,dense_split=false,support=false;
     bool device_state=false,turn_checkpoint=true,graph=true,verify_graph=false,npu=false,npu_split=false;
-    bool vision=false;
+    bool vision=false,clover_vision_aliases=false;
 };
 inline Footprint qwen(uint64_t c,const QwenSpec& s={}){
+    if(s.clover_vision_aliases&&(!s.vision||s.mtp))throw std::invalid_argument("Clover image workspace aliases require vision and MTP0");
     Footprint p;const auto n=s.chunk;const bool shared=!s.device_state;
     const auto a=[&](uint64_t count,uint64_t size=4,uint64_t copies=1){p.allocation(count,size,shared,copies);};
     const auto control=[&](uint64_t count){p.allocation(count,4,true);};
@@ -128,9 +129,10 @@ inline Footprint qwen(uint64_t c,const QwenSpec& s={}){
     const uint64_t recurrent=30ull*(32*128*128+64*128*3)*4;
     a(32*128*128,4,60);a(64*128*3,4,60);
     a(mul(n,2048),4,3);a(mul(n,8192));a(mul(n,4096));a(mul(n,32),4,2);
-    a(mul(n,8192));a(mul(n,4096),4,2);
-    a(mul(n,256));a(mul(n,8));a(mul(n,8));a(mul(n,8*512),4,3);a(mul(n,8*2048));
-    a(mul(n,512),4,3);a(mul(n,2048));a(n);
+    if(!s.clover_vision_aliases)a(mul(n,8192)); // convolution reuses consumed raw QKV
+    a(mul(n,4096),4,s.clover_vision_aliases?1:2); // normalized GDN output reuses its input
+    a(mul(n,256));a(mul(n,8));a(mul(n,8));a(mul(n,8*512),4,s.clover_vision_aliases?2:3);a(mul(n,8*2048));
+    a(mul(n,512),4,s.clover_vision_aliases?2:3);a(mul(n,2048));a(n);
     a(mul(n,16*256),4,2);a(mul(n,2*256),4,2);
     const auto rows=mul(16,s.int8?std::min(n,s.verify_capacity):1);
     a(mul(rows,c));a(mul(rows,round256(c)));a(mul(n,16*256));

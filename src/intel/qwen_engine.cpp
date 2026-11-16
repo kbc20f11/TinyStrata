@@ -95,6 +95,7 @@ class Engine {
     int32_t *expert_counts_, *expert_slots_, *tile_owners_, *tile_offsets_, *tile_count_;
     int32_t *token_input_ = nullptr, *position_input_ = nullptr;
     bool vision_enabled_ = false;
+    bool clover_vision_workspace_aliases_ = false;
     int image_pad_ = -1;
     int32_t* mrope_ = nullptr;
     qwen_vision::Input image_input_;
@@ -268,6 +269,10 @@ class Engine {
         dispatch(sycl::range<1>(size_t(count)), [=](sycl::id<1> i) { destination[i] += source[i]; });
     }
     void swiglu(const float* gate, const float* up, float* output, int count) {
+        if(clover_vision_workspace_aliases_){
+            remember("elementwise_attention",silu_mul(q_,gate,up,output,size_t(count)));
+            return;
+        }
         dispatch(sycl::range<1>(size_t(count)), [=](sycl::id<1> i) {
             output[i] = gate[i] / (1.f + sycl::exp(-gate[i])) * up[i];
         });
@@ -297,7 +302,9 @@ class Engine {
         float *history = state.convolution, *output = conv_;
         const float *input = qkv_, *weight = f32(prefix + "ssm_conv1d.weight");
         const float epsilon = epsilon_;
-        dispatch(sycl::nd_range<1>(size_t(channels), 128), [=](sycl::nd_item<1> it) {
+        if(clover_vision_workspace_aliases_)
+            remember("elementwise_attention",conv_step_many(q_,input,history,weight,output,hk,hv,tokens,epsilon));
+        else dispatch(sycl::nd_range<1>(size_t(channels), 128), [=](sycl::nd_item<1> it) {
             const size_t channel = it.get_global_linear_id();
             for (int token = 0; token < tokens; ++token) {
             const float current = input[size_t(token) * channels + channel];
@@ -811,6 +818,7 @@ public:
             if (experimental_clover) clover_causal::validate_launch(kv_int8, mtp_depth, draft_vocab_limit, false, prefill_npu);
             weights_ = WeightStore::load(q_, path, memory, vocab_xmx, expert_layout, dense_layout, dense_split_k, experimental_tiel, experimental_clover, vision);
             clover_ = weights_->geometry().family == strata::ModelFamily::CloverMoe;
+            clover_vision_workspace_aliases_=qwen_vision::clover_workspace_aliases(clover_,vision_enabled_,mtp_depth_);
             if (expert_layout) std::fprintf(stderr, "Intel expert_layout=interleaved16 Q8_activations=1 single_weight_store=1\n");
             if (vocab_xmx) {
                 if (weights_->tensors().at("output.weight").layout == WeightLayout::Q6Interleaved16)
@@ -862,6 +870,7 @@ public:
             context_shape.turn_checkpoint=turn_checkpoint_enabled_;context_shape.graph=use_graph&&!profiling;context_shape.verify_graph=verify_graph;
             context_shape.npu=prefill_npu;context_shape.npu_split=std::getenv("STRATA_REVIEW_NPU_SPLIT")!=nullptr;
             context_shape.vision=vision_enabled_;
+            context_shape.clover_vision_aliases=clover_vision_workspace_aliases_;
             const int context_limit=context_policy::model_limit(metadata_number("context_length",0),clover_?context_policy::lfm_limit:context_policy::full_limit);
             const auto chosen=context_policy::select(context,context_limit,remaining_memory,selected_device.max_allocation,
                 [&](uint64_t tokens){return context_policy::qwen(tokens,context_shape);});
@@ -869,11 +878,17 @@ public:
             x_ = alloc<float>(size_t(chunk_) * (n_)); h_ = alloc<float>(size_t(chunk_) * (n_)); mixer_ = alloc<float>(size_t(chunk_) * (n_));
             qkv_ = alloc<float>(size_t(chunk_) * (std::max((2 * hk_ + hv_) * 128, heads_ * 512)));
             z_ = alloc<float>(size_t(chunk_) * (hv_ * 128)); alpha_ = alloc<float>(size_t(chunk_) * (hv_)); beta_ = alloc<float>(size_t(chunk_) * (hv_));
-            conv_ = alloc<float>(size_t(chunk_) * ((2 * hk_ + hv_) * 128)); recurrent_output_ = alloc<float>(size_t(chunk_) * (hv_ * 128)); normalized_ = alloc<float>(size_t(chunk_) * (hv_ * 128));
+            // These aliases are enabled only for Clover image MTP0. Each source
+            // is dead after its consumer; aliased pointers never acquire ownership.
+            conv_ = clover_vision_workspace_aliases_ ? qkv_ : alloc<float>(size_t(chunk_) * ((2 * hk_ + hv_) * 128));
+            recurrent_output_ = alloc<float>(size_t(chunk_) * (hv_ * 128));
+            normalized_ = clover_vision_workspace_aliases_ ? recurrent_output_ : alloc<float>(size_t(chunk_) * (hv_ * 128));
             router_ = alloc<float>(size_t(chunk_) * (experts_)); expert_ids_ = alloc<int32_t>(size_t(chunk_) * (picks_)); expert_weights_ = alloc<float>(size_t(chunk_) * (picks_));
-            expert_gate_ = alloc<float>(size_t(chunk_) * (picks_ * ff_)); expert_up_ = alloc<float>(size_t(chunk_) * (picks_ * ff_)); expert_hidden_ = alloc<float>(size_t(chunk_) * (picks_ * ff_));
+            expert_gate_ = alloc<float>(size_t(chunk_) * (picks_ * ff_)); expert_up_ = alloc<float>(size_t(chunk_) * (picks_ * ff_));
+            expert_hidden_ = clover_vision_workspace_aliases_ ? expert_gate_ : alloc<float>(size_t(chunk_) * (picks_ * ff_));
             expert_down_ = alloc<float>(size_t(chunk_) * (picks_ * n_)); shared_gate_ = alloc<float>(size_t(chunk_) * (shared_ff_)); shared_up_ = alloc<float>(size_t(chunk_) * (shared_ff_));
-            shared_hidden_ = alloc<float>(size_t(chunk_) * (shared_ff_)); shared_down_ = alloc<float>(size_t(chunk_) * (n_)); shared_scalar_ = alloc<float>(size_t(chunk_) * (1));
+            shared_hidden_ = clover_vision_workspace_aliases_ ? shared_gate_ : alloc<float>(size_t(chunk_) * (shared_ff_));
+            shared_down_ = alloc<float>(size_t(chunk_) * (n_)); shared_scalar_ = alloc<float>(size_t(chunk_) * (1));
             query_ = alloc<float>(size_t(chunk_) * (heads_ * 256)); query_gate_ = alloc<float>(size_t(chunk_) * (heads_ * 256));
             key_ = alloc<float>(size_t(chunk_) * (kv_heads_ * 256)); value_ = alloc<float>(size_t(chunk_) * (kv_heads_ * 256));
             const size_t attention_rows = size_t(heads_) * (kv_int8_ ? std::min(chunk_, verify_capacity) : 1);
@@ -948,6 +963,8 @@ public:
                          mtp_depth_, vision_enabled_ ? "on" : "off", memory == WeightMemory::Host ? "host" : memory == WeightMemory::Shared ? "shared" : "device");
             print_memory("engine_ready", device);
             context_policy::report(chosen,context_limit,remaining_memory,selected_device.max_allocation);
+            if(clover_vision_workspace_aliases_)std::fprintf(stderr,"Intel clover_image_workspace_aliases=1 saved_bytes=%llu MTP=0 single_owned_allocation_per_alias=1\n",
+                (unsigned long long)(uint64_t(chunk_)*16896*sizeof(float)));
             print_moe_routes();
             if(clover_){std::printf("INFO clover_fused_t1_hint=%d\n",int(clover_fused_t1_hint_));std::fflush(stdout);}
         } catch (...) {

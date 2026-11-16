@@ -9,6 +9,9 @@ namespace strata::intel::qwen_vision {
 namespace canonical = strata::qwen35::vision;
 using Input = canonical::Input;
 constexpr uint64_t max_embedding_bytes = 256ull << 20;
+inline bool clover_workspace_aliases(bool clover,bool vision,int mtp) {
+    return clover&&vision&&mtp==0;
+}
 // Intel's validated Qwen-family geometry is 2,048-wide. Even a one-row
 // picture consumes one pad, bounding the old/new record arrays by this count.
 inline uint64_t host_metadata_reservation(uint64_t context) {

@@ -272,6 +272,37 @@ sycl::event convert_half(sycl::queue& q, const float* input, sycl::half* output,
     return q.parallel_for(sycl::range<1>(elements), [=](sycl::id<1> id) { output[id] = sycl::half(input[id]); });
 }
 #undef TINYSTRATA_INTEL_DISPATCH
+sycl::event silu_mul(sycl::queue& q,const float* gate,const float* up,float* output,size_t count) {
+    require_in_order(q);
+    if(!gate||!up||!output||!count)throw std::invalid_argument("Invalid SiLU product extent");
+    return q.parallel_for(sycl::range<1>(count),[=](sycl::id<1> i){
+        output[i]=gate[i]/(1.f+sycl::exp(-gate[i]))*up[i];
+    });
+}
+sycl::event conv_step_many(sycl::queue& q,const float* input,float* history,const float* weight,
+    float* output,int hk,int hv,int tokens,float epsilon) {
+    require_in_order(q);
+    if(!input||!history||!weight||!output||hk<1||hv<1||tokens<1||tokens>1024||!(epsilon>0))
+        throw std::invalid_argument("Invalid causal convolution extent");
+    const int channels=(2*hk+hv)*128;
+    return q.parallel_for(sycl::nd_range<1>(size_t(channels),128),[=](sycl::nd_item<1> it){
+        const size_t channel=it.get_global_linear_id();
+        for(int token=0;token<tokens;++token){
+            const float current=input[size_t(token)*channels+channel];
+            float value=history[channel*3]*weight[channel*4]+history[channel*3+1]*weight[channel*4+1]
+                +history[channel*3+2]*weight[channel*4+2]+current*weight[channel*4+3];
+            history[channel*3]=history[channel*3+1];
+            history[channel*3+1]=history[channel*3+2];
+            history[channel*3+2]=current;
+            value=value/(1.f+sycl::exp(-value));
+            if(it.get_group_linear_id()<size_t(2*hk)){
+                const float sum=sycl::reduce_over_group(it.get_group(),value*value,sycl::plus<float>());
+                value*=sycl::rsqrt(sum+epsilon);
+            }
+            output[size_t(token)*channels+channel]=value;
+        }
+    });
+}
 sycl::event rms_norm(sycl::queue& q, const float* x, const float* w, float* y,
                      int rows, int width, float epsilon) {
     require_in_order(q);
