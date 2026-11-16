@@ -565,7 +565,7 @@ class Engine {
         plan.tile_width = interleaved_experts ? (tokens == 1 ? 1 : 4) : prefill_dp ? 4 : small_dp ? (verify_xmx_ ? 4 : 2) : prefill_xmx_ && tokens >= 64 ? 8 : 4;
         bool route_packed_q8 = false;
         if (grouped) {
-            const auto expert_plan = plan_experts(q_, ids, plan);
+            auto expert_plan = plan_experts(q_, ids, plan);
             remember("expert_plan", expert_plan);
 #ifdef TINYSTRATA_INTEL_MKL
         if (moe_route_observe_ && !recording_ && !verifying_ && prefix != "blk.40." && gemm_ && dp4a_ &&
