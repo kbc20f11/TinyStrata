@@ -111,7 +111,7 @@ inline Footprint lfm(uint64_t c,const LfmSpec& s={}){
     p.host(16ull<<20);return p;
 }
 struct QwenSpec {
-    uint64_t chunk=128,vocabulary=248320,draft_vocabulary=0,verify_capacity=8;
+    uint64_t chunk=128,vocabulary=248320,draft_vocabulary=0,verify_capacity=8,npu_requests=1;
     bool int8=false,mtp=false,mkl=false,dp4a=false,dense_split=false,support=false;
     bool device_state=false,turn_checkpoint=true,graph=true,verify_graph=false,npu=false,npu_split=false,npu_pair=false;
 };
@@ -159,7 +159,13 @@ inline Footprint qwen(uint64_t c,const QwenSpec& s={}){
     // margins, distinct from exact USM arrays and the one4GiB OS headroom.
     if(s.graph)p.device=add(p.device,64ull<<20);
     if(s.verify_graph)p.device=add(p.device,128ull<<20);
-    if(s.npu||s.npu_split){p.allocation(8192*2048,2,true);p.allocation(1024*8192,2,true);p.allocation(1024*8192,4,true);p.host(96ull<<20);}
+    if(s.npu||s.npu_split){
+        if(s.npu_requests<1||s.npu_requests>2)throw std::invalid_argument("Intel NPU request slots must be 1 or 2");
+        // One shared weight scratch/cache, independently owned request input
+        // and output banks, and an opaque runtime margin per admitted slot.
+        p.allocation(8192*2048,2,true);p.allocation(1024*8192,2,true,s.npu_requests);
+        p.allocation(1024*8192,4,true,s.npu_requests);p.host(mul(96ull<<20,s.npu_requests));
+    }
     if(s.npu_split)p.allocation(64ull*1024*1024,2,true);
     return p;
 }

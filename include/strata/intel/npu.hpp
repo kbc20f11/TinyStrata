@@ -26,11 +26,13 @@ struct NpuSplitTiming {
 struct NpuSplitCounters {
     size_t eligible = 0, served = 0, cache_hits = 0;
     size_t cache_capacity_skips = 0, graph_capacity_skips = 0;
+    size_t max_pending_requests = 0;
 };
 struct NpuMemoryUsage {
     size_t host_usm_bytes = 0, device_usm_bytes = 0;
     size_t fp16_cache_capacity_bytes = 0, fp16_cache_used_bytes = 0;
     size_t compiled_graphs = 0, tensor_bindings = 0;
+    size_t request_slots = 1, infer_requests = 0;
     // Driver/compiler allocations are opaque, not measured as zero.
     size_t opaque_runtime_reservation_bytes = 96ull << 20;
 };
@@ -42,7 +44,7 @@ class NpuProjection {
     struct Impl;
     std::unique_ptr<Impl> impl_;
 public:
-    explicit NpuProjection(sycl::queue& queue);
+    explicit NpuProjection(sycl::queue& queue, unsigned request_slots = 1);
     ~NpuProjection();
     sycl::event run(int type, const uint8_t* weights, const float* input, float* output,
                     int rows, int width, int tokens);
@@ -53,16 +55,20 @@ public:
     bool run_split(PrefillGemm& gpu, int type, const uint8_t* weights, const float* input,
                    float* output, int rows, int width, int tokens, int npu_rows,
                    const NpuSplitOptions& options, sycl::event& completion);
-    // Exactly one pending request. GPUcompletion covers only the GPU suffix;
-    // the caller must join before consuming the NPU prefix or changing input.
+    // Convert both bank inputs before starting their GPU suffixes. This keeps
+    // a later bank's readiness wait from draining earlier useful GPU work.
+    sycl::event prepare_split_input(unsigned bank, const float* input, int width, int tokens);
+    // One pending request per admitted slot. GPUcompletion covers only the
+    // GPU suffix; join the same bank before consuming its NPU prefix.
     bool begin_split(PrefillGemm& gpu, int type, const uint8_t* weights, const float* input,
                      float* output, int rows, int width, int tokens, int npu_rows,
-                     const NpuSplitOptions& options, sycl::event& GPUcompletion);
-    sycl::event finish_split();
-    bool split_pending() const noexcept;
+                     const NpuSplitOptions& options, sycl::event& GPUcompletion, unsigned bank = 0);
+    sycl::event finish_split(unsigned bank = 0);
+    bool split_pending(unsigned bank = 0) const noexcept;
+    unsigned pending_split_count() const noexcept;
     // Does not synchronize. Query immediately after completion.wait() in a
     // profiling micro; normal callers need not collect device stage timings.
-    NpuSplitTiming last_split_timing() const;
+    NpuSplitTiming last_split_timing(unsigned bank = 0) const;
     NpuSplitCounters split_counters() const;
 #endif
     NpuMemoryUsage memory_usage() const;

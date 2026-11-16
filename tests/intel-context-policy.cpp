@@ -88,6 +88,21 @@ int main(){try{
         check(cp::fits(exact,16*GiB,before));check(!cp::fits(exact,16*GiB,after));
         exact.wddm_available=after.device;check(cp::fits(exact,16*GiB,after));
     }
+    // Two NPU requests share the same compiled shapes/resident weight cache.
+    // Only a second48MiB host-USM input/output bank plus96MiB opaque runtime
+    // margin is added; ordinary runtime allocations never count as zero.
+    for(bool device_state:{false,true}){
+        auto one=q;one.device_state=device_state;one.npu=true;one.npu_split=true;one.npu_pair=true;
+        auto two=one;two.npu_requests=2;
+        const auto a=cp::qwen(32768,one),b=cp::qwen(32768,two);
+        check(b.device-a.device==(48ull<<20));check(b.host_visible-a.host_visible==(48ull<<20));
+        check(b.host_only-a.host_only==(96ull<<20));check(b.uma_total()-a.uma_total()==(144ull<<20));
+        check(b.cache==a.cache&&b.owned_device==a.owned_device&&b.owned_host_visible==a.owned_host_visible);
+        MemoryBudget exact{4*GiB+b.uma_total(),4*GiB+b.uma_total(),uma_wddm_headroom+b.device,true,true};
+        check(cp::fits(exact,16*GiB,b));--exact.available_commit;
+        check(!cp::fits(exact,16*GiB,b));check(cp::fits(exact,16*GiB,a));
+    }
+    for(uint64_t slots:{uint64_t{0},uint64_t{3}})rejected([&]{auto s=q;s.npu=true;s.npu_requests=slots;cp::qwen(32768,s);});
     // A remaining10GiB RAM/commit snapshot means6GiB after the existing OS
     // floor, once. All full model limits fit this synthetic UMA budget.
     MemoryBudget uma{10*GiB,10*GiB,12*GiB,true,true};
