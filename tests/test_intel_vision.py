@@ -11,6 +11,14 @@ from serve.intel_vision import prepare_encoder
 
 
 class IntelVisionStartup(unittest.TestCase):
+    def test_public_features_require_both_encoder_and_native_image_readiness(self):
+        from serve.server import intel_feature_fields
+        for encoder, native, expected in ((True, 1, True), (False, 1, False), (True, 0, False), (True, None, False)):
+            svc = SimpleNamespace(backend="sycl", model="qwen3.6-35b-a3b",
+                                  engine=SimpleNamespace(info={"vision": native}),
+                                  vision_available=lambda: encoder)
+            self.assertEqual(intel_feature_fields(svc)["features"]["images"], expected)
+
     def config(self):
         return {"backend": "sycl", "arch": "qwen35moe", "model_name": "qwen3.6-35b-a3b",
                 "exe": "native.exe", "vision_mode": "gpu", "gpu": 1,

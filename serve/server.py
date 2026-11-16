@@ -7461,7 +7461,8 @@ def intel_feature_fields(svc) -> dict:
     from serve.intel_backend import canonical_model
     model = canonical_model({"model_name": svc.model,
                              "arch": getattr(svc.engine, "_tinystrata_arch", None) or "qwen35moe"})
-    return {"features": runtime_features(model)}
+    images = svc.vision_available() and getattr(svc.engine, "info", {}).get("vision") == 1
+    return {"features": runtime_features(model, images=images)}
 
 
 def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
