@@ -25,6 +25,12 @@ static void record(std::ofstream& f,int rows,int nx,int ny,int width,float first
     for(int i=0;i<rows*width;++i){const float x=first+float(i)/16;f.write(reinterpret_cast<const char*>(&x),4);}
 }
 int main() try {
+    check(v::admit_metadata(2048,64,true,248320,77,88)==77);
+    check(v::admit_metadata(2048,64,true,248320,-1,88)==88);
+    for(int invalid=0;invalid<7;++invalid){bool refused=false;
+        try{(void)v::admit_metadata(invalid==0?1024:2048,invalid==1?32:64,invalid!=2,248320,
+            invalid<3?77:-1,invalid==3?-1:invalid==4?248320:invalid==5?1.5:std::numeric_limits<double>::quiet_NaN());}
+        catch(const std::runtime_error&){refused=true;}check(refused);}
     Temp temp;const auto file=temp.path/std::filesystem::path(std::u8string(u8"image \u753b\u50cf.sve"));
     constexpr int pad=77,width=8,context=20;
     const std::vector<int> ids={10,pad,pad,pad,pad,11,12,pad,pad,13};

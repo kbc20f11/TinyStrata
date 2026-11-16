@@ -1,6 +1,7 @@
 #include "strata/intel/weight_store.hpp"
 #include "strata/intel/q6_interleave.hpp"
 #include "strata/intel/clover_causal.hpp"
+#include "strata/intel/qwen_vision.hpp"
 #include "strata/common/utf8_path.hpp"
 #include "strata/core/family_layout.hpp"
 #include <windows.h>
@@ -101,18 +102,18 @@ WeightStore::~WeightStore() {
         catch (const std::exception& error) { std::fprintf(stderr, "Intel weight release failed: %s\n", error.what()); }
     }
 }
-std::unique_ptr<WeightStore> WeightStore::load(sycl::queue queue, const std::string& gguf, WeightMemory kind, bool interleave_output, bool interleave_experts, bool interleave_dense, bool interleave_split_output, bool allow_experimental_tiel, bool allow_experimental_clover) {
+std::unique_ptr<WeightStore> WeightStore::load(sycl::queue queue, const std::string& gguf, WeightMemory kind, bool interleave_output, bool interleave_experts, bool interleave_dense, bool interleave_split_output, bool allow_experimental_tiel, bool allow_experimental_clover, bool vision) {
     return load_impl(std::move(queue), gguf, kind, interleave_output, interleave_experts,
-        interleave_dense, interleave_split_output, allow_experimental_tiel, allow_experimental_clover, {});
+        interleave_dense, interleave_split_output, allow_experimental_tiel, allow_experimental_clover, vision, {});
 }
 std::unique_ptr<WeightStore> WeightStore::load_validated(sycl::queue queue, const std::string& gguf,
     WeightMemory kind, const std::function<void(const strata::GgufModel&)>& admission) {
     if (!admission) throw std::invalid_argument("A family-specific weight admission is required");
-    return load_impl(std::move(queue), gguf, kind, false, false, false, false, false, false, admission);
+    return load_impl(std::move(queue), gguf, kind, false, false, false, false, false, false, false, admission);
 }
 std::unique_ptr<WeightStore> WeightStore::load_impl(sycl::queue queue, const std::string& gguf, WeightMemory kind,
     bool interleave_output, bool interleave_experts, bool interleave_dense, bool interleave_split_output,
-    bool allow_experimental_tiel, bool allow_experimental_clover,
+    bool allow_experimental_tiel, bool allow_experimental_clover, bool vision,
     const std::function<void(const strata::GgufModel&)>& admission) {
     if (!queue.has_property<sycl::property::queue::in_order>()) throw std::invalid_argument("Weight loading requires an in-order queue");
     const auto device = inspect_device(queue.get_device());
@@ -153,6 +154,27 @@ std::unique_ptr<WeightStore> WeightStore::load_impl(sycl::queue queue, const std
         if (!strata::core::geometry_from_gguf(model.meta(), store->geometry_, top_k, layout_error) ||
             !strata::core::check_gguf_layout(model, store->geometry_, layout_error))
             throw std::runtime_error("Qwen GGUF layout: " + layout_error);
+        if (vision) {
+            const std::string prefix = clover ? "clover_moe." : "qwen35moe.";
+            const auto number = [&](const std::string& key, double fallback) {
+                const auto* value = model.meta().get(prefix + key);
+                return value && value->is_num() ? value->num() : fallback;
+            };
+            const auto* sections = model.meta().get(prefix + "rope.dimension_sections");
+            // Clover's published vision interface restores Qwen's original
+            // interleaved positions even though its text export is one-dimensional.
+            bool image_rope = clover;
+            if (!clover && sections && sections->type == strata::MetaType::ARRAY && sections->items.size() >= 3) {
+                image_rope = true;
+                for (size_t i = 0; i < sections->items.size(); ++i) {
+                    const int expected = i < 2 ? 11 : i == 2 ? 10 : 0;
+                    image_rope = image_rope && sections->items[i].is_num() && sections->items[i].num() == expected;
+                }
+            }
+            store->image_pad_ = qwen_vision::admit_metadata(int(store->geometry_.n_embd),
+                number("rope.dimension_count",64),image_rope,int(store->geometry_.n_vocab),
+                model.meta().token_id("<|image_pad|>"),number("ple.image_token_id",-1));
+        }
         if (clover) {
             LARGE_INTEGER size;
             if (model.size() != 1 || !GetFileSizeEx(files[0]->handle, &size) || size.QuadPart != 15515157952LL)

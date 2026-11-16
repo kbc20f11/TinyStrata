@@ -21,7 +21,8 @@ class WeightStore {
 public:
     static std::unique_ptr<WeightStore> load(sycl::queue queue, const std::string& gguf,
                                             WeightMemory kind = WeightMemory::Host, bool interleave_output = false, bool interleave_experts = false, bool interleave_dense = false, bool interleave_split_output = false,
-                                            bool allow_experimental_tiel = false, bool allow_experimental_clover = false);
+                                            bool allow_experimental_tiel = false, bool allow_experimental_clover = false,
+                                            bool vision = false);
     // Family-specific admission runs over metadata and the complete tensor
     // directory before allocating an arena. This entry does not apply Qwen's
     // recurrent geometry/layout rules to an unrelated architecture. geometry()
@@ -34,17 +35,19 @@ public:
     const std::map<std::string, strata::MetaValue>& metadata() const { return metadata_; }
     uint64_t allocated_bytes() const { return bytes_; }
     uint64_t upload_bytes() const { return upload_bytes_; }
+    int image_pad() const { return image_pad_; }
     const strata::core::ModelGeometry& geometry() const { return geometry_; }
 private:
     static std::unique_ptr<WeightStore> load_impl(sycl::queue queue, const std::string& gguf,
         WeightMemory kind, bool interleave_output, bool interleave_experts, bool interleave_dense,
-        bool interleave_split_output, bool allow_experimental_tiel, bool allow_experimental_clover,
+        bool interleave_split_output, bool allow_experimental_tiel, bool allow_experimental_clover, bool vision,
         const std::function<void(const strata::GgufModel&)>& admission);
     explicit WeightStore(sycl::queue queue) : queue_(std::move(queue)) {}
     sycl::queue queue_;
     uint8_t* arena_ = nullptr;
     uint64_t bytes_ = 0;
     uint64_t upload_bytes_ = 0;
+    int image_pad_ = -1;
     strata::core::ModelGeometry geometry_;
     std::map<std::string, ResidentTensor> tensors_;
     std::map<std::string, strata::MetaValue> metadata_;

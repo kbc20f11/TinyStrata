@@ -844,25 +844,11 @@ public:
             if (n_rot_ <= 0 || n_rot_ > 256 || n_rot_ % 2 || !(epsilon_ > 0) || !(rope_base_ > 0))
                 throw std::runtime_error("Invalid Qwen normalization/rotary settings");
             if (vision_enabled_) {
-                // Read the real tokenizer identity, including Tiel's special
-                // IDs. Metadata/token lookup does not retain another arena.
-                strata::GgufFile metadata(path);
-                const auto actual_pad = metadata.token_id("<|image_pad|>");
-                const double declared_pad = metadata_number("ple.image_token_id", -1);
-                if (actual_pad >= 0 && actual_pad < g.n_vocab) image_pad_ = int(actual_pad);
-                else if (std::isfinite(declared_pad) && declared_pad >= 0 && declared_pad < g.n_vocab &&
-                         declared_pad == std::floor(declared_pad)) image_pad_ = int(declared_pad);
-                const std::string family = clover_ ? "clover_moe." : "qwen35moe.";
-                const auto sections = weights_->metadata().find(family + "rope.dimension_sections");
-                bool image_rope = clover_; // published Clover vision uses Qwen's original input interface
-                if (!clover_ && sections != weights_->metadata().end()) {
-                    const auto& value = sections->second;
-                    image_rope = value.type == strata::MetaType::ARRAY && value.items.size() >= 3 &&
-                        value.items[0].u == 11 && value.items[1].u == 11 && value.items[2].u == 10;
-                    for (size_t i = 3; i < value.items.size(); ++i) image_rope = image_rope && value.items[i].u == 0;
-                }
-                if (n_rot_ != 64 || !image_rope || image_pad_ < 0 || image_pad_ >= g.n_vocab)
-                    throw std::runtime_error("Intel vision requires 2048-wide Qwen image input, a real image-pad token and 11/11/10 M-RoPE");
+                // WeightStore admitted the image metadata before allocating
+                // its one arena, using the already open tokenizer mapping.
+                image_pad_ = weights_->image_pad();
+                if (n_rot_ != 64 || image_pad_ < 0 || image_pad_ >= g.n_vocab)
+                    throw std::logic_error("Intel image weight admission differs from engine geometry");
             }
             const uint64_t attention_layers = uint64_t(g.n_layers / g.full_attention_interval);
             const uint64_t recurrent_layers = uint64_t(g.n_layers) - attention_layers;

@@ -14,6 +14,18 @@ constexpr uint64_t max_embedding_bytes = 256ull << 20;
 inline uint64_t host_metadata_reservation(uint64_t context) {
     return 2 * std::min(context, max_embedding_bytes / sizeof(float) / 2048) * sizeof(canonical::Image);
 }
+// Admit vision before the compressed weight arena is allocated. The actual
+// tokenizer spelling takes precedence over a declared PLE token identity.
+inline int admit_metadata(int width, double rotation, bool image_rope, int vocabulary,
+                          int64_t actual_pad, double declared_pad = -1) {
+    int pad = -1;
+    if (actual_pad >= 0 && actual_pad < vocabulary) pad = int(actual_pad);
+    else if (std::isfinite(declared_pad) && declared_pad >= 0 && declared_pad < vocabulary &&
+             declared_pad == std::floor(declared_pad)) pad = int(declared_pad);
+    if (width != 2048 || rotation != 64 || !image_rope || pad < 0)
+        throw std::runtime_error("Intel vision requires 2048-wide Qwen image input, a real image-pad token and 11/11/10 M-RoPE");
+    return pad;
+}
 
 // Validate the total size before the shared SVE1 reader allocates any rows.
 // Old and incoming inputs must coexist until exact image-prefix comparison.
