@@ -84,9 +84,11 @@ int main(){try{
         check(after.host_only==before.host_only&&after.cache==before.cache);
         check(after.uma_total()-before.uma_total()==floats+controls);
         if(chunk==1024){check(floats==67371008);check(controls==8192);}
-        MemoryBudget exact{10*GiB,10*GiB,before.device,true,true};
+        MemoryBudget exact{10*GiB,10*GiB,uma_wddm_headroom+before.device,true,true};
+        check(wddm_allocation_budget(exact)==before.device);
         check(cp::fits(exact,16*GiB,before));check(!cp::fits(exact,16*GiB,after));
-        exact.wddm_available=after.device;check(cp::fits(exact,16*GiB,after));
+        exact.wddm_available=uma_wddm_headroom+after.device;
+        check(wddm_allocation_budget(exact)==after.device);check(cp::fits(exact,16*GiB,after));
     }
     // Two NPU requests share the same compiled shapes/resident weight cache.
     // Only a second48MiB host-USM input/output bank plus96MiB opaque runtime
