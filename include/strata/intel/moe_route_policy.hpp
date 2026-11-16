@@ -14,6 +14,35 @@ inline bool enabled(const char* setting, const char* name = "STRATA_REVIEW_INTEL
     throw std::invalid_argument(std::string(name) + " requires 0 or 1");
 }
 inline bool measured_tokens(int tokens) { return tokens == 512 || tokens == 1024; }
+enum class Mode { Off, Auto512, Research };
+struct Recipe {
+    bool qwen = false, interleaved = false, mkl = false, dp4a = false, int8_xmx = false;
+};
+struct Device {
+    uint32_t vendor = 0, id = 0;
+    bool integrated = false, ptl_h_aot = false;
+};
+inline bool supported(const Recipe& r) { return r.qwen && r.interleaved && r.mkl && r.dp4a && r.int8_xmx; }
+inline bool measured_device(const Device& d) { return d.vendor == 0x8086 && d.id == 0xB082 && d.integrated && d.ptl_h_aot; }
+struct Policy {
+    Mode mode = Mode::Off;
+    bool stats = false;
+    bool adaptive() const { return mode != Mode::Off; }
+    bool observing() const { return adaptive() || stats; }
+    bool observe_tokens(int tokens) const {
+        if (!measured_tokens(tokens)) return false;
+        return tokens == 512 ? observing() : (mode == Mode::Research || stats);
+    }
+};
+inline Policy configure(const char* mode, const char* stats, const Recipe& recipe, const Device& device) {
+    Policy result;
+    result.stats = enabled(stats,"STRATA_REVIEW_INTEL_MOE_ROUTE_STATS");
+    if (mode) result.mode = enabled(mode) ? Mode::Research : Mode::Off;
+    else if (supported(recipe) && measured_device(device)) result.mode = Mode::Auto512;
+    if (result.observing() && !supported(recipe))
+        throw std::invalid_argument("Adaptive MoE route experiment requires Qwen interleaved experts, MKL, DP4A and INT8 XMX prefill");
+    return result;
+}
 // The measured Qwen IQ2_S gate/up and IQ3_S down projections only. No change
 // to the selected experts, slot order, router weights, or short-window paths.
 inline bool measured_projection(int type, int rows, int width, bool separate,
@@ -57,5 +86,8 @@ inline bool prefer_packed_q8(const Route& route) {
     if (route.tokens == 1024)
         return route.active >= 240 && route.peak <= route.tokens / 16;
     return false;
+}
+inline bool select_packed_q8(const Policy& policy, const Route& route) {
+    return (policy.mode == Mode::Research || (policy.mode == Mode::Auto512 && route.tokens == 512)) && prefer_packed_q8(route);
 }
 } // namespace strata::intel::moe_route_policy

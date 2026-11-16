@@ -82,5 +82,43 @@ int main() { try {
     check(!p::prefer_packed_q8({512,256,16,0,0}));
     check(!p::prefer_packed_q8({512,256,513,4096,0}));
     check(!p::prefer_packed_q8({1024,256,32,8192,8193}));
+    const p::Recipe full{true,true,true,true,true};
+    const p::Device b390{0x8086,0xB082,true,true};
+    auto counts512 = uniform(512,256), counts1024 = uniform(1024,256);
+    const auto route512 = p::analyze(counts512.data(),256,512,8);
+    const auto route1024 = p::analyze(counts1024.data(),256,1024,8);
+    const auto automatic = p::configure(nullptr,nullptr,full,b390);
+    check(automatic.mode == p::Mode::Auto512 && automatic.adaptive());
+    check(automatic.observe_tokens(512) && !automatic.observe_tokens(1024));
+    check(p::select_packed_q8(automatic,route512) && !p::select_packed_q8(automatic,route1024));
+    for (int tokens : {1,8,128,511,513,760,1008,1023,1025}) check(!automatic.observe_tokens(tokens));
+    const auto research = p::configure("1","0",full,b390);
+    check(research.mode == p::Mode::Research && research.observe_tokens(512) && research.observe_tokens(1024));
+    check(p::select_packed_q8(research,route512) && p::select_packed_q8(research,route1024));
+    const auto off = p::configure("0",nullptr,full,b390);
+    check(!off.adaptive() && !off.observing() && !off.observe_tokens(512) && !off.observe_tokens(1024));
+    const auto observe = p::configure("0","1",full,b390);
+    check(!observe.adaptive() && observe.observe_tokens(512) && observe.observe_tokens(1024));
+    check(!p::select_packed_q8(observe,route512) && !p::select_packed_q8(observe,route1024));
+    const auto auto_stats = p::configure(nullptr,"1",full,b390);
+    check(auto_stats.mode == p::Mode::Auto512 && auto_stats.observe_tokens(1024));
+    check(!p::select_packed_q8(auto_stats,route1024) && p::select_packed_q8(auto_stats,route512));
+    for (int missing = 0; missing < 5; ++missing) {
+        auto recipe = full;
+        const std::array<bool*,5> fields{&recipe.qwen,&recipe.interleaved,&recipe.mkl,&recipe.dp4a,&recipe.int8_xmx};
+        *fields[missing] = false;
+        const auto fallback = p::configure(nullptr,nullptr,recipe,b390);
+        check(fallback.mode == p::Mode::Off && !fallback.observing());
+        rejects([&] { p::configure("1",nullptr,recipe,b390); });
+        rejects([&] { p::configure("0","1",recipe,b390); });
+    }
+    for (const auto device : {p::Device{},p::Device{0x8086,0xB082,true,false},p::Device{0x8086,0xB082,false,true},p::Device{0x8086,0x1234,true,true},p::Device{0x1002,0xB082,true,true}}) {
+        check(p::configure(nullptr,nullptr,full,device).mode == p::Mode::Off);
+        check(p::configure("1",nullptr,full,device).mode == p::Mode::Research);
+    }
+    for (const char* value : {"", "2", "true", "01", " 1", "1\n"}) {
+        rejects([&] { p::configure(value,nullptr,full,b390); });
+        rejects([&] { p::configure(nullptr,value,full,b390); });
+    }
     std::printf("MoE route policy PASS checks=%d\n",checks);return 0;
 } catch (const std::exception& e) { std::fprintf(stderr,"%s\n",e.what());return 1; } }

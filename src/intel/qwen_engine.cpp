@@ -96,7 +96,7 @@ class Engine {
     bool graph_enabled_ = true;
     bool recording_ = false, profiling_ = false, prefill_xmx_ = false, verify_xmx_ = false, prefill_int8_xmx_ = false;
     bool verify_mkl_attention_ = false, dense_split_k_ = false;
-    bool moe_route_adaptive_ = false, moe_route_observe_ = false;
+    moe_route_policy::Policy moe_route_policy_;
     uint64_t moe_route_observed_ = 0, moe_route_eligible_ = 0, moe_route_q8_projections_ = 0;
     uint64_t moe_route_observed_512_ = 0, moe_route_eligible_512_ = 0;
     int moe_route_active_min_ = 256, moe_route_active_max_ = 0, moe_route_peak_max_ = 0;
@@ -473,10 +473,10 @@ class Engine {
         plan.tile_width = interleaved_experts ? (tokens == 1 ? 1 : 4) : prefill_dp ? 4 : small_dp ? (verify_xmx_ ? 4 : 2) : prefill_xmx_ && tokens >= 64 ? 8 : 4;
         bool route_packed_q8 = false;
         if (grouped) {
-            const auto expert_plan = plan_experts(q_, ids, plan);
+            auto expert_plan = plan_experts(q_, ids, plan);
             remember("expert_plan", expert_plan);
 #ifdef TINYSTRATA_INTEL_MKL
-        if (moe_route_observe_ && !recording_ && !verifying_ && prefix != "blk.40." && gemm_ && dp4a_ &&
+        if (moe_route_policy_.observe_tokens(tokens) && !recording_ && !verifying_ && prefix != "blk.40." && gemm_ && dp4a_ &&
             moe_route_policy::measured_projection(int(gate.info.type),ff,n,false,interleaved_experts,tokens,experts,picks) &&
             moe_route_policy::measured_projection(int(up.info.type),ff,n,false,interleaved_experts,tokens,experts,picks) &&
             moe_route_policy::measured_projection(int(down.info.type),n,ff,true,interleaved_experts,tokens,experts,picks)) {
@@ -492,7 +492,7 @@ class Engine {
             moe_route_active_max_ = std::max(moe_route_active_max_,route.active);
             moe_route_peak_max_ = std::max(moe_route_peak_max_,route.peak);
             moe_route_hot_slots_max_ = std::max(moe_route_hot_slots_max_,route.hot_slots);
-            route_packed_q8 = moe_route_adaptive_ && eligible;
+            route_packed_q8 = moe_route_policy::select_packed_q8(moe_route_policy_,route);
         }
 #endif
         }
@@ -755,13 +755,22 @@ public:
         verify_graph_enabled_ = verify_graph;
         if (device_state_) std::fprintf(stderr, "Intel state_memory=device cpu_control_and_logits=shared\n");
         prefill_int8_xmx_ = prefill_int8_xmx;
-        moe_route_adaptive_ = moe_route_policy::enabled(std::getenv("STRATA_REVIEW_INTEL_MOE_ROUTE"));
-        moe_route_observe_ = moe_route_policy::enabled(std::getenv("STRATA_REVIEW_INTEL_MOE_ROUTE_STATS"),"STRATA_REVIEW_INTEL_MOE_ROUTE_STATS") || moe_route_adaptive_;
-        if (moe_route_observe_ && (experimental_tiel || experimental_clover || !expert_layout || !prefill_mkl || !decode_dp4a || !prefill_int8_xmx))
-            throw std::runtime_error("Adaptive MoE route experiment requires Qwen interleaved experts, MKL, DP4A and INT8 XMX prefill");
-#if !defined(TINYSTRATA_INTEL_MKL) || !defined(TINYSTRATA_INTEL_INT8_XMX)
-        if (moe_route_observe_) throw std::runtime_error("Adaptive MoE route experiment requires MKL and INT8 XMX build support");
+        moe_route_policy::Recipe moe_recipe;
+        moe_recipe.qwen = !experimental_tiel && !experimental_clover;
+        moe_recipe.interleaved = expert_layout; moe_recipe.dp4a = decode_dp4a;
+#ifdef TINYSTRATA_INTEL_MKL
+        moe_recipe.mkl = prefill_mkl;
 #endif
+#ifdef TINYSTRATA_INTEL_INT8_XMX
+        moe_recipe.int8_xmx = prefill_int8_xmx;
+#endif
+        bool moe_ptl_h_aot = false;
+#ifdef TINYSTRATA_INTEL_AOT_TARGET
+        moe_ptl_h_aot = std::string(TINYSTRATA_INTEL_AOT_TARGET) == "intel_gpu_ptl_h" && selected_device.ptl_h_aot;
+#endif
+        moe_route_policy_ = moe_route_policy::configure(std::getenv("STRATA_REVIEW_INTEL_MOE_ROUTE"),
+            std::getenv("STRATA_REVIEW_INTEL_MOE_ROUTE_STATS"),moe_recipe,
+            {selected_device.vendor_id,selected_device.device_id,selected_device.integrated,moe_ptl_h_aot});
         mtp_depth_ = mtp_depth;
         bool measured_clover_runtime = false;
 #ifdef TINYSTRATA_INTEL_AOT_TARGET
@@ -992,8 +1001,9 @@ public:
     }
     int vocabulary() const { return int(weights_->geometry().n_vocab); }
     void print_moe_routes() const {
-        std::printf("INFO moe_route_adaptive=%d\nINFO moe_route_observe=%d\n",int(moe_route_adaptive_),int(moe_route_observe_));
-        if (moe_route_observe_) std::printf(
+        std::printf("INFO moe_route_adaptive=%d\nINFO moe_route_observe=%d\nINFO moe_route_auto512=%d\n",
+            int(moe_route_policy_.adaptive()),int(moe_route_policy_.observing()),int(moe_route_policy_.mode == moe_route_policy::Mode::Auto512));
+        if (moe_route_policy_.observing()) std::printf(
             "INFO moe_route_observed=%llu\nINFO moe_route_eligible=%llu\nINFO moe_route_q8_projections=%llu\n"
             "INFO moe_route_observed_512=%llu\nINFO moe_route_eligible_512=%llu\n"
             "INFO moe_route_active_min=%d\nINFO moe_route_active_max=%d\nINFO moe_route_peak_max=%d\nINFO moe_route_hot_slots_max=%u\n",
