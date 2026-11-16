@@ -20,7 +20,7 @@ function Check([bool]$Ok,[string]$Message){if(-not $Ok){throw $Message};$script:
 function Reject([scriptblock]$Action){$failed=$false;try{& $Action}catch{$failed=$true};Check $failed 'Expected a fail-closed preparation/publish refusal'}
 $fixture=[IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) ('intel-ui-runtime-cpu-'+[Guid]::NewGuid().ToString('N'))))
 $originalToken=[Environment]::GetEnvironmentVariable('TINYSTRATA_INSTALLER_TRANSACTION','Process')
-$script:failModel='';$script:configureFail='';$script:receiveFail='';$script:downloads=@();$script:probes=@()
+$script:failModel='';$script:configureFail='';$script:receiveFail='';$script:downloads=@();$script:probes=@();$script:imageProbes=@();$script:imageCapFail=$false
 function Receive-TinyStrataIntelRuntime {
     param($CatalogPath,$CacheRoot,$Profile,$Model,$AotTarget)
     $script:downloads+=@($Model)
@@ -29,22 +29,30 @@ function Receive-TinyStrataIntelRuntime {
     return [pscustomobject]@{Artifact=$artifact;StageDirectory=$script:stages[$artifact.manifest_sha256]}
 }
 function Assert-TinyStrataIntelCapabilities {
-    param($Python,$SourceRoot,$Executable,$DllDirectories,$ExpectedSha256,$Profile,$Model,$AllowLegacy,$CatalogPath,$ExpectedAotTarget)
+    param($Python,$SourceRoot,$Executable,$DllDirectories,$ExpectedSha256,$Profile,$Model,$AllowLegacy,$CatalogPath,$ExpectedAotTarget,$RequireImages)
     $script:probes+=@($Model)
     Check (-not $AllowLegacy -and (Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash -eq $ExpectedSha256) 'Only hash-bound new metadata reaches the model probe fixture'
     if($Model -eq $script:failModel){throw 'CPU native-contract rejection'}
+    if($RequireImages){$script:imageProbes+=@($Model);if($script:imageCapFail){throw 'CPU image-contract rejection'}}
 }
 function Invoke-IntelUiFixturePython {
     $config=[string]$args[[Array]::IndexOf($args,'--config')+1]
     $family=Get-TinyStrataModelFamily $args[[Array]::IndexOf($args,'--model-family')+1] -Backend sycl
-    Check ($args -contains '--configure-only' -and $args -notcontains '--model' -and $args -notcontains '--vision-exe') 'Preparation never generates or downloads a model/assistant/projector'
+    Check ($args -contains '--configure-only' -and $args -notcontains '--model') 'Preparation never generates or downloads a model/assistant/projector'
     $guardPath=Join-Path (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $config))) '.tinystrata-installing.json'
     $expectedGuard=if(Test-Path -LiteralPath $guardPath){(Get-Content -LiteralPath $guardPath -Raw|ConvertFrom-Json).token}else{'fixture-guard'}
     Check ([Environment]::GetEnvironmentVariable('TINYSTRATA_INSTALLER_TRANSACTION','Process') -ceq $expectedGuard) 'Preparation receives only its existing guard token'
     if($family.Model -eq $script:configureFail){$global:LASTEXITCODE=1;return}
     $cfg=if(Test-Path -LiteralPath $config){Get-TinyStrataConfig $config}else{[pscustomobject]@{args=@('--max-context','auto','--kv-type','auto','--chunk','auto');model_bootstrap=$true}}
     $exe=[string]$args[[Array]::IndexOf($args,'--exe')+1]
-    foreach($entry in @{backend='sycl';model_name=$family.Model;arch=$family.Arch;intel_profile=[string]$args[[Array]::IndexOf($args,'--intel-profile')+1];vision_mode='no';exe=$exe;lib_dirs=@((Split-Path -Parent $exe))}.GetEnumerator()){$cfg|Add-Member -NotePropertyName $entry.Key -NotePropertyValue $entry.Value -Force}
+    $mode=[string]$args[[Array]::IndexOf($args,'--vision')+1]
+    Check ($mode -in @('gpu','no') -and ($family.Arch -ne 'lfm2moe' -or $mode -eq 'no')) 'Every Intel prepare has a bounded explicit mode and LFM remains text only'
+    if($mode -eq 'gpu'){
+        $imageExe=[string]$args[[Array]::IndexOf($args,'--vision-exe')+1]
+        Check ($imageExe -eq (Join-Path (Split-Path -Parent $exe) 'tinystrata-vision.exe') -and (Test-Path -LiteralPath $imageExe -PathType Leaf)) 'Images use only the selected verified app-local encoder'
+        $cfg|Add-Member -NotePropertyName vision_exe -NotePropertyValue $imageExe -Force
+    }else{Check ($args -notcontains '--vision-exe') 'Text-only Intel preparation does not attach an image encoder'}
+    foreach($entry in @{backend='sycl';model_name=$family.Model;arch=$family.Arch;intel_profile=[string]$args[[Array]::IndexOf($args,'--intel-profile')+1];vision_mode=$mode;exe=$exe;lib_dirs=@((Split-Path -Parent $exe))}.GetEnumerator()){$cfg|Add-Member -NotePropertyName $entry.Key -NotePropertyValue $entry.Value -Force}
     [IO.File]::WriteAllText($config,($cfg|ConvertTo-Json -Depth 12))
     $global:LASTEXITCODE=0
 }
@@ -69,6 +77,9 @@ try {
     foreach($name in @('qwen36','gemma4','lfm2')){
         $stage=Join-Path $fixture ('stage-'+$name);$manifest=New-IntelFixtureStage $stage
         Write-IntelFixture $stage 'tinystrata-intel.exe' ('CPU non-executable fixture '+$name)
+        Write-IntelFixture $stage 'tinystrata-vision.exe' ('CPU non-executable image fixture '+$name)
+        $image=Get-Item -LiteralPath (Join-Path $stage 'tinystrata-vision.exe')
+        $manifest.Files+=@([pscustomobject]@{RelativePath='tinystrata-vision.exe';Component='tinystrata';RedistributionEvidence='fixture notice';Source='Z:\never-read';Bytes=$image.Length;Sha256=(Get-FileHash -LiteralPath $image.FullName -Algorithm SHA256).Hash.ToLowerInvariant()})
         $manifest.Files[0].Bytes=(Get-Item -LiteralPath (Join-Path $stage 'tinystrata-intel.exe')).Length
         $manifest.Files[0].Sha256=(Get-FileHash -LiteralPath (Join-Path $stage 'tinystrata-intel.exe') -Algorithm SHA256).Hash.ToLowerInvariant();Write-IntelManifest $stage $manifest
         $hash=(Get-FileHash -LiteralPath (Join-Path $stage '.tinystrata-intel-runtime.json') -Algorithm SHA256).Hash.ToLowerInvariant();$script:stages[$hash]=$stage
@@ -125,27 +136,46 @@ try {
     function Initialize-TinyStrataPython {param($WorkRoot,$SourceRoot,$CacheRoot,$Transaction)return 'Invoke-IntelUiFixturePython'}
     function Complete-TinyStrataPythonTransaction {param($Transaction,[switch]$Rollback)}
     function Restore-TinyStrataSource {param($Change)}
-    function Initialize-TinyStrataOptionalUI {param($SourceRoot,$WorkRoot,$ApiPort,$UiPort,$Family,[switch]$ConfigureOnly,$Backend,$IntelProfile)$script:uiCalls++}
+    function Initialize-TinyStrataOptionalUI {param($SourceRoot,$WorkRoot,$ApiPort,$UiPort,$Family,[switch]$ConfigureOnly,$Backend,$IntelProfile,$Vision)$script:uiCalls++;$script:uiVision=$Vision}
     function Get-VerifiedDownload {param($Uri,$Destination,$Sha256)
         Check ($script:zips.ContainsKey($Sha256)) 'Only a pinned fixture ZIP can be requested'
         $script:networkBoundaries++
         [IO.Directory]::CreateDirectory((Split-Path -Parent $Destination))|Out-Null
         [IO.File]::Copy($script:zips[$Sha256],$Destination,$false)
     }
-    foreach($scenario in @('wired-success','wired-extra-fail','wired-offline')){
+    foreach($scenario in @('wired-success','wired-extra-fail','wired-offline','wired-vision-gpu','wired-vision-saved','wired-vision-no','wired-vision-cap-fail')){
         $case=Prepare-Case $scenario $catalog;$script:configureFail=if($scenario -eq 'wired-extra-fail'){'lfm2.5-24b-a2b'}else{''}
-        $script:failModel='';$script:receiveFail='';$script:networkBoundaries=0;$script:uiCalls=0
+        $script:failModel='';$script:receiveFail='';$script:networkBoundaries=0;$script:uiCalls=0;$script:uiVision='';$script:imageProbes=@();$script:imageCapFail=$scenario -eq 'wired-vision-cap-fail'
+        if($scenario -in @('wired-vision-saved','wired-vision-no')){
+            foreach($path in @($case.Path,(Join-Path $case.Work 'runtime\.tinystrata\config-gemma4-sycl.json'))){
+                $saved=Get-TinyStrataConfig $path;$saved|Add-Member -NotePropertyName vision_mode -NotePropertyValue gpu -Force
+                [IO.File]::WriteAllText($path,($saved|ConvertTo-Json -Depth 12))
+            }
+        }
         $source=Join-Path $fixture ($scenario+'-source');[IO.Directory]::CreateDirectory((Join-Path $source 'cmake'))|Out-Null
         foreach($helper in @('install-intel-runtime.ps1','intel-runtime-package.ps1','install-intel-ui-runtimes.ps1')){[IO.File]::Copy((Join-Path $repository ('cmake\'+$helper)),(Join-Path $source ('cmake\'+$helper)))}
         [IO.File]::Copy($case.Catalog,(Join-Path $source 'cmake\intel-runtime-catalog.json'))
         $old=[IO.File]::ReadAllText($case.Path)
         $arguments=@{SourceDirectory=$source;WorkingDirectory=$case.Work;Backend='sycl';Family='qwen36';FamilyExplicit=$true;IncludeUI=$true;DoNotStart=$true;DoNotDownload=$true}
         if($scenario -eq 'wired-offline'){$arguments.IntelRuntimeDirectory=$script:qwenStage}
-        if($scenario -eq 'wired-extra-fail'){Reject {Invoke-TinyStrataInstaller @arguments}}
+        if($scenario -in @('wired-vision-gpu','wired-vision-cap-fail')){$arguments.Vision='gpu'}
+        if($scenario -eq 'wired-vision-no'){$arguments.Vision='no'}
+        if($scenario -in @('wired-extra-fail','wired-vision-cap-fail')){Reject {Invoke-TinyStrataInstaller @arguments}}
         else{Invoke-TinyStrataInstaller @arguments}
-        if($scenario -eq 'wired-extra-fail'){
+        if($scenario -in @('wired-extra-fail','wired-vision-cap-fail')){
             Check ([IO.File]::ReadAllText($case.Path) -ceq $old -and $script:uiCalls -eq 0) 'Full installer failure publishes no selected config/UI'
             Check (@(Get-ChildItem -LiteralPath (Join-Path $case.Work 'native') -Directory).Count -eq 1) 'Full installer rollback retains only its prior immutable generation'
+        }elseif($scenario -like 'wired-vision-*'){
+            foreach($name in @('qwen36','tiel','gemma4','lfm2','clover')){
+                $family=Get-TinyStrataModelFamily $name -Backend sycl;$prepared=Get-TinyStrataConfig (Join-Path $case.Work ('runtime\.tinystrata\'+$family.ConfigFile))
+                $expected=if($name -eq 'lfm2' -or $scenario -eq 'wired-vision-no'){'no'}elseif($scenario -eq 'wired-vision-gpu' -or $name -in @('qwen36','gemma4')){'gpu'}else{'no'}
+                Check ($prepared.vision_mode -eq $expected) ('Explicit/saved model-specific vision selection: '+$name+' '+$scenario)
+            }
+            Check ($script:imageProbes.Count -eq $(if($scenario -eq 'wired-vision-gpu'){4}elseif($scenario -eq 'wired-vision-saved'){2}else{0})) 'Image capability proof is required exactly for the selected image-capable model identities'
+            $gemma=Get-TinyStrataConfig (Join-Path $case.Work 'runtime\.tinystrata\config-gemma4-sycl.json')
+            Check ($gemma.api_key -ceq 'private-extra-key' -and $gemma.sampling.temperature -eq 0.3 -and $gemma.args[1] -eq '65536') 'Vision adoption preserves model KV, sampling and private key'
+            $expectedUi=if($scenario -eq 'wired-vision-gpu'){'gpu'}elseif($scenario -eq 'wired-vision-no'){'no'}else{$null}
+            Check ($script:uiCalls -eq 1 -and $script:uiVision -eq $expectedUi) 'Only an explicit image choice reaches the UI launcher'
         }elseif($scenario -eq 'wired-success'){
             Check ($script:networkBoundaries -eq 3 -and $script:uiCalls -eq 1) 'Fresh WithUI fetches three runtime payloads and prepares UI only after all models are configured'
             Check ((Get-TinyStrataConfig (Join-Path $case.Work 'runtime\.tinystrata\config-clover-sycl.json')).model_bootstrap -eq $true) 'Fresh UI has a dedicated Clover bootstrap profile before any model download'
@@ -154,6 +184,7 @@ try {
         Check (-not(Test-Path -LiteralPath (Join-Path $case.Work '.tinystrata-installing.json'))) 'Full installer releases its real transaction guard'
         Check (@(Get-ChildItem -LiteralPath (Join-Path $case.Work 'runtime\.tinystrata') -Filter '*.prepare-*').Count -eq 1) 'Full installer cleans its own candidates and leaves the pre-existing fixture candidate untouched'
     }
+    $script:imageCapFail=$false
     # Real running-selected branch with a mixed catalog: selected Qwen stays
     # current while one dedicated peer is stale/missing. No process or network
     # boundary is allowed to hide the refusal, including ordinary WithUI reuse.

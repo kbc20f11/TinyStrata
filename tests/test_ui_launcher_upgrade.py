@@ -19,6 +19,57 @@ from ui import launch
 
 
 class LauncherUpgradeTests(unittest.TestCase):
+    def test_explicit_intel_images_forward_only_to_selected_model(self):
+        for family in launch.INTEL_PROFILES:
+            for selected in (None, "gpu", "no"):
+                with self.subTest(family=family, vision=selected):
+                    args = argparse.Namespace(api_port=9, port=19191, model_family=family,
+                                              backend="sycl", intel_profile=None, vision=selected)
+                    item = launch.Launcher(args, self.source, self.work)
+                    config = launch.profile_path(item.runtime, family, "sycl")
+                    child = mock.Mock()
+                    child.wait.return_value = 0
+                    with mock.patch.object(item, "spawn", return_value=child) as spawn:
+                        item.prepare_api(config)
+                    arguments = spawn.call_args.args[1]
+                    if selected is None:
+                        self.assertNotIn("--vision", arguments)
+                    else:
+                        self.assertEqual(arguments[arguments.index("--vision") + 1],
+                                         "no" if family == "lfm2" else selected)
+                    item.save_settings()
+                    # Each model configuration owns its mode; a global UI
+                    # setting must not overwrite other model selections.
+                    self.assertNotIn("vision", launch.read_json(item.state_dir / "settings.json"))
+
+    def test_explicit_intel_image_change_does_not_restart_running_api(self):
+        args = argparse.Namespace(api_port=9, port=19191, model_family="qwen36", backend="sycl",
+                                  intel_profile=None, vision="gpu")
+        item = launch.Launcher(args, self.source, self.work)
+        config = launch.profile_path(item.runtime, "qwen36", "sycl")
+        config.parent.mkdir(parents=True)
+        retained = '{"vision_mode":"no","api_key":"retained","args":["--max-context","auto"]}'
+        config.write_text(retained, encoding="utf-8")
+        health = {"status":"ok", "service":"tinystrata", "model":"qwen3.6-35b-a3b", "backend":"sycl",
+                  "experimental":True, "intel_profile":"b390-qwen36"}
+        with mock.patch.object(launch, "port_occupied", return_value=True), \
+             mock.patch.object(launch, "request_json", return_value=health), \
+             mock.patch.object(item, "spawn") as spawn:
+            with self.assertRaisesRegex(RuntimeError, "Stop this installation"):
+                item.ensure_api()
+        spawn.assert_not_called()
+        self.assertEqual(config.read_text(encoding="utf-8"), retained)
+
+    def test_intel_cpu_images_are_rejected_while_lfm_stays_text_only(self):
+        for family in launch.INTEL_PROFILES:
+            args = argparse.Namespace(api_port=9, port=19191, model_family=family, backend="sycl",
+                                      intel_profile=None, vision="cpu")
+            if family == "lfm2":
+                self.assertEqual(launch.Launcher(args, self.source, self.work).vision, "no")
+            else:
+                with self.assertRaisesRegex(ValueError, "Intel images require"):
+                    launch.Launcher(args, self.source, self.work)
+
     def test_generic_intel_profile_survives_settings_and_matching_api_reuse(self):
         args = argparse.Namespace(api_port=9, port=19191, model_family="tiel", backend="sycl", intel_profile="generic")
         item = launch.Launcher(args, self.source, self.work)

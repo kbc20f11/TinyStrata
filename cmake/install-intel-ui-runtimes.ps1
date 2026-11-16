@@ -54,7 +54,7 @@ function Get-TinyStrataIntelUiRuntimeCandidates {
 
 function Assert-TinyStrataIntelUiRuntimesCurrent {
     param([string]$SourceRoot, [string]$WorkRoot, [string]$CatalogPath,
-          [string]$SelectedModel, [AllowEmptyString()][string]$AotTarget)
+          [string]$SelectedModel, [AllowEmptyString()][string]$AotTarget, [string]$Vision)
     # Running services must not keep an older managed peer merely because the
     # selected model shares an unchanged package. Never replace it hot or stop
     # an app here; the ordinary stopped transaction owns adoption/rollback.
@@ -62,6 +62,10 @@ function Assert-TinyStrataIntelUiRuntimesCurrent {
         -CatalogPath $CatalogPath -SelectedModel $SelectedModel -AotTarget $AotTarget -Offline $false)) {
         if (-not (Test-TinyStrataIntelRuntimeCurrent -Configuration $entry.Configuration -WorkRoot $WorkRoot -Artifact $entry.Artifact)) {
             throw "A published Intel UI runtime is missing, older or invalid for $($entry.Family.Model). Stop this installation's API and UI, then rerun the installer to update it. The running services were left unchanged."
+        }
+        $mode = if ($entry.Family.Arch -eq 'lfm2moe') { 'no' } else { $Vision }
+        if ($Vision -and $entry.Configuration.vision_mode -ne $mode) {
+            throw "A published Intel UI runtime needs an image selection update for $($entry.Family.Model). Stop this installation's API and UI, then rerun the installer to update it. The running services were left unchanged."
         }
     }
 }
@@ -72,10 +76,11 @@ function Prepare-TinyStrataIntelUiRuntimes {
           [AllowEmptyString()][string]$AotTarget, [bool]$Offline,
           [hashtable]$RuntimeCache,
           [System.Collections.Generic.List[object]]$Configurations,
-          [System.Collections.Generic.List[string]]$Generations)
+          [System.Collections.Generic.List[string]]$Generations, [string]$Vision)
     foreach ($entry in @(Get-TinyStrataIntelUiRuntimeCandidates -SourceRoot $SourceRoot -WorkRoot $WorkRoot `
         -CatalogPath $CatalogPath -SelectedModel $SelectedModel -AotTarget $AotTarget -Offline $Offline)) {
         $family=$entry.Family;$path=$entry.Path;$cfg=$entry.Configuration
+        $mode = if ($family.Arch -eq 'lfm2moe') { 'no' } elseif ($Vision) { $Vision } elseif ($cfg -and $cfg.vision_mode -eq 'gpu') { 'gpu' } else { 'no' }
         $profile=$entry.Profile;$target=$entry.AotTarget;$artifact=$entry.Artifact
         $key = $artifact.manifest_sha256.ToLowerInvariant() + ':' + $artifact.executable_sha256.ToLowerInvariant()
         $runtime = $RuntimeCache[$key]
@@ -94,12 +99,17 @@ function Prepare-TinyStrataIntelUiRuntimes {
         }
         $null = Assert-TinyStrataIntelCapabilities -Python $Python -SourceRoot $SourceRoot -Executable $runtime.Exe `
             -DllDirectories $runtime.DllDirectories -ExpectedSha256 $artifact.executable_sha256 -Profile $profile `
-            -Model $family.Model -AllowLegacy $false -CatalogPath $CatalogPath -ExpectedAotTarget $target
+            -Model $family.Model -AllowLegacy $false -CatalogPath $CatalogPath -ExpectedAotTarget $target -RequireImages ($mode -eq 'gpu')
         $candidate = $path + '.prepare-' + [Guid]::NewGuid().ToString('N')
         $Configurations.Add([pscustomobject]@{ Path=$path; Candidate=$candidate })
         if (Test-Path -LiteralPath $path -PathType Leaf) { [IO.File]::Copy($path, $candidate, $false) }
         $arguments = @('-B', (Join-Path $SourceRoot 'run.py'), '--model-family', $family.Name,
-            '--config', $candidate, '--exe', $runtime.Exe, '--backend', 'sycl', '--intel-profile', $profile, '--configure-only')
+            '--config', $candidate, '--exe', $runtime.Exe, '--backend', 'sycl', '--intel-profile', $profile, '--vision', $mode, '--configure-only')
+        if ($mode -eq 'gpu') {
+            $imageExe = Join-Path (Split-Path -Parent $runtime.Exe) 'tinystrata-vision.exe'
+            if (-not (Test-Path -LiteralPath $imageExe -PathType Leaf)) { throw 'A selected Intel UI runtime has no verified image encoder; install an image-capable runtime before enabling -Vision gpu.' }
+            $arguments += @('--vision-exe', $imageExe)
+        }
         foreach ($directory in $runtime.DllDirectories) { $arguments += @('--lib-dir', $directory) }
         $previous = [Environment]::GetEnvironmentVariable('TINYSTRATA_INSTALLER_TRANSACTION','Process')
         try {
@@ -113,7 +123,9 @@ function Prepare-TinyStrataIntelUiRuntimes {
         $prepared = Get-TinyStrataConfig -Path $candidate
         if (-not $prepared -or $prepared.backend -ne 'sycl' -or $prepared.model_name -ne $family.Model -or
             $prepared.arch -ne $family.Arch -or $prepared.intel_profile -ne $profile -or $prepared.exe -ne $runtime.Exe -or
-            $prepared.vision_mode -ne 'no' -or $prepared.vision -or @($prepared.lib_dirs).Count -ne 1 -or
+            $prepared.vision_mode -ne $mode -or ($mode -eq 'no' -and $prepared.vision) -or
+            ($mode -eq 'gpu' -and ($prepared.vision_exe -ne $imageExe -or ($prepared.vision -and ($prepared.vision.exe -ne $imageExe -or $prepared.vision.gpu -ne $true)))) -or
+            @($prepared.lib_dirs).Count -ne 1 -or
             $prepared.lib_dirs[0] -ne (Split-Path -Parent $runtime.Exe)) { throw 'Prepared Intel UI model settings do not match their dedicated runtime.' }
         Write-Host "Prepared dedicated experimental Intel runtime for $($family.Model); its model file is downloaded only when requested."
     }

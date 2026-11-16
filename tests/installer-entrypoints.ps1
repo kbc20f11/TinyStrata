@@ -39,6 +39,7 @@ $entrypointCapture = @'
     HipArchitectures = $HipArchitectures
     Backend = $Backend
     ModelFamily = $ModelFamily
+    Vision = $Vision
     Port = $Port
     UiPort = $UiPort
     CheckOnly = [bool]$CheckOnly
@@ -73,6 +74,12 @@ foreach ($header in @($entrypointCoreHeader, $entrypointUiHeader)) {
     $result = Invoke-EntrypointHeader -Header $header
     Assert-Entrypoint ($result.Reached -and [string]::IsNullOrEmpty($result.HipArchitectures)) 'fresh IEX permits omitted architecture'
     Assert-Entrypoint ($result.Backend -eq 'auto' -and $result.ModelFamily -eq 'qwen36' -and $result.Port -eq 0 -and $result.UiPort -eq 3000) 'IEX preserves valid defaults'
+    Assert-Entrypoint ([string]::IsNullOrEmpty($result.Vision)) 'image selection is omitted by default'
+    foreach ($mode in @('gpu', 'cpu', 'no')) {
+        $result = Invoke-EntrypointHeader -Header $header -Invocation Call -Arguments @{ Vision = $mode; CheckOnly = $true }
+        Assert-Entrypoint ($result.Reached -and $result.Vision -eq $mode) 'explicit image selection binds in both installers'
+    }
+    Assert-EntrypointThrows { Invoke-EntrypointHeader -Header $header -Invocation Call -Arguments @{ Vision = 'auto' } } 'unknown image mode is rejected'
 
     $result = Invoke-EntrypointHeader -Header $header -Ambient @{ HipArchitectures = '' }
     Assert-Entrypoint ($result.Reached -and [string]::IsNullOrEmpty($result.HipArchitectures)) 'IEX with an existing empty architecture'
@@ -161,6 +168,12 @@ $result = Invoke-MockedUiBootstrap -UiText $entrypointUiText -CoreHeader $entryp
 }
 Assert-Entrypoint ($result.Forwarded.WithUI -and $result.Forwarded.CheckOnly -and $result.Forwarded.Port -eq 8080 -and $result.Forwarded.UiPort -eq 3001) 'UI forwards CheckOnly and requested ports'
 Assert-Entrypoint ($result.Forwarded.Backend -eq 'hip' -and $result.Forwarded.ModelFamily -eq 'gemma4' -and $result.Forwarded.HipArchitectures -eq 'gfx1200;gfx1201') 'UI forwards backend family and multiple architectures'
+foreach ($mode in @('gpu', 'no')) {
+    $result = Invoke-MockedUiBootstrap -UiText $entrypointUiText -CoreHeader $entrypointCoreHeader -Arguments @{
+        CheckOnly = $true; Backend = 'sycl'; ModelFamily = 'gemma4'; Vision = $mode
+    }
+    Assert-Entrypoint ($result.Forwarded.WithUI -and $result.Forwarded.Backend -eq 'sycl' -and $result.Forwarded.Vision -eq $mode) 'normal UI entrypoint forwards explicit Intel image choice'
+}
 
 $result = Invoke-MockedUiBootstrap -UiText $entrypointUiText -CoreHeader $entrypointCoreHeader -LocalInstaller
 Assert-Entrypoint ($result.Forwarded.Origin -eq 'pinned' -and $result.Requests.Count -eq 2 -and $result.Forwarded.SkipModelDownload) 'ordinary archive bootstrap updates with the same command and does not download a model'

@@ -295,6 +295,7 @@ class Launcher:
         self.runtime = work / "runtime"
         self.backend = getattr(args, "backend", None) or "auto"
         self.intel_profile = getattr(args, "intel_profile", None)
+        self.vision = getattr(args, "vision", None)
         self._intel_selection_explicit = bool(self.intel_profile or args.model_family)
         if getattr(args, "intel_profile", None) and self.backend != "sycl":
             raise ValueError("--intel-profile requires explicit --backend sycl")
@@ -325,6 +326,10 @@ class Launcher:
             self.intel_profile = self.intel_profile or ("generic" if settings.get("intel_profile") == "generic" else expected)
         if self.family not in PROFILES:
             raise ValueError("Unknown saved model family; specify --model-family qwen36, gemma4, lfm2, clover or tiel")
+        if self.family == "lfm2" and self.vision is not None:
+            self.vision = "no"
+        elif self.backend == "sycl" and self.vision == "cpu":
+            raise ValueError("Intel images require --vision gpu or --vision no")
         if self.api_port == self.port:
             raise ValueError("The UI and API must use different ports")
         self.python = self.runtime / ".venv" / "Scripts" / "python.exe"
@@ -420,6 +425,8 @@ class Launcher:
             arguments += ["--backend", "sycl", "--intel-profile", self.intel_profile]
         elif self.backend != "auto":
             arguments += ["--backend", self.backend]
+        if self.vision is not None:
+            arguments += ["--vision", self.vision]
         process = self.spawn(self.source / "run.py", arguments, "api-prepare")
         if process.wait() != 0:
             raise RuntimeError(f"API configuration failed; see {self.state_dir / 'api-prepare.stderr.log'}")
@@ -448,6 +455,12 @@ class Launcher:
                 raise RuntimeError(f"API port {self.api_port} is occupied or unresponsive; it was left unchanged") from error
             if not self.selected_api_identity(health):
                 raise RuntimeError(f"API port {self.api_port} belongs to another application; it was left unchanged")
+            if self.vision is not None:
+                current_family = MODELS[health["model"]]
+                desired = "no" if current_family == "lfm2" else self.vision
+                configured = read_json(profile_path(self.runtime, current_family, self.backend))
+                if configured.get("vision_mode") != desired:
+                    raise RuntimeError("Stop this installation's API and UI before changing its image selection, then rerun the installer; the running services were left unchanged")
             expected_model = health["model"]
             self.family = MODELS[expected_model]
             if self.backend == "sycl":
@@ -650,6 +663,8 @@ def main():
     parser.add_argument("--backend", choices=("auto", "cuda", "hip", "sycl"),
                         help="explicit sycl uses model-specific experimental text runtimes, separate Intel configs and ui-sycl history/settings (API 18085/UI 3005); an installed compatible runtime is required")
     parser.add_argument("--intel-profile", choices=("generic", *(profile[0] for profile in INTEL_PROFILES.values())), help="requested Intel tuning profile; must match --model-family and requires --backend sycl; does not certify hardware")
+    parser.add_argument("--vision", choices=("gpu", "cpu", "no"),
+                        help="explicit image selection for the selected model; omission preserves its configuration, Intel requires an image-capable GPU runtime, LFM stays text only")
     parser.add_argument("--no-browser", action="store_true", help="do not open the browser")
     parser.add_argument("--no-api-start", action="store_true", help="require an existing healthy API; never start it or force model loading")
     parser.add_argument("--configure-only", action="store_true", help="save selections without starting services or opening the browser")
