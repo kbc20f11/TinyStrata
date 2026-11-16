@@ -22,6 +22,9 @@ MODEL_CONTEXT_LIMITS = {QWEN_MODEL: 262144, TIEL_MODEL: 262144, GEMMA_MODEL: 262
                         LFM_MODEL: 131072, CLOVER_MODEL: 131072}
 TARGET_ONLY_MODELS = frozenset((GEMMA_MODEL, LFM_MODEL, CLOVER_MODEL))
 QWEN_ENGINE_MODELS = frozenset((QWEN_MODEL, TIEL_MODEL))
+VISION_MODELS = frozenset((QWEN_MODEL, TIEL_MODEL, GEMMA_MODEL, CLOVER_MODEL))
+VISION_PROTOCOL = "geni_sve1"
+VISION_CONTRACT_VERSION = 1
 MODEL_CONTRACTS = {
     GEMMA_MODEL: {"version": 1, "architecture": "gemma4", "kv_types": ["int8"], "mtp": False,
                   "experimental_mtp_max_depth": 0, "images": False, "thinking": "on_off", "mode": "target_only", "context_max": 262144},
@@ -30,9 +33,13 @@ MODEL_CONTRACTS = {
     CLOVER_MODEL: {"version": 1, "architecture": "clover_moe", "kv_types": ["int8"], "mtp": False,
                    "experimental_mtp_max_depth": 0, "images": False, "thinking": "on_off", "mode": "causal_d0", "context_max": 131072},
 }
+VISION_MODEL_CONTRACTS = {
+    model: {**MODEL_CONTRACTS[model], "version": 2, "images": True}
+    for model in (GEMMA_MODEL, CLOVER_MODEL)
+}
 
 
-def runtime_features(model: str) -> dict:
+def runtime_features(model: str, *, images: bool = False) -> dict:
     """Frontend contract of this route, independent of CUDA family features.
 
     These are available feature choices, not claims about hardware validation,
@@ -41,7 +48,7 @@ def runtime_features(model: str) -> dict:
     """
     if model not in MODEL_PROFILES:
         raise ValueError("Unknown experimental Intel model identity")
-    return {"images": False, "assistant": False, "lookup": False,
+    return {"images": bool(images and model in VISION_MODELS), "assistant": False, "lookup": False,
             "mtp": model in QWEN_ENGINE_MODELS, "target_only": model in TARGET_ONLY_MODELS,
             "clover_draft": False, "clover_modes": ["causal"] if model == CLOVER_MODEL else [],
             "kv_types": ["int8"] if model in TARGET_ONLY_MODELS else ["int8", "fp32"]}

@@ -12,7 +12,8 @@ from copy import deepcopy
 import os
 from collections.abc import Mapping
 from serve.intel_models import (QWEN_MODEL, TIEL_MODEL, GEMMA_MODEL, LFM_MODEL, CLOVER_MODEL,
-                                MODEL_PROFILES, MODEL_ARCHES, MODEL_CONTEXT_LIMITS, TARGET_ONLY_MODELS, QWEN_ENGINE_MODELS)
+                                MODEL_PROFILES, MODEL_ARCHES, MODEL_CONTEXT_LIMITS, TARGET_ONLY_MODELS,
+                                QWEN_ENGINE_MODELS, VISION_MODELS)
 
 
 B390_PROFILE = "b390-qwen36"
@@ -28,7 +29,7 @@ _OPTIMIZATIONS = ("--prefill-mkl", "--decode-dp4a", "--verify-xmx", "--prefill-i
                   "--vocab-xmx", "--expert-xmx-layout", "--device-state",
                   "--dense-xmx-layout", "--dense-split-k")
 _CLOVER_OPTIMIZATIONS = tuple(flag for flag in _OPTIMIZATIONS if flag != "--verify-xmx")
-_SWITCHES = {*_OPTIMIZATIONS, "--mtp-stochastic", "--verify-graph", "--no-graph", "--profile", "--host-profile", "--experimental-tiel", "--experimental-clover", "--no-prefill-mkl"}
+_SWITCHES = {*_OPTIMIZATIONS, "--mtp-stochastic", "--verify-graph", "--no-graph", "--profile", "--host-profile", "--experimental-tiel", "--experimental-clover", "--no-prefill-mkl", "--vision"}
 
 
 def canonical_model(cfg: dict) -> str:
@@ -178,6 +179,7 @@ def validate_config(cfg: dict, *, allow_uninstalled: bool = False) -> None:
     if not supports_model(cfg):
         raise ValueError("Intel requires a pinned supported experimental text identity")
     profile = _profile(cfg)
+    model = canonical_model(cfg)
     values, switches = _options({"args": _profile_arguments(cfg)})
     if not allow_uninstalled and (not isinstance(cfg.get("exe"), str) or not cfg["exe"]):
         raise ValueError("Set the Intel executable before starting the model")
@@ -187,8 +189,17 @@ def validate_config(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         raise ValueError("The Intel model path must not be empty")
     if "--experimental-tiel" in switches and canonical_model(cfg) != TIEL_MODEL:
         raise ValueError("--experimental-tiel is specific to the pinned Tiel profile")
-    if cfg.get("vision") or cfg.get("images") or cfg.get("vision_mode") not in (None, "no", "none"):
-        raise ValueError("Intel images are unsupported; select vision_mode=no")
+    mode = cfg.get("vision_mode", "no")
+    if mode not in ("gpu", "cpu", "no"):
+        raise ValueError("Intel vision_mode must be gpu, cpu or no")
+    if cfg.get("images"):
+        raise ValueError("Intel image generation is unsupported; image input uses vision_mode")
+    if model not in VISION_MODELS and (mode != "no" or cfg.get("vision") or "--vision" in switches):
+        raise ValueError("The selected Intel model is text-only; select vision_mode=no")
+    if mode == "no" and (cfg.get("vision") or "--vision" in switches):
+        raise ValueError("Intel image configuration requires vision_mode=gpu or cpu")
+    if isinstance(cfg.get("vision"), dict) and cfg["vision"].get("elastic"):
+        raise ValueError("Intel image encoders must remain resident before automatic KV allocation")
     if cfg.get("draft_model") or cfg.get("assistant"):
         raise ValueError("Intel target-only text does not support an assistant model")
     for field in ("layer_split", "vram_elastic", "slot_save_path", "expert_profile_save", "split_skip_if_fits",
@@ -227,6 +238,8 @@ def validate_config(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         if mtp or kv != "int8":
             raise ValueError("This Intel target-only text route requires MTP0 and actual INT8 KV")
         allowed = {"--prefill-mkl"}
+        if model in VISION_MODELS:
+            allowed.add("--vision")
         if model in (GEMMA_MODEL, LFM_MODEL):
             allowed.add("--no-prefill-mkl")
         if model == CLOVER_MODEL:
@@ -325,6 +338,8 @@ def engine_args(cfg: dict, *, allow_uninstalled: bool = False) -> list[str]:
     _put(args, "--max-context", "auto" if requested_context is None else requested_context)
     _put(args, "--kv-type", _kv(values))
     _put(args, "--chunk", _chunk(new, values))
+    if new.get("vision") and new.get("vision_mode") in ("gpu", "cpu") and "--vision" not in args:
+        args.append("--vision")
     if "--device" not in values:
         _put(args, "--device", new.get("gpu", 0))
     return args

@@ -112,7 +112,8 @@ def validate_intel_executable(cfg: dict, *, allow_legacy: bool = True):
     requested_context = context_tokens(cfg)
     validate_capabilities(proof.report, model=model, profile=cfg.get("intel_profile", "generic"),
                           required_types=required, allow_legacy=allow_legacy,
-                          requested_context="auto" if requested_context is None else requested_context)
+                          requested_context="auto" if requested_context is None else requested_context,
+                          require_images=cfg.get("vision_mode", "no") in ("gpu", "cpu"))
     launch = engine_args(cfg, allow_uninstalled=True)
     if "--prefill-mkl" in launch and not proof.report.get("build", {}).get("mkl") and not proof.legacy:
         raise ValueError("The selected Intel runtime does not compile the requested MKL path")
@@ -295,8 +296,23 @@ def configure_vision(cfg: dict, model: Path, *, projector: Path | None = None,
         new["vision_mmproj"] = str(projector)
     elif previous.get("mmproj") and not new.get("vision_mmproj"):
         new["vision_mmproj"] = previous["mmproj"]
+    if cfg.get("backend") == "sycl":
+        from serve.intel_capabilities import supports_images
+        from serve.intel_models import VISION_PROTOCOL, VISION_CONTRACT_VERSION
+        from serve.intel_backend import canonical_model
+        proof = validate_intel_executable(new)
+        if proof is not None and supports_images(proof.report, canonical_model(new)):
+            new["intel_vision_contract"] = {"version": VISION_CONTRACT_VERSION,
+                "protocol": VISION_PROTOCOL, "model": canonical_model(new),
+                "executable": proof.executable, "sha256": proof.sha256}
+        else:
+            new.pop("intel_vision_contract", None)
     if mode == "no":
         return disable_vision(new)
+    if cfg.get("backend") == "sycl" and not new.get("intel_vision_contract"):
+        new.pop("vision", None)
+        new["vision_download_required"] = True
+        return new
     artifact = projector_for_arch(cfg.get("arch", "qwen35moe"), cfg.get("model_name"))
     if artifact is None:
         raise ValueError("This model has no supported image projector")
@@ -312,6 +328,8 @@ def configure_vision(cfg: dict, model: Path, *, projector: Path | None = None,
     if valid and encoder is not None:
         new["vision"] = {**previous, "exe": str(encoder), "mmproj": str(projector.resolve()),
                          "model": str(model), "gpu": mode == "gpu"}
+        if cfg.get("backend") == "sycl":
+            new["vision"].update(backend="sycl", elastic=False)
         if cfg.get("arch") == "gemma4":
             new["vision"].setdefault("max_tokens", 1120)
         if "vision_tokens" in cfg:

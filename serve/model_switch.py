@@ -207,7 +207,8 @@ class ModelSwitcher:
                               'meta': {'n_ctx': context['allocated_tokens'] or 0}})
                 if self._intel:
                     from serve.intel_models import runtime_features
-                    items[-1]['features'] = runtime_features(model)
+                    from serve.intel_capabilities import configured_images
+                    items[-1]['features'] = runtime_features(model, images=configured_images(self.profiles.get(model).config))
             return items
 
     def _library_conflict(self):
@@ -633,7 +634,7 @@ class ModelSwitcher:
         vision = None
         try:
             if cfg.get('vision'):
-                vision = api.Vision(cfg['vision'],
+                vision = api.Vision(api.vision_config(cfg, native_env),
                                     log=open(cfg['log'], 'a', encoding='utf-8') if cfg.get('log') else None,
                                     env=api.vision_env(cfg, native_env), lazy=True)
             fresh = api.Service(engine, tok, template, model_name=api.default_model_name(cfg),
@@ -876,7 +877,13 @@ class ModelSwitcher:
             # selected model and native processes are changed by start().
             self.prepare_download(model, path, projector, assistant)
 
-        if cfg.get('backend') == 'sycl':
+        if cfg.get('backend') == 'sycl' and cfg.get('vision_mode', 'no') != 'no' and projector_artifact is not None:
+            projector = (cfg.get('vision') or {}).get('mmproj') or cfg.get('vision_mmproj')
+            manager = FixedModelBundleDownloader(directory, on_ready=prepared,
+                                                 existing_paths=(existing,) if existing is not None else (),
+                                                 projector_paths=(Path(projector),) if projector else (),
+                                                 _manifests=(artifact, projector_artifact))
+        elif cfg.get('backend') == 'sycl':
             manager = FixedModelDownloader(directory, on_ready=prepared,
                                            existing_paths=(existing,) if existing is not None else (),
                                            _manifest=artifact)

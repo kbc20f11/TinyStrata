@@ -51,14 +51,12 @@ def _references(profile):
 
 def artifacts(profile):
     result = [manifest_for_arch(profile.arch, profile.id)]
-    if profile.config.get('backend') == 'sycl':
-        # Intel text engines install only their pinned target. CUDA Gemma's
-        # assistant/projector and other image bundles are separate features.
-        return tuple(result)
     projector = projector_for_arch(profile.arch, profile.id)
-    if projector is not None and not (profile.arch == 'clover_moe' and profile.config.get('vision_mode') == 'no'):
+    include_projector = (profile.config.get('vision_mode', 'no') != 'no' if profile.config.get('backend') == 'sycl' else
+                         not (profile.arch == 'clover_moe' and profile.config.get('vision_mode') == 'no'))
+    if projector is not None and include_projector:
         result.append(projector)
-    if profile.arch == 'gemma4':
+    if profile.arch == 'gemma4' and profile.config.get('backend') != 'sycl':
         result.append(FIXED_GEMMA4_ASSISTANT)
     return tuple(result)
 

@@ -21,7 +21,8 @@ import re
 import stat
 import subprocess
 from serve.intel_models import (MODEL_PROFILES, MODEL_CONTRACTS, TARGET_ONLY_MODELS,
-                                QWEN_ENGINE_MODELS)
+                                QWEN_ENGINE_MODELS, VISION_MODELS, VISION_MODEL_CONTRACTS,
+                                VISION_PROTOCOL, VISION_CONTRACT_VERSION)
 
 
 QWEN_MODEL = "qwen3.6-35b-a3b"
@@ -70,8 +71,12 @@ def _check_report(report):
         raise IntelCapabilityError("The executable does not identify the experimental sycl backend")
     if report.get("model_families") != []:
         raise IntelCapabilityError("Intel model_families must retain the explicit formal-adoption boundary")
-    if report.get("images") is not False or report.get("serve") is not True or type(report.get("mtp")) is not bool:
-        raise IntelCapabilityError("Intel capabilities must identify the experimental text/MTP server")
+    if type(report.get("images")) is not bool or report.get("serve") is not True or type(report.get("mtp")) is not bool:
+        raise IntelCapabilityError("Intel capabilities must identify the experimental image/MTP server")
+    if report["images"] and (report.get("image_protocol") != VISION_PROTOCOL or
+                            type(report.get("vision_contract_version")) is not int or
+                            report["vision_contract_version"] != VISION_CONTRACT_VERSION):
+        raise IntelCapabilityError("Intel images require the explicit GENI/SVE1 vision contract")
     kv = report.get("kv_types")
     if (not isinstance(kv, list) or not kv or any(item not in ("fp32", "int8") for item in kv) or
             len(set(kv)) != len(kv)):
@@ -84,8 +89,10 @@ def _check_report(report):
                 not 16 <= report["max_context"] <= 262144):
             raise IntelCapabilityError("Invalid Intel native context capability contract")
     if "capabilities_schema" not in report:
+        if report["images"]:
+            raise IntelCapabilityError("Legacy Intel metadata cannot advertise image input")
         # Partial new metadata must never silently downgrade into legacy policy.
-        if any(key in report for key in ("experimental_models", "experimental_profiles", "build", "weight_types", "experimental_model_contracts", "context_auto", "max_context")):
+        if any(key in report for key in ("experimental_models", "experimental_profiles", "build", "weight_types", "experimental_model_contracts", "context_auto", "max_context", "image_protocol", "vision_contract_version")):
             raise IntelCapabilityError("Intel build metadata is missing capabilities_schema")
         if report["mtp"] is not True:
             raise IntelCapabilityError("Legacy Intel metadata requires the retained text/MTP server")
@@ -121,11 +128,14 @@ def _check_report(report):
         raise IntelCapabilityError("Intel experimental_model_contracts must describe declared model IDs")
     for model in TARGET_ONLY_MODELS.intersection(models):
         declared = contracts.get(model)
-        expected = MODEL_CONTRACTS[model]
+        expected = (VISION_MODEL_CONTRACTS[model] if model in VISION_MODEL_CONTRACTS and
+                    isinstance(declared, dict) and declared.get("version") == 2 else MODEL_CONTRACTS[model])
         if not isinstance(declared, dict) or set(declared) != set(expected):
             raise IntelCapabilityError(f"The Intel build lacks the explicit target-only contract for {model}")
         if any(type(declared[key]) is not type(value) or declared[key] != value for key, value in expected.items()):
             raise IntelCapabilityError(f"Unsupported Intel model-specific capability contract for {model}")
+        if declared["images"] and not report["images"]:
+            raise IntelCapabilityError(f"The Intel build lacks image input declared for {model}")
         if not set(declared["kv_types"]) <= set(kv):
             raise IntelCapabilityError(f"The Intel build lacks the declared KV baseline for {model}")
     paths = report.get("weight_types")
@@ -138,7 +148,7 @@ def _check_report(report):
 
 def validate_capabilities(report: dict, *, model: str = QWEN_MODEL, profile: str = "generic",
                           required_types: Mapping | None = None, allow_legacy: bool = False,
-                          requested_context: int | str | None = None) -> None:
+                          requested_context: int | str | None = None, require_images: bool = False) -> None:
     """Pure compatibility check; never start a process or inspect a device.
 
     New imports should keep ``allow_legacy=False``. Explicit legacy compatibility
@@ -159,6 +169,10 @@ def validate_capabilities(report: dict, *, model: str = QWEN_MODEL, profile: str
         if any(type(item) is not int or not 0 <= item <= 65535 for item in types):
             raise IntelCapabilityError("Invalid required Intel GGUF type")
     _check_report(report)
+    if type(require_images) is not bool:
+        raise IntelCapabilityError("require_images must be a boolean")
+    if require_images and not supports_images(report, model):
+        raise IntelCapabilityError("This Intel model runtime lacks image input; update its runtime or select vision_mode=no")
     if requested_context is not None:
         from serve.intel_models import MODEL_CONTEXT_LIMITS
         model_limit = MODEL_CONTEXT_LIMITS.get(model)
@@ -204,6 +218,37 @@ def validate_capabilities(report: dict, *, model: str = QWEN_MODEL, profile: str
         missing = set(types) - set(report["weight_types"][path])
         if missing:
             raise IntelCapabilityError(f"The Intel {path} path lacks GGUF types {sorted(missing)}")
+
+
+def supports_images(report: dict, model: str) -> bool:
+    """Compiled model capability; encoder readiness is checked separately."""
+    _check_report(report)
+    if model not in VISION_MODELS or report["images"] is not True or model not in report.get("experimental_models", ()):
+        return False
+    if model in TARGET_ONLY_MODELS:
+        return report.get("experimental_model_contracts", {}).get(model, {}).get("images") is True
+    return True
+
+
+def configured_images(cfg: dict) -> bool:
+    """Cheap published configuration proof; launch revalidates native bytes."""
+    from serve.intel_backend import canonical_model
+    try:
+        proof = cfg.get("intel_vision_contract")
+        if not isinstance(proof, dict) or cfg.get("backend") != "sycl":
+            return False
+        base = cfg.get("cwd") or os.getcwd()
+        executable = cfg.get("exe")
+        if not isinstance(executable, str) or not executable:
+            return False
+        path = executable if os.path.isabs(executable) else os.path.join(base, executable)
+        return (type(proof.get("version")) is int and proof["version"] == VISION_CONTRACT_VERSION and
+                proof.get("protocol") == VISION_PROTOCOL and
+                proof.get("model") == canonical_model(cfg) and
+                _SHA256.fullmatch(str(proof.get("sha256", ""))) is not None and
+                os.path.normcase(os.path.abspath(path)) == os.path.normcase(str(proof.get("executable", ""))))
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 
 
 def _identity(path):

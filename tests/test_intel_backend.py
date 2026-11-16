@@ -280,14 +280,30 @@ class IntelBackendPolicy(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Intel context"):
                 intel.configure_backend(cfg)
 
-    def test_unsupported_images_placement_and_state_are_rejected(self):
-        for fields in ({"vision": {"exe": "encoder.exe"}}, {"images": {"enabled": True}}, {"vision_mode": "gpu"},
+    def test_unsupported_image_generation_placement_and_state_are_rejected(self):
+        for fields in ({"vision": {"exe": "encoder.exe"}}, {"images": {"enabled": True}},
                        {"draft_model": "cuda-assistant.gguf"}, {"assistant": "cuda-assistant.gguf"},
-                       {"vision_mode": "cpu"}, {"layer_split": "auto"}, {"vram_elastic": True},
+                       {"layer_split": "auto"}, {"vram_elastic": True},
                        {"slot_save_path": "snapshots"}, {"parallel": 2}, {"replicas": 2},
                        {"expert_gpu_percent": 0}, {"expert_gpu_count": 8}, {"conversation_cache_mib": 0}, {"gpu": [0, 1]}):
             with self.subTest(fields=fields), self.assertRaises(ValueError):
                 intel.configure_backend(configuration(**fields))
+
+    def test_image_input_is_opt_in_and_lfm_remains_text_only(self):
+        for model in (intel.QWEN_MODEL, intel.TIEL_MODEL, intel.GEMMA_MODEL, intel.CLOVER_MODEL):
+            for mode in ("gpu", "cpu"):
+                source = configuration(model_name=model, arch=intel.MODEL_ARCHES[model], vision_mode=mode,
+                                       vision={"exe": "encoder.exe", "gpu": mode == "gpu"})
+                before = deepcopy(source)
+                self.assertIn("--vision", intel.engine_args(source))
+                self.assertEqual(source, before)
+        self.assertNotIn("--vision", intel.engine_args(configuration()))
+        for fields in ({"vision_mode": "gpu"}, {"vision_mode": "cpu"},
+                       {"vision_mode": "gpu", "vision": {"elastic": True}}):
+            with self.subTest(fields=fields), self.assertRaises(ValueError):
+                intel.configure_backend(configuration(model_name=intel.LFM_MODEL, arch="lfm2moe", **fields))
+        with self.assertRaisesRegex(ValueError, "remain resident"):
+            intel.configure_backend(configuration(vision_mode="gpu", vision={"elastic": True}))
 
     def test_discrete_memory_tail_role_and_expert_learning_controls_are_rejected(self):
         for fields in ({"min_free_vram_mib": 768}, {"min_free_vram_mib": -1},

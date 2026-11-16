@@ -30,6 +30,40 @@ def report(*, mkl=True, xmx=True):
 
 
 class CompatibilityPolicy(unittest.TestCase):
+    def test_images_require_explicit_protocol_and_model_contract(self):
+        from serve.intel_models import VISION_MODELS, VISION_MODEL_CONTRACTS
+        for model in VISION_MODELS:
+            native = report()
+            native.update(images=True, image_protocol="geni_sve1", vision_contract_version=1,
+                          experimental_models=[model], experimental_profiles={MODEL_PROFILES[model]: 1})
+            if model in VISION_MODEL_CONTRACTS:
+                native.update(mtp=False, experimental_mtp_max_depth=0, kv_types=["int8"],
+                              experimental_model_contracts={model: deepcopy(VISION_MODEL_CONTRACTS[model])})
+            intel.validate_capabilities(native, model=model, profile=MODEL_PROFILES[model], require_images=True)
+            self.assertTrue(intel.supports_images(native, model))
+            for field, bad in (("image_protocol", "guess"), ("vision_contract_version", True),
+                               ("vision_contract_version", 2)):
+                changed = deepcopy(native); changed[field] = bad
+                with self.subTest(model=model, field=field), self.assertRaises(intel.IntelCapabilityError):
+                    intel.validate_capabilities(changed, model=model, require_images=True)
+        for old in (report(), legacy_report()):
+            intel.validate_capabilities(old, allow_legacy=True)
+            with self.assertRaisesRegex(intel.IntelCapabilityError, "lacks image"):
+                intel.validate_capabilities(old, allow_legacy=True, require_images=True)
+
+    def test_listing_uses_published_proof_without_process_or_model_reads(self):
+        cfg = {"backend": "sycl", "arch": "qwen35moe", "model_name": intel.QWEN_MODEL,
+               "exe": os.path.abspath("native.exe")}
+        with patch("subprocess.run", side_effect=AssertionError("Listing must remain cheap")):
+            self.assertFalse(intel.configured_images(cfg))
+            cfg["intel_vision_contract"] = {"version": 1, "protocol": "geni_sve1", "model": intel.QWEN_MODEL,
+                                            "sha256": "a" * 64, "executable": cfg["exe"]}
+            self.assertTrue(intel.configured_images(cfg))
+            changed = deepcopy(cfg); changed["exe"] = os.path.abspath("other-native.exe")
+            self.assertFalse(intel.configured_images(changed))
+            changed = deepcopy(cfg); changed["intel_vision_contract"]["version"] = True
+            self.assertFalse(intel.configured_images(changed))
+
     def test_memory_aware_context_requires_actual_native_support(self):
         modern = report()
         modern.update(context_auto=True, max_context=262144)

@@ -202,7 +202,8 @@ class ModelProfiles:
             from serve.intel_backend import configure_backend, MODEL_PROFILES, TARGET_ONLY_MODELS
             if (self._generic_intel or name in TARGET_ONLY_MODELS) and "--mtp" in args:
                 args[args.index("--mtp") + 1] = "0"
-            result.update(intel_profile="generic" if self._generic_intel else MODEL_PROFILES[name], vision_mode="no",
+            result.update(intel_profile="generic" if self._generic_intel else MODEL_PROFILES[name],
+                          vision_mode="no",
                           sampling=tinyconfig.migrate_generation_settings(result)[0]["sampling"])
             share = name == self._runtime_model or {name, self._runtime_model} <= QWEN_ENGINE_MODELS
             if self._engine is not None and share:
@@ -381,6 +382,7 @@ class ModelProfiles:
 
     def list(self) -> list[dict]:
         """Cheap availability metadata; no checksums, GGUF reads or processes."""
+        from serve.intel_capabilities import configured_images
         entries = []
         for profile in self._profiles.values():
             model = model_setup.model_path(profile.config)
@@ -391,7 +393,9 @@ class ModelProfiles:
                             "executable": str(exe) if exe is not None else None,
                             "config_path": str(profile.path), "shared_settings_path": str(profile.shared_path),
                             "context": self.context_info(profile.id),
-                            "vision": not self._intel and profile.arch in ("qwen35moe", "gemma4", "clover_moe") and profile.config.get("vision_mode", "gpu") != "no"})
+                            "vision": profile.arch in ("qwen35moe", "gemma4", "clover_moe") and
+                            profile.config.get("vision_mode", "gpu") != "no" and
+                            (not self._intel or configured_images(profile.config))})
         return entries
 
     def update(self, name: str, cfg: dict, *, save: bool = False) -> ModelProfile:

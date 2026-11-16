@@ -214,7 +214,7 @@ def migrate_chunk_settings(cfg: dict) -> tuple[dict, bool]:
 
 def check_vision_options(cfg: dict) -> str:
     """Validate launcher preferences independently of installed image assets."""
-    text_only = cfg.get("arch") == "lfm2moe" or cfg.get("backend") == "sycl"
+    text_only = cfg.get("arch") == "lfm2moe"
     mode = cfg.get("vision_mode", "no" if text_only else "gpu")
     if mode not in ("gpu", "cpu", "no"):
         raise ValueError("vision_mode must be gpu, cpu or no")
@@ -223,7 +223,7 @@ def check_vision_options(cfg: dict) -> str:
         if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0:
             raise ValueError("vision_tokens must be a positive whole number")
     if text_only and (mode != "no" or cfg.get("vision")):
-        model = "The experimental Intel backend" if cfg.get("backend") == "sycl" else MODEL_NAMES[cfg["arch"]]
+        model = MODEL_NAMES[cfg["arch"]]
         raise ValueError(f"{model} is text-only; use --vision no")
     return mode
 

@@ -2386,8 +2386,12 @@ class Vision:
         absolute = lambda p: os.path.abspath(p) if os.path.dirname(str(p)) else p   # the encoder runs in its own dir (#480)  # noqa: E731
         args = [absolute(cfg["exe"]), "--mmproj", absolute(cfg["mmproj"]), "--model", absolute(cfg["model"])]
         self.gpu = bool(cfg.get("gpu"))
+        self.backend = cfg.get("backend")
+        self.input_protocol = cfg.get("input_protocol", "enc")
         if self.gpu:
             args.append("--gpu")
+        if cfg.get("device_luid"):
+            args += ["--device-luid", str(cfg["device_luid"])]
         if cfg.get("threads"):
             args += ["--threads", str(cfg["threads"])]
         if cfg.get("max_tokens"):
@@ -2684,7 +2688,9 @@ class Vision:
             img, out = self.dir / f"{key}.img", self.dir / f"{key}.sve"
             img.write_bytes(data)
             try:
-                self.proc.stdin.write(f"ENC {img.name} {out.name}\n")      # relative to the encoder's cwd (#480)
+                command = (f"ENC\t{img.name}\t{out.name}\n" if self.input_protocol == "enc-tabs" else
+                           f"ENC {img.name} {out.name}\n")
+                self.proc.stdin.write(command)      # relative to the encoder's cwd (#480)
                 self.proc.stdin.flush()
                 try:
                     line = self._readline(VISION_ENCODE_S, "the image could not be read").strip()
@@ -3140,6 +3146,17 @@ def hip_env_guard(env: dict, cfg: dict) -> list[str]:
     return said
 
 
+def vision_config(cfg: dict, env: dict) -> dict:
+    """Resolve encoder paths and bind Intel to the language GPU before warmup."""
+    vision = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
+                  if k in ("exe", "mmproj", "model") and isinstance(v, str) and not os.path.isabs(v) else v)
+              for k, v in cfg["vision"].items()}
+    if cfg.get("backend") == "sycl":
+        from serve.intel_vision import prepare_encoder
+        vision = prepare_encoder(cfg, vision, env)
+    return vision
+
+
 def vision_env(cfg: dict, env: dict) -> dict:
     """The image encoder's environment: the engine's, unless the config's vision section names its own "cuda_device"
     (numbered like nvidia-smi) - then the encoder runs on that card alone, so a spare GPU can hold it while the engine
@@ -3383,8 +3400,8 @@ class Service:
         if (generation_defaults or {}).get("backend") == "sycl":
             from serve.intel_backend import validate_config
             validate_config(generation_defaults, allow_uninstalled=True)
-            if vision is not None:
-                raise ValueError("Intel image encoders are unsupported")
+            if vision is not None and getattr(vision, "elastic", False):
+                raise ValueError("Intel image encoders must remain resident before KV allocation")
             from serve.model_setup import validate_intel_executable
             validate_intel_executable(generation_defaults, allow_legacy=True)
             self.backend = "sycl"
@@ -3781,7 +3798,7 @@ class Service:
             if retry_image:                            # elastic: re-arm its next image turn, not a permanent allocation
                 self.vision.startup_error = ""
             return
-        if self.loaded() and vision_down and getattr(self.vision, "gpu", False):
+        if self.loaded() and vision_down and (getattr(self.vision, "gpu", False) or getattr(self, "backend", None) == "sycl"):
             # A crashed GPU encoder released its allocation. The language engine
             # may now occupy that room; restore the original load order rather
             # than starting a large image workspace beside a full Expert cache.
@@ -7530,7 +7547,7 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
                                  log=updated.get("log"), env=child_env(updated), lazy=True)
         candidate._tinystrata_arch = updated.get("arch")
         candidate.silence_s = engine_silence_s(updated)
-        image_candidate = (Vision(updated["vision"],
+        image_candidate = (Vision(vision_config(updated, child_env(updated)),
                                   log=open(updated["log"], "a", encoding="utf-8") if updated.get("log") else None,
                                   env=vision_env(updated, child_env(updated)), lazy=True)
                            if want_vision else None)
@@ -7591,7 +7608,14 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
         print("[tinystrata] verified model" + (" and image encoder" if image_candidate is not None else "") +
               " loaded; inference API ready", flush=True)
 
-    if cfg.get("backend") == "sycl":
+    if cfg.get("backend") == "sycl" and cfg.get("vision_mode", "no") != "no" and projector_for_arch(cfg.get("arch", "qwen35moe"), cfg.get("model_name")) is not None:
+        projector = (cfg.get("vision") or {}).get("mmproj") or cfg.get("vision_mmproj")
+        svc.downloads = FixedModelBundleDownloader(directory, on_ready=activate,
+                    existing_paths=(existing,) if existing is not None else (),
+                    projector_paths=(Path(projector),) if projector else (),
+                    _manifests=(manifest_for_arch(cfg.get("arch", "qwen35moe"), cfg.get("model_name")),
+                                projector_for_arch(cfg.get("arch", "qwen35moe"), cfg.get("model_name"))))
+    elif cfg.get("backend") == "sycl":
         svc.downloads = FixedModelDownloader(directory, on_ready=activate,
                     existing_paths=(existing,) if existing is not None else (),
                     _manifest=manifest_for_arch(cfg.get("arch", "qwen35moe"), cfg.get("model_name")))
@@ -7770,9 +7794,7 @@ def main() -> int:
                   "loading the vision encoder ..." if not lazy else
                   "vision encoder unloaded; it starts with the model ...", flush=True)
             # relative paths are the config's cwd's, as for the engine below
-            vcfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
-                        if k in ("exe", "mmproj", "model") and isinstance(v, str) and not os.path.isabs(v) else v)
-                    for k, v in cfg["vision"].items()}
+            vcfg = vision_config(cfg, env)
             if vcfg.get("elastic") is True and cfg.get("vram_elastic") is not True:
                 print('[strata] the vision section\'s "elastic" needs "vram_elastic": true (the expert cache gives the '
                       "encoder its VRAM): the encoder starts with the model instead", flush=True)
