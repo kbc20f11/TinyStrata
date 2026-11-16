@@ -59,7 +59,8 @@ function(tinystrata_add_intel_vision_encoder)
   include("${PROJECT_SOURCE_DIR}/cmake/intel_vision_patches.cmake")
   set_property(GLOBAL PROPERTY TINYSTRATA_INTEL_VISION_PATCH_HASHES "")
   tinystrata_intel_vision_bounded_attention("${_vision_llama}")
-  tinystrata_intel_vision_graph_memory("${_vision_llama}")
+  set(_vision_ffn_token_tile 1024)
+  tinystrata_intel_vision_graph_memory("${_vision_llama}" "${_vision_ffn_token_tile}")
   target_sources(ggml-sycl PRIVATE
     "${PROJECT_SOURCE_DIR}/src/vision/intel_device.cpp"
     "${PROJECT_SOURCE_DIR}/src/intel/device.cpp")

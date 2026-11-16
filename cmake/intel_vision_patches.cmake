@@ -1,15 +1,14 @@
 # Apply reviewed changes only to build-owned copies of pinned source files.
 # A caller's STRATA_GGML_DIR checkout is never modified.
 function(tinystrata_intel_vision_write_lf destination contents)
-  # Insert the source as one substitution so literal @name@ text in upstream
-  # C++ cannot itself be interpreted as a configure-file placeholder.
-  set(_intel_vision_literal "${contents}")
-  set(_template "${CMAKE_BINARY_DIR}/intel-vision-patched/literal.in")
-  file(WRITE "${_template}" "@_intel_vision_literal@")
-  configure_file("${_template}" "${destination}" @ONLY NEWLINE_STYLE LF)
+  # Escape literal @ bytes as single substitutions. file(CONFIGURE) preserves
+  # the exact final newline count; configure_file would append another newline.
+  set(_intel_vision_at "@")
+  string(REPLACE "@" "@_intel_vision_at@" _escaped "${contents}")
+  file(CONFIGURE OUTPUT "${destination}" CONTENT "${_escaped}" @ONLY NEWLINE_STYLE LF)
 endfunction()
 
-function(tinystrata_intel_vision_graph_memory root)
+function(tinystrata_intel_vision_graph_memory root token_tile)
   tinystrata_intel_vision_patch_copy("${root}" "tools/mtmd/clip.cpp"
     "${PROJECT_SOURCE_DIR}/cmake/patches/intel-vision-token-ffn.patch"
     f50b204fa1bd4138c53d041663bbaf1472bab3af3407b95a8023429eb14e51ce
@@ -28,9 +27,11 @@ function(tinystrata_intel_vision_graph_memory root)
   endforeach()
   set_property(TARGET mtmd PROPERTY SOURCES "${_sources}")
   set_property(SOURCE "${_copy_root}/clip.cpp" TARGET_DIRECTORY mtmd
-    APPEND PROPERTY COMPILE_DEFINITIONS TINYSTRATA_VISION_TOKEN_FFN=256)
+    APPEND PROPERTY COMPILE_DEFINITIONS "TINYSTRATA_VISION_TOKEN_FFN=${token_tile}")
   set_property(SOURCE "${_copy_root}/models/qwen3vl.cpp" TARGET_DIRECTORY mtmd
     APPEND PROPERTY COMPILE_DEFINITIONS TINYSTRATA_VISION_SPLIT_QKV=1)
+  set_property(SOURCE "${_copy_root}/models/qwen3vl.cpp" TARGET_DIRECTORY mtmd
+    APPEND PROPERTY INCLUDE_DIRECTORIES "${root}/tools/mtmd/models")
 endfunction()
 
 function(tinystrata_intel_vision_patch_copy root relative patch base_sha patched_sha patch_sha)
