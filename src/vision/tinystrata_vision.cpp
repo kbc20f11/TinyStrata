@@ -250,7 +250,11 @@ int vision_main(int argc, char** argv) {
         for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
             ggml_backend_dev_t device = ggml_backend_dev_get(i);
             const auto type = ggml_backend_dev_type(device);
-            if ((type != GGML_BACKEND_DEVICE_TYPE_GPU && type != GGML_BACKEND_DEVICE_TYPE_IGPU) ||
+            bool supported_type = type == GGML_BACKEND_DEVICE_TYPE_GPU;
+#ifdef TINYSTRATA_VISION_SYCL
+            supported_type = supported_type || type == GGML_BACKEND_DEVICE_TYPE_IGPU;
+#endif
+            if (!supported_type ||
                 std::strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(device)), gpu_backend) != 0) continue;
             if (!device_name.empty() && device_name != ggml_backend_dev_name(device)) continue;
 #ifdef TINYSTRATA_VISION_SYCL
