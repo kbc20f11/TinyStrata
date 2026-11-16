@@ -119,6 +119,18 @@ struct QwenSpec {
     bool device_state=false,turn_checkpoint=true,graph=true,verify_graph=false,npu=false,npu_split=false;
     bool vision=false,clover_vision_aliases=false;
 };
+// MoE's routed output is dead throughout the preceding attention/GDN phase.
+// Keep its simultaneously live attention views disjoint. GDN output uses the
+// query view instead, and its gate uses the later MoE expert-gate allocation.
+struct CloverPhaseLayout {uint64_t query_offset=0,attention_offset=0,routed_count=0,gate_count=0;};
+inline CloverPhaseLayout clover_phase_layout(uint64_t tokens,uint64_t raw_width,uint64_t query_width,
+    uint64_t recurrent_width,uint64_t routed_width,uint64_t expert_gate_width,uint64_t gdn_gate_width){
+    if(!tokens||!raw_width||!query_width||add(raw_width,mul(2,query_width))!=routed_width
+        ||query_width!=recurrent_width||!expert_gate_width||expert_gate_width!=gdn_gate_width)
+        throw std::logic_error("Clover phase workspace extents differ");
+    const auto query=mul(tokens,raw_width);
+    return {query,add(query,mul(tokens,query_width)),mul(tokens,routed_width),mul(tokens,expert_gate_width)};
+}
 inline Footprint qwen(uint64_t c,const QwenSpec& s={}){
     if(s.clover_vision_aliases&&(!s.vision||s.mtp))throw std::invalid_argument("Clover image workspace aliases require vision and MTP0");
     Footprint p;const auto n=s.chunk;const bool shared=!s.device_state;
@@ -128,14 +140,18 @@ inline Footprint qwen(uint64_t c,const QwenSpec& s={}){
     if(s.int8)q8_cache(p,cells,shared,layers);else p.allocation(cells,4,shared,2*layers,true);
     const uint64_t recurrent=30ull*(32*128*128+64*128*3)*4;
     a(32*128*128,4,60);a(64*128*3,4,60);
-    a(mul(n,2048),4,3);a(mul(n,8192));a(mul(n,4096));a(mul(n,32),4,2);
+    a(mul(n,2048),4,3);
+    if(!s.clover_vision_aliases){a(mul(n,8192));a(mul(n,4096));} // raw QKV and GDN gate reuse MoE owners
+    a(mul(n,32),4,2);
     if(!s.clover_vision_aliases)a(mul(n,8192)); // convolution reuses consumed raw QKV
-    a(mul(n,4096),4,s.clover_vision_aliases?1:2); // normalized GDN output reuses its input
+    if(!s.clover_vision_aliases)a(mul(n,4096),4,2); // GDN output/norm reuse the attention query view
     a(mul(n,256));a(mul(n,8));a(mul(n,8));a(mul(n,8*512),4,s.clover_vision_aliases?2:3);a(mul(n,8*2048));
     a(mul(n,512),4,s.clover_vision_aliases?2:3);a(mul(n,2048));a(n);
-    a(mul(n,16*256),4,s.clover_vision_aliases?1:2);a(mul(n,2*256),4,2);
+    if(!s.clover_vision_aliases)a(mul(n,16*256),4,2); // query is a routed-output view; gate reuses GDN gate
+    a(mul(n,2*256),4,2);
     const auto rows=mul(16,s.int8?std::min(n,s.verify_capacity):1);
-    a(mul(rows,c));a(mul(rows,round256(c)));a(mul(n,16*256));
+    a(mul(rows,c));a(mul(rows,round256(c)));
+    if(!s.clover_vision_aliases)a(mul(n,16*256)); // attention output is a disjoint routed-output view
     control(s.vocabulary);control(256);a(mul(256,n));
     const auto tiles=add(add(mul(n,8),3)/4,256);a(tiles,4,2);a(1);
     control(n);control(n);a(2048);

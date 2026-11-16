@@ -875,21 +875,37 @@ public:
             const auto chosen=context_policy::select(context,context_limit,remaining_memory,selected_device.max_allocation,
                 [&](uint64_t tokens){return context_policy::qwen(tokens,context_shape);});
             context=context_=chosen.tokens;graph_extent_=std::min(context_,128);
+            const auto phase=clover_vision_workspace_aliases_
+                ? context_policy::clover_phase_layout(chunk_,std::max((2*hk_+hv_)*128,heads_*512),heads_*256,
+                    hv_*128,picks_*n_,picks_*ff_,hv_*128)
+                : context_policy::CloverPhaseLayout{};
             x_ = alloc<float>(size_t(chunk_) * (n_)); h_ = alloc<float>(size_t(chunk_) * (n_)); mixer_ = alloc<float>(size_t(chunk_) * (n_));
-            qkv_ = alloc<float>(size_t(chunk_) * (std::max((2 * hk_ + hv_) * 128, heads_ * 512)));
-            z_ = alloc<float>(size_t(chunk_) * (hv_ * 128)); alpha_ = alloc<float>(size_t(chunk_) * (hv_)); beta_ = alloc<float>(size_t(chunk_) * (hv_));
+            if(clover_vision_workspace_aliases_){
+                expert_down_=alloc<float>(size_t(phase.routed_count));
+                expert_gate_=alloc<float>(size_t(phase.gate_count));
+            }
+            qkv_ = clover_vision_workspace_aliases_ ? expert_down_
+                : alloc<float>(size_t(chunk_) * (std::max((2 * hk_ + hv_) * 128, heads_ * 512)));
+            z_ = clover_vision_workspace_aliases_ ? expert_gate_ : alloc<float>(size_t(chunk_) * (hv_ * 128));
+            alpha_ = alloc<float>(size_t(chunk_) * (hv_)); beta_ = alloc<float>(size_t(chunk_) * (hv_));
             // These aliases are enabled only for Clover image MTP0. Each source
             // is dead after its consumer; aliased pointers never acquire ownership.
             conv_ = clover_vision_workspace_aliases_ ? qkv_ : alloc<float>(size_t(chunk_) * ((2 * hk_ + hv_) * 128));
-            recurrent_output_ = alloc<float>(size_t(chunk_) * (hv_ * 128));
+            recurrent_output_ = clover_vision_workspace_aliases_ ? expert_down_+phase.query_offset
+                : alloc<float>(size_t(chunk_) * (hv_ * 128));
             normalized_ = clover_vision_workspace_aliases_ ? recurrent_output_ : alloc<float>(size_t(chunk_) * (hv_ * 128));
             router_ = alloc<float>(size_t(chunk_) * (experts_)); expert_ids_ = alloc<int32_t>(size_t(chunk_) * (picks_)); expert_weights_ = alloc<float>(size_t(chunk_) * (picks_));
-            expert_gate_ = alloc<float>(size_t(chunk_) * (picks_ * ff_)); expert_up_ = alloc<float>(size_t(chunk_) * (picks_ * ff_));
+            if(!clover_vision_workspace_aliases_)expert_gate_ = alloc<float>(size_t(chunk_) * (picks_ * ff_));
+            expert_up_ = alloc<float>(size_t(chunk_) * (picks_ * ff_));
             expert_hidden_ = clover_vision_workspace_aliases_ ? expert_gate_ : alloc<float>(size_t(chunk_) * (picks_ * ff_));
-            expert_down_ = alloc<float>(size_t(chunk_) * (picks_ * n_)); shared_gate_ = alloc<float>(size_t(chunk_) * (shared_ff_)); shared_up_ = alloc<float>(size_t(chunk_) * (shared_ff_));
+            if(!clover_vision_workspace_aliases_)expert_down_ = alloc<float>(size_t(chunk_) * (picks_ * n_));
+            shared_gate_ = alloc<float>(size_t(chunk_) * (shared_ff_)); shared_up_ = alloc<float>(size_t(chunk_) * (shared_ff_));
             shared_hidden_ = clover_vision_workspace_aliases_ ? shared_gate_ : alloc<float>(size_t(chunk_) * (shared_ff_));
             shared_down_ = alloc<float>(size_t(chunk_) * (n_)); shared_scalar_ = alloc<float>(size_t(chunk_) * (1));
-            query_ = alloc<float>(size_t(chunk_) * (heads_ * 256));
+            // enqueue() completes attention/GDN before moe(). At that boundary
+            // all these views are dead; the expert projections replace them.
+            query_ = clover_vision_workspace_aliases_ ? expert_down_+phase.query_offset
+                : alloc<float>(size_t(chunk_) * (heads_ * 256));
             // attention() and gdn() are alternative branches of one layer.
             // Each writes its gate before consuming it on the in-order queue.
             query_gate_ = clover_vision_workspace_aliases_
@@ -898,7 +914,9 @@ public:
             key_ = alloc<float>(size_t(chunk_) * (kv_heads_ * 256)); value_ = alloc<float>(size_t(chunk_) * (kv_heads_ * 256));
             const size_t attention_rows = size_t(heads_) * (kv_int8_ ? std::min(chunk_, verify_capacity) : 1);
             scores_ = alloc<float>(attention_rows * context);
-            attention_partial_ = alloc<float>(attention_rows * ((context + 255) / 256) * 256); attention_ = alloc<float>(size_t(chunk_) * (heads_ * 256));
+            attention_partial_ = alloc<float>(attention_rows * ((context + 255) / 256) * 256);
+            attention_ = clover_vision_workspace_aliases_ ? expert_down_+phase.attention_offset
+                : alloc<float>(size_t(chunk_) * (heads_ * 256));
             logits_ = alloc<float>(size_t(g.n_vocab), true);
             expert_counts_ = alloc<int32_t>(experts_, true);
             expert_slots_ = alloc<int32_t>(experts_ * chunk_);
@@ -969,7 +987,7 @@ public:
             print_memory("engine_ready", device);
             context_policy::report(chosen,context_limit,remaining_memory,selected_device.max_allocation);
             if(clover_vision_workspace_aliases_)std::fprintf(stderr,"Intel clover_image_workspace_aliases=1 saved_bytes=%llu MTP=0 single_owned_allocation_per_alias=1\n",
-                (unsigned long long)(uint64_t(chunk_)*20992*sizeof(float)));
+                (unsigned long long)(uint64_t(chunk_)*45568*sizeof(float)));
             print_moe_routes();
             if(clover_){std::printf("INFO clover_fused_t1_hint=%d\n",int(clover_fused_t1_hint_));std::fflush(stdout);}
         } catch (...) {

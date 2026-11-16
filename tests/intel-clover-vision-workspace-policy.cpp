@@ -15,14 +15,14 @@ int main()try{
         cp::QwenSpec original;original.chunk=chunk;original.int8=true;original.vision=true;original.device_state=device;
         auto alias=original;alias.clover_vision_aliases=true;
         const auto a=cp::qwen(context,original),b=cp::qwen(context,alias);
-        // Five independently counted dead/mutually-exclusive sources: expert
-        // hidden, shared hidden, GDN norm, convolution, and attention gate.
-        const uint64_t saved=(8*512+512+32*128+(2*16+32)*128+16*256)*chunk*sizeof(float);
+        // The first five aliases save 41 MiB at chunk512. Reusing the MoE
+        // owners across whole layer phases removes another 48 MiB exactly.
+        const uint64_t saved=45568*chunk*sizeof(float);
         check(a.owned_device-b.owned_device==saved);check(a.device-b.device==saved);
         check(a.owned_host_visible-b.owned_host_visible==(device?0:saved));
         check(a.host_visible-b.host_visible==(device?0:saved));
         check(a.cache==b.cache&&a.host_only==b.host_only&&a.largest==b.largest);
-        check(saved==(chunk==512?41ull<<20:chunk*83968));
+        check(saved==(chunk==512?89ull<<20:chunk*182272));
     }
     for(bool vision:{false,true})for(bool mtp:{false,true})if(!vision||mtp){
         cp::QwenSpec bad;bad.clover_vision_aliases=true;bad.vision=vision;bad.mtp=mtp;
@@ -45,12 +45,32 @@ int main()try{
         check(std::equal(gdn_gate.begin(),gdn_gate.end(),attention_reference.begin()));
     }
     bool mismatch=false;try{v::clover_layer_gate_alias(gdn_gate.data(),4096,2048);}catch(const std::logic_error&){mismatch=true;}check(mismatch);
+    for(uint64_t chunk:{1,7,256,512}){
+        const auto p=cp::clover_phase_layout(chunk,8192,4096,4096,16384,4096,4096);
+        std::vector<float> routed(size_t(p.routed_count)),gate(size_t(p.gate_count));
+        const std::array<float*,2> phase_owners{routed.data(),gate.data()};
+        float *raw=routed.data(),*query=routed.data()+p.query_offset,*attention=routed.data()+p.attention_offset;
+        check(raw+chunk*8192==query&&query+chunk*4096==attention&&attention+chunk*4096==raw+p.routed_count);
+        check(p.gate_count==chunk*4096&&phase_owners.size()==2);
+        // Both live full-attention outputs and its raw producer occupy
+        // disjoint regions; GDN substitutes query, then MoE owns all cells.
+        std::fill_n(raw,chunk*8192,1.f);std::fill_n(query,chunk*4096,2.f);std::fill_n(attention,chunk*4096,3.f);
+        check(raw[chunk*8192-1]==1.f&&query[chunk*4096-1]==2.f&&attention[chunk*4096-1]==3.f);
+        std::fill(routed.begin(),routed.end(),4.f);std::fill(gate.begin(),gate.end(),5.f);
+        check(std::all_of(routed.begin(),routed.end(),[](float x){return x==4.f;}));
+    }
+    for(const auto widths:std::array<std::array<uint64_t,6>,3>{{{8192,4096,2048,16384,4096,4096},
+        {8192,4096,4096,8192,4096,4096},{8192,4096,4096,16384,2048,4096}}}){
+        bool rejected=false;try{(void)cp::clover_phase_layout(512,widths[0],widths[1],widths[2],widths[3],widths[4],widths[5]);}
+        catch(const std::logic_error&){rejected=true;}check(rejected);
+    }
     const auto initial=cp::qwen(2048,original);
     si::MemoryBudget memory;memory.integrated=true;memory.wddm_known=true;
-    memory.wddm_available=1268115988; // actual Clover APIv3 WDDM remainder
+    memory.wddm_available=1232140820; // actual installed Clover UI WDDM remainder
     memory.available_physical=memory.available_commit=initial.uma_total()+4*si::GiB+si::GiB;
-    const auto prior_four=[&](uint64_t c){auto p=cp::qwen(c,alias);p.device+=8ull<<20;p.owned_device+=8ull<<20;return p;};
-    const auto a=cp::select(0,131072,memory,16*si::GiB,prior_four);
+    const auto prior_five=[&](uint64_t c){auto p=cp::qwen(c,alias);p.device+=48ull<<20;p.owned_device+=48ull<<20;return p;};
+    check(prior_five(2048).device==424188060);
+    const auto a=cp::select(0,131072,memory,16*si::GiB,prior_five);
     const auto b=cp::select(0,131072,memory,16*si::GiB,[&](uint64_t c){return cp::qwen(c,alias);});
     check(a.tokens==2048&&b.tokens==4096);
     check(memory.wddm_available-b.bytes.device>=si::uma_wddm_headroom);
