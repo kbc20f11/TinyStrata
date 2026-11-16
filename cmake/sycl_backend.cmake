@@ -186,3 +186,6 @@ target_link_libraries(intel_gemma_vision_policy_test PRIVATE strata_native_paths
 add_test(NAME intel_gemma_vision_policy COMMAND intel_gemma_vision_policy_test)
 add_executable(intel_gemma_vision_test EXCLUDE_FROM_ALL tests/intel-gemma-vision.cpp)
 target_link_libraries(intel_gemma_vision_test PRIVATE tinystrata_intel strata_native_paths)
+if(TINYSTRATA_VISION)
+  include(cmake/intel_vision.cmake)
+endif()

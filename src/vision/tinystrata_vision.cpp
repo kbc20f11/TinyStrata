@@ -24,6 +24,9 @@
 #include "mtmd.h"
 #include "mtmd-helper.h"
 #include "strata/common/utf8_args.hpp"
+#ifdef TINYSTRATA_VISION_SYCL
+#include "strata/vision/intel_device.hpp"
+#endif
 
 #include <algorithm>
 #if !defined(_WIN32)
@@ -31,6 +34,7 @@
 #include <unistd.h>
 #endif
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -46,8 +50,35 @@ namespace {
 
 #if defined(TINYSTRATA_VISION_HIP)
 constexpr const char* gpu_backend = "ROCm";
+#elif defined(TINYSTRATA_VISION_SYCL)
+constexpr const char* gpu_backend = "SYCL";
 #else
 constexpr const char* gpu_backend = "CUDA";
+#endif
+
+#ifdef TINYSTRATA_VISION_SYCL
+std::string json_text(const std::string& value) {
+    constexpr char hex[] = "0123456789abcdef";
+    std::string result = "\"";
+    for (unsigned char c : value) {
+        if (c == '"' || c == '\\') { result += '\\'; result += char(c); }
+        else if (c < 32) { result += "\\u00"; result += hex[c >> 4]; result += hex[c & 15]; }
+        else result += char(c);
+    }
+    return result + '"';
+}
+bool valid_luid(const std::string& value) {
+    if (value.size() != 17 || value[8] != ':') return false;
+    for (size_t i = 0; i < value.size(); ++i)
+        if (i != 8 && !std::isxdigit(static_cast<unsigned char>(value[i]))) return false;
+    return true;
+}
+void print_device(const char* name, const strata::intel::DeviceInfo& identity) {
+    std::printf("{\"name\":%s,\"description\":%s,\"vendor_id\":%u,\"device_id\":%u,"
+                "\"integrated\":%s,\"adapter_luid\":%s,\"adapter_node_mask\":%u}",
+        json_text(name).c_str(), json_text(identity.name).c_str(), identity.vendor_id, identity.device_id,
+        identity.integrated ? "true" : "false", json_text(identity.adapter_luid).c_str(), identity.adapter_node_mask);
+}
 #endif
 
 void quiet_log(ggml_log_level level, const char* text, void*) {
@@ -99,6 +130,10 @@ bool parse_enc(const std::string& line, std::string& img, std::string& out) {
 int vision_main(int argc, char** argv) {
     std::string mmproj, model, device_name;
     bool gpu = false, capabilities = false;
+#ifdef TINYSTRATA_VISION_SYCL
+    std::string device_luid;
+    bool device_info = false;
+#endif
     int threads = 0, max_tokens = 0, min_tokens = 0;
     llama_flash_attn_type fa = LLAMA_FLASH_ATTN_TYPE_AUTO;
     bool fa_given = false;
@@ -113,6 +148,14 @@ int vision_main(int argc, char** argv) {
         else if (a == "--gpu") gpu = true;
         else if (a == "--device") device_name = next();
         else if (a == "--capabilities") capabilities = true;
+#ifdef TINYSTRATA_VISION_SYCL
+        else if (a == "--device-info") device_info = true;
+        else if (a == "--device-luid") {
+            device_luid = next();
+            if (!valid_luid(device_luid)) throw std::invalid_argument("--device-luid requires eight hex digits, colon, eight hex digits");
+            for (char& c : device_luid) c = char(std::tolower(static_cast<unsigned char>(c)));
+        }
+#endif
         else if (a == "--threads") threads = std::atoi(next().c_str());
         else if (a == "--max-tokens") max_tokens = std::atoi(next().c_str());
         else if (a == "--min-tokens") min_tokens = std::atoi(next().c_str());   // mtmd image_min_tokens (#767)
@@ -129,11 +172,43 @@ int vision_main(int argc, char** argv) {
         std::puts("{\"cuda\":true,\"hip\":false,\"backend\":\"cuda\"}");
 #elif defined(TINYSTRATA_VISION_HIP)
         std::puts("{\"cuda\":false,\"hip\":true,\"backend\":\"hip\"}");
+#elif defined(TINYSTRATA_VISION_SYCL)
+        std::puts("{\"cuda\":false,\"hip\":false,\"sycl\":true,\"cpu\":false,\"backend\":\"sycl\",\"device_luid\":true,\"warmup_before_ready\":true}");
 #else
         std::puts("{\"cuda\":false,\"hip\":false,\"backend\":\"cpu\"}");
 #endif
         return 0;
     }
+#ifdef TINYSTRATA_VISION_SYCL
+    if (device_info) {
+        llama_log_set(quiet_log, nullptr);
+        llama_backend_init();
+        std::printf("{\"schema\":1,\"backend\":\"sycl\",\"devices\":[");
+        bool first = true;
+        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+            const auto d = ggml_backend_dev_get(i);
+            const auto type = ggml_backend_dev_type(d);
+            if ((type != GGML_BACKEND_DEVICE_TYPE_GPU && type != GGML_BACKEND_DEVICE_TYPE_IGPU) ||
+                std::strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(d)), gpu_backend)) continue;
+            try {
+                const auto identity = strata::vision::intel_device(ggml_backend_dev_name(d));
+                if (!first) std::putchar(',');
+                print_device(ggml_backend_dev_name(d), identity); first = false;
+            } catch (const std::exception& error) {
+                std::fprintf(stderr, "tinystrata-vision: unavailable Intel device: %s\n", error.what());
+            }
+        }
+        std::puts("]}");
+        llama_backend_free();
+        return first ? 1 : 0;
+    }
+    // This distribution is a real Intel GPU reader. CPU mode requires a
+    // separately built CPU reader; do not relabel a failed GPU launch as CPU.
+    if (!gpu) {
+        std::puts("ERR Intel SYCL vision requires --gpu; CPU vision requires a CPU encoder executable");
+        return 2;
+    }
+#endif
     if (mmproj.empty() || model.empty()) {
         std::fprintf(stderr, "usage: tinystrata-vision --mmproj <mmproj.gguf> --model <model.gguf> [--gpu] [--threads N] "
                              "[--device GPU_NAME] [--max-tokens N] [--min-tokens N] [--flash-attn on|off|auto]\n");
@@ -179,12 +254,23 @@ int vision_main(int argc, char** argv) {
     mtmd_helper_log_set(quiet_log, nullptr);
     llama_backend_init();
     ggml_backend_dev_t gpu_device = nullptr;
+#ifdef TINYSTRATA_VISION_SYCL
+    strata::intel::DeviceInfo gpu_identity;
+#endif
     if (gpu) {
         for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
             ggml_backend_dev_t device = ggml_backend_dev_get(i);
-            if (ggml_backend_dev_type(device) != GGML_BACKEND_DEVICE_TYPE_GPU ||
+            const auto type = ggml_backend_dev_type(device);
+            if ((type != GGML_BACKEND_DEVICE_TYPE_GPU && type != GGML_BACKEND_DEVICE_TYPE_IGPU) ||
                 std::strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(device)), gpu_backend) != 0) continue;
             if (!device_name.empty() && device_name != ggml_backend_dev_name(device)) continue;
+#ifdef TINYSTRATA_VISION_SYCL
+            try {
+                const auto identity = strata::vision::intel_device(ggml_backend_dev_name(device));
+                if (!device_luid.empty() && identity.adapter_luid != device_luid) continue;
+                gpu_identity = identity;
+            } catch (const std::exception&) { continue; }
+#endif
             gpu_device = device;
             break;
         }
@@ -197,6 +283,10 @@ int vision_main(int argc, char** argv) {
         }
         std::fprintf(stderr, "tinystrata-vision: using %s (%s)\n", ggml_backend_dev_name(gpu_device),
                      ggml_backend_dev_description(gpu_device));
+#ifdef TINYSTRATA_VISION_SYCL
+        std::fprintf(stderr, "tinystrata-vision: backend=sycl vendor_id=%u device_id=%u integrated=%d adapter_luid=%s\n",
+            gpu_identity.vendor_id, gpu_identity.device_id, int(gpu_identity.integrated), gpu_identity.adapter_luid.c_str());
+#endif
     }
 
     const auto load_t0 = std::chrono::steady_clock::now();
@@ -346,6 +436,9 @@ int vision_main(int argc, char** argv) {
             return 1;
         }
     }
+#ifdef TINYSTRATA_VISION_SYCL
+    strata::intel::print_memory("vision_ready", gpu_identity);
+#endif
     std::printf("READY %d\n", n_embd);
     std::fflush(stdout);
 
