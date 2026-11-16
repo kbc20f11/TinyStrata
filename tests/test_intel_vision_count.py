@@ -1,26 +1,43 @@
 """CPU-only resident-encoder token planning; no image decoding or GPU work."""
 import base64
+from contextlib import nullcontext
 import hashlib
 import io
 from pathlib import Path
 import queue
 import sys
+import struct
 import threading
 from types import SimpleNamespace
 import unittest
 from unittest import mock
+import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from PIL import Image
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
 from serve.frontend import ChatTemplate, openai_to_messages
 from serve.server import ByteTokenizer, MockEngine, Service, Vision
 
 
 def picture(width=320, height=640, format="PNG"):
+    if format == "PNG":
+        def chunk(name, data):
+            return struct.pack(">I", len(data)) + name + data + struct.pack(">I", zlib.crc32(name + data))
+        return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) +
+                chunk(b"IDAT", zlib.compress((b"\0" + b"\0" * (width * 3)) * height)) + chunk(b"IEND", b""))
+    if Image is None:
+        return b"unsupported"
     output = io.BytesIO()
     Image.new("RGB", (width, height)).save(output, format=format)
     return output.getvalue()
+
+
+def no_pixels():
+    return mock.patch.object(Image.Image, "load", side_effect=AssertionError("Pixel decode")) if Image else nullcontext()
 
 
 def resident(reply="TOKENS 200 10 20\n", *, enabled=True, maximum=4096):
@@ -38,12 +55,20 @@ def resident(reply="TOKENS 200 10 20\n", *, enabled=True, maximum=4096):
 
 
 class DimensionCountTests(unittest.TestCase):
+    def test_header_planning_works_when_pillow_is_not_installed(self):
+        formats = ("PNG", "JPEG", "GIF", "BMP") if Image else ("PNG",)
+        fixtures = [picture(format=format) for format in formats]
+        with mock.patch.dict(sys.modules, {"PIL":None,"PIL.Image":None}):
+            for data in fixtures:
+                self.assertEqual(Vision.inline_dimensions(data), (320, 640))
+                self.assertEqual(resident().count_tokens(data), 200)
+
     def test_inline_headers_need_no_pixel_decode_fetch_file_or_model_load(self):
-        for format in ("PNG", "JPEG", "GIF", "BMP"):
+        for format in (("PNG", "JPEG", "GIF", "BMP") if Image else ("PNG",)):
             data = picture(format=format)
             url = "data:image/" + format.lower() + ";base64," + base64.b64encode(data).decode()
             with self.subTest(format=format), \
-                 mock.patch.object(Image.Image, "load", side_effect=AssertionError("Pixel decode")), \
+                 no_pixels(), \
                  mock.patch.object(Vision, "load", side_effect=AssertionError("File/network load")), \
                  mock.patch.object(Vision, "restart", side_effect=AssertionError("Model start")):
                 self.assertEqual(Vision.inline_dimensions(data), (320, 640))
@@ -126,7 +151,7 @@ class ServiceCountTests(unittest.TestCase):
         request = self.request([self.inline])
         with mock.patch.object(self.engine, "generate", side_effect=AssertionError("GPU turn")), \
              mock.patch.object(Vision, "restart", side_effect=AssertionError("Start")), \
-             mock.patch.object(Image.Image, "load", side_effect=AssertionError("Decode pixels")):
+             no_pixels():
             counted = self.service.chat_token_count(request)
         self.assertEqual(counted["prompt_tokens"], self.raw_count(request) + 1036 - 1)
         self.assertTrue(counted["exact"])
@@ -142,7 +167,7 @@ class ServiceCountTests(unittest.TestCase):
         self.assertFalse(counted["exact"])
         self.assertEqual(counted["images_estimated"], 1)
 
-    def test_cuda_text_and_gemma_keep_existing_policy(self):
+    def test_cuda_keeps_existing_policy(self):
         request = self.request([self.inline])
         self.service.backend = "cuda"
         with mock.patch.object(self.service.vision, "count_tokens", side_effect=AssertionError("CUDA COUNT")):

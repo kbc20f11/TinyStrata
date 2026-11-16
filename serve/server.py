@@ -2579,14 +2579,49 @@ class Vision:
                 return None
             if not data or len(data) > IMAGE_URL_MAX:
                 return None
-            import io
-            from PIL import Image
-            with Image.open(io.BytesIO(data)) as image:
-                # These formats pass through normalize(). Unsupported conversions
-                # retain the old conservative cap instead of guessing their shape.
-                if image.format not in ("PNG", "JPEG", "GIF", "BMP"):
+            # The formats which normalize() passes straight to stb_image have
+            # unambiguous header dimensions. Keep API-only installations free
+            # of a Pillow dependency and never invoke a pixel decoder here.
+            if data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) >= 33 and data[8:16] == b"\0\0\0\rIHDR":
+                width, height = struct.unpack_from(">II", data, 16)
+            elif data[:6] in (b"GIF87a", b"GIF89a") and len(data) >= 13:
+                width, height = struct.unpack_from("<HH", data, 6)
+            elif data[:2] == b"BM" and len(data) >= 26:
+                header = struct.unpack_from("<I", data, 14)[0]
+                if header == 12:
+                    width, height = struct.unpack_from("<HH", data, 18)
+                elif header in (40, 56, 108, 124) and len(data) >= 14 + header:
+                    width, height = struct.unpack_from("<ii", data, 18)
+                    height = abs(height)  # top-down DIBs use a negative height
+                else:
                     return None
-                width, height = image.size
+            elif data[:2] == b"\xff\xd8":
+                offset = 2
+                while offset < len(data):
+                    if data[offset] != 255:
+                        return None
+                    while offset < len(data) and data[offset] == 255:
+                        offset += 1
+                    if offset >= len(data):
+                        return None
+                    marker, offset = data[offset], offset + 1
+                    if marker in (0, 0xD8, 0xD9, 0xDA) or 0xD0 <= marker <= 0xD7:
+                        return None
+                    if offset + 2 > len(data):
+                        return None
+                    size = struct.unpack_from(">H", data, offset)[0]
+                    if size < 2 or offset + size > len(data):
+                        return None
+                    if marker in (0xC0, 0xC1, 0xC2):
+                        if size < 8:
+                            return None
+                        height, width = struct.unpack_from(">HH", data, offset + 3)
+                        break
+                    offset += size
+                else:
+                    return None
+            else:
+                return None
             if (type(width) is not int or type(height) is not int or
                     not 0 < width <= 65536 or not 0 < height <= 65536):
                 return None
