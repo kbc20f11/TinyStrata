@@ -3,6 +3,11 @@ TinyStrata Intel image encoder third-party notices
 llama.cpp/MTMD source revision: 3cf03257f219afbe7334045ff7c6a06ac68c627d
 https://github.com/ggml-org/llama.cpp
 
+The Intel encoder applies reviewed, build-local attention workspace and FP32
+accumulation patches. The original dependency checkout remains unchanged.
+The encoder's --capabilities output records the base revision and exact patch
+hashes used for its build.
+
 This file covers the statically linked image-encoder sources. Intel runtime
 redistribution terms and third-party notices are shipped separately under
 licenses/compiler, licenses/mkl, licenses/tbb, licenses/tcm, and licenses/umf.

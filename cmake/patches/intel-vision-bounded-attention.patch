@@ -1,0 +1,23 @@
+--- a/ggml/src/ggml-sycl/fattn-common.hpp
++++ b/ggml/src/ggml-sycl/fattn-common.hpp
+@@ -1093,10 +1093,20 @@
+                 efficiency_percent_best = efficiency_percent;
+                 parallel_blocks = parallel_blocks_test;
+             }
+         }
+ 
++#if defined(TINYSTRATA_INTEL_VISION_BOUNDED_FATTN)
++        // Large image batches already fill the GPU with independent query
++        // tiles. Splitting their KV range again duplicates the entire output
++        // into a retained scratch buffer. Keep one partition in this case;
++        // the same tiled kernel accumulates all keys at the existing precision.
++        if (Q->ne[1] >= 1024 && ntiles_total >= blocks_per_wave) {
++            parallel_blocks = 1;
++        }
++#endif
++
+         blocks_num.x = ntiles_x;
+         blocks_num.y = parallel_blocks;
+         blocks_num.z = ntiles_z_gqa*K->ne[2]*Q->ne[3];
+ 
+         if (parallel_blocks > 1) {

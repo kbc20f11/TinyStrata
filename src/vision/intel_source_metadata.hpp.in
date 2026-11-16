@@ -1,0 +1,6 @@
+#pragma once
+
+namespace strata::vision {
+inline constexpr const char source_metadata_json[] =
+    R"tsv("llama_base_commit":"3cf03257f219afbe7334045ff7c6a06ac68c627d","vision_source_patch_hashes":[@_vision_patch_hash_json@],"encoder_compile_commit":"@_vision_compile_commit@","encoder_source_dirty":@_vision_source_dirty@)tsv";
+}

@@ -27,6 +27,7 @@
 #include "strata/vision/protocol.hpp"
 #ifdef TINYSTRATA_VISION_SYCL
 #include "strata/vision/intel_device.hpp"
+#include "intel-vision-source.hpp"
 #endif
 
 #include <algorithm>
@@ -83,7 +84,8 @@ void print_device(const char* name, const strata::intel::DeviceInfo& identity) {
 #endif
 
 void quiet_log(ggml_log_level level, const char* text, void*) {
-    if (level >= GGML_LOG_LEVEL_WARN || std::strstr(text, "CLIP using ")) std::fputs(text, stderr);
+    if (level >= GGML_LOG_LEVEL_WARN || std::strstr(text, "CLIP using ") ||
+        std::getenv("TINYSTRATA_VISION_MEMORY_DIAGNOSTICS")) std::fputs(text, stderr);
 }
 
 // Clover uses the original Qwen3.6 input interface. Other
@@ -162,7 +164,7 @@ int vision_main(int argc, char** argv) {
 #elif defined(TINYSTRATA_VISION_HIP)
         std::puts("{\"cuda\":false,\"hip\":true,\"backend\":\"hip\"}");
 #elif defined(TINYSTRATA_VISION_SYCL)
-        std::puts("{\"cuda\":false,\"hip\":false,\"sycl\":true,\"cpu\":false,\"backend\":\"sycl\",\"device_luid\":true,\"warmup_before_ready\":true,\"input_protocol\":\"enc-tabs\"}");
+        std::printf("{\"cuda\":false,\"hip\":false,\"sycl\":true,\"cpu\":false,\"backend\":\"sycl\",\"device_luid\":true,\"warmup_before_ready\":true,\"input_protocol\":\"enc-tabs\",%s}\n", strata::vision::source_metadata_json);
 #else
         std::puts("{\"cuda\":false,\"hip\":false,\"backend\":\"cpu\"}");
 #endif
