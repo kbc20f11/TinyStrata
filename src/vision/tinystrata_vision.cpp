@@ -24,6 +24,7 @@
 #include "mtmd.h"
 #include "mtmd-helper.h"
 #include "strata/common/utf8_args.hpp"
+#include "strata/vision/protocol.hpp"
 #ifdef TINYSTRATA_VISION_SYCL
 #include "strata/vision/intel_device.hpp"
 #endif
@@ -113,18 +114,6 @@ bool clover_projector_compatible(const std::string& path) {
     return valid;
 }
 
-// "ENC <image> <out>": paths may contain spaces, so the image path ends at the last " " before the output path;
-// the server always writes paths without spaces, but a user calling the tool by hand might not
-bool parse_enc(const std::string& line, std::string& img, std::string& out) {
-    if (line.rfind("ENC ", 0) != 0) return false;
-    const std::string rest = line.substr(4);
-    const size_t sp = rest.rfind(' ');
-    if (sp == std::string::npos || sp == 0) return false;
-    img = rest.substr(0, sp);
-    out = rest.substr(sp + 1);
-    return !img.empty() && !out.empty();
-}
-
 }  // namespace
 
 int vision_main(int argc, char** argv) {
@@ -173,7 +162,7 @@ int vision_main(int argc, char** argv) {
 #elif defined(TINYSTRATA_VISION_HIP)
         std::puts("{\"cuda\":false,\"hip\":true,\"backend\":\"hip\"}");
 #elif defined(TINYSTRATA_VISION_SYCL)
-        std::puts("{\"cuda\":false,\"hip\":false,\"sycl\":true,\"cpu\":false,\"backend\":\"sycl\",\"device_luid\":true,\"warmup_before_ready\":true}");
+        std::puts("{\"cuda\":false,\"hip\":false,\"sycl\":true,\"cpu\":false,\"backend\":\"sycl\",\"device_luid\":true,\"warmup_before_ready\":true,\"input_protocol\":\"enc-tabs\"}");
 #else
         std::puts("{\"cuda\":false,\"hip\":false,\"backend\":\"cpu\"}");
 #endif
@@ -447,7 +436,7 @@ int vision_main(int argc, char** argv) {
         while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
         if (line == "QUIT") break;
         std::string img, out;
-        if (!parse_enc(line, img, out)) { std::printf("ERR expected: ENC <image> <output>\n"); std::fflush(stdout); continue; }
+        if (!strata::vision::parse_enc(line, img, out)) { std::printf("ERR expected: ENC <image> <output>, or tab-separated ENC fields\n"); std::fflush(stdout); continue; }
         const auto t0 = std::chrono::steady_clock::now();
         mtmd_helper_bitmap_wrapper bw = mtmd_helper_bitmap_init_from_file(ctx, img.c_str(), false,
                                                                             mtmd_helper_init_opt_default());

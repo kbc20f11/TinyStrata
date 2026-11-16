@@ -61,7 +61,13 @@ function(tinystrata_add_intel_vision_encoder)
     "${PROJECT_SOURCE_DIR}/src/intel/device.cpp")
   target_include_directories(ggml-sycl PRIVATE "${PROJECT_SOURCE_DIR}/include"
     "${_vision_llama}/ggml/src/ggml-sycl" "${TINYSTRATA_LEVEL_ZERO_INCLUDE_DIR}")
-  target_compile_definitions(ggml-sycl PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+  target_compile_definitions(ggml-sycl PRIVATE NOMINMAX)
+  # Keep GGML's own Windows header contract: its GLA kernels use the u_int
+  # typedef provided by the normal Windows headers. Only our device probes
+  # inherit the language engine's lean Win32 include policy.
+  set_property(SOURCE "${PROJECT_SOURCE_DIR}/src/vision/intel_device.cpp"
+    "${PROJECT_SOURCE_DIR}/src/intel/device.cpp" TARGET_DIRECTORY ggml-sycl
+    APPEND PROPERTY COMPILE_DEFINITIONS WIN32_LEAN_AND_MEAN)
   target_link_libraries(ggml-sycl PRIVATE "${TINYSTRATA_LEVEL_ZERO_LIBRARY}" dxgi psapi)
   add_executable(tinystrata-vision "${PROJECT_SOURCE_DIR}/src/vision/tinystrata_vision.cpp")
   target_compile_features(tinystrata-vision PRIVATE cxx_std_17)
@@ -71,6 +77,10 @@ function(tinystrata_add_intel_vision_encoder)
   target_link_libraries(tinystrata-vision PRIVATE mtmd llama strata_native_paths)
   set_target_properties(tinystrata-vision PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
   install(TARGETS tinystrata-vision RUNTIME DESTINATION bin)
+  add_executable(intel_vision_protocol_test EXCLUDE_FROM_ALL "${PROJECT_SOURCE_DIR}/tests/intel-vision-protocol.cpp")
+  target_include_directories(intel_vision_protocol_test PRIVATE "${PROJECT_SOURCE_DIR}/include")
+  target_compile_features(intel_vision_protocol_test PRIVATE cxx_std_17)
+  add_test(NAME intel_vision_protocol COMMAND intel_vision_protocol_test)
 endfunction()
 
 tinystrata_add_intel_vision_encoder()
