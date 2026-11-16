@@ -889,7 +889,12 @@ public:
             expert_down_ = alloc<float>(size_t(chunk_) * (picks_ * n_)); shared_gate_ = alloc<float>(size_t(chunk_) * (shared_ff_)); shared_up_ = alloc<float>(size_t(chunk_) * (shared_ff_));
             shared_hidden_ = clover_vision_workspace_aliases_ ? shared_gate_ : alloc<float>(size_t(chunk_) * (shared_ff_));
             shared_down_ = alloc<float>(size_t(chunk_) * (n_)); shared_scalar_ = alloc<float>(size_t(chunk_) * (1));
-            query_ = alloc<float>(size_t(chunk_) * (heads_ * 256)); query_gate_ = alloc<float>(size_t(chunk_) * (heads_ * 256));
+            query_ = alloc<float>(size_t(chunk_) * (heads_ * 256));
+            // attention() and gdn() are alternative branches of one layer.
+            // Each writes its gate before consuming it on the in-order queue.
+            query_gate_ = clover_vision_workspace_aliases_
+                ? qwen_vision::clover_layer_gate_alias(z_,size_t(heads_)*256,size_t(hv_)*128)
+                : alloc<float>(size_t(chunk_) * (heads_ * 256));
             key_ = alloc<float>(size_t(chunk_) * (kv_heads_ * 256)); value_ = alloc<float>(size_t(chunk_) * (kv_heads_ * 256));
             const size_t attention_rows = size_t(heads_) * (kv_int8_ ? std::min(chunk_, verify_capacity) : 1);
             scores_ = alloc<float>(attention_rows * context);
@@ -964,7 +969,7 @@ public:
             print_memory("engine_ready", device);
             context_policy::report(chosen,context_limit,remaining_memory,selected_device.max_allocation);
             if(clover_vision_workspace_aliases_)std::fprintf(stderr,"Intel clover_image_workspace_aliases=1 saved_bytes=%llu MTP=0 single_owned_allocation_per_alias=1\n",
-                (unsigned long long)(uint64_t(chunk_)*16896*sizeof(float)));
+                (unsigned long long)(uint64_t(chunk_)*20992*sizeof(float)));
             print_moe_routes();
             if(clover_){std::printf("INFO clover_fused_t1_hint=%d\n",int(clover_fused_t1_hint_));std::fflush(stdout);}
         } catch (...) {

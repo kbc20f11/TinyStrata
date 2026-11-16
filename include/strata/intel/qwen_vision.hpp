@@ -12,6 +12,13 @@ constexpr uint64_t max_embedding_bytes = 256ull << 20;
 inline bool clover_workspace_aliases(bool clover,bool vision,int mtp) {
     return clover&&vision&&mtp==0;
 }
+// Full-attention query gates and GDN gates belong to mutually exclusive
+// layer branches. Return a non-owning view only for exactly equal row extents.
+inline float* clover_layer_gate_alias(float* recurrent_gate,size_t query_width,size_t recurrent_width) {
+    if(!recurrent_gate||!query_width||query_width!=recurrent_width)
+        throw std::logic_error("Clover layer gate workspace extents differ");
+    return recurrent_gate;
+}
 // Intel's validated Qwen-family geometry is 2,048-wide. Even a one-row
 // picture consumes one pad, bounding the old/new record arrays by this count.
 inline uint64_t host_metadata_reservation(uint64_t context) {

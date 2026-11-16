@@ -1,6 +1,8 @@
 #include "strata/intel/context_policy.hpp"
 #include <cstdio>
 #include <stdexcept>
+#include <array>
+#include <vector>
 namespace cp=strata::intel::context_policy;
 namespace si=strata::intel;
 namespace v=strata::intel::qwen_vision;
@@ -13,14 +15,14 @@ int main()try{
         cp::QwenSpec original;original.chunk=chunk;original.int8=true;original.vision=true;original.device_state=device;
         auto alias=original;alias.clover_vision_aliases=true;
         const auto a=cp::qwen(context,original),b=cp::qwen(context,alias);
-        // Four independently counted dead sources: expert hidden, shared
-        // hidden, GDN normalized output, and causal convolution output.
-        const uint64_t saved=(8*512+512+32*128+(2*16+32)*128)*chunk*sizeof(float);
+        // Five independently counted dead/mutually-exclusive sources: expert
+        // hidden, shared hidden, GDN norm, convolution, and attention gate.
+        const uint64_t saved=(8*512+512+32*128+(2*16+32)*128+16*256)*chunk*sizeof(float);
         check(a.owned_device-b.owned_device==saved);check(a.device-b.device==saved);
         check(a.owned_host_visible-b.owned_host_visible==(device?0:saved));
         check(a.host_visible-b.host_visible==(device?0:saved));
         check(a.cache==b.cache&&a.host_only==b.host_only&&a.largest==b.largest);
-        check(saved==(chunk==512?33ull<<20:chunk*67584));
+        check(saved==(chunk==512?41ull<<20:chunk*83968));
     }
     for(bool vision:{false,true})for(bool mtp:{false,true})if(!vision||mtp){
         cp::QwenSpec bad;bad.clover_vision_aliases=true;bad.vision=vision;bad.mtp=mtp;
@@ -29,11 +31,26 @@ int main()try{
     cp::QwenSpec original;original.chunk=512;original.vision=true;original.int8=true;
     original.device_state=true;original.mkl=true;original.dp4a=true;original.dense_split=true;
     auto alias=original;alias.clover_vision_aliases=true;
+    // Exercise the non-owning gate view across the same 30 GDN / 10 full
+    // attention phase schedule. Each branch completely replaces its producer's
+    // cells before reading; no phase consumes the previous layer's gate.
+    std::array<float,4096> gdn_gate{},attention_reference{};
+    std::vector<float*> owners{gdn_gate.data()};
+    float* attention_gate=v::clover_layer_gate_alias(gdn_gate.data(),16*256,32*128);
+    check(attention_gate==gdn_gate.data()&&owners.size()==1);
+    for(int layer=0;layer<40;++layer){
+        const bool full=(layer+1)%4==0;
+        float* producer=full?attention_gate:gdn_gate.data();
+        for(size_t i=0;i<gdn_gate.size();++i)producer[i]=attention_reference[i]=float(layer*4096+int(i));
+        check(std::equal(gdn_gate.begin(),gdn_gate.end(),attention_reference.begin()));
+    }
+    bool mismatch=false;try{v::clover_layer_gate_alias(gdn_gate.data(),4096,2048);}catch(const std::logic_error&){mismatch=true;}check(mismatch);
     const auto initial=cp::qwen(2048,original);
     si::MemoryBudget memory;memory.integrated=true;memory.wddm_known=true;
-    memory.wddm_available=initial.device+si::uma_wddm_headroom+(8ull<<20);
+    memory.wddm_available=1268115988; // actual Clover APIv3 WDDM remainder
     memory.available_physical=memory.available_commit=initial.uma_total()+4*si::GiB+si::GiB;
-    const auto a=cp::select(0,131072,memory,16*si::GiB,[&](uint64_t c){return cp::qwen(c,original);});
+    const auto prior_four=[&](uint64_t c){auto p=cp::qwen(c,alias);p.device+=8ull<<20;p.owned_device+=8ull<<20;return p;};
+    const auto a=cp::select(0,131072,memory,16*si::GiB,prior_four);
     const auto b=cp::select(0,131072,memory,16*si::GiB,[&](uint64_t c){return cp::qwen(c,alias);});
     check(a.tokens==2048&&b.tokens==4096);
     check(memory.wddm_available-b.bytes.device>=si::uma_wddm_headroom);

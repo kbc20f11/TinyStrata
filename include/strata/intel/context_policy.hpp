@@ -133,7 +133,7 @@ inline Footprint qwen(uint64_t c,const QwenSpec& s={}){
     a(mul(n,4096),4,s.clover_vision_aliases?1:2); // normalized GDN output reuses its input
     a(mul(n,256));a(mul(n,8));a(mul(n,8));a(mul(n,8*512),4,s.clover_vision_aliases?2:3);a(mul(n,8*2048));
     a(mul(n,512),4,s.clover_vision_aliases?2:3);a(mul(n,2048));a(n);
-    a(mul(n,16*256),4,2);a(mul(n,2*256),4,2);
+    a(mul(n,16*256),4,s.clover_vision_aliases?1:2);a(mul(n,2*256),4,2);
     const auto rows=mul(16,s.int8?std::min(n,s.verify_capacity):1);
     a(mul(rows,c));a(mul(rows,round256(c)));a(mul(n,16*256));
     control(s.vocabulary);control(256);a(mul(256,n));
