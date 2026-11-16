@@ -20,7 +20,7 @@ template<class T>struct Buffer{
     void guards()const{for(int i=0;i<16;++i)require(owner[i]==T(guard)&&data[size+i]==T(guard),"Alias operation wrote a canary");}
 };
 void identical(const float* a,const float* b,size_t n,const char* why){
-    if(std::memcmp(a,b,n*sizeof(float)))throw std::runtime_error(why);checked_floats+=n;
+    if(n&&std::memcmp(a,b,n*sizeof(float)))throw std::runtime_error(why);checked_floats+=n;
 }
 float sample(size_t i,int salt){return float(int((i*size_t(salt)+17)%137)-68)/53.f;}
 void silu(sycl::queue& q,int tokens,int width){
