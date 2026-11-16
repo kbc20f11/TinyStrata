@@ -1,5 +1,6 @@
 """CPU-only staging contracts using tiny synthetic PE files and SDK fixtures."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -193,6 +194,38 @@ function Get-Item {
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Unresolved dependency", result.stderr)
         self.assertFalse(self.destination.exists())
+
+    def vision_receipt(self, vision, **changes):
+        data = dict(backend="sycl", encoder_source_dirty=False, encoder_compile_commit="a" * 40,
+                    llama_base_commit="3cf03257f219afbe7334045ff7c6a06ac68c627d",
+                    vision_source_patch_hashes=["b" * 64], executable_sha256=hashlib.sha256(vision.read_bytes()).hexdigest())
+        data.update(changes)
+        receipt = self.root / "encoder-build-receipt.json"
+        receipt.write_text(json.dumps(data), encoding="utf-8")
+        return receipt
+
+    def test_clean_encoder_provenance_round_trips_through_verified_stage(self):
+        vision = self.vision_fixture()
+        receipt = self.vision_receipt(vision)
+        command = self.plan_command() + " -VisionEncoder " + quote(vision) + " -VisionBuildReceipt " + quote(receipt)
+        importer = SCRIPT.with_name("install-intel-runtime.ps1")
+        result = self.powershell("$plan = " + command + "; Write-IntelRuntimeStage $plan | Out-Null; . " + quote(importer) +
+                                 "; (Get-TinyStrataIntelStagePlan " + quote(self.destination) + ").Manifest.VisionEncoder | ConvertTo-Json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        metadata = json.loads(result.stdout)
+        self.assertEqual(metadata["EncoderCompileCommit"], "a" * 40)
+        self.assertEqual(metadata["VisionSourcePatchHashes"], ["b" * 64])
+        self.assertFalse(metadata["EncoderSourceDirty"])
+
+    def test_encoder_provenance_rejects_dirty_or_unbound_builds(self):
+        vision = self.vision_fixture()
+        for bad in (dict(encoder_source_dirty=True), dict(executable_sha256="0" * 64),
+                    dict(vision_source_patch_hashes=["invalid"]), dict(vision_source_patch_hashes=["b" * 64] * 2)):
+            receipt = self.vision_receipt(vision, **bad)
+            command = self.plan_command() + " -VisionEncoder " + quote(vision) + " -VisionBuildReceipt " + quote(receipt)
+            result = self.powershell(command)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(self.destination.exists())
 
     def test_stage_cannot_be_placed_inside_encoder_build(self):
         vision = self.vision_fixture()

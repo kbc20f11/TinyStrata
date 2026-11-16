@@ -91,6 +91,16 @@ function Get-TinyStrataIntelStagePlan {
         foreach ($required in @('tinystrata-vision.exe', 'licenses/TinyStrata/third_party/licenses/llama-vision.txt')) {
             if (-not $names.Contains($required)) { throw "Intel vision payload/license is missing: $required" }
         }
+        if ($vision.PSObject.Properties['EncoderCompileCommit'] -or $vision.PSObject.Properties['VisionSourcePatchHashes']) {
+            $patches = @($vision.VisionSourcePatchHashes)
+            if ([string]$vision.EncoderCompileCommit -notmatch '^[a-f0-9]{40}$' -or
+                $vision.BaselineLlamaCommit -cne $vision.LlamaCommit -or $vision.EncoderSourceDirty -isnot [bool] -or
+                $vision.EncoderSourceDirty -ne $false -or $patches.Count -lt 1 -or $patches.Count -gt 16) { throw 'Invalid Intel vision source provenance.' }
+            $unique = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+            foreach ($hash in $patches) {
+                if ($hash -isnot [string] -or $hash -notmatch '^[a-f0-9]{64}$' -or -not $unique.Add($hash)) { throw 'Invalid Intel vision source patch inventory.' }
+            }
+        }
     } elseif ($names.Contains('tinystrata-vision.exe') -or $manifest.VisionEncoder) {
         throw 'Intel vision encoder payload requires an enabled, explicit vision manifest.'
     }

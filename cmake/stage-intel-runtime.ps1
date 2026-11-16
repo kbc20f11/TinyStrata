@@ -16,6 +16,7 @@ param(
     [string]$VcRuntimeDirectory,
     [string]$VcRedistributionNotice,
     [string]$VisionEncoder,
+    [string]$VisionBuildReceipt,
     [switch]$PlanOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -134,7 +135,7 @@ function Get-IntelRuntimePlan {
           [string]$TcmRoot = 'C:\Program Files (x86)\Intel\oneAPI\tcm\latest',
           [string]$UmfRoot = 'C:\Program Files (x86)\Intel\oneAPI\umf\latest',
           [string]$SystemDirectory = [Environment]::SystemDirectory,
-          [string]$VcRuntimeDirectory, [string]$VcRedistributionNotice, [string]$VisionEncoder)
+          [string]$VcRuntimeDirectory, [string]$VcRedistributionNotice, [string]$VisionEncoder, [string]$VisionBuildReceipt)
     $mkl = $null; $tbb = $null; $tcm = $null; $umf = $null
     $exe = (Get-Item -LiteralPath $ExecutablePath -ErrorAction Stop).FullName
     $vision = $null
@@ -142,6 +143,21 @@ function Get-IntelRuntimePlan {
         $vision = (Get-Item -LiteralPath $VisionEncoder -ErrorAction Stop).FullName
         if (-not (Test-Path -LiteralPath $vision -PathType Leaf) -or [IO.Path]::GetFileName($vision) -ne 'tinystrata-vision.exe') {
             throw 'VisionEncoder must be the built tinystrata-vision.exe file.'
+        }
+    }
+    $visionSource = $null
+    if ($VisionBuildReceipt) {
+        if (-not $vision -or -not (Test-Path -LiteralPath $VisionBuildReceipt -PathType Leaf) -or
+            (Get-Item -LiteralPath $VisionBuildReceipt).Length -gt 65536) { throw 'A bounded vision build receipt requires an image encoder.' }
+        $visionSource = Get-Content -LiteralPath $VisionBuildReceipt -Raw -Encoding UTF8 | ConvertFrom-Json
+        $patches = @($visionSource.vision_source_patch_hashes)
+        if ($visionSource.backend -cne 'sycl' -or $visionSource.encoder_source_dirty -isnot [bool] -or
+            $visionSource.encoder_source_dirty -ne $false -or [string]$visionSource.encoder_compile_commit -notmatch '^[a-f0-9]{40}$' -or
+            $visionSource.llama_base_commit -cne '3cf03257f219afbe7334045ff7c6a06ac68c627d' -or $patches.Count -lt 1 -or $patches.Count -gt 16 -or
+            [string]$visionSource.executable_sha256 -cne (Get-FileHash -LiteralPath $vision -Algorithm SHA256).Hash.ToLowerInvariant()) { throw 'Vision build receipt does not bind a clean, pinned Intel encoder executable.' }
+        $unique = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+        foreach ($hash in $patches) {
+            if ($hash -isnot [string] -or $hash -notmatch '^[a-f0-9]{64}$' -or -not $unique.Add($hash)) { throw 'Invalid or duplicate vision source patch hash.' }
         }
     }
     $compiler = (Get-Item -LiteralPath $CompilerRoot -ErrorAction Stop).FullName
@@ -294,11 +310,21 @@ function Get-IntelRuntimePlan {
         $info = Get-Item -LiteralPath $entry.Source -ErrorAction Stop
         $files += [pscustomobject]@{ Source = $info.FullName; RelativePath = $entry.RelativePath; Component = $entry.Component; RedistributionEvidence = 'license / attribution'; Bytes = (Get-IntelPayloadLength $info.FullName); FileVersion = $null; Sha256 = (Get-FileHash -LiteralPath $info.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
     }
+    $visionMetadata = $null
+    if ($vision) {
+        $visionMetadata = [pscustomobject]@{ RelativePath='tinystrata-vision.exe'; Backend='sycl'; InputProtocol='enc-tabs'; WarmupBeforeReady=$true; LlamaCommit='3cf03257f219afbe7334045ff7c6a06ac68c627d' }
+        if ($visionSource) {
+            $visionMetadata | Add-Member EncoderCompileCommit $visionSource.encoder_compile_commit
+            $visionMetadata | Add-Member BaselineLlamaCommit $visionSource.llama_base_commit
+            $visionMetadata | Add-Member VisionSourcePatchHashes @($visionSource.vision_source_patch_hashes)
+            $visionMetadata | Add-Member EncoderSourceDirty $false
+        }
+    }
     return [pscustomobject][ordered]@{
         Schema = 1; Backend = 'sycl'; Experimental = $true; ModelFamilies = @(); ModelsIncluded = $false
         CreatedUtc = [DateTime]::UtcNow.ToString('o'); Destination = $destinationPath; ExecutablePath = $exe
         VisionEnabled = [bool]$vision; VisionEncoderPath = $vision
-        VisionEncoder = $(if ($vision) { [pscustomobject]@{ RelativePath='tinystrata-vision.exe'; Backend='sycl'; InputProtocol='enc-tabs'; WarmupBeforeReady=$true; LlamaCommit='3cf03257f219afbe7334045ff7c6a06ac68c627d' } } else { $null })
+        VisionEncoder = $visionMetadata
         CompilerRoot = $compiler; MklEnabled = $mklEnabled; MklRoot = $(if ($mklEnabled) { $mkl } else { $null }); TbbRoot = $(if ($mklEnabled) { $tbb } else { $null })
         TcmRoot = $tcm; UmfRoot = $umf
         VcRuntimeDirectory = $VcRuntimeDirectory; VcRedistributionNotice = $VcRedistributionNotice
@@ -327,7 +353,7 @@ function Write-IntelRuntimeStage {
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
-    $plan = Get-IntelRuntimePlan -ExecutablePath $ExecutablePath -Destination $Destination -VisionEncoder $VisionEncoder -CompilerRoot $CompilerRoot -MklRoot $MklRoot -TbbRoot $TbbRoot -TcmRoot $TcmRoot -UmfRoot $UmfRoot -VcRuntimeDirectory $VcRuntimeDirectory -VcRedistributionNotice $VcRedistributionNotice
+    $plan = Get-IntelRuntimePlan -ExecutablePath $ExecutablePath -Destination $Destination -VisionEncoder $VisionEncoder -VisionBuildReceipt $VisionBuildReceipt -CompilerRoot $CompilerRoot -MklRoot $MklRoot -TbbRoot $TbbRoot -TcmRoot $TcmRoot -UmfRoot $UmfRoot -VcRuntimeDirectory $VcRuntimeDirectory -VcRedistributionNotice $VcRedistributionNotice
     if ($PlanOnly) { $plan | ConvertTo-Json -Depth 8 }
     else { Write-Output (Write-IntelRuntimeStage $plan) }
 }
