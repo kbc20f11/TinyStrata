@@ -32,6 +32,12 @@ int main() try {
     v::Input original;std::string error;
     check(v::load(utf8(file),ids,width,context,pad,original,error));check(original.images.size()==2);
     check(original.embeddings.size()==6*width && original.positions.size()==context*3);
+    check(original.embeddings.capacity()==original.embeddings.size());
+    check(original.images.capacity()==6); // every image record needs at least one pad
+    v::Input legacy;
+    check(v::canonical::load(utf8(file),ids,width,context,legacy,error,pad));
+    check(legacy.embeddings==original.embeddings && legacy.positions==original.positions);
+    check(v::canonical::same_prefix(legacy,original,ids.size(),width));
     const int32_t expected[][3]={{0,0,0},{1,1,1},{1,1,2},{1,2,1},{1,2,2},{3,3,3},{4,4,4},{5,5,5},{5,5,6},{7,7,7},{8,8,8}};
     for(size_t i=0;i<std::size(expected);++i)for(int j=0;j<3;++j)check(original.positions[3*i+j]==expected[i][j]);
     check(v::canonical::whole_prefix(original,1));check(!v::canonical::whole_prefix(original,2));
@@ -75,7 +81,9 @@ int main() try {
         const auto a=cp::qwen(c,off),b=cp::qwen(c,on);
         check(b.device-a.device==c*3*4);check(b.owned_device-a.owned_device==c*3*4);
         check(b.host_visible-a.host_visible==(device?0:c*3*4));
-        check(b.host_only-a.host_only==2*v::max_embedding_bytes+c*3*4*2);check(a.cache==b.cache);
+        const auto metadata=2*std::min(c,v::max_embedding_bytes/sizeof(float)/2048)*sizeof(v::canonical::Image);
+        check(v::host_metadata_reservation(c)==metadata);
+        check(b.host_only-a.host_only==2*v::max_embedding_bytes+c*3*4*2+metadata);check(a.cache==b.cache);
     }
     using strata::intel::GiB;using strata::intel::MemoryBudget;
     cp::QwenSpec shape;shape.chunk=1024;shape.int8=true;shape.mtp=true;shape.mkl=true;shape.dp4a=true;shape.device_state=true;

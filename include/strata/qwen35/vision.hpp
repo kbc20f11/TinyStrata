@@ -71,7 +71,8 @@ inline std::vector<int32_t> identity_positions(int context) {
 // SVE1: int32 magic, rows, nx, ny, embedding width; then row-major FP32 embeddings.
 // Bound every allocation by image-pad tokens already present in a validated prompt.
 inline bool load(const std::string& path, const std::vector<int32_t>& ids, int width, int context,
-                 Input& result, std::string& error, int32_t image_pad = kImagePad) {
+                 Input& result, std::string& error, int32_t image_pad = kImagePad,
+                 bool exact_payload_allocation = false) {
     Input input;
     const size_t pads = (size_t) std::count(ids.begin(), ids.end(), image_pad);
     if (width <= 0 || context <= 0 || ids.empty() || ids.size() > (size_t) context || pads == 0) {
@@ -80,6 +81,13 @@ inline bool load(const std::string& path, const std::vector<int32_t>& ids, int w
     }
     std::ifstream file(std::filesystem::u8path(path), std::ios::binary);
     if (!file) { error = "cannot open image embeddings file"; return false; }
+    // Intel reserves two bounded payloads while validating old/new prefixes.
+    // Allocate the validated total once so incremental multi-image growth
+    // cannot exceed that admission with spare capacity or temporary copies.
+    if (exact_payload_allocation) {
+        input.embeddings.reserve(pads * (size_t) width);
+        input.images.reserve(pads); // each validated record consumes at least one pad
+    }
     size_t remaining = pads;
     while (file.peek() != std::char_traits<char>::eof()) {
         int32_t header[5] = {};

@@ -9,6 +9,11 @@ namespace strata::intel::qwen_vision {
 namespace canonical = strata::qwen35::vision;
 using Input = canonical::Input;
 constexpr uint64_t max_embedding_bytes = 256ull << 20;
+// Intel's validated Qwen-family geometry is 2,048-wide. Even a one-row
+// picture consumes one pad, bounding the old/new record arrays by this count.
+inline uint64_t host_metadata_reservation(uint64_t context) {
+    return 2 * std::min(context, max_embedding_bytes / sizeof(float) / 2048) * sizeof(canonical::Image);
+}
 
 // Validate the total size before the shared SVE1 reader allocates any rows.
 // Old and incoming inputs must coexist until exact image-prefix comparison.
@@ -19,7 +24,7 @@ inline bool load(const std::string& path, const std::vector<int>& ids, int width
         error = "image embeddings exceed the 256 MiB request limit";
         return false;
     }
-    return canonical::load(path, ids, width, context, result, error, image_pad);
+    return canonical::load(path, ids, width, context, result, error, image_pad, true);
 }
 
 inline bool overlaps(const Input& input, size_t begin, size_t count) {

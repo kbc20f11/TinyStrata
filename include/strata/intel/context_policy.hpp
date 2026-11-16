@@ -2,6 +2,7 @@
 #include "strata/intel/memory_policy.hpp"
 #include "strata/intel/gemma_prefix.hpp"
 #include "strata/intel/gemma_vision.hpp"
+#include "strata/intel/qwen_vision.hpp"
 #include <cstdint>
 #include <cmath>
 #include <cstdio>
@@ -155,7 +156,7 @@ inline Footprint qwen(uint64_t c,const QwenSpec& s={}){
     // Both the resident and incoming SVE1 payload/position maps coexist for
     // exact image-prefix validation. This is bounded host admission, not an
     // additional GPU embedding store or a claim of actual allocation.
-    if(s.vision)p.host(add(2ull*(256ull<<20),mul(mul(c,3),8)));
+    if(s.vision)p.host(add(add(2*qwen_vision::max_embedding_bytes,mul(mul(c,3),8)),qwen_vision::host_metadata_reservation(c)));
     p.host(16ull<<20);
     // Bounded opaque graph/NPU runtime reservations retain the old safety
     // margins, distinct from exact USM arrays and the one4GiB OS headroom.
