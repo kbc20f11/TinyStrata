@@ -25,6 +25,14 @@ function Get-TinyStrataIntelStagePlan {
     Assert-TinyStrataIntelUnlinkedPath $manifestPath
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw 'Intel runtime stage manifest is missing.' }
     $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    # Schema-1 stages published before Intel vision have no VisionEnabled field.
+    # A present field is strict: neither string booleans nor undeclared encoders
+    # may turn a text-only generation into a vision-enabled generation.
+    $visionEnabled = $false
+    if ($manifest.PSObject.Properties['VisionEnabled']) {
+        if ($manifest.VisionEnabled -isnot [bool]) { throw 'Intel stage VisionEnabled must be a JSON boolean.' }
+        $visionEnabled = $manifest.VisionEnabled
+    }
     foreach ($flag in @('Experimental','ModelsIncluded','DriverIncluded','GlobalPathChanged','MklEnabled')) {
         if ($manifest.$flag -isnot [bool]) { throw 'Intel stage scope/runtime flags must be JSON booleans.' }
     }
@@ -75,6 +83,17 @@ function Get-TinyStrataIntelStagePlan {
                             'licenses/compiler/credist.txt')) {
         if (-not $names.Contains($required)) { throw "Intel stage required payload/license is missing: $required" }
     }
+    if ($visionEnabled) {
+        $vision = $manifest.VisionEncoder
+        if (-not $vision -or $vision.RelativePath -cne 'tinystrata-vision.exe' -or $vision.Backend -cne 'sycl' -or
+            $vision.InputProtocol -cne 'enc-tabs' -or $vision.WarmupBeforeReady -isnot [bool] -or $vision.WarmupBeforeReady -ne $true -or
+            $vision.LlamaCommit -cne '3cf03257f219afbe7334045ff7c6a06ac68c627d') { throw 'Invalid Intel vision encoder metadata.' }
+        foreach ($required in @('tinystrata-vision.exe', 'licenses/TinyStrata/third_party/licenses/llama-vision.txt')) {
+            if (-not $names.Contains($required)) { throw "Intel vision payload/license is missing: $required" }
+        }
+    } elseif ($names.Contains('tinystrata-vision.exe') -or $manifest.VisionEncoder) {
+        throw 'Intel vision encoder payload requires an enabled, explicit vision manifest.'
+    }
     foreach ($seed in @($manifest.DynamicRuntimeSeeds)) {
         if (-not $seed -or -not $names.Contains([string]$seed) -or ([string]$seed).Contains('/') -or ([string]$seed).Contains('\')) {
             throw 'Intel stage dynamic-runtime seed is absent from its inventory.'
@@ -87,7 +106,7 @@ function Get-TinyStrataIntelStagePlan {
             if (-not $names.Contains($relative)) { throw "Intel stage file is absent from its manifest: $relative" }
         }
     }
-    return [pscustomobject]@{ Root=$root; ManifestPath=$manifestPath; Manifest=$manifest; Files=$payloads;
+    return [pscustomobject]@{ Root=$root; ManifestPath=$manifestPath; Manifest=$manifest; Files=$payloads; VisionEnabled=$visionEnabled;
         ManifestSha256=(Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant() }
 }
 
@@ -137,6 +156,7 @@ function Install-TinyStrataIntelRuntime {
             $stream.Write($bytes, 0, $bytes.Length)
         } finally { $stream.Dispose() }
         return [pscustomobject]@{ Exe=(Join-Path $targetRoot 'tinystrata-intel.exe'); DllDirectories=@($targetRoot);
+            VisionExe=$(if ($plan.VisionEnabled) { Join-Path $targetRoot 'tinystrata-vision.exe' } else { $null });
             Manifest=$manifestPath; FileCount=$plan.Files.Count; StageManifestSha256=$plan.ManifestSha256 }
     } catch {
         # Remove only files this invocation created. Do not recursively delete a

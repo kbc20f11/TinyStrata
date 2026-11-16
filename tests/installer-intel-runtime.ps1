@@ -57,6 +57,34 @@ try {
     $installed = Get-Content -LiteralPath $result.Manifest -Raw -Encoding UTF8 | ConvertFrom-Json
     Assert-Intel ($installed.ImportedFromManifestSha256 -match '^[a-f0-9]{64}$' -and $installed.Destination -eq $destination) 'import publishes provenance after all copied hashes pass'
     Assert-Intel (@($installed.ModelFamilies).Count -eq 0 -and $installed.Experimental) 'import preserves the formal adoption gate'
+    Assert-Intel ($null -eq $result.VisionExe) 'legacy text-only stage does not invent an image encoder'
+    $visionStage = Join-Path $fixtureRoot 'vision-stage'
+    $visionManifest = New-IntelFixtureStage $visionStage
+    foreach ($relative in @('tinystrata-vision.exe','licenses/TinyStrata/third_party/licenses/llama-vision.txt')) {
+        Write-IntelFixture $visionStage $relative ('vision fixture ' + $relative)
+        $path = Join-Path $visionStage $relative
+        $visionManifest.Files += [pscustomobject]@{ RelativePath=$relative; Component='tinystrata'; RedistributionEvidence='fixture notice';
+            Bytes=(Get-Item -LiteralPath $path).Length; Sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() }
+    }
+    $visionManifest | Add-Member VisionEnabled $true
+    $visionManifest | Add-Member VisionEncoder ([pscustomobject]@{RelativePath='tinystrata-vision.exe';Backend='sycl';InputProtocol='enc-tabs';WarmupBeforeReady=$true;LlamaCommit='3cf03257f219afbe7334045ff7c6a06ac68c627d'})
+    Write-IntelManifest $visionStage $visionManifest
+    $visionResult=Install-TinyStrataIntelRuntime $visionStage (Join-Path $fixtureRoot 'native\sycl-vision-fixture')
+    Assert-Intel ($visionResult.FileCount -eq 11 -and (Test-Path -LiteralPath $visionResult.VisionExe -PathType Leaf)) 'vision encoder and attribution import as one hash-verified generation'
+    $visionManifest.VisionEnabled='true'; Write-IntelManifest $visionStage $visionManifest
+    Assert-IntelRejected {Get-TinyStrataIntelStagePlan $visionStage} 'vision flag must be a JSON boolean'
+    $visionManifest.VisionEnabled=$false; Write-IntelManifest $visionStage $visionManifest
+    Assert-IntelRejected {Get-TinyStrataIntelStagePlan $visionStage} 'undeclared encoder inventory rejected'
+    $visionManifest.VisionEnabled=$true
+    $visionManifest.VisionEncoder.Backend='cpu'; Write-IntelManifest $visionStage $visionManifest
+    Assert-IntelRejected {Get-TinyStrataIntelStagePlan $visionStage} 'CPU encoder cannot masquerade as Intel GPU vision'
+    $visionManifest.VisionEncoder.Backend='sycl'
+    $visionManifest.VisionEncoder.WarmupBeforeReady=$false; Write-IntelManifest $visionStage $visionManifest
+    Assert-IntelRejected {Get-TinyStrataIntelStagePlan $visionStage} 'vision stage must declare pre-KV warmup'
+    $visionManifest.VisionEncoder.WarmupBeforeReady=$true
+    $visionManifest.Files=@($visionManifest.Files | Where-Object {$_.RelativePath -ne 'licenses/TinyStrata/third_party/licenses/llama-vision.txt'})
+    Write-IntelManifest $visionStage $visionManifest
+    Assert-IntelRejected {Get-TinyStrataIntelStagePlan $visionStage} 'missing pinned vision license rejected'
     Assert-IntelRejected { Install-TinyStrataIntelRuntime $stage $destination } 'published generation cannot be overwritten'
     Assert-IntelRejected { Install-TinyStrataIntelRuntime $stage (Join-Path $stage 'child') } 'destination cannot overlap source'
     $empty = Join-Path $fixtureRoot 'empty'

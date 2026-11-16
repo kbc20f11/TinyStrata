@@ -150,6 +150,58 @@ function Get-Item {
         self.assertIn("Unresolved dependency", result.stderr)
         self.assertFalse(self.destination.exists())
 
+    def vision_fixture(self, sycl="sycl9.dll"):
+        vision = self.root / "vision-build" / "tinystrata-vision.exe"
+        pe(vision, [sycl, "ze_loader.dll", "mkl_sycl_blas.6.dll", "libimalloc.dll"])
+        for root, component, filename in ((self.mkl, "mkl", "license.rtf"), (self.tbb, "tbb", "license.txt")):
+            licensing = root / "share" / "doc" / component / "licensing"
+            licensing.mkdir(parents=True)
+            (licensing / filename).write_text("Intel Simplified Software License")
+        pe(self.mkl / "bin" / "mkl_sycl_blas.6.dll", ["sycl9.dll", "mkl_core.3.dll"])
+        pe(self.mkl / "bin" / "mkl_core.3.dll")
+        pe(self.mkl / "bin" / "libimalloc.dll")
+        pe(self.tbb / "bin" / "tbb12.dll")
+        return vision
+
+    def test_vision_encoder_closes_its_own_imports_and_keeps_notices(self):
+        # The language executable itself has no MKL import in this fixture.
+        # Encoder-only imports must still select and inventory the MKL runtime.
+        vision = self.vision_fixture()
+        command = self.plan_command() + " -VisionEncoder " + quote(vision)
+        result = self.powershell("$plan = " + command + "; Write-IntelRuntimeStage $plan")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plan = json.loads((self.destination / ".tinystrata-intel-runtime.json").read_text(encoding="utf-8"))
+        names = {file["RelativePath"] for file in plan["Files"]}
+        self.assertTrue(plan["VisionEnabled"])
+        self.assertTrue(plan["MklEnabled"])
+        self.assertEqual(plan["VisionEncoder"]["Backend"], "sycl")
+        self.assertTrue({"tinystrata-vision.exe", "libimalloc.dll", "mkl_sycl_blas.6.dll",
+                         "licenses/TinyStrata/third_party/licenses/llama-vision.txt"}.issubset(names))
+        self.assertEqual(plan["VisionEncoder"]["LlamaCommit"], "3cf03257f219afbe7334045ff7c6a06ac68c627d")
+
+    def test_vision_runtime_generation_must_match_language_runtime(self):
+        vision = self.vision_fixture("sycl8.dll")
+        result = self.powershell(self.plan_command() + " -VisionEncoder " + quote(vision))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("same SYCL runtime", result.stderr)
+        self.assertFalse(self.destination.exists())
+
+    def test_missing_encoder_allocator_is_refused(self):
+        vision = self.vision_fixture()
+        (self.mkl / "bin" / "libimalloc.dll").unlink()
+        result = self.powershell(self.plan_command() + " -VisionEncoder " + quote(vision))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Unresolved dependency", result.stderr)
+        self.assertFalse(self.destination.exists())
+
+    def test_stage_cannot_be_placed_inside_encoder_build(self):
+        vision = self.vision_fixture()
+        self.destination = vision.parent / "stage"
+        result = self.powershell(self.plan_command() + " -VisionEncoder " + quote(vision))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("outside the source", result.stderr)
+        self.assertFalse(self.destination.exists())
+
     def test_selected_app_local_vc_runtime_closes_imports_and_keeps_notice(self):
         runtime = self.root / "vc-runtime"
         for name in ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140_atomic_wait.dll"):

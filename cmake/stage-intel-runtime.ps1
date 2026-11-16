@@ -15,6 +15,7 @@ param(
     [string]$UmfRoot = 'C:\Program Files (x86)\Intel\oneAPI\umf\latest',
     [string]$VcRuntimeDirectory,
     [string]$VcRedistributionNotice,
+    [string]$VisionEncoder,
     [switch]$PlanOnly
 )
 $ErrorActionPreference = 'Stop'
@@ -133,11 +134,18 @@ function Get-IntelRuntimePlan {
           [string]$TcmRoot = 'C:\Program Files (x86)\Intel\oneAPI\tcm\latest',
           [string]$UmfRoot = 'C:\Program Files (x86)\Intel\oneAPI\umf\latest',
           [string]$SystemDirectory = [Environment]::SystemDirectory,
-          [string]$VcRuntimeDirectory, [string]$VcRedistributionNotice)
+          [string]$VcRuntimeDirectory, [string]$VcRedistributionNotice, [string]$VisionEncoder)
     $mkl = $null; $tbb = $null; $tcm = $null; $umf = $null
     $exe = (Get-Item -LiteralPath $ExecutablePath -ErrorAction Stop).FullName
+    $vision = $null
+    if ($VisionEncoder) {
+        $vision = (Get-Item -LiteralPath $VisionEncoder -ErrorAction Stop).FullName
+        if (-not (Test-Path -LiteralPath $vision -PathType Leaf) -or [IO.Path]::GetFileName($vision) -ne 'tinystrata-vision.exe') {
+            throw 'VisionEncoder must be the built tinystrata-vision.exe file.'
+        }
+    }
     $compiler = (Get-Item -LiteralPath $CompilerRoot -ErrorAction Stop).FullName
-    $destinationPath = Assert-IntelStageDestination $Destination @((Split-Path -Parent $exe), $compiler, $MklRoot, $TbbRoot, $TcmRoot, $UmfRoot, $VcRuntimeDirectory)
+    $destinationPath = Assert-IntelStageDestination $Destination @((Split-Path -Parent $exe), $(if ($vision) { Split-Path -Parent $vision }), $compiler, $MklRoot, $TbbRoot, $TcmRoot, $UmfRoot, $VcRuntimeDirectory)
     $redist = Join-Path $compiler 'share\doc\compiler\credist.txt'
     $agreement = Join-Path $compiler 'share\doc\compiler\licensing\c\LICENSE.rtf'
     if (-not (Test-Path -LiteralPath $redist -PathType Leaf) -or -not (Test-Path -LiteralPath $agreement -PathType Leaf)) { throw 'The compiler redistribution list and license are required.' }
@@ -172,7 +180,15 @@ function Get-IntelRuntimePlan {
     $nativeImports = @(Get-IntelPeImports $exe)
     $sycl = @($nativeImports | Where-Object { $_ -match '^sycl[0-9]+\.dll$' })
     if ($sycl.Count -ne 1 -or $nativeImports -notcontains 'ze_loader.dll') { throw 'Expected a native Windows Intel SYCL executable importing ze_loader.dll and one SYCL runtime.' }
-    $mklBlas = @($nativeImports | Where-Object { $_ -match '^mkl_sycl_blas\.[0-9]+\.dll$' })
+    $visionImports = @()
+    if ($vision) {
+        $visionImports = @(Get-IntelPeImports $vision)
+        $visionSycl = @($visionImports | Where-Object { $_ -match '^sycl[0-9]+\.dll$' })
+        if ($visionSycl.Count -ne 1 -or $visionSycl[0] -ne $sycl[0] -or $visionImports -notcontains 'ze_loader.dll') {
+            throw 'The Intel vision encoder must import the same SYCL runtime and the Level Zero loader as the language executable.'
+        }
+    }
+    $mklBlas = @(@($nativeImports) + @($visionImports) | Where-Object { $_ -match '^mkl_sycl_blas\.[0-9]+\.dll$' } | Sort-Object -Unique)
     if ($mklBlas.Count -gt 1) { throw 'The executable imports multiple oneMKL BLAS runtime generations.' }
     $mklEnabled = $mklBlas.Count -eq 1
     $seeds = New-Object 'System.Collections.Generic.List[string]'
@@ -189,7 +205,10 @@ function Get-IntelRuntimePlan {
             $licenseRoots += [pscustomobject]@{ Root = $license; Component = $pair[1] }
         }
         foreach ($file in Get-ChildItem -LiteralPath (Join-Path $mkl 'bin') -Filter '*.dll' -File) {
-            if ($file.Name -match '^mkl_[a-zA-Z0-9_]+\.[0-9]+\.dll$') {
+            # GGML's SYCL allocator imports libimalloc directly. It belongs to
+            # the selected MKL binary package and its redistribution license;
+            # it is not in the compiler's separate credist allowlist.
+            if ($file.Name -match '^mkl_[a-zA-Z0-9_]+\.[0-9]+\.dll$' -or $file.Name -eq 'libimalloc.dll') {
                 if ($approved.ContainsKey($file.Name)) { throw "Ambiguous SDK runtime: $($file.Name)" }
                 $approved[$file.Name] = [pscustomobject]@{ Path = $file.FullName; Component = 'mkl'; Evidence = 'mkl/licensing/license.rtf' }
             }
@@ -216,6 +235,7 @@ function Get-IntelRuntimePlan {
     $external = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([StringComparer]::OrdinalIgnoreCase)
     $queue = New-Object 'System.Collections.Generic.Queue[object]'
     $queue.Enqueue([pscustomobject]@{ Path = $exe; Component = 'tinystrata'; Evidence = 'selected executable' })
+    if ($vision) { $queue.Enqueue([pscustomobject]@{ Path = $vision; Component = 'tinystrata'; Evidence = 'selected Intel image encoder' }) }
     foreach ($name in $seeds) {
         if (-not $approved.ContainsKey($name)) { throw "Required dynamic runtime is absent from the selected SDK/redist list: $name" }
         $queue.Enqueue($approved[$name])
@@ -267,6 +287,9 @@ function Get-IntelRuntimePlan {
     foreach ($file in @('LICENSE', 'NOTICE', 'third_party/ggml/LICENSE', 'third_party/licenses/gufo.txt')) {
         $notices += [pscustomobject]@{ Source = (Join-Path $sourceRoot $file); RelativePath = ('licenses/TinyStrata/' + $file); Component = 'tinystrata' }
     }
+    if ($vision) {
+        $notices += [pscustomobject]@{ Source = (Join-Path $sourceRoot 'third_party/licenses/llama-vision.txt'); RelativePath = 'licenses/TinyStrata/third_party/licenses/llama-vision.txt'; Component = 'tinystrata' }
+    }
     foreach ($entry in $notices) {
         $info = Get-Item -LiteralPath $entry.Source -ErrorAction Stop
         $files += [pscustomobject]@{ Source = $info.FullName; RelativePath = $entry.RelativePath; Component = $entry.Component; RedistributionEvidence = 'license / attribution'; Bytes = (Get-IntelPayloadLength $info.FullName); FileVersion = $null; Sha256 = (Get-FileHash -LiteralPath $info.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
@@ -274,6 +297,8 @@ function Get-IntelRuntimePlan {
     return [pscustomobject][ordered]@{
         Schema = 1; Backend = 'sycl'; Experimental = $true; ModelFamilies = @(); ModelsIncluded = $false
         CreatedUtc = [DateTime]::UtcNow.ToString('o'); Destination = $destinationPath; ExecutablePath = $exe
+        VisionEnabled = [bool]$vision; VisionEncoderPath = $vision
+        VisionEncoder = $(if ($vision) { [pscustomobject]@{ RelativePath='tinystrata-vision.exe'; Backend='sycl'; InputProtocol='enc-tabs'; WarmupBeforeReady=$true; LlamaCommit='3cf03257f219afbe7334045ff7c6a06ac68c627d' } } else { $null })
         CompilerRoot = $compiler; MklEnabled = $mklEnabled; MklRoot = $(if ($mklEnabled) { $mkl } else { $null }); TbbRoot = $(if ($mklEnabled) { $tbb } else { $null })
         TcmRoot = $tcm; UmfRoot = $umf
         VcRuntimeDirectory = $VcRuntimeDirectory; VcRedistributionNotice = $VcRedistributionNotice
@@ -285,7 +310,7 @@ function Get-IntelRuntimePlan {
 
 function Write-IntelRuntimeStage {
     param([Parameter(Mandatory=$true)]$Plan)
-    $root = Assert-IntelStageDestination $Plan.Destination @((Split-Path -Parent $Plan.ExecutablePath), $Plan.CompilerRoot, $Plan.MklRoot, $Plan.TbbRoot, $Plan.TcmRoot, $Plan.UmfRoot, $Plan.VcRuntimeDirectory)
+    $root = Assert-IntelStageDestination $Plan.Destination @((Split-Path -Parent $Plan.ExecutablePath), $(if ($Plan.VisionEncoderPath) { Split-Path -Parent $Plan.VisionEncoderPath }), $Plan.CompilerRoot, $Plan.MklRoot, $Plan.TbbRoot, $Plan.TcmRoot, $Plan.UmfRoot, $Plan.VcRuntimeDirectory)
     $null = [IO.Directory]::CreateDirectory($root)
     foreach ($file in $Plan.Files) {
         $target = [IO.Path]::GetFullPath((Join-Path $root $file.RelativePath))
@@ -302,7 +327,7 @@ function Write-IntelRuntimeStage {
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
-    $plan = Get-IntelRuntimePlan -ExecutablePath $ExecutablePath -Destination $Destination -CompilerRoot $CompilerRoot -MklRoot $MklRoot -TbbRoot $TbbRoot -TcmRoot $TcmRoot -UmfRoot $UmfRoot -VcRuntimeDirectory $VcRuntimeDirectory -VcRedistributionNotice $VcRedistributionNotice
+    $plan = Get-IntelRuntimePlan -ExecutablePath $ExecutablePath -Destination $Destination -VisionEncoder $VisionEncoder -CompilerRoot $CompilerRoot -MklRoot $MklRoot -TbbRoot $TbbRoot -TcmRoot $TcmRoot -UmfRoot $UmfRoot -VcRuntimeDirectory $VcRuntimeDirectory -VcRedistributionNotice $VcRedistributionNotice
     if ($PlanOnly) { $plan | ConvertTo-Json -Depth 8 }
     else { Write-Output (Write-IntelRuntimeStage $plan) }
 }
