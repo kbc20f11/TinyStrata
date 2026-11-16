@@ -1,0 +1,65 @@
+--- a/tools/mtmd/clip.cpp
++++ b/tools/mtmd/clip.cpp
+@@ -161,5 +161,9 @@
+
+
++#if defined(TINYSTRATA_VISION_TOKEN_FFN) && TINYSTRATA_VISION_TOKEN_FFN > 0
++    int max_nodes = 32768;
++#else
+     int max_nodes = 8192;
++#endif
+     ggml_backend_sched_ptr sched;
+     clip_flash_attn_type flash_attn_type = CLIP_FLASH_ATTN_TYPE_AUTO;
+@@ -219,5 +223,5 @@
+
+         sched.reset(
+-            ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), 8192, false, true)
++            ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, false, true)
+         );
+
+@@ -624,4 +628,45 @@
+         ffn_op_type type_op,
+         int il) const {
++
++#if defined(TINYSTRATA_VISION_TOKEN_FFN) && TINYSTRATA_VISION_TOKEN_FFN > 0
++    // Only the token axis is tiled. Linear projections, bias and pointwise
++    // activations are independent between image tokens; build_mm remains
++    // virtual so Gemma's input/output clamps and precision stay unchanged.
++    constexpr int64_t token_tile = TINYSTRATA_VISION_TOKEN_FFN;
++    static_assert(token_tile <= 1024, "Invalid Intel vision FFN token tile");
++    const bool tiled_model = proj_type == PROJECTOR_TYPE_QWEN2VL ||
++        proj_type == PROJECTOR_TYPE_QWEN25VL || proj_type == PROJECTOR_TYPE_QWEN3VL ||
++        proj_type == PROJECTOR_TYPE_GEMMA4V;
++    const auto matrix = [](const ggml_tensor * tensor) {
++        return !tensor || (tensor->ne[2] == 1 && tensor->ne[3] == 1);
++    };
++    const auto bias = [](const ggml_tensor * tensor) {
++        return !tensor || (tensor->ne[1] == 1 && tensor->ne[2] == 1 && tensor->ne[3] == 1);
++    };
++    if (tiled_model && up && down && cur->type == GGML_TYPE_F32 && ggml_is_contiguous(cur) &&
++        cur->ne[1] > token_tile && cur->ne[2] == 1 && cur->ne[3] == 1 &&
++        matrix(up) && matrix(gate) && matrix(down) && bias(up_b) && bias(gate_b) && bias(down_b)) {
++        ggml_tensor * result = nullptr;
++        for (int64_t first = 0; first < cur->ne[1]; first += token_tile) {
++            const int64_t count = std::min(token_tile, cur->ne[1] - first);
++            ggml_tensor * input = ggml_view_2d(ctx0, cur, cur->ne[0], count, cur->nb[1], first * cur->nb[1]);
++            ggml_tensor * tile = build_ffn(input, up, up_b, gate, gate_b, down, down_b, type_op, il);
++            GGML_ASSERT(tile->type == GGML_TYPE_F32 && tile->ne[2] == 1 && tile->ne[3] == 1);
++            if (!result) {
++                // A fresh leaf would be preallocated for every layer at graph
++                // entry. A normal node tied to cur allocates only at this layer.
++                // All initialized cells are overwritten by the tile copies.
++                result = ggml_repeat_4d(ctx0, ggml_view_1d(ctx0, cur, 1, 0), tile->ne[0], cur->ne[1], 1, 1);
++            }
++            // SET is an in-place view of this one output allocation. Its src0
++            // chain runs the preceding tile's copy before this tile's FFN, so
++            // the allocator can recycle expanded intermediates between tiles.
++            // Concatenating tile results would keep every output live instead.
++            result = ggml_set_2d_inplace(ctx0, result, tile, result->nb[1], first * result->nb[1]);
++        }
++        cb(result, "ffn_token_tiled", il);
++        return result;
++    }
++#endif
+
+     ggml_tensor * tmp = up ? build_mm(up, cur) : cur;
