@@ -419,9 +419,11 @@ class ModelProfiles:
         The controller must verify native/Vision readiness before unloading the
         old model. A supplied model_path is used by a verified download callback.
         """
-        if self._intel and (projector is not None or assistant is not None):
-            raise ValueError("Intel images and assistant models are unsupported")
         profile = self.get(name)
+        if self._intel:
+            from serve.intel_models import VISION_MODELS
+            if assistant is not None or (projector is not None and profile.id not in VISION_MODELS):
+                raise ValueError("This Intel model does not support the requested projector or assistant")
         saved = config.load(profile.path) if profile.path.is_file() else profile.config
         cfg = self._settings(saved, profile)
         model = Path(model_path).expanduser().resolve() if model_path is not None else model_setup.model_path(cfg)
@@ -433,6 +435,8 @@ class ModelProfiles:
             else:
                 cfg["args"][cfg["args"].index("--model") + 1] = str(model)
         tinyconfig.validate(cfg, allow_uninstalled=True)
+        if self._intel:
+            model_setup.validate_intel_executable(cfg)
         extra = {"assistant": Path(assistant) if assistant is not None else None,
                  "assistant_verified": assistant_verified} if profile.arch == "gemma4" else {}
         prepared = model_setup.prepare_installed_model(cfg, profile.path, model,
