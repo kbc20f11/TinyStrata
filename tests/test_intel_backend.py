@@ -78,6 +78,17 @@ class IntelBackendPolicy(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "B390"):
             intel.configure_backend(generic)
 
+    def test_clover_gpu_images_reduce_only_automatic_workspace(self):
+        base = configuration(arch="clover_moe", model_name=intel.CLOVER_MODEL,
+                             intel_profile="b390-clover", vision_mode="gpu")
+        before = deepcopy(base)
+        self.assertEqual(value(intel.engine_args(intel.configure_backend(base)), "--chunk"), "512")
+        explicit = deepcopy(base); explicit["args"] += ["--chunk", "1024"]
+        self.assertEqual(value(intel.engine_args(intel.configure_backend(explicit)), "--chunk"), "1024")
+        text = {**base, "vision_mode": "no"}
+        self.assertEqual(value(intel.engine_args(intel.configure_backend(text)), "--chunk"), "1024")
+        self.assertEqual(base, before)
+
     def test_policy_helpers_do_not_launch_processes_or_load_runtime_dlls(self):
         with patch("subprocess.Popen", side_effect=AssertionError("No native process allowed")), \
              patch("ctypes.WinDLL", side_effect=AssertionError("No runtime DLL allowed"), create=True):

@@ -118,7 +118,10 @@ def _chunk(cfg, values):
     value = values.get("--chunk", "auto")
     if value in ("auto", "0"):
         if model == CLOVER_MODEL and _profile(cfg) == MODEL_PROFILES[model]:
-            return 1024
+            # A resident GPU encoder shares the B390 memory budget. The
+            # existing 512-row kernels save 162 MiB of language workspace;
+            # explicit chunks and the measured text-only default stay intact.
+            return 512 if cfg.get("vision_mode") == "gpu" else 1024
         if model in TARGET_ONLY_MODELS:
             return 512
         return 1024 if _profile(cfg) in MODEL_PROFILES.values() else 128
