@@ -2473,6 +2473,7 @@ class Vision:
             raise RuntimeError(vision_start_error(line, log, exit_code=code, log_start=log_start, strays=strays))
         self.stopped = False
         self._count_pending = None
+        self._dimension_counts.clear()
 
     READY_GRACE_S = 2.0
     STRAY_KEEP = 20
