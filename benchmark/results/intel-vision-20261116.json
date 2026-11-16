@@ -1,0 +1,256 @@
+{
+  "schema": 1,
+  "date": "2026-11-16",
+  "status": "passed installed update and actual browser acceptance; experimental qualification limits retained",
+  "target_result": "benchmark/results/intel-vision-20261116.json",
+  "scope": "Experimental Intel SYCL image input for Qwen3.6, Tiel Coder, Gemma4 and Clover; LFM remains text-only.",
+  "hardware": {
+    "os": "Windows x64",
+    "gpu": "Intel Arc B390 integrated",
+    "vendor_id": "0x8086",
+    "device_id": "0xb082",
+    "architecture": "panther_lake_xe3",
+    "qualified_native_target": "intel_gpu_ptl_h"
+  },
+  "final_artifacts": {"native_compile_commit":"f8ca664d44d25a62d6bae1e4413d8ce69db60497","encoder_compile_commit":"8719ee420b93acc5e7fa38ba4334a076fe17a2e1","llama_commit":"3cf03257f219afbe7334045ff7c6a06ac68c627d","llama_archive_sha256":"c076d7534afa0e5d0ec2a0d425b11e791c16f3de0d727221aea071cef156a280","encoder_sha256":"1b711f879f7bb322cface2bc48d337c629bb8ca6afd6958b6c16fdad931123d2","encoder_patch_sha256":["3ea2d06b7246588d392064c98eff6884b394588604b2b27ebfcba261f422e047","b02362847a2a73e0f74258c3a2ce00be5b5a482cacbca37ed22a712d60e7fed5","8aae33a4dbfbce47c270f1d91e24830514af1705227ed70481169806dbd4e5ff","23bd8a0e8898dcaea0a8ce4544819452818c796e8fcd0ce7749e0aaa10dfa961"],"packages":[{"family":"gemma4","variant":"ptl-h","native_sha256":"e027af690c460c7b03bbb9de1d914014f823240d40cbad8a48b4cf4d979d49c8","archive_sha256":"83aa1de27af77ac8d8a3d47fc7df16b4c6c70fa5477fc1d6c3af96d333a695de","native_compile_commit":"306122aedabac8bb38a8131c33b09430d7c4f627","encoder_compile_commit":"783f6194903cea8a750fcc4f0b5533198ac64fe4","encoder_sha256":"886abc9d61de75bb312578f7c5ac4356cb918ae4aa08d3a61d63f6a0837a2ab5"},{"family":"gemma4","variant":"generic","native_sha256":"9939769842307cd61fc38e036b293e6ccbf0dd3c09f523131c32e0fba729acc3","archive_sha256":"18e4d61efd28ef6f1fb2efd8ce1e6ca7df71f5f7c124df5f0115e05f075e9552","native_compile_commit":"306122aedabac8bb38a8131c33b09430d7c4f627","encoder_compile_commit":"783f6194903cea8a750fcc4f0b5533198ac64fe4","encoder_sha256":"886abc9d61de75bb312578f7c5ac4356cb918ae4aa08d3a61d63f6a0837a2ab5"},{"family":"qwen-family","variant":"ptl-h","native_sha256":"b6e852af3cf104365f1a22f3c24ffbda75deec0da3d569d78a57ee847e2c5fcc","native_compile_commit":"f8ca664d44d25a62d6bae1e4413d8ce69db60497","encoder_compile_commit":"8719ee420b93acc5e7fa38ba4334a076fe17a2e1","encoder_sha256":"1b711f879f7bb322cface2bc48d337c629bb8ca6afd6958b6c16fdad931123d2","archive_sha256":"2c78e9e3be63af6c4807c73ea486fea2628904af52d30d7ce7e08370b2150d09"},{"family":"qwen-family","variant":"generic","native_sha256":"7110fb55c8c25a4b972fb6d8ea4794055cd4400e2ddd6331ee082722598f63b3","native_compile_commit":"f8ca664d44d25a62d6bae1e4413d8ce69db60497","encoder_compile_commit":"8719ee420b93acc5e7fa38ba4334a076fe17a2e1","encoder_sha256":"1b711f879f7bb322cface2bc48d337c629bb8ca6afd6958b6c16fdad931123d2","archive_sha256":"692d122cf5ea782e519b0fbe6fcbe4c0cde6494cd925de887931f7f589ad7b28"}],"generic_qualification":"Compiled, capability-checked and packaged; no generic-device inference or speed qualification.","producer_evidence":{"path":"intel-vision-20261116/vision-package-receipt-clover-memory-final.json","sha256":"fb11a7d29cb871906233c5ced2cebee27462cc471a687cbafa494a38bbc2860d"},"final_source_commit":"82656f4150b370fdf6e1971b3a3ef83725bfd561","compile_identity_scope":"Qwen/Tiel/Clover correction; Gemma retains its accepted initial native and encoder"},
+  "implementation": {
+    "protocol": {
+      "native": "GENI/SVE1",
+      "encoder": "ENC with tab-delimited request fields",
+      "capabilities_schema": 1,
+      "vision_contract_version": 1,
+      "native_model_contract_version": 2,
+      "explicit_opt_in": "Vision gpu / --vision"
+    },
+    "encoder": "Pinned MTMD/GGML SYCL encoder on the selected Intel adapter; no CPU encoder shipped.",
+    "language_paths": {
+      "qwen_tiel_clover": "Projected embeddings and interleaved M-RoPE positions",
+      "gemma": "Unscaled image embeddings, 1D positions, whole-image SWA right boundary; original sliding left boundary retained",
+      "kv": "Existing INT8 policy retained",
+      "selected_experts": "Unchanged",
+      "vocabulary": "Unchanged",
+      "thinking_and_sampling": "Existing per-model defaults retained"
+    },
+    "memory": {
+      "encoder_warmed_and_resident_before_language_weights_and_auto_kv": true,
+      "physical_and_commit_os_floor_bytes": 4294967296,
+      "uma_wddm_floor_bytes": 805306368,
+      "shared_memory_counted_once": true,
+      "fixed_new_kv_cap": false,
+      "bounded_request_embedding_bytes": 268435456
+    },
+    "image_caps": {
+      "qwen_tiel_clover_encoder_rows": 4096,
+      "gemma_encoder_and_native_rows": 1120,
+      "native_request_admission": "Image tokens plus text and generation must fit the dynamically selected context."
+    },
+    "encoder_memory_changes": {
+      "fp32_flash_attention_partition_workspace": true,
+      "token_ffn_tile": 1024,
+      "same_weight_qkv_views": true,
+      "query_and_rotary_precision": "F32",
+      "kv_cast_precision": "Existing F16 casts moved earlier",
+      "positions_leaf_order": "Small persistent input allocated before transient image buffers",
+      "qwen_full_graph_mib_before": 480.25,
+      "qwen_combined_graph_gpu_observed_mib": 336.25,
+      "qwen_final_positions_order_graph_cpu_allocator_estimate_mib": 324.25,
+      "final_graph_gpu_measurement": "Final runtime full-cap warmup passed; exact final graph size was not directly logged by that GPU run."
+    },
+    "clover_workspace": {
+      "scope": "Clover + vision + MTP0 only",
+      "auto_chunk": 512,
+      "explicit_chunk": "Preserved",
+      "five_scratch_aliases_saved_bytes_at_chunk512": 42991616,
+      "arithmetic_changed": false
+    },
+    "image_token_planning": {
+      "scope": "Inline Qwen/Tiel/Clover on already-ready pinned Intel encoders; CUDA/HIP/Gemma unchanged",
+      "producer_protocol": "COUNT dimensions with MTMD placeholder bitmaps; no GPU encoding or startup",
+      "unknown_or_old_inputs": "retain the original full image-cap upper bound",
+      "context_and_output_policy": "unchanged; no fixed KV cap or reserve reduction",
+      "native_protocol_CPU_checks": 74,
+      "Python_affected_CPU_tests": 48,
+      "canonical_producer_rows": [{"family":"qwen","configured_min_tokens":null,"rows":768},{"family":"tiel","configured_min_tokens":null,"rows":768},{"family":"clover","configured_min_tokens":1024,"rows":1036}],
+      "producer_geometry_evidence": {"path":"intel-vision-20261116/count-cpu-validation/result.json","sha256":"20843ed3df018874f2d7a043780360532bfc601da27b81995386b4c2f98c31fe"}
+    },
+    "clover_phase_workspace_reuse": {
+      "scope": "Clover images, MTP0, unchanged arithmetic",
+      "saved_bytes_at_chunk512": 93323264,
+      "GPU_bitwise_float_checks": 94876032,
+      "cases": 16,
+      "token_counts": [1,7,256,512],
+      "following_history_and_canaries": "passed",
+      "evidence": {"path":"intel-vision-20261116/clover-phase-gpu-validation-f8ca664.json","sha256":"f9d7a6fc954fb13bbfe82ec19ff05cc5ec42fd886091d6a48f2838bf13bb949e"}
+    }
+  },
+  "targeted_validation": {
+    "cpu_checks": {
+      "context_admission": 179,
+      "qwen_image_parser_and_identity": 159,
+      "gemma_image_parser_and_policy": 44,
+      "clover_workspace_policy": 241,
+      "encoder_protocol": 34
+    },
+    "gpu_operators": [
+      {"path":"Qwen M-RoPE/cache","cases":17,"max_abs_vs_fp64":7.66868063e-07,"identity_positions_bit_exact":true,"canaries":true},
+      {"path":"Gemma image attention","cases":10,"checked_values":290002,"max_abs_vs_fp64":6.19462558e-08,"includes_1120_rows_over_1024_swa_window":true,"mkl_and_native":true},
+      {"path":"Clover workspace aliases","cases":12,"bitwise_float_checks":33141120,"tokens":[1,7,512],"canaries":true}
+    ],
+    "graph_cpu_checks": {
+      "ffn_cases": 36,
+      "max_abs_difference": 1.1920929e-07,
+      "qkv_mrope_cast_cases": 3,
+      "qkv_max_abs_difference": 0,
+      "full_qwen_4096_rows_graph_nodes": 4115,
+      "graph_node_capacity": 32768
+    },
+    "evidence": [
+      {"path":"intel-vision-20261116/gpu-operations.json","sha256":"5e4334aa73ed92fbf143c6e8257535d4f4e99bdfe48a2d82799ac01ba9d18c23"},
+      {"path":"intel-vision-20261116/clover-gate-workspace-validation.json","sha256":"c8c17d6dfeda2fa7d64879d2fb9f2cc064927f0a7d7031da7ddcfb5b0615e743"}
+    ]
+  },
+  "api_measurements": {"method":"Real model HTTP streaming, natural EOS, normal installed profile defaults; no request max_tokens or seed override. Tokens/s are native accepted generation rates.","artifact_note":"Earlier API hashes are retained separately. Six initial UI passes and three targeted correction passes retain their actual source/native/encoder identities; unchanged Gemma/Tiel paths were not replayed.","case_columns":["case","fresh_prompt_tokens","cached_prompt_tokens","output_tokens","prefill_tok_s","accepted_generation_tok_s","finish_reason","quality"],"models":[{"family":"qwen","native_sha256":"da913d03c6a1bbd9a5d33f3c04d165d203956feb1e47c60a4d8f14bd5b2bb5d6","encoder_sha256":"f4d9762803de7289b0101a22c98001a678e8046951471e1468e117482857727d","projector_sha256":"71f3cbc1f7cc0f30d09d41cfa924c0060827ebc33bf15ace7e86661e856f0160","auto_context_tokens":10240,"context_wddm_raw_bytes":1733069332,"planned_native_device_bytes":890599588,"planned_wddm_remaining_bytes":842469744,"image_rows_observed":[768],"natural_eos_all":true,"protected_profiles_unchanged":true,"cases":[["original-image",814,0,1094,230.4,33.9,"stop","pass"],["same-image-followup",99,809,314,119.6,40.4,"stop","pass"],["changed-image",814,0,841,237.9,35.3,"stop","pass"],["two-images",1570,0,408,237.4,37.1,"stop","incomplete final answer; ambiguous prompt retained"],["text-after-images",23,0,174,61.2,34.7,"stop","pass"]],"evidence":{"path":"intel-vision-20261116/qwen-api-v1/result.json","sha256":"c508c7bcd9e94108243311277180c825ba0cbaf58f5c3724da2415d719f89924"}},{"family":"tiel","native_sha256":"da913d03c6a1bbd9a5d33f3c04d165d203956feb1e47c60a4d8f14bd5b2bb5d6","encoder_sha256":"f4d9762803de7289b0101a22c98001a678e8046951471e1468e117482857727d","projector_sha256":"d9ce31026d1cb1f3f8d5152e2e2a014d9d2b302b6c93a7dc07bb0a0487f52837","auto_context_tokens":30720,"context_wddm_raw_bytes":2171480596,"planned_native_device_bytes":1324693668,"planned_wddm_remaining_bytes":846786928,"image_rows_observed":[768],"natural_eos_all":true,"protected_profiles_unchanged":true,"cases":[["original-image",993,0,137,195.0,30.4,"stop","pass"],["same-image-followup",94,988,92,106.0,33.6,"stop","pass"],["changed-image",993,0,198,203.4,31.1,"stop","pass"]],"evidence":{"path":"intel-vision-20261116/tiel-api-v1/result.json","sha256":"629ed30b39cb3429d1c0d93e96597731da5ab6c6c88551f99730cef0bfe9b310"}},{"family":"gemma","native_sha256":"4e5fa6ba2a03eba1761fce9fc17472519d711a84492a13f5194c361fabc2663b","encoder_sha256":"1185edb88d4abd7c42b63f25e372f3f9b2548283c434a5aad7a9878ceae5d9c9","projector_sha256":"a359953a076b877db30c31dbbb4c6d93b4a6e017ee5db5784247e4d4c0dd4f3b","auto_context_tokens":14336,"context_wddm_raw_bytes":1897413140,"planned_native_device_bytes":1052671368,"planned_wddm_remaining_bytes":844741772,"image_rows_observed":[336,1120],"natural_eos_all":true,"protected_profiles_unchanged":true,"cases":[["original-image",390,0,370,170.4,12.0,"stop","pass"],["same-image-followup",97,387,413,97.5,11.6,"stop","pass"],["changed-image",1174,0,502,266.4,12.6,"stop","pass"]],"evidence":{"path":"intel-vision-20261116/gemma-api-v2-attention-fp32/result.json","sha256":"4206720e1bbe15e8b575798148ae959b04b2baa74e5751ec6fdaacae3b525d4e"}},{"family":"clover","native_sha256":"623e98c7a386243f1c35265bfd10147e4287d2615bb0b4851211e6a9ec7fd7df","encoder_sha256":"886abc9d61de75bb312578f7c5ac4356cb918ae4aa08d3a61d63f6a0837a2ab5","projector_sha256":"71f3cbc1f7cc0f30d09d41cfa924c0060827ebc33bf15ace7e86661e856f0160","auto_context_tokens":4096,"context_wddm_raw_bytes":1268115988,"planned_native_device_bytes":461174940,"planned_wddm_remaining_bytes":806941048,"image_rows_observed":[1036],"natural_eos_all":true,"protected_profiles_unchanged":true,"cases":[["original-image",1082,0,300,110.8,18.5,"stop","pass"],["same-image-followup",74,1077,96,142.9,18.8,"stop","pass"],["changed-image",1082,0,127,110.5,18.9,"stop","pass"]],"evidence":{"path":"intel-vision-20261116/clover-api-v4-final/result.json","sha256":"375583a5578636da1bd8f0993ed9753ba3e58482c2159912d2bde2477af10b79"}}],"qwen_json_checker":"The initial checker rejected standard fenced JSON. Read-only reconciliation accepted the three correct single-image answers without rerunning inference.","qwen_reconciliation_evidence":{"path":"intel-vision-20261116/qwen-api-v1/quality-json-reconciliation.json","sha256":"47c995cc9d8aeb9beff874f69562702751f4d363039225365ad809b0e767ea91"}},
+  "cancellation": {
+    "scope": "Controlled owned-request fixture only; healthy benchmarks were not interrupted.",
+    "image_rows": 4096,
+    "image_span": [
+      38,
+      4134
+    ],
+    "cancel_after_committed_tokens": 1024,
+    "generation_fixture": {
+      "temperature": 0,
+      "seed": 1234,
+      "checkpoint_hint": 0
+    },
+    "native_finish": "cancel",
+    "whole_image_reusable_boundary_after_cancel": 0,
+    "retry_and_cold_reference_prompt_and_sampler_equal": true,
+    "retry_and_cold_reference_output_token_ids_bit_equal": true,
+    "retry_and_cold_reference_shapes_correct": true,
+    "same_native_process": true,
+    "harness_stop_on_retry_or_reference": false,
+    "production_eos_drain": "Transport STOP followed an already observed terminal token; native completion was natural EOS.",
+    "evidence": {
+      "path": "intel-vision-20261116/qwen-image-cancellation-v3/result.json",
+      "sha256": "79d6d2acd6c31212a04b5bfbb85a248d6a6567acf9864995df976c645153b41d"
+    }
+  },
+  "encoder_numerics": {"reference":"Independent CPU encoder from the same pinned source, flash attention off; not included in distribution.","baseline_qwen_cosine":0.9979083719213963,"baseline_qwen_relative_l2":0.06466019182996735,"retained_fp32_attention_candidate":{"cosine_rounded":0.999992,"relative_l2_rounded":0.00398,"status":"Passed independent comparison; exact scope and numerical limits are retained in final_combined_comparison."},"rejected_fp16_single_partition_candidate":{"cosine_rounded":0.9844,"status":"rejected for numerical regression despite memory saving"},"final_combined_comparison":{"source":{"llama_base_commit":"3cf03257f219afbe7334045ff7c6a06ac68c627d","final_encoder_compile_commit":"783f6194903cea8a750fcc4f0b5533198ac64fe4","final_encoder_sha256":"886abc9d61de75bb312578f7c5ac4356cb918ae4aa08d3a61d63f6a0837a2ab5","vision_source_patch_hashes":["3ea2d06b7246588d392064c98eff6884b394588604b2b27ebfcba261f422e047","b02362847a2a73e0f74258c3a2ce00be5b5a482cacbca37ed22a712d60e7fed5","8aae33a4dbfbce47c270f1d91e24830514af1705227ed70481169806dbd4e5ff","23bd8a0e8898dcaea0a8ce4544819452818c796e8fcd0ce7749e0aaa10dfa961"],"numeric_measurement_encoder_commit":"93fabd98fb505cbf1d215bcbcb5d9ddfebc63c9f","final_metadata_relink_math_archives_sha256":{"ggml_sycl":"57aa21cf9540022504397f2bcebceb7cc00973eb75ee0aa75015cff3f9b63e18","mtmd":"25baf57c8ef3a1b72c5af8271f3a0e201b7e10d5a0c93b6387fcef3f2f631312"}},"accepted_comparisons":[{"family":"qwen3.6_clover_shared_projector","case":"combined_ffn1024_before_positions_order","rows":768,"embedding_width":2048,"cosine":0.999992087723938,"relative_l2":0.003978409657025652,"measurement_scope":"Direct GPU measurement from combined source93fabd9, capacity4096 and canonical image768 tokens; precedes the allocation-only positions-order hint."}],"baseline_comparisons":[{"family":"qwen3.6","case":"original_qwen_encoder","rows":768,"embedding_width":2048,"cosine":0.9979083719213963,"relative_l2":0.06466019182996735,"measurement_scope":"Original unpatched encoder; canonical image has768 tokens."},{"family":"tiel","case":"original_tiel_encoder","rows":768,"embedding_width":2048,"cosine":0.998090633300432,"relative_l2":0.061772400554666984,"measurement_scope":"Original unpatched encoder; canonical image has768 tokens."},{"family":"gemma4","case":"original_gemma_encoder","rows":336,"embedding_width":2816,"cosine":0.9998132293513193,"relative_l2":0.01932841236287019,"measurement_scope":"Original unpatched encoder; canonical image has336 tokens, NOT1120."}],"rejected_candidates":[{"family":"qwen3.6_clover_shared_projector","case":"rejected_single_kv_partition_fp16","rows":768,"embedding_width":2048,"cosine":0.9844181418543583,"relative_l2":0.17585786486811744,"measurement_scope":"Rejected because long FP16 accumulation increased numerical error."}],"saved_fp32_attention_and_combined_embeddings_bit_identical":true,"memory":{"gpu_observation_before_positions_order":{"image_capacity":4096,"graph_compute_buffer_bytes":352583680,"scratch_pool_bytes":85983232,"measurement":"Direct GPU run log before the allocation-only positions hint."},"final_cpu_only_allocator":{"image_capacity":4096,"graph_compute_buffer_bytes":340000768,"graph_nodes":4115,"measurement":"CPU-only real-projector GGML allocation harness. No tensor payload read, compute-buffer allocation or graph execution."},"final_direct_gpu_graph_buffer_bytes":null,"final_actual_api_warmup":{"image_tokens":4096,"seconds":52.5,"wddm_available_bytes":17085196820,"measurement":"Actual final producer API startup; graph-buffer diagnostics were suppressed."}},"limitations":["The accepted numeric row was directly measured before the allocation-only positions-order hint; no separate post-hint embedding comparison was saved.","Final783 is a metadata-only relink of the positions candidate with identical GGML-SYCL and MTMD archives.","Gemma baseline numeric comparison uses336 image rows. Full1120 is API image-facts/EOS validation, not a full1120 CPU/GPU embedding comparison."]},"final_evidence":{"path":"intel-vision-20261116/encoder-numerical-memory-evidence-final.json","sha256":"46be05f2c874ab17436eaedfffc6b724c5dc477c8f3db8a584cd3487c30f531d"}},
+  "retained_limits": [
+    "Experimental adoption only; no claim of general Intel-device hardware qualification.",
+    "The encoder supports the full 4096-row Qwen-family cap. Clover API admitted 4096 total context positions on this memory cohort and tested 1036-row images; a full 4096-row Clover language request was not established.",
+    "Initial ambiguous multi-image request recognized both pictures in reasoning but omitted the second array from its final answer. That failure is retained; the clearer image1/image2 UI case passed; the original incomplete answer remains retained.",
+    "Gemma language decode after image input measured 11.6-12.6 tok/s; Clover 18.5-18.9 tok/s. These are measured results, not a claim that either meets the earlier Qwen 30 tok/s target.",
+    "The natural-EOS Qwen UI follow-up took 293.8 seconds and generated 7349 tokens with 28140 reasoning characters at 25.1639 tok/s. Long normal thinking remains a latency limit; these UI cases do not establish a universal 30 tok/s floor."
+  ],
+  "installed_acceptance": {
+    "status": "passed",
+    "source_commit": "82656f4150b370fdf6e1971b3a3ef83725bfd561",
+    "online_provision": true,
+    "explicit_runtime_stage": false,
+    "ordinary_start": true,
+    "ordinary_current_repeats": 1,
+    "all_five_model_configs_keys_settings_history_preserved": true,
+    "lfm_config_and_payload_unchanged": true,
+    "current_repeat_process_identities_unchanged": true,
+    "existing_logical_history_preserved": true,
+    "only_finished_owned_test_chats_deleted": true,
+    "qwen_restored": true,
+    "browser_automation": "Playwright actual file upload, Send and composer model selector",
+    "measurement_scope": "Normal UI acceptance requests, not a controlled speedup benchmark.",
+    "playwright_version": "1.65.2",
+    "private_browser_gpu_disabled": true,
+    "exact_fixture_hashes": {
+      "input-2.png": "e6144e9edeec391d72c22971b969c114c75c2e6acb677d3574eaf73c661eb653",
+      "gemma-1120.png": "a78c5ca6b8ee1b298d7386abace46c77b58ae66372bc7466c7a38546bf9fdd63"
+    },
+    "cases": [
+      {"case":"qwen-upload","model":"qwen3.6-35b-a3b","prefill_tok_s":208.3683,"accepted_generation_tok_s":37.584,"wall_s":21.25,"first_token_ms":9631.09999999404,"reasoning_characters":1082,"prompt_tokens":1488,"fresh_prompt_tokens":1488,"cached_prompt_tokens":0,"output_tokens":411,"kv_used_tokens":1887,"kv_max_tokens":49152,"gpu_policy_percent":100,"cpu_policy_percent":0,"natural_eos":true,"quality":"passed","answer_schema":"array[label,color,shape]","parsed_answer":[{"label":"X","color":"yellow","shape":"square"},{"label":"Y","color":"red","shape":"circle"},{"label":"C","color":"green","shape":"triangle"}],"image_count":1,"image_sha256":["e6144e9edeec391d72c22971b969c114c75c2e6acb677d3574eaf73c661eb653"],"uncapped_model_defaults":true,"offered_default_tools":["run_python","web_search"],"health_images":true,"features_images":true,"config_settings_preserved":true,"native_sha256":"623e98c7a386243f1c35265bfd10147e4287d2615bb0b4851211e6a9ec7fd7df","encoder_sha256":"886abc9d61de75bb312578f7c5ac4356cb918ae4aa08d3a61d63f6a0837a2ab5","sdk_modules":0,"source_commit":"7c94a0a3a5debc71d37fdc48836e19c3b535f1a0","cohort":"initial six UI passes; aggregate interrupted before Clover POST"},
+      {"case":"qwen-same-image-followup","model":"qwen3.6-35b-a3b","prefill_tok_s":109.0613,"accepted_generation_tok_s":25.1639,"wall_s":293.813,"first_token_ms":1052.2000000178814,"reasoning_characters":28140,"prompt_tokens":1590,"fresh_prompt_tokens":107,"cached_prompt_tokens":1483,"output_tokens":7349,"kv_used_tokens":8938,"kv_max_tokens":49152,"gpu_policy_percent":100,"cpu_policy_percent":0,"natural_eos":true,"quality":"passed","answer_schema":"array[label,color,shape]","parsed_answer":[{"label":"X","color":"yellow","shape":"square"},{"label":"Y","color":"red","shape":"circle"},{"label":"C","color":"green","shape":"triangle"}],"image_count":1,"image_sha256":["e6144e9edeec391d72c22971b969c114c75c2e6acb677d3574eaf73c661eb653"],"uncapped_model_defaults":true,"offered_default_tools":["run_python","web_search"],"health_images":true,"features_images":true,"config_settings_preserved":true,"native_sha256":"623e98c7a386243f1c35265bfd10147e4287d2615bb0b4851211e6a9ec7fd7df","encoder_sha256":"886abc9d61de75bb312578f7c5ac4356cb918ae4aa08d3a61d63f6a0837a2ab5","sdk_modules":0,"source_commit":"7c94a0a3a5debc71d37fdc48836e19c3b535f1a0","cohort":"initial six UI passes; aggregate interrupted before Clover POST"},
+      {"case":"qwen-multiimage","model":"qwen3.6-35b-a3b","prefill_tok_s":251.6797,"accepted_generation_tok_s":35.0772,"wall_s":41.532,"first_token_ms":11679.09999999404,"reasoning_characters":3011,"prompt_tokens":2315,"fresh_prompt_tokens":2315,"cached_prompt_tokens":0,"output_tokens":1031,"kv_used_tokens":3323,"kv_max_tokens":49152,"gpu_policy_percent":100,"cpu_policy_percent":0,"natural_eos":true,"quality":"passed","answer_schema":"object[image1:array[label,color,shape],image2:array[label,color,shape]]","parsed_answer":{"image1":[{"label":"A","color":"RED","shape":"SQUARE"},{"label":"B","color":"BLUE","shape":"CIRCLE"},{"label":"C","color":"GREEN","shape":"TRIANGLE"}],"image2":[{"label":"X","color":"YELLOW","shape":"SQUARE"},{"label":"Y","color":"RED","shape":"CIRCLE"},{"label":"C","color":"GREEN","shape":"TRIANGLE"}]},"image_count":2,"image_sha256":["b6983fe5adacff8a4fc2f8b7b0cd3b235d8961550e9f9bca7a669396b3d33138","e6144e9edeec391d72c22971b969c114c75c2e6acb677d3574eaf73c661eb653"],"uncapped_model_defaults":true,"offered_default_tools":["run_python","web_search"],"health_images":true,"features_images":true,"config_settings_preserved":true,"native_sha256":"623e98c7a386243f1c35265bfd10147e4287d2615bb0b4851211e6a9ec7fd7df","encoder_sha256":"886abc9d61de75bb312578f7c5ac4356cb918ae4aa08d3a61d63f6a0837a2ab5","sdk_modules":0,"source_commit":"7c94a0a3a5debc71d37fdc48836e19c3b535f1a0","cohort":"initial six UI passes; aggregate interrupted before Clover POST"},
+      {"case":"qwen-text-six-facts","model":"qwen3.6-35b-a3b","prefill_tok_s":195.0682,"accepted_generation_tok_s":37.5254,"wall_s":24.266,"first_token_ms":3480.0999999940395,"reasoning_characters":1125,"prompt_tokens":1800,"fresh_prompt_tokens":1045,"cached_prompt_tokens":755,"output_tokens":586,"kv_used_tokens":1233,"kv_max_tokens":49152,"gpu_policy_percent":100,"cpu_policy_percent":0,"natural_eos":true,"quality":"passed","answer_schema":"object[id,participants,fee,venue,start,remaining]","parsed_answer":{"id":"R17","participants":12,"fee":800,"venue":3200,"start":"14:30","remaining":6400},"image_count":0,"image_sha256":[],"uncapped_model_defaults":true,"offered_default_tools":["run_python","web_search"],"health_images":true,"features_images":true,"config_settings_preserved":true,"native_sha256":"623e98c7a386243f1c35265bfd10147e4287d2615bb0b4851211e6a9ec7fd7df","encoder_sha256":"886abc9d61de75bb312578f7c5ac4356cb918ae4aa08d3a61d63f6a0837a2ab5","sdk_modules":0,"source_commit":"7c94a0a3a5debc71d37fdc48836e19c3b535f1a0","cohort":"initial six UI passes; aggregate interrupted before Clover POST"},
+      {"case":"tiel-upload","model":"tiel-coder-35b-a3b","prefill_tok_s":197.747,"accepted_generation_tok_s":33.648,"wall_s":16.203,"first_token_ms":11388.199999988079,"reasoning_characters":260,"prompt_tokens":1773,"fresh_prompt_tokens":1773,"cached_prompt_tokens":0,"output_tokens":139,"kv_used_tokens":1911,"kv_max_tokens":67584,"gpu_policy_percent":100,"cpu_policy_percent":0,"natural_eos":true,"quality":"passed","answer_schema":"array[label,color,shape]","parsed_answer":[{"label":"X","color":"yellow","shape":"square"},{"label":"Y","color":"red","shape":"circle"},{"label":"C","color":"green","shape":"triangle"}],"image_count":1,"image_sha256":["e6144e9edeec391d72c22971b969c114c75c2e6acb677d3574eaf73c661eb653"],"uncapped_model_defaults":true,"offered_default_tools":["run_python","web_search"],"health_images":true,"features_images":true,"config_settings_preserved":true,"native_sha256":"623e98c7a386243f1c35265bfd10147e4287d2615bb0b4851211e6a9ec7fd7df","encoder_sha256":"886abc9d61de75bb312578f7c5ac4356cb918ae4aa08d3a61d63f6a0837a2ab5","sdk_modules":0,"source_commit":"7c94a0a3a5debc71d37fdc48836e19c3b535f1a0","cohort":"initial six UI passes; aggregate interrupted before Clover POST"},
+      {"case":"gemma-upload","model":"gemma-4-26b-a4b-it","prefill_tok_s":305.9066,"accepted_generation_tok_s":12.6265,"wall_s":50.578,"first_token_ms":25493.40000000596,"reasoning_characters":658,"prompt_tokens":1634,"fresh_prompt_tokens":1634,"cached_prompt_tokens":0,"output_tokens":318,"kv_used_tokens":1942,"kv_max_tokens":28672,"gpu_policy_percent":100,"cpu_policy_percent":0,"natural_eos":true,"quality":"passed","answer_schema":"array[label,color,shape]","parsed_answer":[{"label":"X","color":"yellow","shape":"square"},{"label":"Y","color":"red","shape":"circle"},{"label":"C","color":"green","shape":"triangle"}],"image_count":1,"image_sha256":["a78c5ca6b8ee1b298d7386abace46c77b58ae66372bc7466c7a38546bf9fdd63"],"uncapped_model_defaults":true,"offered_default_tools":["run_python","web_search"],"health_images":true,"features_images":true,"config_settings_preserved":true,"native_sha256":"e027af690c460c7b03bbb9de1d914014f823240d40cbad8a48b4cf4d979d49c8","encoder_sha256":"886abc9d61de75bb312578f7c5ac4356cb918ae4aa08d3a61d63f6a0837a2ab5","sdk_modules":0,"source_commit":"7c94a0a3a5debc71d37fdc48836e19c3b535f1a0","cohort":"initial six UI passes; aggregate interrupted before Clover POST"},
+      {"case":"clover-upload","model":"clover-35b-a3b-preview","prefill_tok_s":112.0058,"accepted_generation_tok_s":18.3715,"wall_s":32.437,"first_token_ms":19659.5,"reasoning_characters":661,"prompt_tokens":1754,"fresh_prompt_tokens":1754,"cached_prompt_tokens":0,"output_tokens":225,"kv_used_tokens":1978,"kv_max_tokens":6144,"gpu_policy_percent":100,"cpu_policy_percent":0,"natural_eos":true,"quality":"passed","answer_schema":"array[label,color,shape]","parsed_answer":[{"label":"X","color":"yellow","shape":"square"},{"label":"Y","color":"red","shape":"circle"},{"label":"C","color":"green","shape":"triangle"}],"image_count":1,"image_sha256":["e6144e9edeec391d72c22971b969c114c75c2e6acb677d3574eaf73c661eb653"],"uncapped_model_defaults":true,"offered_default_tools":["run_python","web_search"],"health_images":true,"features_images":true,"config_settings_preserved":true,"native_sha256":"b6e852af3cf104365f1a22f3c24ffbda75deec0da3d569d78a57ee847e2c5fcc","encoder_sha256":"1b711f879f7bb322cface2bc48d337c629bb8ca6afd6958b6c16fdad931123d2","sdk_modules":0,"source_commit":"82656f4150b370fdf6e1971b3a3ef83725bfd561","cohort":"final correction UI","image_token_planning":[{"status":200,"prompt_tokens":1754,"max_context":6144,"exact":true,"images_estimated":0,"images_counted":1,"model":"clover-35b-a3b-preview"}]},
+      {"case":"qwen-upload","model":"qwen3.6-35b-a3b","prefill_tok_s":215.8211,"accepted_generation_tok_s":36.0601,"wall_s":27.281,"first_token_ms":9275.5,"reasoning_characters":1923,"prompt_tokens":1488,"fresh_prompt_tokens":1488,"cached_prompt_tokens":0,"output_tokens":638,"kv_used_tokens":2125,"kv_max_tokens":51200,"gpu_policy_percent":100,"cpu_policy_percent":0,"natural_eos":true,"quality":"passed","answer_schema":"array[label,color,shape]","parsed_answer":[{"label":"X","color":"yellow","shape":"square"},{"label":"Y","color":"red","shape":"circle"},{"label":"C","color":"green","shape":"triangle"}],"image_count":1,"image_sha256":["e6144e9edeec391d72c22971b969c114c75c2e6acb677d3574eaf73c661eb653"],"uncapped_model_defaults":true,"offered_default_tools":["run_python","web_search"],"health_images":true,"features_images":true,"config_settings_preserved":true,"native_sha256":"b6e852af3cf104365f1a22f3c24ffbda75deec0da3d569d78a57ee847e2c5fcc","encoder_sha256":"1b711f879f7bb322cface2bc48d337c629bb8ca6afd6958b6c16fdad931123d2","sdk_modules":0,"source_commit":"82656f4150b370fdf6e1971b3a3ef83725bfd561","cohort":"final correction UI","image_token_planning":[{"status":200,"prompt_tokens":1488,"max_context":51200,"exact":true,"images_estimated":0,"images_counted":1,"model":"qwen3.6-35b-a3b"}]},
+      {"case":"qwen-text-six-facts","model":"qwen3.6-35b-a3b","prefill_tok_s":198.1902,"accepted_generation_tok_s":33.591,"wall_s":44.531,"first_token_ms":3449.2999999821186,"reasoning_characters":3327,"prompt_tokens":1734,"fresh_prompt_tokens":979,"cached_prompt_tokens":755,"output_tokens":1240,"kv_used_tokens":1843,"kv_max_tokens":51200,"gpu_policy_percent":100,"cpu_policy_percent":0,"natural_eos":true,"quality":"passed","answer_schema":"object[id,participants,fee,venue,start,remaining]","parsed_answer":{"id":"R17","participants":12,"fee":800,"venue":3200,"start":"14:30","remaining":6400},"image_count":0,"image_sha256":[],"uncapped_model_defaults":true,"offered_default_tools":["run_python","web_search"],"health_images":true,"features_images":true,"config_settings_preserved":true,"native_sha256":"b6e852af3cf104365f1a22f3c24ffbda75deec0da3d569d78a57ee847e2c5fcc","encoder_sha256":"1b711f879f7bb322cface2bc48d337c629bb8ca6afd6958b6c16fdad931123d2","sdk_modules":0,"source_commit":"82656f4150b370fdf6e1971b3a3ef83725bfd561","cohort":"final correction UI","image_token_planning":[{"status":200,"prompt_tokens":760,"max_context":51200,"exact":true,"images_estimated":0,"model":"qwen3.6-35b-a3b"},{"status":200,"prompt_tokens":974,"max_context":51200,"exact":true,"images_estimated":0,"model":"qwen3.6-35b-a3b"}]}
+    ],
+    "installer_evidence": {
+      "path": "intel-vision-20261116/installed-vision-update-continuation-v2/result.json",
+      "sha256": "1500f08943a803ba0caffd84b6ce01ebdca2bad3fb020f9ca9f85113ef3513fc"
+    },
+    "ui_evidence": {
+      "path": "intel-vision-20261116/installed-vision-playwright-correction-v2/result.json",
+      "sha256": "63df4f3d2df0b2b399d26f6bda0be12a8adaca162d4542636e0fb763f0c60e00"
+    },
+    "validation_scope": "Six initial UI passes plus three targeted final correction passes; per-case runtime hashes retained",
+    "initial_UI_aggregate": "incomplete after a conservative Clover pre-POST context rejection; no inference was stopped",
+    "original_user_chat_count": 9,
+    "original_user_chat_rows_all_columns_unchanged": true,
+    "ordinary_correction_provision_start_repeat": true,
+    "initial_UI_evidence": {
+      "path": "intel-vision-20261116/installed-vision-playwright-v1/result.json",
+      "sha256": "51079ce94c85d099d157b74cfd5c63656359c157e7575d077646dea48ea77471"
+    },
+    "correction_installer_evidence": {
+      "path": "intel-vision-20261116/installed-vision-correction-final-v1/result.json",
+      "sha256": "d16d7957083ee3d7f7620a6beb963b00bceca965a8694eb90ac25b04810ff638"
+    },
+    "original_history_evidence": {
+      "path": "intel-vision-20261116/installed-vision-original-history-reconciliation.json",
+      "sha256": "67e92752d3c8bc0de30e58251710640b151255b99bbde1dca735375cdf16e93b"
+    },
+    "pre_POST_error_evidence": {
+      "path": "intel-vision-20261116/installed-vision-playwright-v1-controller-error.json",
+      "sha256": "e007cd5849874dd6a7fc02e0993a8c6c0c1e3da938a437d100015218043fdecc"
+    },
+    "source_only_ordinary_provision_start_repeat": true,
+    "source_only_all_five_configs_runtime_encoders_catalog_exact": true,
+    "source_only_installer_evidence": {
+      "path": "intel-vision-20261116/installed-vision-source-only-final-v1/result.json",
+      "sha256": "12e689b40b92dd65a9b33ec6539af780862506c3ebcd9920ceac2543dd929ea9"
+    },
+    "failed_owned_cleanup_evidence": {
+      "path": "intel-vision-20261116/installed-vision-playwright-correction-v1/result.json",
+      "sha256": "9407bc80fae32d21b350296f4608010fa98d3ed8e1f22227bedbdf2358f23307"
+    }
+  },
+  "initial_accepted_artifacts": {"native_compile_commit":"306122aedabac8bb38a8131c33b09430d7c4f627","encoder_compile_commit":"783f6194903cea8a750fcc4f0b5533198ac64fe4","llama_commit":"3cf03257f219afbe7334045ff7c6a06ac68c627d","llama_archive_sha256":"c076d7534afa0e5d0ec2a0d425b11e791c16f3de0d727221aea071cef156a280","encoder_sha256":"886abc9d61de75bb312578f7c5ac4356cb918ae4aa08d3a61d63f6a0837a2ab5","encoder_patch_sha256":["3ea2d06b7246588d392064c98eff6884b394588604b2b27ebfcba261f422e047","b02362847a2a73e0f74258c3a2ce00be5b5a482cacbca37ed22a712d60e7fed5","8aae33a4dbfbce47c270f1d91e24830514af1705227ed70481169806dbd4e5ff","23bd8a0e8898dcaea0a8ce4544819452818c796e8fcd0ce7749e0aaa10dfa961"],"packages":[{"family":"qwen-family","variant":"ptl-h","native_sha256":"623e98c7a386243f1c35265bfd10147e4287d2615bb0b4851211e6a9ec7fd7df","archive_sha256":"c74d4b0caa492f41e9aa803e6b0d79c475f669a63d501ee051b114d2bcdcd853"},{"family":"qwen-family","variant":"generic","native_sha256":"403554c34e8c5d7cd7500d557710b9f50c8208e166f68cfad7d817187614b9c5","archive_sha256":"d28808a417610f5372ea559cacb53835cf03a3ad2532875e2a213926e7184494"},{"family":"gemma4","variant":"ptl-h","native_sha256":"e027af690c460c7b03bbb9de1d914014f823240d40cbad8a48b4cf4d979d49c8","archive_sha256":"83aa1de27af77ac8d8a3d47fc7df16b4c6c70fa5477fc1d6c3af96d333a695de"},{"family":"gemma4","variant":"generic","native_sha256":"9939769842307cd61fc38e036b293e6ccbf0dd3c09f523131c32e0fba729acc3","archive_sha256":"18e4d61efd28ef6f1fb2efd8ce1e6ca7df71f5f7c124df5f0115e05f075e9552"}],"generic_qualification":"Compiled, capability-checked and packaged; no generic-device inference or speed qualification.","producer_evidence":{"path":"intel-vision-20261116/vision-package-receipt-final.json","sha256":"a187c4c9fd49e03c40c4e36f0a1b9f8c1f83f6c3c635c7c3b36376c932c2c903"},"final_source_commit":"7c94a0a3a5debc71d37fdc48836e19c3b535f1a0"},
+  "retained_product_rejections": [
+    {
+      "scope": "initial UI Clover pre-POST context rejection",
+      "ui_message_code": "context.tooLarge",
+      "reason": "The original planner reserved the full4096 image-token cap at a loaded2048 context instead of the actual image rows.",
+      "generation_started": false,
+      "healthy_generation_stopped": false,
+      "retained_unchanged": true,
+      "evidence": {"path":"intel-vision-20261116/installed-vision-playwright-v1-controller-error.json","sha256":"e007cd5849874dd6a7fc02e0993a8c6c0c1e3da938a437d100015218043fdecc"}
+    },
+    {
+      "scope": "first correction UI Clover pre-POST dependency rejection",
+      "ui_message_code": "context.tooLarge",
+      "reason": "The initial COUNT caller needed optional Pillow for image headers. Without Pillow it retained the full cap and rejected the image; final standard-library headers remove that dependency.",
+      "generation_started": false,
+      "healthy_generation_stopped": false,
+      "retained_unchanged": true,
+      "evidence": {"path":"intel-vision-20261116/installed-vision-playwright-correction-v1/result.json","sha256":"9407bc80fae32d21b350296f4608010fa98d3ed8e1f22227bedbdf2358f23307"}
+    }
+  ],
+  "retained_checker_failures": [
+    {
+      "scope": "private installer preservation checker, not a product failure",
+      "reason": "The checker omitted the authorized explicit-GPU Clover vision policy marker from its allowlist.",
+      "exact_checker_error": "AssertionError(('clover-35b-a3b-preview', {'changed_fields': ['args', 'clover_vision_policy_version', 'exe', 'intel_vision_contract', 'lib_dirs', 'vision', 'vision_exe', 'vision_mmproj', 'vision_mode', 'vision_policy_version'], 'allowed_runtime_fields': ['exe', 'args', 'intel_vision_contract', 'lib_dirs', 'vision_exe', 'vision', 'vision_policy_version', 'vision_mmproj', 'vision_mode'], 'unexpected_fields': ['clover_vision_policy_version'], 'preserved': False}))",
+      "original_receipt_retained_unchanged": true,
+      "evidence": {"path":"intel-vision-20261116/installed-vision-update-actual-v1/result.json","sha256":"bc6434cce478f35984b8b0efffceab8d0d16773a5c373780ae5564b267e148eb"}
+    },
+    {
+      "scope": "private continuation checker, not a product failure",
+      "reason": "The private checker expected SourceCommit in an older manifest schema; the actual ordinary Provision and Start had succeeded.",
+      "exact_checker_error": "KeyError('SourceCommit')",
+      "original_receipt_retained_unchanged": true,
+      "evidence": {"path":"intel-vision-20261116/installed-vision-update-continuation-v1/result.json","sha256":"30724bb7a30042f289496b1130a78980ad3f8495987f8c43a658b088056cd8f0"}
+    }
+  ]
+}
