@@ -316,7 +316,15 @@ def configure_vision(cfg: dict, model: Path, *, projector: Path | None = None,
     artifact = projector_for_arch(cfg.get("arch", "qwen35moe"), cfg.get("model_name"))
     if artifact is None:
         raise ValueError("This model has no supported image projector")
-    projector = Path(new.get("vision_mmproj") or Path(cfg["download_dir"]) / artifact.filename)
+    selected_projector = new.get("vision_mmproj")
+    projector = Path(selected_projector or Path(cfg["download_dir"]) / artifact.filename)
+    if cfg.get("backend") == "sycl" and not selected_projector and not projector.is_file():
+        # Local Intel models may live outside the managed download directory.
+        # Reuse their matching projector after the same pinned SHA check.
+        beside_model = Path(model).with_name(artifact.filename)
+        if beside_model.is_file():
+            projector = beside_model
+            verified = False
     encoder = resolve_vision_executable(new)
     valid = projector.is_file() and projector.stat().st_size == artifact.size
     if valid and not verified:
@@ -326,6 +334,8 @@ def configure_vision(cfg: dict, model: Path, *, projector: Path | None = None,
                 digest.update(block)
         valid = digest.hexdigest() == artifact.sha256
     if valid and encoder is not None:
+        if cfg.get("backend") == "sycl":
+            new["vision_mmproj"] = str(projector.resolve())
         new["vision"] = {**previous, "exe": str(encoder), "mmproj": str(projector.resolve()),
                          "model": str(model), "gpu": mode == "gpu"}
         if cfg.get("backend") == "sycl":

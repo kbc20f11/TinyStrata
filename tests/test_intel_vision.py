@@ -1,5 +1,9 @@
 """Startup adapter identity and explicit encoder-backend policy, without GPUs."""
 from copy import deepcopy
+import hashlib
+from pathlib import Path
+from types import SimpleNamespace
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -56,6 +60,38 @@ class IntelVisionStartup(unittest.TestCase):
             selected = prepare_encoder(self.config(), {"exe": "v.exe", "gpu": False}, {})
             self.assertEqual(selected["backend"], "cpu")
             self.assertEqual(query.call_count, 1)
+
+
+class IntelProjectorReuse(unittest.TestCase):
+    def test_local_projector_is_pinned_and_explicit_selection_is_retained(self):
+        from serve.model_setup import configure_vision
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            local = base / "models"; local.mkdir()
+            model = local / "model.gguf"; model.write_bytes(b"model")
+            encoder = base / "vision.exe"; encoder.write_bytes(b"encoder")
+            projector = local / "mmproj.gguf"; projector.write_bytes(b"verified")
+            artifact = SimpleNamespace(filename=projector.name, size=8,
+                                       sha256=hashlib.sha256(b"verified").hexdigest())
+            cfg = {"backend": "sycl", "arch": "qwen35moe", "model_name": "qwen3.6-35b-a3b",
+                   "exe": str(base / "native.exe"), "vision_exe": str(encoder),
+                   "vision_mode": "gpu", "download_dir": str(base / "managed"),
+                   "args": ["--model", str(model)]}
+            proof = SimpleNamespace(report={}, executable=cfg["exe"], sha256="a"*64)
+            with patch("serve.model_setup.validate_intel_executable", return_value=proof), \
+                 patch("serve.intel_capabilities.supports_images", return_value=True), \
+                 patch("serve.model_download.projector_for_arch", return_value=artifact):
+                ready = configure_vision(cfg, model, verified=True)
+                self.assertEqual(ready["vision"]["mmproj"], str(projector.resolve()))
+                self.assertEqual(ready["vision_mmproj"], str(projector.resolve()))
+                # A downloaded target's verified flag cannot bless another file.
+                projector.write_bytes(b"tampered")
+                bad = configure_vision(cfg, model, verified=True)
+                self.assertNotIn("vision", bad)
+                self.assertTrue(bad["vision_download_required"])
+                explicit = configure_vision(cfg | {"vision_mmproj": str(base / "chosen.gguf")}, model)
+                self.assertEqual(explicit["vision_mmproj"], str(base / "chosen.gguf"))
+                self.assertNotIn("vision", explicit)
 
 
 if __name__ == "__main__":
