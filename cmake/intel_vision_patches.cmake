@@ -17,8 +17,8 @@ function(tinystrata_intel_vision_graph_memory root token_tile)
   tinystrata_intel_vision_patch_copy("${root}" "tools/mtmd/models/qwen3vl.cpp"
     "${PROJECT_SOURCE_DIR}/cmake/patches/intel-vision-split-qkv.patch"
     5a248956cc965ec1229538585f66a0010fa03a5d5dd164bd495c522ecede0c7b
-    1f174049c66072340b1433acb8cdcf1f9850eabaf8d145d5fcfcc07c2eba3dce
-    1b8cb0884990a22d023adbc15a421a69430f8ee94c0303bc565054914006c1f4)
+    dd8d34d7948e8290275add559fa4ced675b1a98a412d98c670e60376ad009675
+    23bd8a0e8898dcaea0a8ce4544819452818c796e8fcd0ce7749e0aaa10dfa961)
   set(_copy_root "${CMAKE_BINARY_DIR}/intel-vision-patched/tools/mtmd")
   get_target_property(_sources mtmd SOURCES)
   foreach(_relative clip.cpp models/qwen3vl.cpp)
