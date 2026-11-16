@@ -21,6 +21,14 @@ sycl::event dequantize_half(sycl::queue& queue, int type, const uint8_t* weights
 sycl::event convert_half(sycl::queue& queue, const float* input, sycl::half* output, size_t elements);
 sycl::event embedding_lookup(sycl::queue& queue, int type, const uint8_t* weights,
                              const int32_t* ids, float* output, int width, int tokens);
+// Qwen head normalization, interleaved t/h/w M-RoPE and physical KV storage.
+// The optional position map is [context][3]; rotary pair p uses axis p%3.
+// KV addressing always uses the physical cell, including inside a picture.
+sycl::event prepare_qwen_attention(sycl::queue& queue, const float* packed_query_gate,
+    const float* keys, const float* values, const float* query_norm, const float* key_norm,
+    float* queries, float* gates, float* rotated_keys, float* cache_keys, float* cache_values,
+    int heads, int kv_heads, int context, int rotary_dimensions, int tokens,
+    const int32_t* position, const int32_t* mrope, float base, float epsilon, bool quantized_kv);
 // Exact causal visibility; online FP32 softmax, no materialized score matrix.
 // Query/gate [token][head][256], persistent K/V [kv_head][context][256].
 sycl::event causal_attention(sycl::queue& queue, const float* queries, const float* gates,

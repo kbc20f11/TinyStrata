@@ -210,6 +210,56 @@ sycl::event embedding_lookup(sycl::queue& q, int type, const uint8_t* w, const i
     TINYSTRATA_INTEL_DISPATCH(RUN)
 #undef RUN
 }
+sycl::event prepare_qwen_attention(sycl::queue& q, const float* packed_query_gate,
+    const float* keys, const float* values, const float* query_norm, const float* key_norm,
+    float* queries, float* gates, float* rotated_keys, float* cache_keys, float* cache_values,
+    int heads, int kv_heads, int context, int rotary_dimensions, int tokens,
+    const int32_t* position, const int32_t* mrope, float base, float epsilon, bool quantized_kv) {
+    require_in_order(q);
+    if (heads < 1 || kv_heads < 1 || context < 1 || tokens < 1 || tokens > 1024 ||
+        rotary_dimensions < 2 || rotary_dimensions > 256 || rotary_dimensions % 2 ||
+        !(base > 0) || !(epsilon > 0) || !packed_query_gate || !keys || !values ||
+        !query_norm || !key_norm || !queries || !gates || !position ||
+        (quantized_kv ? !rotated_keys : (!cache_keys || !cache_values)))
+        throw std::invalid_argument("Invalid Qwen normalized rotary/cache geometry");
+    return q.submit([&](sycl::handler& handler) {
+        sycl::local_accessor<float, 1> normalized(256, handler);
+        handler.parallel_for(sycl::nd_range<1>(size_t(tokens) * (heads + kv_heads) * 256, 256), [=](sycl::nd_item<1> it) {
+            const size_t entry = it.get_group_linear_id(), token = entry / (heads + kv_heads);
+            const size_t head = entry % (heads + kv_heads), col = it.get_local_linear_id();
+            const bool query = head < size_t(heads);
+            const float* input = query ? packed_query_gate + (token * heads + head) * 512
+                                      : keys + (token * kv_heads + head - heads) * 256;
+            const float value = input[col];
+            const float sum = sycl::reduce_over_group(it.get_group(), value * value, sycl::plus<float>());
+            normalized[col] = value * sycl::rsqrt(sum / 256.f + epsilon) * (query ? query_norm[col] : key_norm[col]);
+            sycl::group_barrier(it.get_group());
+            float result = normalized[col];
+            const int half = rotary_dimensions / 2;
+            const size_t physical = size_t(position[0]) + token;
+            if (col < size_t(rotary_dimensions)) {
+                const size_t pair = col < size_t(half) ? col : col - half;
+                const int rotary_position = mrope ? mrope[physical * 3 + pair % 3] : int(physical);
+                const float theta = float(rotary_position) * sycl::pow(base, -2.f * float(pair) / float(rotary_dimensions));
+                const float sine = sycl::sin(theta), cosine = sycl::cos(theta);
+                result = col < size_t(half) ? normalized[col] * cosine - normalized[col + half] * sine
+                                          : normalized[col - half] * sine + normalized[col] * cosine;
+            }
+            if (query) {
+                queries[(token * heads + head) * 256 + col] = result;
+                gates[(token * heads + head) * 256 + col] = packed_query_gate[(token * heads + head) * 512 + 256 + col];
+            } else {
+                const size_t key_head = head - heads;
+                if (quantized_kv) rotated_keys[(token * kv_heads + key_head) * 256 + col] = result;
+                else {
+                    const size_t index = (key_head * context + physical) * 256 + col;
+                    cache_keys[index] = result;
+                    cache_values[index] = values[(token * kv_heads + key_head) * 256 + col];
+                }
+            }
+        });
+    });
+}
 sycl::event dequantize_half(sycl::queue& q, int type, const uint8_t* w, sycl::half* output, size_t elements) {
     require_in_order(q);
     validate_quantized_shape(type, elements);

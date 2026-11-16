@@ -1,0 +1,51 @@
+#pragma once
+#include "strata/intel/turn_checkpoint.hpp"
+#include "strata/qwen35/vision.hpp"
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace strata::intel::qwen_vision {
+namespace canonical = strata::qwen35::vision;
+using Input = canonical::Input;
+constexpr uint64_t max_embedding_bytes = 256ull << 20;
+
+// Validate the total size before the shared SVE1 reader allocates any rows.
+// Old and incoming inputs must coexist until exact image-prefix comparison.
+inline bool load(const std::string& path, const std::vector<int>& ids, int width,
+                 int context, int image_pad, Input& result, std::string& error) {
+    const auto rows = size_t(std::count(ids.begin(), ids.end(), image_pad));
+    if (width <= 0 || rows > max_embedding_bytes / sizeof(float) / uint64_t(width)) {
+        error = "image embeddings exceed the 256 MiB request limit";
+        return false;
+    }
+    return canonical::load(path, ids, width, context, result, error, image_pad);
+}
+
+inline bool overlaps(const Input& input, size_t begin, size_t count) {
+    for (const auto& image : input.images)
+        if (image.cell < begin + count && begin < image.cell + size_t(image.rows)) return true;
+    return false;
+}
+
+inline bool saved_prefix(const std::vector<int>& live, const std::vector<int>& prompt,
+                         const std::vector<int>& saved, size_t position, bool enabled) {
+    return enabled && position && position == saved.size() && saved.size() <= live.size() &&
+        saved.size() <= prompt.size() && std::equal(saved.begin(), saved.end(), live.begin()) &&
+        std::equal(saved.begin(), saved.end(), prompt.begin());
+}
+
+// Image-pad token IDs alone cannot identify a picture. A changed late image
+// can still reuse an earlier complete turn before that picture.
+inline turn_checkpoint::Reuse choose(const std::vector<int>& live, const std::vector<int>& prompt,
+    const std::vector<int>& saved, size_t position, bool enabled,
+    const Input& old, const Input& next, int width) {
+    if (live.size() <= prompt.size() && std::equal(live.begin(), live.end(), prompt.begin()) &&
+        canonical::same_prefix(old, next, live.size(), width))
+        return {turn_checkpoint::Source::live, live.size()};
+    if (saved_prefix(live, prompt, saved, position, enabled) &&
+        canonical::same_prefix(old, next, saved.size(), width))
+        return {turn_checkpoint::Source::saved_turn, saved.size()};
+    return {};
+}
+} // namespace strata::intel::qwen_vision

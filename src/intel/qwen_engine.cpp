@@ -1,7 +1,7 @@
 // Causal Qwen3.6/Tiel and opt-in Clover D0 driver for Windows SYCL.
 // Model/layer semantics follow src/qwen35/q36_engine.cu (Strata/TinyStrata,
 // MIT; LICENSE and NOTICE). Optional arithmetic/MTP candidates are explicit;
-// compressed weights and FP32 recurrent/KV state are retained. No image route.
+// compressed weights and FP32 recurrent/KV state are retained.
 #include "strata/intel/weight_store.hpp"
 #include "strata/intel/context_policy.hpp"
 #include "strata/intel/graph_visibility.hpp"
@@ -12,6 +12,7 @@
 #include "strata/intel/kv_q8.hpp"
 #include "strata/intel/execution_request.hpp"
 #include "strata/intel/turn_checkpoint.hpp"
+#include "strata/intel/qwen_vision.hpp"
 #include "strata/intel/clover_causal.hpp"
 #ifdef TINYSTRATA_INTEL_MKL
 #include "strata/intel/prefill_gemm.hpp"
@@ -36,6 +37,7 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <sstream>
 #include <random>
@@ -92,6 +94,10 @@ class Engine {
     int32_t* expert_ids_;
     int32_t *expert_counts_, *expert_slots_, *tile_owners_, *tile_offsets_, *tile_count_;
     int32_t *token_input_ = nullptr, *position_input_ = nullptr;
+    bool vision_enabled_ = false;
+    int image_pad_ = -1;
+    int32_t* mrope_ = nullptr;
+    qwen_vision::Input image_input_;
     int graph_extent_ = 128;
     bool graph_enabled_ = true;
     bool recording_ = false, profiling_ = false, prefill_xmx_ = false, verify_xmx_ = false, prefill_int8_xmx_ = false;
@@ -183,6 +189,18 @@ class Engine {
     double metadata_number(const std::string& name, double fallback) const {
         const auto it = weights_->metadata().find(std::string(clover_ ? "clover_moe." : "qwen35moe.") + name);
         return it == weights_->metadata().end() ? fallback : it->second.num();
+    }
+    // SVE1 rows remain owned by the active request until all queued copies
+    // complete. Main and MTP prefill receive the same replacement embeddings.
+    void image_rows(float* destination, int count, int position) {
+        for (const auto& image : image_input_.images) {
+            const size_t begin = std::max(size_t(position), image.cell);
+            const size_t end = std::min(size_t(position + count), image.cell + size_t(image.rows));
+            if (begin >= end) continue;
+            q_.memcpy(destination + (begin - size_t(position)) * size_t(n_),
+                image_input_.embeddings.data() + image.offset + (begin - image.cell) * size_t(n_),
+                (end - begin) * size_t(n_) * sizeof(float));
+        }
     }
     void matrix(const std::string& name, const float* input, float* output, int tokens = 1) {
         const auto& t = tensor(name);
@@ -334,40 +352,9 @@ class Engine {
         const float *packed = qkv_, *keys = key_, *values = value_;
         float *queries = query_, *gates = query_gate_, *cache_k = state.key, *cache_v = state.value, *rotated_keys = key_;
         const bool quantized_kv = kv_int8_;
-        q_.submit([&](sycl::handler& handler) {
-            sycl::local_accessor<float, 1> normalized(256, handler);
-            handler.parallel_for(sycl::nd_range<1>(size_t(tokens) * (heads + kv_heads) * 256, 256), [=](sycl::nd_item<1> it) {
-                const size_t entry = it.get_group_linear_id(), token = entry / (heads + kv_heads);
-                const size_t head = entry % (heads + kv_heads), col = it.get_local_linear_id();
-                const bool query = head < size_t(heads);
-                const float* input = query ? packed + (token * heads + head) * 512 : keys + (token * kv_heads + head - heads) * 256;
-                const float value = input[col];
-                const float sum = sycl::reduce_over_group(it.get_group(), value * value, sycl::plus<float>());
-                normalized[col] = value * sycl::rsqrt(sum / 256.f + epsilon) * (query ? qw[col] : kw[col]);
-                sycl::group_barrier(it.get_group());
-                float result = normalized[col];
-                const int half = n_rot / 2;
-                if (col < size_t(n_rot)) {
-                    const size_t pair = col < size_t(half) ? col : col - half;
-                    const float theta = float(position_input[0] + token) * sycl::pow(base, -2.f * float(pair) / float(n_rot));
-                    const float sine = sycl::sin(theta), cosine = sycl::cos(theta);
-                    result = col < size_t(half) ? normalized[col] * cosine - normalized[col + half] * sine
-                                              : normalized[col - half] * sine + normalized[col] * cosine;
-                }
-                if (query) {
-                    queries[(token * heads + head) * 256 + col] = result;
-                    gates[(token * heads + head) * 256 + col] = packed[(token * heads + head) * 512 + 256 + col];
-                } else {
-                    const size_t key_head = head - heads;
-                    const size_t index = (key_head * context + position_input[0] + token) * 256 + col;
-                    if (quantized_kv) rotated_keys[(token * kv_heads + key_head) * 256 + col] = result;
-                    else {
-                        cache_k[index] = result;
-                        cache_v[index] = values[(token * kv_heads + key_head) * 256 + col];
-                    }
-                }
-            });
-        });
+        remember("prepare_attention", prepare_qwen_attention(q_, packed, keys, values, qw, kw,
+            queries, gates, rotated_keys, cache_k, cache_v, heads, kv_heads, context, n_rot, tokens,
+            position_input, mrope_, base, epsilon, quantized_kv));
         const float *visible_keys = state.key, *visible_values = state.value;
         bool small_gemm_attention = false;
 #ifdef TINYSTRATA_INTEL_MKL
@@ -548,6 +535,7 @@ class Engine {
     bool enqueue(int count, bool output_logits, const std::atomic<bool>* cancelled = nullptr) {
         const auto& embedding = tensor("token_embd.weight");
         remember("embedding_lookup", embedding_lookup(q_, int(embedding.info.type), embedding.data, token_input_, x_, n_, count));
+        image_rows(x_, count, position_);
         for (size_t layer = 0; layer < layers_.size(); ++layer) {
             if (cancelled && cancelled->load()) return false;
             const std::string prefix = "blk." + std::to_string(layer) + ".";
@@ -599,6 +587,7 @@ class Engine {
         const std::string prefix = "blk.40.";
         const auto& embedding = tensor("token_embd.weight");
         embedding_lookup(q_, int(embedding.info.type), embedding.data, token_input_, x_, n_, count);
+        image_rows(x_, count, position);
         rms_norm(q_, x_, f32(prefix + "nextn.enorm.weight"), h_, count, n_, epsilon_);
         float* cat = mtp_cat_; const float* normalized = h_; const int n = n_;
         q_.parallel_for(sycl::range<1>(size_t(count) * n), [=](sycl::id<1> i) {
@@ -727,7 +716,7 @@ class Engine {
         }
     }
 public:
-    Engine(const std::string& path, int context, unsigned device_index, WeightMemory memory = WeightMemory::Host, int chunk = 128, bool use_graph = true, bool profiling = false, bool prefill_xmx = false, bool prefill_npu = false, bool prefill_mkl = false, bool decode_dp4a = false, int mtp_depth = 0, bool verify_xmx = false, bool kv_int8 = false, bool prefill_int8_xmx = false, bool vocab_xmx = false, bool verify_mkl_attention = false, bool expert_layout = false, bool device_state = false, bool verify_graph = false, bool dense_layout = false, bool dense_split_k = false, int draft_vocab_limit = 0, bool experimental_tiel = false, bool experimental_clover = false) :
+    Engine(const std::string& path, int context, unsigned device_index, WeightMemory memory = WeightMemory::Host, int chunk = 128, bool use_graph = true, bool profiling = false, bool prefill_xmx = false, bool prefill_npu = false, bool prefill_mkl = false, bool decode_dp4a = false, int mtp_depth = 0, bool verify_xmx = false, bool kv_int8 = false, bool prefill_int8_xmx = false, bool vocab_xmx = false, bool verify_mkl_attention = false, bool expert_layout = false, bool device_state = false, bool verify_graph = false, bool dense_layout = false, bool dense_split_k = false, int draft_vocab_limit = 0, bool experimental_tiel = false, bool experimental_clover = false, bool vision = false) :
         q_(select_device(device_index), [](sycl::exception_list errors) { for (const auto& error : errors) std::rethrow_exception(error); },
            profiling ? sycl::property_list{sycl::property::queue::in_order{}, sycl::property::queue::enable_profiling{}}
                      : sycl::property_list{sycl::property::queue::in_order{}}), profiling_(profiling), prefill_xmx_(prefill_xmx), context_(context), chunk_(chunk) {
@@ -772,6 +761,7 @@ public:
             std::getenv("STRATA_REVIEW_INTEL_MOE_ROUTE_STATS"),moe_recipe,
             {selected_device.vendor_id,selected_device.device_id,selected_device.integrated,moe_ptl_h_aot});
         mtp_depth_ = mtp_depth;
+        vision_enabled_ = vision;
         bool measured_clover_runtime = false;
 #ifdef TINYSTRATA_INTEL_AOT_TARGET
         measured_clover_runtime = std::string(TINYSTRATA_INTEL_AOT_TARGET) == "intel_gpu_ptl_h";
@@ -819,7 +809,7 @@ public:
             if (draft_vocab_limit && (!mtp_depth || !vocab_xmx || draft_vocab_limit < 64 || draft_vocab_limit > 4096))
                 throw std::runtime_error("--draft-vocab requires MTP, --vocab-xmx and a limit in 64..4096");
             if (experimental_clover) clover_causal::validate_launch(kv_int8, mtp_depth, draft_vocab_limit, false, prefill_npu);
-            weights_ = WeightStore::load(q_, path, memory, vocab_xmx, expert_layout, dense_layout, dense_split_k, experimental_tiel, experimental_clover);
+            weights_ = WeightStore::load(q_, path, memory, vocab_xmx, expert_layout, dense_layout, dense_split_k, experimental_tiel, experimental_clover, vision);
             clover_ = weights_->geometry().family == strata::ModelFamily::CloverMoe;
             if (expert_layout) std::fprintf(stderr, "Intel expert_layout=interleaved16 Q8_activations=1 single_weight_store=1\n");
             if (vocab_xmx) {
@@ -853,6 +843,27 @@ public:
             rope_base_ = float(metadata_number("rope.freq_base", 1e7)); n_rot_ = int(metadata_number("rope.dimension_count", 64));
             if (n_rot_ <= 0 || n_rot_ > 256 || n_rot_ % 2 || !(epsilon_ > 0) || !(rope_base_ > 0))
                 throw std::runtime_error("Invalid Qwen normalization/rotary settings");
+            if (vision_enabled_) {
+                // Read the real tokenizer identity, including Tiel's special
+                // IDs. Metadata/token lookup does not retain another arena.
+                strata::GgufFile metadata(path);
+                const auto actual_pad = metadata.token_id("<|image_pad|>");
+                const double declared_pad = metadata_number("ple.image_token_id", -1);
+                if (actual_pad >= 0 && actual_pad < g.n_vocab) image_pad_ = int(actual_pad);
+                else if (std::isfinite(declared_pad) && declared_pad >= 0 && declared_pad < g.n_vocab &&
+                         declared_pad == std::floor(declared_pad)) image_pad_ = int(declared_pad);
+                const std::string family = clover_ ? "clover_moe." : "qwen35moe.";
+                const auto sections = weights_->metadata().find(family + "rope.dimension_sections");
+                bool image_rope = clover_; // published Clover vision uses Qwen's original input interface
+                if (!clover_ && sections != weights_->metadata().end()) {
+                    const auto& value = sections->second;
+                    image_rope = value.type == strata::MetaType::ARRAY && value.items.size() >= 3 &&
+                        value.items[0].u == 11 && value.items[1].u == 11 && value.items[2].u == 10;
+                    for (size_t i = 3; i < value.items.size(); ++i) image_rope = image_rope && value.items[i].u == 0;
+                }
+                if (n_rot_ != 64 || !image_rope || image_pad_ < 0 || image_pad_ >= g.n_vocab)
+                    throw std::runtime_error("Intel vision requires 2048-wide Qwen image input, a real image-pad token and 11/11/10 M-RoPE");
+            }
             const uint64_t attention_layers = uint64_t(g.n_layers / g.full_attention_interval);
             const uint64_t recurrent_layers = uint64_t(g.n_layers) - attention_layers;
             const uint64_t state_bytes = recurrent_layers * (uint64_t(hv_) * 128 * 128 + uint64_t(2 * hk_ + hv_) * 128 * 3) * sizeof(float);
@@ -864,6 +875,7 @@ public:
             context_shape.dense_split=dense_split_k;context_shape.support=gpu_support_sampling_;context_shape.device_state=device_state_;
             context_shape.turn_checkpoint=turn_checkpoint_enabled_;context_shape.graph=use_graph&&!profiling;context_shape.verify_graph=verify_graph;
             context_shape.npu=prefill_npu;context_shape.npu_split=std::getenv("STRATA_REVIEW_NPU_SPLIT")!=nullptr;
+            context_shape.vision=vision_enabled_;
             const int context_limit=context_policy::model_limit(metadata_number("context_length",0),clover_?context_policy::lfm_limit:context_policy::full_limit);
             const auto chosen=context_policy::select(context,context_limit,remaining_memory,selected_device.max_allocation,
                 [&](uint64_t tokens){return context_policy::qwen(tokens,context_shape);});
@@ -888,6 +900,11 @@ public:
             tile_owners_ = alloc<int32_t>(max_tiles); tile_offsets_ = alloc<int32_t>(max_tiles); tile_count_ = alloc<int32_t>(1);
             token_input_ = alloc<int32_t>(chunk_, true);
             position_input_ = alloc<int32_t>(chunk_, true);
+            if (vision_enabled_) {
+                mrope_ = alloc<int32_t>(size_t(context_) * 3);
+                const auto identity = qwen_vision::canonical::identity_positions(context_);
+                q_.memcpy(mrope_, identity.data(), identity.size() * sizeof(int32_t)).wait_and_throw();
+            }
             checkpoint_hidden_ = alloc<float>(n_);
             if (kv_int8_) {
                 kv_error_ = alloc<int32_t>(1, true);
@@ -940,9 +957,9 @@ public:
             if (decode_dp4a) dp4a_ = std::make_unique<DecodeDp4a>(q_, verify_xmx || prefill_int8_xmx || expert_layout, dense_split_k);
             if (use_graph && !profiling) prepare_graph();
             const auto device = inspect_device(q_.get_device());
-            std::fprintf(stderr, "Intel causal Qwen: %s, architecture=%s, context=%d, KV=%s, MTP=%d, images=off, weight_memory=%s\n",
+            std::fprintf(stderr, "Intel causal Qwen: %s, architecture=%s, context=%d, KV=%s, MTP=%d, images=%s, weight_memory=%s\n",
                          device.name.c_str(), device.architecture.c_str(), context, kv_int8_ ? "INT8" : "FP32",
-                         mtp_depth_, memory == WeightMemory::Host ? "host" : memory == WeightMemory::Shared ? "shared" : "device");
+                         mtp_depth_, vision_enabled_ ? "on" : "off", memory == WeightMemory::Host ? "host" : memory == WeightMemory::Shared ? "shared" : "device");
             print_memory("engine_ready", device);
             context_policy::report(chosen,context_limit,remaining_memory,selected_device.max_allocation);
             print_moe_routes();
@@ -977,13 +994,15 @@ public:
         std::copy_n(tokens, count, token_input_);
         for (int t = 0; t < count; ++t) position_input_[t] = position_ + t;
         last_hidden_row_ = count - 1;
-        if (graph_enabled_ && !profiling_ && count == 1 && output_logits) {
+        if (graph_enabled_ && !profiling_ && count == 1 && output_logits &&
+            !qwen_vision::overlaps(image_input_, size_t(position_), size_t(count))) {
             int extent = std::min(context_, 128);
             while (extent <= position_) extent = std::min(context_, extent * 2);
             if (!decode_graph_ || extent != graph_extent_) { graph_extent_ = extent; prepare_graph(); }
         }
         bool complete = true;
-        if (decode_graph_ && count == 1 && output_logits) q_.ext_oneapi_graph(*decode_graph_);
+        if (decode_graph_ && count == 1 && output_logits &&
+            !qwen_vision::overlaps(image_input_, size_t(position_), size_t(count))) q_.ext_oneapi_graph(*decode_graph_);
         else complete = enqueue(count, output_logits, cancelled);
         q_.wait_and_throw();
         if (mtp_depth_ && complete && !(cancelled && cancelled->load())) warm_mtp(tokens, count);
@@ -1112,6 +1131,27 @@ public:
             draft_vocab_limit_, static_cast<unsigned long long>(draft_vocab_updates_), draft_vocab_prepare_ms_);
     }
     bool clover() const { return clover_; }
+    bool vision() const { return vision_enabled_; }
+    int image_pad() const { return image_pad_; }
+    int embedding_width() const { return n_; }
+    const qwen_vision::Input& images() const { return image_input_; }
+    void images(qwen_vision::Input next) {
+        if (!vision_enabled_) {
+            if (!next.images.empty()) throw std::runtime_error("Intel engine was started without --vision");
+            return;
+        }
+        if ((!next.images.empty() && next.positions.size() != size_t(context_) * 3) ||
+            next.embeddings.size() > qwen_vision::max_embedding_bytes / sizeof(float))
+            throw std::runtime_error("Invalid bounded Intel image input");
+        q_.wait_and_throw();
+        if (!next.positions.empty())
+            q_.memcpy(mrope_, next.positions.data(), next.positions.size() * sizeof(int32_t)).wait_and_throw();
+        else if (!image_input_.positions.empty()) {
+            const auto identity = qwen_vision::canonical::identity_positions(context_);
+            q_.memcpy(mrope_, identity.data(), identity.size() * sizeof(int32_t)).wait_and_throw();
+        }
+        image_input_ = std::move(next);
+    }
     bool terminal(int token) const { return clover_ ? clover_causal::terminal(token) : token == terminal_token_; }
     int context() const { return context_; }
     const float* logits() {
@@ -1167,9 +1207,11 @@ public:
         return true;
     }
     void restore_turn(const std::vector<int>& live, const std::vector<int>& prompt) {
-        const auto reuse = turn_checkpoint::choose(live, prompt, turn_snapshot_.tokens,
-                                                    turn_position(), turn_checkpoint_enabled_);
-        if (reuse.source != turn_checkpoint::Source::saved_turn || turn_snapshot_.bytes.size() != turn_checkpoint_bytes_)
+        // A cancelled chunk can require a rewind even when its live tokens
+        // are a valid prefix. Validate the saved prefix independently of the
+        // usual preference for direct live reuse.
+        if (!qwen_vision::saved_prefix(live, prompt, turn_snapshot_.tokens,
+                turn_position(), turn_checkpoint_enabled_) || turn_snapshot_.bytes.size() != turn_checkpoint_bytes_)
             throw std::runtime_error("Intel turn checkpoint prefix is no longer resident");
         q_.wait_and_throw();
         size_t at = 0;
@@ -1277,8 +1319,8 @@ void sampling_option(Sampling& s, const std::string& field) {
 }
 int serve(Engine& engine, bool stochastic_mtp = false) {
     const auto device = engine.device_info();
-    std::printf("INFO backend=sycl experimental=1 model_family=%s kv=%s mtp=%d vision=0 memory_model=%s single_weight_store=1 device_vendor=%u device_id=%u device_integrated=%d device_architecture=%s adapter_luid=%s adapter_node_mask=%u kv_used_tokens=%d\nREADY %d stop\n",
-        engine.clover() ? "clover_moe" : "qwen35moe", engine.kv_type(), engine.mtp_depth(), device.integrated ? "uma" : "discrete", device.vendor_id, device.device_id, int(device.integrated),
+    std::printf("INFO backend=sycl experimental=1 model_family=%s kv=%s mtp=%d vision=%d memory_model=%s single_weight_store=1 device_vendor=%u device_id=%u device_integrated=%d device_architecture=%s adapter_luid=%s adapter_node_mask=%u kv_used_tokens=%d\nREADY %d stop\n",
+        engine.clover() ? "clover_moe" : "qwen35moe", engine.kv_type(), engine.mtp_depth(), int(engine.vision()), device.integrated ? "uma" : "discrete", device.vendor_id, device.device_id, int(device.integrated),
         device.architecture.c_str(), device.adapter_luid.empty() ? "unknown" : device.adapter_luid.c_str(),
         device.adapter_node_mask, engine.consumed_tokens(), engine.context());
     std::fflush(stdout);
@@ -1303,18 +1345,24 @@ int serve(Engine& engine, bool stochastic_mtp = false) {
         if (line == "QUIT") return 0;
         if (line.empty()) continue;
         std::vector<int> prompt;
+        qwen_vision::Input image_input;
+        const bool image_request = line.rfind("GENI ", 0) == 0;
         Sampling sampling = model_sampling(engine.clover());
         int max_new = 0;
         size_t turn_at = 0;
         bool checkpoint_requested = true;
         try {
-            if (line.rfind("GEN ", 0) != 0) throw std::runtime_error("Intel supports text GEN requests only");
-            std::istringstream fields(line.substr(4));
-            std::string field, ids;
+            if (!image_request && line.rfind("GEN ", 0) != 0)
+                throw std::runtime_error("Expected GEN <max_new> [key=value ...] <ids> or GENI <max_new> [key=value ...] <file> <ids>");
+            if (image_request && !engine.vision()) throw std::runtime_error("Intel engine was started without --vision");
+            std::istringstream fields(line.substr(image_request ? 5 : 4));
+            std::string field, ids, embeddings_path;
             if (!(fields >> field)) throw std::runtime_error("Missing output count");
             max_new = number(field.c_str(), engine.context());
-            while (fields >> field) {
-                if (field.find('=') != std::string::npos && ids.empty()) {
+            while (fields >> std::ws && fields.peek() != std::char_traits<char>::eof()) {
+                const bool quoted_path = image_request && embeddings_path.empty() && fields.peek() == '"';
+                if (!(fields >> std::quoted(field, '"', '\0'))) throw std::runtime_error("Invalid request field");
+                if (!quoted_path && field.find('=') != std::string::npos && ids.empty() && embeddings_path.empty()) {
                     sampling_option(sampling, field);
                     if (engine.turn_checkpoint_enabled() && field.rfind("turn_at=", 0) == 0) {
                         const float value = real_option(field.substr(8));
@@ -1323,12 +1371,20 @@ int serve(Engine& engine, bool stochastic_mtp = false) {
                     } else if (engine.turn_checkpoint_enabled() && field.rfind("ckpt=", 0) == 0)
                         checkpoint_requested = real_option(field.substr(5)) != 0;
                 }
+                else if (image_request && embeddings_path.empty()) embeddings_path = field;
                 else { if (!ids.empty()) ids += ' '; ids += field; }
             }
             prompt = parse_tokens(ids);
             if (!max_new || prompt.size() + size_t(max_new) > size_t(engine.context())) throw std::runtime_error("Request exceeds Intel context capacity");
             for (int token : prompt) if (token >= engine.vocabulary()) throw std::runtime_error("Token ID outside vocabulary");
             if (engine.turn_checkpoint_enabled() && turn_at > prompt.size()) throw std::runtime_error("Turn-cache boundary exceeds prompt");
+            if (image_request) {
+                std::string error;
+                if (!qwen_vision::load(embeddings_path, prompt, engine.embedding_width(), engine.context(),
+                        engine.image_pad(), image_input, error)) throw std::runtime_error(error);
+            }
+            if (!qwen_vision::canonical::whole_prefix(image_input, turn_at))
+                throw std::runtime_error("Turn-cache boundary cannot split an image");
         } catch (const std::exception& error) {
             std::printf("ERR %s\n", error.what());
             std::fflush(stdout);
@@ -1339,13 +1395,14 @@ int serve(Engine& engine, bool stochastic_mtp = false) {
         const auto speculation_start = engine.speculation_counts();
         ExecutionRequest active_request;
         if (engine.consumed_tokens() != int(live.size())) throw std::runtime_error("Intel consumed history differs from model position");
-        const auto reuse = turn_checkpoint::choose(live, prompt, engine.turn_prefix(), engine.turn_position(),
-                                                   engine.turn_checkpoint_enabled() && checkpoint_requested);
+        const auto reuse = qwen_vision::choose(live, prompt, engine.turn_prefix(), engine.turn_position(),
+            engine.turn_checkpoint_enabled() && checkpoint_requested, engine.images(), image_input, engine.embedding_width());
         const bool restored_turn = reuse.source == turn_checkpoint::Source::saved_turn;
         if (restored_turn) {
             engine.restore_turn(live, prompt);
             live.assign(engine.turn_prefix().begin(), engine.turn_prefix().end());
         } else if (reuse.source == turn_checkpoint::Source::reset) { engine.reset(); live.clear(); }
+        engine.images(std::move(image_input));
         report_context_usage();
         const size_t reused = live.size();
         std::printf("RESUME %zu\n", reused);
@@ -1369,7 +1426,19 @@ int serve(Engine& engine, bool stochastic_mtp = false) {
         }
         const auto decode_start = std::chrono::steady_clock::now();
         const double prompt_ms = std::chrono::duration<double, std::milli>(decode_start - start).count();
-        const size_t fresh = live.size() - reused;
+        // A partially consumed image cannot act as an independently reusable
+        // prefix. Restore the last complete turn, or discard the partial state.
+        if (inbox.cancelled().load() && !qwen_vision::canonical::whole_prefix(engine.images(), live.size())) {
+            if (qwen_vision::saved_prefix(live, prompt, engine.turn_prefix(), engine.turn_position(),
+                    engine.turn_checkpoint_enabled()) &&
+                qwen_vision::canonical::whole_prefix(engine.images(), engine.turn_position())) {
+                engine.restore_turn(live, prompt);
+                live.assign(engine.turn_prefix().begin(), engine.turn_prefix().end());
+            } else { engine.reset(); live.clear(); engine.images({}); }
+            report_context_usage();
+        }
+        const size_t committed_reused = std::min(reused, live.size());
+        const size_t fresh = live.size() - committed_reused;
         int produced = 0;
         const char* finish = "length";
         std::vector<int> history = clover_causal::request_history(engine.clover(), prompt);
@@ -1450,7 +1519,7 @@ int serve(Engine& engine, bool stochastic_mtp = false) {
         const auto speculation_end = engine.speculation_counts();
         std::printf("DONE %d %zu %.3f %.3f %s %llu %llu %zu %d 0 0 0 0.0 %zu 0\n", produced, prompt.size(), prompt_ms, decode_ms, finish,
             static_cast<unsigned long long>(speculation_end.first - speculation_start.first),
-            static_cast<unsigned long long>(speculation_end.second - speculation_start.second), reused, int(restored_turn), fresh);
+            static_cast<unsigned long long>(speculation_end.second - speculation_start.second), committed_reused, int(restored_turn), fresh);
         std::fflush(stdout);
     }
     return 0;
@@ -1498,7 +1567,7 @@ int main(int argc, char** argv) {
         }
         std::string path, token_list, token_file, dump_path;
         int count = 32, context = 0, device = 0, chunk = 128, mtp_depth = 0, draft_vocab = 0;
-        bool serve = false, use_graph = true, profiling = false, prefill_xmx = false, prefill_npu = false, prefill_mkl = false, decode_dp4a = false, verify_xmx = false, kv_int8 = false, prefill_int8_xmx = false, vocab_xmx = false, verify_mkl_attention = false, stochastic_mtp = false, expert_layout = false, device_state = false, verify_graph = false, dense_layout = false, dense_split_k = false, experimental_tiel = false, experimental_clover = false, explicit_kv = false;
+        bool serve = false, use_graph = true, profiling = false, prefill_xmx = false, prefill_npu = false, prefill_mkl = false, decode_dp4a = false, verify_xmx = false, kv_int8 = false, prefill_int8_xmx = false, vocab_xmx = false, verify_mkl_attention = false, stochastic_mtp = false, expert_layout = false, device_state = false, verify_graph = false, dense_layout = false, dense_split_k = false, experimental_tiel = false, experimental_clover = false, explicit_kv = false, vision = false;
         std::string clover_mode = "causal";
         int clover_drafts = 0;
         bool clover_options = false;
@@ -1506,6 +1575,7 @@ int main(int argc, char** argv) {
         for (int i = 1; i < argc; ++i) {
             const std::string option(argv[i]);
             if (option == "--serve") { serve = true; continue; }
+            if (option == "--vision") { vision = true; continue; }
             if (option == "--experimental-tiel") { experimental_tiel = true; continue; }
             if (option == "--experimental-clover") { experimental_clover = true; continue; }
             if (option == "--decode-dp4a") { decode_dp4a = true; continue; }
@@ -1526,7 +1596,7 @@ int main(int argc, char** argv) {
             if (option == "--host-profile") { strata::intel::host_profile::enabled = true; continue; }
             if (option == "--no-graph") { use_graph = false; continue; }
             if (option == "--help") {
-                std::puts("tinystrata-intel --model MODEL [--serve | --tokens IDS | --tokens-file FILE] [--n N] [--max-context auto|N] [--device N] [--chunk 1..1024] [--mtp 0..7] [--kv-type fp32|int8] [--draft-vocab 0|64..4096] [--dump-full-logits FILE] [--experimental-tiel | --experimental-clover] [--host-profile]\ntinystrata-intel --device-info [--device N]\nExperimental text driver. Qwen/Tiel KV defaults to FP32; MTP and draft vocabulary selection default to 0 (off); images are unsupported. A nonzero draft vocabulary requires --serve --mtp-stochastic --mtp --vocab-xmx. --host-profile enables host phase wall timers without changing decode graphs. --experimental-tiel selects the separately pinned Ornith IQ3_XXS artifact. --experimental-clover selects the pinned Clover AD-IQ3_S-IQ3_XXS artifact with INT8 KV and causal D0 only (--clover-mode causal --clover-draft 0). It preserves Clover response-only penalties and stopping ramps; Qwen MTP and Clover images remain disabled.");
+                std::puts("tinystrata-intel --model MODEL [--serve | --tokens IDS | --tokens-file FILE] [--n N] [--max-context auto|N] [--device N] [--chunk 1..1024] [--mtp 0..7] [--kv-type fp32|int8] [--draft-vocab 0|64..4096] [--dump-full-logits FILE] [--experimental-tiel | --experimental-clover] [--vision] [--host-profile]\ntinystrata-intel --device-info [--device N]\nExperimental Intel multimodal driver. Qwen/Tiel KV defaults to FP32; MTP and draft vocabulary selection default to 0 (off); --vision enables bounded SVE1 image input through GENI; ordinary GEN remains available. A nonzero draft vocabulary requires --serve --mtp-stochastic --mtp --vocab-xmx. --host-profile enables host phase wall timers without changing decode graphs. --experimental-tiel selects the separately pinned Ornith IQ3_XXS artifact. --experimental-clover selects the pinned Clover AD-IQ3_S-IQ3_XXS artifact with INT8 KV and causal D0 only (--clover-mode causal --clover-draft 0). It preserves Clover response-only penalties and stopping ramps; Clover MTP remains disabled; Clover images use the Qwen-compatible projector and interleaved M-RoPE.");
                 return 0;
             }
             if (option == "--capabilities") {
@@ -1554,9 +1624,9 @@ int main(int argc, char** argv) {
 #else
                 constexpr const char* aot_target = "";
 #endif
-                std::printf("{\"backend\":\"sycl\",\"experimental\":true,\"model_families\":[],\"kv_types\":[\"fp32\",\"int8\"],\"images\":false,\"mtp\":true,\"experimental_mtp_max_depth\":7,\"serve\":true,"
+                std::printf("{\"backend\":\"sycl\",\"experimental\":true,\"model_families\":[],\"kv_types\":[\"fp32\",\"int8\"],\"images\":true,\"image_protocol\":\"geni_sve1\",\"vision_contract_version\":1,\"vision_max_embedding_bytes\":268435456,\"mtp\":true,\"experimental_mtp_max_depth\":7,\"serve\":true,"
                             "\"capabilities_schema\":1,\"context_auto\":true,\"max_context\":262144,\"experimental_models\":%s,\"experimental_profiles\":%s,"
-                            "\"experimental_model_contracts\":{\"clover-35b-a3b-preview\":{\"version\":1,\"architecture\":\"clover_moe\",\"kv_types\":[\"int8\"],\"mtp\":false,\"experimental_mtp_max_depth\":0,\"images\":false,\"thinking\":\"on_off\",\"mode\":\"causal_d0\",\"context_max\":131072}},"
+                            "\"experimental_model_contracts\":{\"clover-35b-a3b-preview\":{\"version\":2,\"architecture\":\"clover_moe\",\"kv_types\":[\"int8\"],\"mtp\":false,\"experimental_mtp_max_depth\":0,\"images\":true,\"thinking\":\"on_off\",\"mode\":\"causal_d0\",\"context_max\":131072}},"
                             "\"build\":{\"mkl\":%s,\"int8_xmx\":%s,\"aot_target\":\"%s\"},"
                             "\"weight_types\":{\"scalar\":[0,1,8,10,11,14,18,21,22,23,30],\"dp4a\":[8,10,11,14,18,21,22,23],\"int8_xmx\":%s}}\n",
                             models, profiles, mkl, int8_xmx, aot_target, xmx_types);
@@ -1592,6 +1662,7 @@ int main(int argc, char** argv) {
             else throw std::runtime_error("Unsupported Intel option: " + option);
         }
         if (path.empty()) throw std::runtime_error("--gguf is required");
+        if (vision && !serve) throw std::runtime_error("Intel --vision requires --serve and GENI image input");
         if (experimental_clover) {
             if (experimental_tiel) throw std::runtime_error("Clover and Tiel require separate model selections");
             if (!explicit_kv) kv_int8 = true;
@@ -1604,7 +1675,7 @@ int main(int argc, char** argv) {
         if (serve) {
             if (!token_list.empty() || !token_file.empty() || !dump_path.empty()) throw std::runtime_error("Token CLI options cannot accompany --serve");
             std::optional<strata::intel::ExecutionRequest> loading(std::in_place);
-            strata::intel::Engine engine(path, context, unsigned(device), memory, chunk, use_graph, profiling, prefill_xmx, prefill_npu, prefill_mkl, decode_dp4a, mtp_depth, verify_xmx, kv_int8, prefill_int8_xmx, vocab_xmx, verify_mkl_attention, expert_layout, device_state, verify_graph, dense_layout, dense_split_k, draft_vocab, experimental_tiel, experimental_clover);
+            strata::intel::Engine engine(path, context, unsigned(device), memory, chunk, use_graph, profiling, prefill_xmx, prefill_npu, prefill_mkl, decode_dp4a, mtp_depth, verify_xmx, kv_int8, prefill_int8_xmx, vocab_xmx, verify_mkl_attention, expert_layout, device_state, verify_graph, dense_layout, dense_split_k, draft_vocab, experimental_tiel, experimental_clover, vision);
             loading.reset();
             return strata::intel::serve(engine, stochastic_mtp);
         }
@@ -1617,7 +1688,7 @@ int main(int argc, char** argv) {
         auto tokens = strata::intel::parse_tokens(token_list);
         if (context>0&&tokens.size() + size_t(count) > size_t(context)) throw std::runtime_error("Prompt and requested output exceed --context");
         strata::intel::ExecutionRequest active_request;
-        strata::intel::Engine engine(path, context, unsigned(device), memory, chunk, use_graph, profiling, prefill_xmx, prefill_npu, prefill_mkl, decode_dp4a, mtp_depth, verify_xmx, kv_int8, prefill_int8_xmx, vocab_xmx, verify_mkl_attention, expert_layout, device_state, verify_graph, dense_layout, dense_split_k, draft_vocab, experimental_tiel, experimental_clover);
+        strata::intel::Engine engine(path, context, unsigned(device), memory, chunk, use_graph, profiling, prefill_xmx, prefill_npu, prefill_mkl, decode_dp4a, mtp_depth, verify_xmx, kv_int8, prefill_int8_xmx, vocab_xmx, verify_mkl_attention, expert_layout, device_state, verify_graph, dense_layout, dense_split_k, draft_vocab, experimental_tiel, experimental_clover, vision);
         if(tokens.size()+size_t(count)>size_t(engine.context()))throw std::runtime_error("Prompt and requested output exceed allocated Intel context");
         const float* logits = nullptr;
         const auto start = std::chrono::steady_clock::now();

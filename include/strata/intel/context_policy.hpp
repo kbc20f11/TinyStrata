@@ -114,6 +114,7 @@ struct QwenSpec {
     uint64_t chunk=128,vocabulary=248320,draft_vocabulary=0,verify_capacity=8;
     bool int8=false,mtp=false,mkl=false,dp4a=false,dense_split=false,support=false;
     bool device_state=false,turn_checkpoint=true,graph=true,verify_graph=false,npu=false,npu_split=false;
+    bool vision=false;
 };
 inline Footprint qwen(uint64_t c,const QwenSpec& s={}){
     Footprint p;const auto n=s.chunk;const bool shared=!s.device_state;
@@ -133,6 +134,7 @@ inline Footprint qwen(uint64_t c,const QwenSpec& s={}){
     control(s.vocabulary);control(256);a(mul(256,n));
     const auto tiles=add(add(mul(n,8),3)/4,256);a(tiles,4,2);a(1);
     control(n);control(n);a(2048);
+    if(s.vision)a(mul(c,3)); // persistent interleaved temporal/height/width positions
     if(s.int8){control(1);a(cells,4,2);}
     if(s.mtp){
         a(mul(n,4096));a(mul(n,2048),4,4);a(2048,4,2);
@@ -148,6 +150,10 @@ inline Footprint qwen(uint64_t c,const QwenSpec& s={}){
         p.allocation(2048,4);p.allocation(512,4);p.allocation(16,1);p.allocation(256,4);p.allocation(128,1);
         if(s.dense_split)p.allocation(4*8*8192,4);}
     if(s.turn_checkpoint)p.host(add(add(recurrent,2048ull*4*(s.mtp?2:1)),mul(c,4)));
+    // Both the resident and incoming SVE1 payload/position maps coexist for
+    // exact image-prefix validation. This is bounded host admission, not an
+    // additional GPU embedding store or a claim of actual allocation.
+    if(s.vision)p.host(add(2ull*(256ull<<20),mul(mul(c,3),8)));
     p.host(16ull<<20);
     // Bounded opaque graph/NPU runtime reservations retain the old safety
     // margins, distinct from exact USM arrays and the one4GiB OS headroom.
