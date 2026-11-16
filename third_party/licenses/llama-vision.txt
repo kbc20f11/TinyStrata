@@ -41,7 +41,8 @@ GGML SYCL code and DPCT helper
 
 MIT License
 
-Copyright (C) 2024 Intel Corporation
+Copyright (C) 2024-2026 Intel Corporation
+Copyright (C) 2025 Codeplay Software Ltd.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
