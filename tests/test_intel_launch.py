@@ -14,6 +14,33 @@ from serve import backend, config, intel_backend, model_setup, tinyconfig
 
 
 class IntelLaunch(unittest.TestCase):
+    def test_explicit_entrypoint_fp8_checks_old_runtime_before_extract_or_native_start(self):
+        from serve import intel as entrypoint,intel_capabilities
+        from tests.test_intel_capabilities import report
+        exe=self.root/"native.exe";model=self.root/"model.gguf"
+        exe.write_bytes(b"CPU fixture");model.write_bytes(b"CPU fixture")
+        argv=["--model",str(model),"--exe",str(exe),"--context","16384","--kv-type","fp8","--verify-graph","--mtp","3"]
+        metadata=SimpleNamespace(metadata={"general.architecture":"qwen35moe","general.name":"Qwen3.6-35B-A3B"})
+        proof=SimpleNamespace(report=report(),legacy=False)
+        with patch("serve.gguf_reader.GGUFFile",return_value=metadata), \
+             patch.object(intel_capabilities,"probe_capabilities",return_value=proof), \
+             patch("serve.tokenizer.extract") as extract,patch("serve.server.StrataEngine") as native:
+            with self.assertRaisesRegex(intel_capabilities.IntelCapabilityError,"requested model-specific KV"):
+                entrypoint.main(argv)
+            extract.assert_not_called();native.assert_not_called()
+
+    def test_explicit_entrypoint_fp8_rejects_non_qwen_identity_before_any_runtime_probe(self):
+        from serve import intel as entrypoint,intel_capabilities
+        exe=self.root/"native.exe";model=self.root/"model.gguf"
+        exe.write_bytes(b"CPU fixture");model.write_bytes(b"CPU fixture")
+        for arch,name in (("qwen35moe","Ornith-1.5-35B"),("clover_moe","Clover"),("gemma4","Gemma"),("lfm2moe","LFM")):
+            metadata=SimpleNamespace(metadata={"general.architecture":arch,"general.name":name})
+            with self.subTest(arch=arch,name=name),patch("serve.gguf_reader.GGUFFile",return_value=metadata), \
+                 patch.object(intel_capabilities,"probe_capabilities") as probe,contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    entrypoint.main(["--model",str(model),"--exe",str(exe),"--kv-type","fp8"])
+                probe.assert_not_called()
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="tinystrata-intel-launch-")
         self.addCleanup(temporary.cleanup)

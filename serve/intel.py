@@ -44,7 +44,8 @@ def main(argv=None, *, stop_event: threading.Event | None = None) -> int:
     parser.add_argument("--weight-memory", choices=("host", "shared", "device"), default="host")
     parser.add_argument("--device-state", action="store_true", help="candidate device USM for GPU-only state/scratch")
     parser.add_argument("--verify-graph", action="store_true", help="candidate MTP verification command graphs")
-    parser.add_argument("--kv-type", choices=("fp32", "int8"), default=None)
+    parser.add_argument("--kv-type", choices=("fp32", "int8", "fp8"), default=None,
+                        help="fp8 is experimental Qwen3.6 E4M3FN with FP16 block32 scales")
     parser.add_argument("--chunk", type=int, default=128)
     parser.add_argument("--mtp", type=int, choices=tuple(range(8)), default=0)
     parser.add_argument("--draft-vocab", type=int, default=0, help="candidate exact-MTP proposal vocabulary size, 0 or 64..4096")
@@ -74,8 +75,8 @@ def main(argv=None, *, stop_event: threading.Event | None = None) -> int:
         parser.error("--draft-vocab requires --mtp-stochastic, --mtp, --vocab-xmx and 64..4096 rows")
     if args.mtp_stochastic and not args.mtp:
         parser.error("--mtp-stochastic requires --mtp >= 1")
-    if args.verify_graph and (not args.mtp or args.kv_type != "int8" or args.verify_mkl_attention):
-        parser.error("--verify-graph requires MTP, INT8 KV and native attention")
+    if args.verify_graph and (not args.mtp or args.kv_type not in ("int8", "fp8") or args.verify_mkl_attention):
+        parser.error("--verify-graph requires MTP, quantized INT8 or experimental FP8 KV and native attention")
     if args.verify_xmx and not args.decode_dp4a:
         parser.error("--verify-xmx requires --decode-dp4a")
     if args.prefill_int8_xmx and not args.decode_dp4a:
@@ -106,6 +107,8 @@ def main(argv=None, *, stop_event: threading.Event | None = None) -> int:
                  TIEL_MODEL if arch == "qwen35moe" and name == "Ornith-1.5-35B" else None))
     if selected is None:
         parser.error("The GGUF does not identify a pinned experimental Intel text family")
+    if args.kv_type == "fp8" and selected != QWEN_MODEL:
+        parser.error("FP8 KV is experimental Qwen3.6 only")
     requested = {"qwen36": QWEN_MODEL, "tiel": TIEL_MODEL, "gemma4": GEMMA_MODEL,
                  "lfm2": LFM_MODEL, "clover": CLOVER_MODEL}.get(args.model_family)
     if requested is not None and requested != selected:
@@ -120,14 +123,14 @@ def main(argv=None, *, stop_event: threading.Event | None = None) -> int:
         if args.model.name != pinned.filename or args.model.stat().st_size != pinned.size:
             parser.error("The selected Intel family requires its pinned model artifact")
     args.kv_type = args.kv_type or ("int8" if selected in TARGET_ONLY_MODELS else "fp32")
-    if selected == QWEN_MODEL and args.intel_profile is None and (args.context == "auto" or args.context > 32768):
+    if selected == QWEN_MODEL and args.intel_profile is None and (args.context == "auto" or args.context > 32768 or args.kv_type == "fp8"):
         # Preserve the diagnostic Qwen option surface, but never send auto or
         # a larger explicit request to an old fixed-context executable.
         from serve.intel_capabilities import probe_capabilities, validate_capabilities
         proof = probe_capabilities({"backend": "sycl", "exe": str(args.exe.resolve()),
                                     "lib_dirs": [str(path.resolve()) for path in args.lib_dir]})
         validate_capabilities(proof.report, model=selected, profile="generic", allow_legacy=True,
-                              requested_context=args.context)
+                              requested_context=args.context,requested_kv=args.kv_type)
     from serve.tokenizer import Tokenizer, extract
     from serve.frontend import ChatTemplate
     from serve.server import Service, StrataEngine, Vision, vision_config, vision_env, serve
