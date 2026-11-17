@@ -247,9 +247,22 @@ def disable_vision(cfg: dict) -> dict:
     return new
 
 
+def migrate_image_generation_settings(cfg: dict) -> tuple[dict, bool]:
+    """Discard only the retired generator's top-level config, without opening or deleting its files.
+
+    Image understanding uses ``vision`` / ``vision_mode``. Nested ``images`` values in user data and saved
+    conversations are unrelated and remain intact. Call before backend validation, including Intel startup.
+    """
+    if "images" not in cfg:
+        return cfg, False
+    return {key: value for key, value in cfg.items() if key != "images"}, True
+
+
 def migrate_settings(cfg: dict) -> tuple[dict, bool]:
-    """Retain backend preferences while removing settings for the retired web UI."""
+    """Retain backend preferences while removing retired generator and web UI settings."""
     reject_retired_model(cfg.get("arch"), cfg.get("model_name"))
+    original = cfg
+    cfg, _ = migrate_image_generation_settings(cfg)
     if cfg.get("backend") == "sycl":
         from copy import deepcopy
         # Intel has one physical RAM pool. Discrete expert-budget and historical
@@ -259,7 +272,7 @@ def migrate_settings(cfg: dict) -> tuple[dict, bool]:
         new["vision_mode"] = check_vision_options(new)
         new, _ = migrate_generation_settings(new)
         new = {key: value for key, value in new.items() if key not in {"open_browser", "api_monitor"}}
-        return new, new != cfg
+        return new, new != original
     # Check the existing memory-policy marker before the memory migration adds it.
     new, changed = migrate_chunk_settings(cfg)
     new, memory_changed = migrate_memory_settings(new)
@@ -284,7 +297,7 @@ def migrate_settings(cfg: dict) -> tuple[dict, bool]:
     if retired.intersection(new):
         new = {key: value for key, value in new.items() if key not in retired}
         changed = True
-    return new, changed or new != cfg
+    return new, changed or new != original
 
 
 def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:

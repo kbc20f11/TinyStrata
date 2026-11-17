@@ -254,7 +254,7 @@ const StrataI18n = {lang: "en"}, statusIcon = () => "";
 const cloverGenerationText = () => null, projectionText = () => null;
 const output = {}, facts = (el, rows) => { output[el.id] = rows.filter((r) => r[1] != null && r[1] !== ""); };
 const metrics = {}, setGpuMetric = (key, value, unit, sub) => {metrics[key] = {value, unit, sub};};
-const setMetric = () => {}, spark = () => {}, imageLive = () => false, modelOp = null, busy = null;
+const setMetric = () => {}, spark = () => {}, modelOp = null, busy = null;
 const modelSwitching = false, placementSampleValid = true, contextUsage = () => null, reqShowAll = false;
 const gpuMetricState = () => ({label: "Unavailable", hint: ""}), setStableHtml = (el, html) => {el.innerHTML = html;}, renderTotals = () => "";
 '''+helpers+about+monitor+placement+r'''

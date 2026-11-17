@@ -50,7 +50,7 @@ try {
     $script:fixtureArchive = Join-Path $fixtureRoot 'official-fixture.zip'
     [IO.Compression.ZipFile]::CreateFromDirectory($payloadParent, $script:fixtureArchive)
     $source = Join-Path $fixtureRoot ('source-' + [char]0x65E5 + [char]0x672C)
-    foreach ($name in @('run.py', 'requirements.txt', 'CMakeLists.txt', 'serve\server.py', 'src\gptoss.cpp')) {
+    foreach ($name in @('run.py', 'requirements.txt', 'CMakeLists.txt', 'serve\server.py', 'serve\images.py', 'src\gptoss.cpp')) {
         Write-SourceFixture $source $name ('old fixture ' + $name)
     }
     $work = Join-Path $fixtureRoot 'work'
@@ -63,6 +63,8 @@ try {
     $change = Initialize-TinyStrataSource -SourceRoot $source -CacheRoot (Join-Path $work 'downloads') -Refresh -Revision $script:fixtureRevision
     Assert-Source ($change.Changed -and $change.Backup -and $script:fixtureRequests -eq 0 -and $script:fixtureTransfers -eq 1) 'pinned installer/source uses one revision without a second main lookup'
     Assert-Source (-not (Test-Path -LiteralPath (Join-Path $source 'src\gptoss.cpp'))) 'full source replacement removes obsolete model files'
+    Assert-Source (-not (Test-Path -LiteralPath (Join-Path $source 'serve\images.py'))) 'full source replacement removes the retired image generator'
+    Assert-Source (Test-Path -LiteralPath (Join-Path $change.Backup 'serve\images.py')) 'retired generator source remains only in the reversible backup'
     Assert-Source (Test-Path -LiteralPath (Join-Path $change.Backup 'src\gptoss.cpp')) 'previous source is retained reversibly'
     Assert-Source (Test-TinyStrataSourceRevision -Directory $source -Revision $script:fixtureRevision) 'new source tree and revision stamp agree'
     $same = Initialize-TinyStrataSource -SourceRoot $source -CacheRoot (Join-Path $work 'downloads') -Refresh -Revision $script:fixtureRevision

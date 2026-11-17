@@ -335,6 +335,10 @@ CMakeFiles/
 !/benchmark/results/intel-review-20261115.json
 !/benchmark/results/gemma-prefill-diagnosis-20261112.json
 !/tests/test_retired_model.py
+!/tests/test_retired_image_generation.py
+!/tests/test_image_generation_removed_api.py
+!/tests/test_image_generation_profile_migration.py
+!/tests/test_ui_no_image_generation.py
 !/tests/test_installer_request_admission.py
 !/tests/installer-desktop-shortcut.ps1
 !/tests/installer-source-refresh.ps1

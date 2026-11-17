@@ -62,7 +62,7 @@ MODEL_FIELDS = (
     'tool_call_recovery', 'codex_compaction_cache', 'codex_thread_titles',
     'slot_save_path', 'embeddings', 'conv_log', 'rate', 'live_reqs', 'history',
     'totals', 'last_timings', 'latencies', 'last_request_at', 'status',
-    'restore_after_load', 'vram_reserve', 'vram_reserve_asked', 'vision_held', 'last_image_at',
+    'vram_reserve', 'vram_reserve_asked', 'vision_held', 'last_image_at',
 )
 
 

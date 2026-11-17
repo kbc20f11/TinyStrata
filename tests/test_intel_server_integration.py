@@ -354,7 +354,7 @@ class IntelServerIntegration(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "match its pinned model"):
             ModelProfiles(self.path, {**self.cfg, "model_name": TIEL})
         profiles = ModelProfiles(self.path, self.cfg)
-        for change in ({"model_name": TIEL}, {"vision_mode": "gpu"}, {"images": {"exe": "image.exe"}},
+        for change in ({"model_name": TIEL}, {"vision_mode": "gpu"},
                        {"parallel": 2}, {"effort_position": "end"}, {"min_free_vram_mib": 128}):
             invalid = {**self.cfg, **change}
             self.path.write_text(json.dumps(invalid), encoding="utf-8")

@@ -61,6 +61,7 @@ class ModelProfiles:
     """Keep model settings separate while sharing the selected GPU/runtime."""
 
     def __init__(self, config_path: str | Path, cfg: dict):
+        cfg, _ = tinyconfig.migrate_image_generation_settings(cfg)
         current_path = Path(config_path).expanduser().resolve()
         self._intel = cfg.get("backend") == "sycl"
         self._generic_intel = self._intel and cfg.get("intel_profile", "generic") == "generic"
@@ -240,6 +241,7 @@ class ModelProfiles:
                 (len(parts) == 2 or len(parts) == 3 and parts[1] == "release"))
 
     def _settings(self, cfg: dict, profile: ModelProfile) -> dict:
+        cfg, _ = tinyconfig.migrate_image_generation_settings(cfg)
         if self._intel:
             from serve.intel_backend import configure_backend, validate_config
             if cfg.get("backend") != "sycl":

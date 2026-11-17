@@ -8,8 +8,8 @@
 <link rel="icon" href="web/terminal-logo.svg?v=20261030.1" type="image/svg+xml">
 <link rel="stylesheet" href="web/tokens.css">
 <link rel="stylesheet" href="web/components.css">
-<link rel="stylesheet" href="web/app.css?v=20261108.1">
-<link rel="stylesheet" href="web/terminal-theme.css?v=20261107.2">
+<link rel="stylesheet" href="web/app.css?v=20261117.1">
+<link rel="stylesheet" href="web/terminal-theme.css?v=20261117.1">
 <link rel="stylesheet" href="web/syntax.css?v=20261103.1">
 <link rel="stylesheet" href="web/local-tools.css?v=20261103.2">
 <link rel="stylesheet" href="web/resource-dialogs.css?v=20261104.3">
@@ -39,8 +39,6 @@
   <nav class="st-tabs" role="tablist" aria-label="Views" data-i18n-label="tab.views">
     <button class="st-tab" role="tab" id="tab-btn-chat" aria-controls="view-chat" aria-selected="true" data-tab="chat">
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-chat"/></svg><span data-i18n="tab.chat">Chat</span></button>
-    <button class="st-tab" role="tab" id="tab-btn-images" aria-controls="view-images" aria-selected="false" data-tab="images" hidden>
-      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-image"/></svg><span data-i18n="tab.images">Images</span></button>
     <button class="st-tab" role="tab" id="tab-btn-models" aria-controls="view-models" aria-selected="false" data-tab="models">
       <svg class="st-icon st-icon--sm" aria-hidden="true"><use href="web/sprite.svg#i-download"/></svg><span data-i18n="tab.models">Models</span></button>
     <button class="st-tab" role="tab" id="tab-btn-monitor" aria-controls="view-monitor" aria-selected="false" data-tab="monitor">
@@ -148,27 +146,6 @@
         </button>
         </div>
       </div>
-    </div>
-  </section>
-
-  <!-- ============================ Images ============================ -->
-  <section class="view view--images" id="view-images" role="tabpanel" aria-labelledby="tab-btn-images" hidden>
-    <div class="about">
-      <form class="st-card img-form" id="img-form">
-        <span class="card-title" id="img-title" data-i18n="images.make">Make an image</span>
-        <textarea class="st-input img-prompt" id="img-prompt" rows="3" placeholder="Describe the image…" aria-label="Prompt" data-i18n-placeholder="images.describe" data-i18n-label="monitor.prompt"></textarea>
-        <div class="img-row">
-          <label class="st-field"><span data-i18n="images.size">Size</span>
-            <select class="st-input" id="img-size">
-              <option>1024x1024</option><option>1536x1024</option><option>1024x1536</option>
-              <option>768x768</option><option>512x512</option></select></label>
-          <label class="st-field"><span data-i18n="drawer.seed">Seed</span>
-            <input class="st-input" id="img-seed" type="number" min="0" placeholder="Random" data-i18n-placeholder="drawer.random"></label>
-          <button type="submit" class="st-btn st-btn--primary" id="img-go" data-i18n="images.generate">Generate</button>
-        </div>
-        <span class="composer-hint" id="img-hint" data-i18n="images.oneAtATime">One image at a time; a chat request waits for it (and the other way round).</span>
-      </form>
-      <div class="img-results" id="img-results"></div>
     </div>
   </section>
 
@@ -449,6 +426,6 @@
 <script src="web/resource-actions.js?v=20261112.1"></script>
 <script src="web/model-library.js?v=20261110.1"></script>
 <script src="web/thinking-controls.js?v=20261110.1"></script>
-<script src="web/app.js?v=20261113.1"></script>
+<script src="web/app.js?v=20261117.1"></script>
 </body>
 </html>

@@ -552,7 +552,7 @@ html[data-theme] .st-composer[data-switching="true"] .st-composer__bar { border-
   .st-msg--user > .history-actions--user,
   .st-msg--assistant .history-actions--assistant { transition: none; }
 }
-.tool-image img, .msg-images img, .img-results img { border-radius: 2px; border: 1px solid #2c543a; }
+.tool-image img, .msg-images img { border-radius: 2px; border: 1px solid #2c543a; }
 
 /* The optional request inspector uses its own markup and inline base styles. */
 body:has(.workspace) { overflow: auto; background-attachment: fixed; }
@@ -674,7 +674,6 @@ html[data-theme="light"] .facts dd code,
 html[data-theme="light"] .st-header .st-tabs,
 html[data-theme="light"] .tool-image img,
 html[data-theme="light"] .msg-images img,
-html[data-theme="light"] .img-results img,
 html[data-theme="light"] .history-editor--user { border-color: var(--st-line); }
 html[data-theme="light"] .st-input,
 html[data-theme="light"] .st-bubble h3,

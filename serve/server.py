@@ -6,9 +6,6 @@
 Endpoints: POST /v1/chat/completions (OpenAI, stream and non-stream), POST /v1/chat/token-count (prompt planning),
 POST /v1/messages (Anthropic, stream and
 non-stream), POST /v1/responses (Responses API), GET /v1/models, GET /models, GET /props, GET /slots, GET /health, GET /mcp. One sequence at a time behind a FIFO (plan: one resident sequence).
-Image generation (optional, when the config has an "images" section): POST /v1/images/generations (OpenAI's shape,
-plus seed and steps) runs stable-diffusion.cpp's sd-cli for Qwen-Image-2.1-Turbo, one job at a time on the GPU the
-text engine uses (serve/images.py).
 Tools from MCP servers (serve/mcp.py, `"mcp_servers"` in the config or --mcp-config) are offered only to requests that
 ask for them with `"strata_mcp": true`; other clients see exactly the API they always saw.
 Images (optional, when the config has a "vision" entry): OpenAI image_url parts and Anthropic image blocks (base64
@@ -71,7 +68,6 @@ from serve.structured import StructuredOutputError, prepare_format, validated_js
 from serve import responses as responses_api  # noqa: E402
 from serve import thinking as thinking_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
-from serve import images as images_api  # noqa: E402
 from serve.model_switch import ModelControlError, ModelSwitcher  # noqa: E402
 
 IM_END = "<|im_end|>"
@@ -3631,8 +3627,6 @@ class Service:
         self.repeat_stop_tokens = REPEAT_STOP_TOKENS     # #606: one token this many times in a row ends a reply (0: off)
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
         self.tool_call_recovery = False                   # opt-in: tool calls in forms next to the template's
-        self.images = None                                # serve/images.py's ImageGen when the config has "images"
-        self.restore_after_load = None                    # a session file an image job saved before it unloaded
         self.stop_ids = tokenizer_stop_ids(tokenizer)
 
     def loaded(self) -> bool:
@@ -3981,8 +3975,6 @@ class Service:
                 self.vision.unload()
             raise
         print("[strata] the engine is running again", flush=True)
-        if self.restore_after_load:                      # an image job unloaded it: its conversation comes back
-            images_api.restore_session(self)
         if self.vram_reserve is not None and hasattr(self.engine, "vram"):   # #533: the reserve asked for last
             try:
                 self.engine.vram(self.vram_reserve)
@@ -4369,7 +4361,6 @@ class Service:
             "dialects": ["/v1/chat/completions", "/v1/messages", "/v1/responses"],
             "vision": {"enabled": images, "configured": self.vision is not None,
                        "available": images, "error": self.vision_error or None},
-            "image_generation": self.images.status() if self.images is not None else {"enabled": False},
             "activity": {"requests": totals["requests"] + int(busy), "in_flight": int(busy) + int(s.get("queued") or 0),
                          "last_request_at": int(last_at) if last_at else None},
             "last_timings": last_t,
@@ -6302,22 +6293,8 @@ def make_handler(svc: Service):
                     return
                 self._json(200, {"status": "ok", "max_context": svc.reported_ctx(), "model": svc.model,
                                  "images": svc.vision_available(), "api_key": bool(svc.api_key),
-                                 "image_generation": svc.images is not None,
                                  "loaded": svc.loaded(), "service": "strata", **intel_health_fields(svc),
                                  **intel_feature_fields(svc)})
-            elif path.startswith("/v1/images/files/"):
-                # response_format url: the name (32 random hex digits) is the access, as an OpenAI image URL is
-                f = svc.images.file(path[len("/v1/images/files/"):]) if svc.images is not None else None
-                if f is None:
-                    self._json(404, {"error": {"message": "not found (the server keeps the newest images only)"}})
-                    return
-                body = f.read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", "image/png")
-                self.send_header("Cache-Control", "private, max-age=86400")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
             elif path == "/status":
                 if not self._authorized():                  # #212: it shows the end of the last answer
                     return
@@ -6352,9 +6329,6 @@ def make_handler(svc: Service):
                         model["aliases"] = list(svc.aliases)
                     data = [model, *({**model, "id": x, "alias_of": svc.model} for x in svc.aliases)]
                     data = data if loaded else []
-                    if svc.images is not None:            # the image model: POST /v1/images/generations
-                        data.append({"id": svc.images.model, "object": "model", "status": {"value": "loaded"},
-                                     "architecture": {"input_modalities": ["text"], "output_modalities": ["image"]}})
                     self._json(200, {"object": "list", "data": data})
             elif path == "/props":
                 if self._authorized():
@@ -6558,8 +6532,6 @@ def make_handler(svc: Service):
                     self._anthropic(req)
                 elif path == "/v1/messages/count_tokens":
                     self._count_tokens(req)
-                elif path == "/v1/images/generations":
-                    self._images(req)
                 else:
                     self._json(404, {"error": {"message": "not found"}})
             except EngineNonFinite as e:                    # #879, twice: not the request's fault
@@ -6603,33 +6575,6 @@ def make_handler(svc: Service):
                 svc.drop_embeddings()                        # the images' file of a request that never got to run()
                 if self.watch_done is not None:
                     self.watch_done.set()
-
-        def _images(self, req):
-            """POST /v1/images/generations (serve/images.py): one sd-cli job in the GPU's turn."""
-            gen = svc.images
-            if gen is None:
-                self._json(404, {"error": {"type": "invalid_request_error", "code": "images_not_set_up",
-                                           "message": "image generation is not set up on this server (run setup "
-                                                      "with --images qwen-image)"}})
-                return
-            job = images_api.parse_request(req, gen.cfg)        # ImageRequestError (a ValueError): 400
-            svc.last_request_at = time.time()
-            cancel = threading.Event()
-            self._watch_client(cancel)
-            print(f"[strata] image: {job['width']}x{job['height']}, n={job['n']}, {job['steps']} steps, "
-                  f"seed {job['seed']}", flush=True)
-            try:
-                with images_api.gpu_turn(svc, gen, job, cancel) as policy:
-                    images, figures = gen.run(job, cancel)
-            except images_api.ImageJobFailed as e:
-                self._json(500, {"error": {"type": "server_error", "code": "image_generation_failed",
-                                           "message": str(e)}})
-                return
-            figures["gpu_policy"] = policy
-            print(f"[strata] image done in {figures['seconds']:.1f} s ({policy})", flush=True)
-            host = self.headers.get("Host") or f"{self.server.server_address[0]}:{self.server.server_address[1]}"
-            scheme = "https" if (self.headers.get("X-Forwarded-Proto") or "").lower() == "https" else "http"
-            self._json(200, gen.response(images, job, figures, f"{scheme}://{host}"))
 
         def _props(self):
             model = parse_qs(urlsplit(self.path).query).get("model", [svc.model])[0]
@@ -7860,9 +7805,11 @@ def main() -> int:
     if a.engine == "tinystrata":
         a.engine = "strata"  # keep the upstream engine adapter and protocol
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
+    from serve.tinyconfig import migrate_image_generation_settings
+    cfg, image_generation_retired = migrate_image_generation_settings(cfg)
 
     runtime_config_changed = False
-    settings_migrated = False
+    settings_migrated = bool(image_generation_retired and a.config)
     if a.engine == "strata" and cfg.get("backend") == "hip":
         from serve.hip_runtime import migrate_installed_runtime
         migrated_runtime = migrate_installed_runtime(cfg, a.config)
@@ -7885,7 +7832,7 @@ def main() -> int:
             from serve.backend import configure_backend
             cfg = configure_backend(cfg)
             validate(cfg, allow_uninstalled=bootstrap)
-            settings_migrated = bool(migrated and a.config)
+            settings_migrated = bool((migrated or image_generation_retired) and a.config)
         except ValueError as e:
             ap.error(str(e))
     if a.replicas is not None:
@@ -8022,21 +7969,6 @@ def main() -> int:
                   fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True,
                   generation_defaults=cfg)
     svc.reasoning_close_retry = cfg.get("reasoning_close_retry") is True    # #1053: opt-in, off by default
-    if cfg.get("images"):                               # image generation (serve/images.py), set up by setup --images
-        icfg = {k: (os.path.abspath(os.path.join(cfg.get("cwd") or ".", v))
-                    if k in ("exe", "diffusion_model", "vae", "llm", "out_dir") and isinstance(v, str)
-                    and not os.path.isabs(v) else v)
-                for k, v in cfg["images"].items()}
-        try:
-            svc.images = images_api.ImageGen(icfg, log=open(cfg["log"], "a", encoding="utf-8") if cfg.get("log") else None)
-        except ValueError as e:
-            raise SystemExit(f"[strata] config: {e}")
-        gone = svc.images.missing()
-        if gone:
-            print(f"[strata] image generation: missing {', '.join(gone)} - requests fail until setup --images has run "
-                  "again", flush=True)
-        print(f"[strata] image generation: {svc.images.model} {icfg.get('quant') or ''} on "
-              f"{icfg.get('backend') or '?'} (POST /v1/images/generations; GPU policy {svc.images.policy})", flush=True)
     if cfg.get("prevent_sleep") is not None and not isinstance(cfg["prevent_sleep"], bool):
         raise SystemExit(f"[strata] config \"prevent_sleep\" must be true or false, not {cfg['prevent_sleep']!r}")
     from serve.keepawake import KeepAwake
