@@ -6,6 +6,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
+#include <optional>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -65,6 +67,19 @@ void storage(sycl::queue& q,bool fp8){
         const size_t i=(size_t(h)*context+cell)*256+col;
         check(cell<11?dk.data[i]==decoded(k.data[i],ks.data[i/32],fp8)&&dv.data[i]==decoded(v.data[i],vs.data[i/32],fp8)
             :dk.data[i]==guard&&dv.data[i]==guard,"Dequantization value/visibility changed");
+    }
+    if(fp8){
+        const char* name="TINYSTRATA_INTEL_FP8_NATIVE_CVT";const char* previous=std::getenv(name);
+        const std::optional<std::string> saved=previous?std::optional<std::string>(previous):std::nullopt;
+        // Exercise every finite byte code, including signed zero, at the same
+        // head-major/tail geometry; the canary region must remain untouched.
+        for(size_t i=0;i<cells;++i){const uint8_t code=uint8_t(i%256);k.data[i]=int8_t((code&127)==127?0:code);v.data[i]=k.data[i];}
+        _putenv_s(name,"0");si::dequantize_q8_kv(q,cache,dk.data,dv.data,11).wait_and_throw();
+        const std::vector<float> software_key(dk.data,dk.data+cells),software_value(dv.data,dv.data+cells);
+        _putenv_s(name,"1");si::dequantize_q8_kv(q,cache,dk.data,dv.data,11).wait_and_throw();
+        const bool identical=!std::memcmp(dk.data,software_key.data(),cells*sizeof(float))&&!std::memcmp(dv.data,software_value.data(),cells*sizeof(float));
+        _putenv_s(name,saved?saved->c_str():"");
+        check(identical,"Native/software FP8 conversion differs bitwise");
     }
     for(float bad:{INFINITY,std::numeric_limits<float>::quiet_NaN(),1e30f}){
         std::fill_n(input_k.data,n,0.f);std::fill_n(input_v.data,n,0.f);input_k.data[35]=bad;position.data[0]=0;error.data[0]=0;

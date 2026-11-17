@@ -1,5 +1,7 @@
 #include "strata/intel/kv_q8.hpp"
 #include "strata/intel/fp8_codec.hpp"
+#include <sycl/ext/intel/esimd.hpp>
+#include <sycl/ext/intel/experimental/esimd/hf8.hpp>
 #include <sycl/ext/intel/experimental/grf_size_properties.hpp>
 #include <sycl/ext/oneapi/experimental/device_architecture.hpp>
 #include <algorithm>
@@ -40,6 +42,23 @@ bool fused_requested(sycl::queue& queue) {
         if(std::strcmp(requested,"1")==0)return true;
     }
     return fused_default(queue.get_device());
+}
+bool native_fp8_conversion(const sycl::device& device) {
+    if(const char* setting=std::getenv("TINYSTRATA_INTEL_FP8_NATIVE_CVT"))
+        if(std::strcmp(setting,"0")==0)return false;
+    thread_local std::vector<std::pair<sycl::device,bool>> cache;
+    for(const auto& entry:cache)if(entry.first==device)return entry.second;
+    bool enabled=false;
+    try {
+        namespace exp=sycl::ext::oneapi::experimental;
+        // Only PTL-H's vector HF8->half instruction was verified on hardware.
+        // Header availability and a generic ESIMD aspect do not prove this.
+        enabled=device.is_gpu()&&device.get_info<sycl::info::device::vendor_id>()==0x8086&&
+            device.get_info<exp::info::device::architecture>()==exp::architecture::intel_gpu_ptl_h&&
+            device.has(sycl::aspect::ext_intel_esimd);
+    } catch(const sycl::exception&) {}
+    cache.emplace_back(device,enabled);
+    return enabled;
 }
 void validate(const sycl::queue& q, Q8Kv c) {
     if (!q.has_property<sycl::property::queue::in_order>() || c.context < 1 || c.heads < 1 ||
@@ -185,6 +204,24 @@ template<bool FP8> sycl::event dequantize_kv_impl(sycl::queue& q,Q8Kv c,float* k
         const size_t head=id[0]/(size_t(visible)*256),within=id[0]%(size_t(visible)*256),i=head*c.context*256+within;
         key[i]=coefficient<FP8>(c.key[i],float(c.key_scale[i/32]));
         value[i]=coefficient<FP8>(c.value[i],float(c.value_scale[i/32]));
+    });
+}
+sycl::event dequantize_fp8_native(sycl::queue& q,Q8Kv c,float* key,float* value,int visible){
+    validate(q,c);
+    if(visible<1||visible>c.context)throw std::invalid_argument("Invalid FP8 KV visibility");
+    return q.parallel_for(sycl::range<1>(size_t(c.heads)*visible*8),[=](sycl::id<1> id) SYCL_ESIMD_KERNEL {
+        namespace es=sycl::ext::intel::esimd;
+        using hf8=sycl::ext::intel::experimental::esimd::hf8;
+        const size_t head=id[0]/(size_t(visible)*8),within=id[0]%(size_t(visible)*8);
+        const size_t offset=head*size_t(c.context)*256+within*32;
+        es::simd<uint8_t,32> raw_key(reinterpret_cast<const uint8_t*>(c.key+offset));
+        es::simd<uint8_t,32> raw_value(reinterpret_cast<const uint8_t*>(c.value+offset));
+        es::simd<hf8,32> fp8_key=raw_key.template bit_cast_view<hf8>();
+        es::simd<hf8,32> fp8_value=raw_value.template bit_cast_view<hf8>();
+        es::simd<sycl::half,32> half_key=fp8_key,half_value=fp8_value;
+        es::simd<float,32> decoded_key=half_key,decoded_value=half_value;
+        (decoded_key*float(c.key_scale[offset/32])).copy_to(key+offset);
+        (decoded_value*float(c.value_scale[offset/32])).copy_to(value+offset);
     });
 }
 template<bool FP8> sycl::event fused_attention_impl(sycl::queue& q,const float* query,const float* gate,Q8Kv c,
@@ -347,6 +384,7 @@ sycl::event store_q8_kv(sycl::queue& q,const float* key,const float* value,Q8Kv 
         :store_kv_impl<false>(q,key,value,c,position,tokens,error);
 }
 sycl::event dequantize_q8_kv(sycl::queue& q,Q8Kv c,float* key,float* value,int visible){
+    if(c.fp8_e4m3&&native_fp8_conversion(q.get_device()))return dequantize_fp8_native(q,c,key,value,visible);
     return c.fp8_e4m3?dequantize_kv_impl<true>(q,c,key,value,visible)
         :dequantize_kv_impl<false>(q,c,key,value,visible);
 }
