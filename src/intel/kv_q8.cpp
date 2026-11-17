@@ -1,4 +1,5 @@
 #include "strata/intel/kv_q8.hpp"
+#include "strata/intel/fp8_codec.hpp"
 #include <sycl/ext/intel/experimental/grf_size_properties.hpp>
 #include <sycl/ext/oneapi/experimental/device_architecture.hpp>
 #include <algorithm>
@@ -47,7 +48,11 @@ void validate(const sycl::queue& q, Q8Kv c) {
 }
 // Preserve each query's original FMA/reduction order while sharing decoded
 // KV words across three/four queries. Admission uses the CPU-known visible end.
-template<int Tokens> sycl::event token_reuse_attention(sycl::queue& q,const float* query,const float* gate,Q8Kv c,
+template<bool FP8> inline float coefficient(int8_t code,float scale) {
+    if constexpr(FP8)return fp8::decode(uint8_t(code))*scale;
+    else return float(code)*scale;
+}
+template<int Tokens,bool FP8> sycl::event token_reuse_attention(sycl::queue& q,const float* query,const float* gate,Q8Kv c,
     float* scores,float* partial,float* output,int heads,const int32_t* position,int extent,sycl::event* stages) {
     static_assert(Tokens>=3 && Tokens<=4);
     constexpr size_t group=128,subgroup=16,per_group=group/subgroup,block=256;
@@ -67,7 +72,7 @@ template<int Tokens> sycl::event token_reuse_attention(sycl::queue& q,const floa
             const float scale=float(c.key_scale[i/32]);
 #pragma unroll
             for(int j=0;j<4;++j){
-                const float value=float(int8_t(codes>>(8*j)))*scale;
+                const float value=coefficient<FP8>(int8_t(codes>>(8*j)),scale);
 #pragma unroll
                 for(int token=0;token<Tokens;++token)if(active[token])
                     sum[token]=sycl::fma(query[(size_t(token)*heads+head)*256+col+j],value,sum[token]);
@@ -101,7 +106,7 @@ template<int Tokens> sycl::event token_reuse_attention(sycl::queue& q,const floa
             const float scale=float(c.value_scale[i/32]);
 #pragma unroll
             for(int j=0;j<4;++j){
-                const float value=float(int8_t(codes>>(8*j)))*scale;
+                const float value=coefficient<FP8>(int8_t(codes>>(8*j)),scale);
 #pragma unroll
                 for(int token=0;token<Tokens;++token)if(cell<=size_t(position[token]))
                     a[token][j]=sycl::fma(scores[(size_t(token)*heads+head)*c.context+cell],value,a[token][j]);
@@ -123,7 +128,7 @@ template<int Tokens> sycl::event token_reuse_attention(sycl::queue& q,const floa
     });
 }
 }
-sycl::event store_q8_kv(sycl::queue& q,const float* key,const float* value,Q8Kv c,
+template<bool FP8> sycl::event store_kv_impl(sycl::queue& q,const float* key,const float* value,Q8Kv c,
     const int32_t* position,int tokens,int32_t* error) {
     validate(q,c);
     if(tokens<1 || tokens>1024 || !error)throw std::invalid_argument("Invalid Q8 KV store");
@@ -140,6 +145,24 @@ sycl::event store_q8_kv(sycl::queue& q,const float* key,const float* value,Q8Kv 
         const bool nonfinite=sycl::any_of_group(sg,!sycl::isfinite(k)||!sycl::isfinite(v));
         const float km=sycl::reduce_over_group(sg,sycl::fabs(k),sycl::maximum<float>());
         const float vm=sycl::reduce_over_group(sg,sycl::fabs(v),sycl::maximum<float>());
+        if constexpr(FP8){
+            sycl::half kd=sycl::half(km/fp8::maximum),vd=sycl::half(vm/fp8::maximum);
+            // Retain tiny finite blocks without a zero denominator. The
+            // smallest FP16 subnormal is representable in the scale array.
+            if(km>0.f&&float(kd)==0.f)kd=sycl::half(0x1p-24f);
+            if(vm>0.f&&float(vd)==0.f)vd=sycl::half(0x1p-24f);
+            const bool bad=nonfinite||!sycl::isfinite(float(kd))||!sycl::isfinite(float(vd));
+            const size_t target=(head*c.context+size_t(cell))*256+col;
+            c.key[target]=!bad&&km>0.f?int8_t(fp8::encode(k/float(kd))):0;
+            c.value[target]=!bad&&vm>0.f?int8_t(fp8::encode(v/float(vd))):0;
+            if(sg.get_local_linear_id()==0){
+                c.key_scale[target/32]=bad?sycl::half(0.f):kd;
+                c.value_scale[target/32]=bad?sycl::half(0.f):vd;
+                if(bad)sycl::atomic_ref<int32_t,sycl::memory_order::relaxed,sycl::memory_scope::device,
+                    sycl::access::address_space::global_space>(error[0]).store(1);
+            }
+            return;
+        }
         const sycl::half kd=sycl::half(km/127.f),vd=sycl::half(vm/127.f);
         const bool bad=nonfinite || !sycl::isfinite(float(kd)) || !sycl::isfinite(float(vd));
         const size_t target=(head*c.context+size_t(cell))*256+col;
@@ -155,16 +178,16 @@ sycl::event store_q8_kv(sycl::queue& q,const float* key,const float* value,Q8Kv 
         }
     });
 }
-sycl::event dequantize_q8_kv(sycl::queue& q,Q8Kv c,float* key,float* value,int visible){
+template<bool FP8> sycl::event dequantize_kv_impl(sycl::queue& q,Q8Kv c,float* key,float* value,int visible){
     validate(q,c);
     if(visible<1||visible>c.context)throw std::invalid_argument("Invalid Q8 KV visibility");
     return q.parallel_for(sycl::range<1>(size_t(c.heads)*visible*256),[=](sycl::id<1> id){
         const size_t head=id[0]/(size_t(visible)*256),within=id[0]%(size_t(visible)*256),i=head*c.context*256+within;
-        key[i]=float(c.key[i])*float(c.key_scale[i/32]);
-        value[i]=float(c.value[i])*float(c.value_scale[i/32]);
+        key[i]=coefficient<FP8>(c.key[i],float(c.key_scale[i/32]));
+        value[i]=coefficient<FP8>(c.value[i],float(c.value_scale[i/32]));
     });
 }
-sycl::event fused_decode_attention_q8(sycl::queue& q,const float* query,const float* gate,Q8Kv c,
+template<bool FP8> sycl::event fused_attention_impl(sycl::queue& q,const float* query,const float* gate,Q8Kv c,
     float* stats,float* partial,float* output,int heads,const int32_t* position,int extent,
     sycl::event* partial_stage,int tokens) {
     validate(q,c);
@@ -196,8 +219,8 @@ sycl::event fused_decode_attention_q8(sycl::queue& q,const float* query,const fl
 #pragma unroll
                 for(int j=0;j<8;++j) {
                     const size_t source=(kv*c.context+cell)*width+lane+j*lanes;
-                    key[j]=float(c.key[source])*float(c.key_scale[source/32]);
-                    value[j]=float(c.value[source])*float(c.value_scale[source/32]);
+                    key[j]=coefficient<FP8>(c.key[source],float(c.key_scale[source/32]));
+                    value[j]=coefficient<FP8>(c.value[source],float(c.value_scale[source/32]));
                 }
 #pragma unroll
                 for(int head=0;head<8;++head) {
@@ -254,7 +277,7 @@ sycl::event fused_decode_attention_q8(sycl::queue& q,const float* query,const fl
         });
     });
 }
-sycl::event decode_attention_q8(sycl::queue& q,const float* query,const float* gate,Q8Kv c,
+template<bool FP8> sycl::event decode_attention_impl(sycl::queue& q,const float* query,const float* gate,Q8Kv c,
     float* scores,float* partial,float* output,int heads,const int32_t* position,int extent,sycl::event* stages,int tokens,int actual_visible){
     validate(q,c);
     if(heads<1||heads%c.heads||extent<1||extent>c.context||tokens<1||tokens>8)throw std::invalid_argument("Invalid Q8 decode attention geometry");
@@ -264,8 +287,8 @@ sycl::event decode_attention_q8(sycl::queue& q,const float* query,const float* g
     // graphs with a zero visibility hint retain the original implementation.
     if(!stages && heads==16 && c.heads==2 && c.context>=2 && actual_visible>=16384 && fused_requested(q))
         return fused_decode_attention_q8(q,query,gate,c,scores,partial,output,heads,position,extent,nullptr,tokens);
-    if(actual_visible>=16384 && tokens==3)return token_reuse_attention<3>(q,query,gate,c,scores,partial,output,heads,position,extent,stages);
-    if(actual_visible>=16384 && tokens==4)return token_reuse_attention<4>(q,query,gate,c,scores,partial,output,heads,position,extent,stages);
+    if(actual_visible>=16384 && tokens==3)return token_reuse_attention<3,FP8>(q,query,gate,c,scores,partial,output,heads,position,extent,stages);
+    if(actual_visible>=16384 && tokens==4)return token_reuse_attention<4,FP8>(q,query,gate,c,scores,partial,output,heads,position,extent,stages);
     constexpr size_t group=128,subgroup=16,per_group=group/subgroup,block=256;
     const size_t entries=size_t(heads)*extent,splits=(c.context+block-1)/block;
     auto qk=q.parallel_for(sycl::nd_range<2>({size_t(tokens),((entries+per_group-1)/per_group)*group},{1,group}),[=](sycl::nd_item<2> it) [[sycl::reqd_sub_group_size(16)]] {
@@ -280,7 +303,7 @@ sycl::event decode_attention_q8(sycl::queue& q,const float* query,const float* g
             const float scale=float(c.key_scale[i/32]);
 #pragma unroll
             for(int j=0;j<4;++j)
-                sum=sycl::fma(query[row*256+col+j],float(int8_t(codes>>(8*j)))*scale,sum);
+                sum=sycl::fma(query[row*256+col+j],coefficient<FP8>(int8_t(codes>>(8*j)),scale),sum);
         }
         sum=sycl::reduce_over_group(sg,sum,sycl::plus<float>());
         if(lane==0)scores[row*c.context+cell]=sum/16.f;
@@ -302,7 +325,7 @@ sycl::event decode_attention_q8(sycl::queue& q,const float* query,const float* g
             uint32_t codes;std::memcpy(&codes,c.value+i,sizeof(codes));
             const float scale=float(c.value_scale[i/32]);
 #pragma unroll
-            for(int j=0;j<4;++j)a[j]=sycl::fma(weight,float(int8_t(codes>>(8*j)))*scale,a[j]);
+            for(int j=0;j<4;++j)a[j]=sycl::fma(weight,coefficient<FP8>(int8_t(codes>>(8*j)),scale),a[j]);
         }
         const size_t target=(head*splits+split)*256+col;
 #pragma unroll
@@ -315,5 +338,26 @@ sycl::event decode_attention_q8(sycl::queue& q,const float* query,const float* g
         const size_t index=head*256+col;
         output[index]=sum/(1.f+sycl::exp(-gate[index]));
     });
+}
+// Format selection occurs once per enqueue; the original INT8 arithmetic
+// remains a separate compile-time instantiation, including its PTL fused policy.
+sycl::event store_q8_kv(sycl::queue& q,const float* key,const float* value,Q8Kv c,
+    const int32_t* position,int tokens,int32_t* error){
+    return c.fp8_e4m3?store_kv_impl<true>(q,key,value,c,position,tokens,error)
+        :store_kv_impl<false>(q,key,value,c,position,tokens,error);
+}
+sycl::event dequantize_q8_kv(sycl::queue& q,Q8Kv c,float* key,float* value,int visible){
+    return c.fp8_e4m3?dequantize_kv_impl<true>(q,c,key,value,visible)
+        :dequantize_kv_impl<false>(q,c,key,value,visible);
+}
+sycl::event fused_decode_attention_q8(sycl::queue& q,const float* query,const float* gate,Q8Kv c,
+    float* stats,float* partial,float* output,int heads,const int32_t* position,int extent,sycl::event* partial_stage,int tokens){
+    return c.fp8_e4m3?fused_attention_impl<true>(q,query,gate,c,stats,partial,output,heads,position,extent,partial_stage,tokens)
+        :fused_attention_impl<false>(q,query,gate,c,stats,partial,output,heads,position,extent,partial_stage,tokens);
+}
+sycl::event decode_attention_q8(sycl::queue& q,const float* query,const float* gate,Q8Kv c,
+    float* scores,float* partial,float* output,int heads,const int32_t* position,int extent,sycl::event* stages,int tokens,int actual_visible){
+    return c.fp8_e4m3?decode_attention_impl<true>(q,query,gate,c,scores,partial,output,heads,position,extent,stages,tokens,actual_visible)
+        :decode_attention_impl<false>(q,query,gate,c,scores,partial,output,heads,position,extent,stages,tokens,actual_visible);
 }
 }
