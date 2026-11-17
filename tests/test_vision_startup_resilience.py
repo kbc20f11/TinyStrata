@@ -98,7 +98,7 @@ class ReadyProtocol(unittest.TestCase):
                     self.addCleanup(proc.stdin.close)
                     self.addCleanup(proc.stdout.close)
                     return proc
-                with mock.patch.object(api, "popen", side_effect=spawn), mock.patch.object(api, "contain"):
+                with mock.patch.object(api, "popen", side_effect=spawn):
                     with self.assertRaisesRegex(RuntimeError, "ERR startup failed") as caught:
                         worker._start()
                 self.assertIn("driver banner", str(caught.exception))

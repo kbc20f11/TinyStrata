@@ -10,8 +10,10 @@ power throttling, see `no_throttle` (#691). Elsewhere, and if the job cannot be 
 from __future__ import annotations
 
 import os
+import subprocess
 import threading
 
+_REAL_POPEN = subprocess.Popen
 _job = None
 _lock = threading.Lock()
 
@@ -78,6 +80,98 @@ if os.name == "nt":
 else:
     def no_throttle(handle) -> bool:
         return False
+
+
+# Suspended child startup adapted from Niko1221/Strata 5d87c4d8eb9d536c663698fdc38a9fc90537090a (MIT).
+# Copyright (c) 2026 Niko1221 and the Strata contributors. See LICENSE and NOTICE.
+CREATE_SUSPENDED = 0x00000004
+
+
+def start_contained(args, **kw):
+    """Start a server-owned child inside its Windows job before it can spawn descendants.
+
+    Assigning an already running MCP wrapper leaves its early children outside the job. Start suspended, assign,
+    then resume, retaining every caller flag and pipe. A refused assignment keeps the existing uncontained fallback;
+    a failure to resume ends the child before propagating the error. Other platforms retain plain Popen behaviour.
+    """
+    if os.name != "nt":
+        return subprocess.Popen(args, **kw)
+    kw["creationflags"] = kw.get("creationflags", 0) | CREATE_SUSPENDED
+    proc = subprocess.Popen(args, **kw)
+    real = isinstance(proc, _REAL_POPEN)
+    try:
+        contain(proc)
+        pid = getattr(proc, "pid", None)
+        resumed = isinstance(pid, int) and pid > 0 and _resume(pid)
+        if real and not resumed:
+            program = args[0] if isinstance(args, (list, tuple)) and args else args
+            raise OSError(f"Windows could not resume {program}; the stopped child was ended")
+    except BaseException:
+        if real:
+            _end(proc)
+        raise
+    return proc
+
+
+def _end(proc) -> None:
+    """Clean up a child the caller never received, including its pipe handles."""
+    try:
+        proc.kill()
+        proc.wait(10)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    finally:
+        for pipe in (proc.stdin, proc.stdout, proc.stderr):
+            if pipe is not None:
+                try:
+                    pipe.close()
+                except OSError:
+                    pass
+
+
+if os.name == "nt":
+    class _ThreadEntry(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ThreadID", wintypes.DWORD),
+                    ("th32OwnerProcessID", wintypes.DWORD), ("tpBasePri", wintypes.LONG), ("tpDeltaPri", wintypes.LONG),
+                    ("dwFlags", wintypes.DWORD)]
+
+    _TH32CS_SNAPTHREAD, _THREAD_SUSPEND_RESUME = 0x00000004, 0x0002
+    _INVALID_HANDLE = wintypes.HANDLE(-1).value
+    _k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    _k32.CreateToolhelp32Snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
+    _k32.Thread32First.argtypes = (wintypes.HANDLE, ctypes.POINTER(_ThreadEntry))
+    _k32.Thread32Next.argtypes = (wintypes.HANDLE, ctypes.POINTER(_ThreadEntry))
+    _k32.OpenThread.restype = wintypes.HANDLE
+    _k32.OpenThread.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    _k32.ResumeThread.restype = wintypes.DWORD
+    _k32.ResumeThread.argtypes = (wintypes.HANDLE,)
+    _k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+
+
+def _resume(pid: int) -> bool:
+    if os.name != "nt":
+        return True
+    snap = _k32.CreateToolhelp32Snapshot(_TH32CS_SNAPTHREAD, 0)
+    if not snap or snap == _INVALID_HANDLE:
+        return False
+    resumed = False
+    try:
+        entry = _ThreadEntry()
+        entry.dwSize = ctypes.sizeof(entry)
+        ok = _k32.Thread32First(snap, ctypes.byref(entry))
+        while ok:
+            if entry.th32OwnerProcessID == pid:
+                thread = _k32.OpenThread(_THREAD_SUSPEND_RESUME, False, entry.th32ThreadID)
+                if thread:
+                    try:
+                        if _k32.ResumeThread(thread) != 0xFFFFFFFF:
+                            resumed = True
+                    finally:
+                        _k32.CloseHandle(thread)
+            ok = _k32.Thread32Next(snap, ctypes.byref(entry))
+    finally:
+        _k32.CloseHandle(snap)
+    return resumed
 
 
 def contain(proc) -> bool:

@@ -99,11 +99,33 @@ class IntelLaunch(unittest.TestCase):
         self.assertEqual(self.primary.read_bytes(), self.original_bytes)
         self.assertFalse(self.primary.with_name("config-sycl.json").exists())
 
-    def test_unsupported_context_or_images_do_not_publish(self):
-        for options in ({"max_context": 262145}, {"vision": "gpu"}, {"expert_vram": 4}):
+    def test_unsupported_context_image_mode_or_placement_do_not_publish(self):
+        for options in ({"max_context": 262145}, {"vision": "unsupported"}, {"expert_vram": 4}):
             with self.subTest(options=options), self.assertRaises(ValueError):
                 self.prepare(**options)
             self.assertFalse(self.primary.with_name("config-sycl.json").exists())
+
+    def test_supported_image_modes_prepare_without_claiming_unverified_image_assets(self):
+        for family, model in (("qwen36", intel_backend.QWEN_MODEL), ("tiel", intel_backend.TIEL_MODEL),
+                              ("gemma4", intel_backend.GEMMA_MODEL), ("clover", intel_backend.CLOVER_MODEL)):
+            for mode in ("gpu", "cpu"):
+                with self.subTest(family=family, mode=mode):
+                    cfg, path = self.prepare(model_family=family, intel_profile=intel_backend.MODEL_PROFILES[model],
+                                             vision=mode)
+                    self.assertEqual(cfg["vision_mode"], mode)
+                    self.assertEqual(config.load(path)["vision_mode"], mode)
+                    self.assertTrue(cfg["model_bootstrap"])
+                    self.assertNotIn("vision", cfg)
+                    self.assertNotIn("intel_vision_contract", cfg)
+                    self.assertNotIn("--vision", intel_backend.engine_args(cfg, allow_uninstalled=True))
+                    self.assertEqual(self.primary.read_bytes(), self.original_bytes)
+
+    def test_text_only_lfm_still_rejects_image_preparation_before_save(self):
+        for mode in ("gpu", "cpu"):
+            with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, "text-only"):
+                self.prepare(model_family="lfm2", intel_profile=intel_backend.MODEL_PROFILES[intel_backend.LFM_MODEL],
+                             vision=mode)
+            self.assertFalse(self.primary.with_name("config-lfm2-sycl.json").exists())
 
     def test_saved_generation_auth_and_arbitrary_user_state_survive(self):
         cfg, path = self.prepare()

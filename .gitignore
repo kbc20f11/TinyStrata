@@ -90,6 +90,12 @@
 !/tests/benchmark-64k.py
 !/tests/test_tool_parser_markdown.py
 !/tests/test_tool_parser_values.py
+!/tests/test_tool_boolean_args.py
+!/tests/test_tool_result_order.py
+!/tests/test_gemma_parser_progress.py
+!/tests/test_stop_closed_pipe.py
+!/tests/test_vision_scratch_lifetime.py
+!/tests/test_winjob_startup.py
 !/tests/test_responses_timings.py
 !/tests/test_parking_settings.py
 !/tests/test_benchmark_profiles.py

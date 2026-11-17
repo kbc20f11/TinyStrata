@@ -256,7 +256,7 @@ class IntelTextBenchmarkVariant(unittest.TestCase):
 
     def test_incompatible_saved_flags_and_backends_are_rejected(self):
         changes = [{'backend': 'cuda'}, {'backend': 'hip'}, {'intel_profile': 'generic'},
-                   {'vision_mode': 'gpu'}, {'env': {'STRATA_TUNING': '1'}}]
+                   {'vision_mode': 'unsupported'}, {'env': {'STRATA_TUNING': '1'}}]
         for change in changes:
             with self.subTest(change=change), self.assertRaises(ValueError):
                 self.configured({**self.original(), **change})
@@ -273,6 +273,20 @@ class IntelTextBenchmarkVariant(unittest.TestCase):
         modified['args'] += ['--draft-vocab', '4096']
         with self.assertRaisesRegex(ValueError, 'draft-vocab'):
             self.configured(modified)
+
+    def test_image_capable_saved_profile_becomes_an_isolated_text_benchmark(self):
+        from serve.intel_backend import engine_args
+        source = self.original()
+        source.update(vision_mode='gpu', vision_exe='runtime/vision.exe', vision_mmproj='models/mmproj.gguf',
+                      vision={'exe': 'runtime/vision.exe', 'mmproj': 'models/mmproj.gguf', 'gpu': True, 'elastic': False},
+                      intel_vision_contract={'version': 1, 'protocol': 'geni_sve1'})
+        before = copy.deepcopy(source)
+        cfg = self.configured(source)
+        self.assertEqual(cfg['vision_mode'], 'no')
+        for key in ('vision', 'vision_exe', 'vision_mmproj', 'intel_vision_contract'):
+            self.assertNotIn(key, cfg)
+        self.assertNotIn('--vision', engine_args(cfg, allow_uninstalled=True))
+        self.assertEqual(source, before)
 
     def test_conflicting_cli_options_fail_before_output_or_service_creation(self):
         conflicts = [('--saved-profile',), ('--include-64k',), ('--clover-vision',),
@@ -517,7 +531,7 @@ class IntelTargetOnlyBenchmark(unittest.TestCase):
         for model in bench.INTEL_TARGET_ONLY:
             for change in ({'intel_profile': 'generic'}, {'intel_profile': 'unknown'},
                            {'intel_profile': 'b390-qwen36'}, {'backend': 'cuda'},
-                           {'draft_model': 'assistant.gguf'}, {'vision_mode': 'gpu'}):
+                           {'draft_model': 'assistant.gguf'}, {'vision_mode': 'unsupported'}):
                 with self.subTest(model=model, change=change), self.assertRaises(ValueError):
                     bench.intel_text_config({**self.original(model), **change}, model, ROOT / 'unused', 18019, CASES)
             for key, value in (('mtp', 3), ('kv_type', 'fp32'), ('chunk', 128)):
@@ -531,6 +545,24 @@ class IntelTargetOnlyBenchmark(unittest.TestCase):
         source = self.original('clover'); source['args'] += ['--clover-mode', 'self-spec', '--clover-draft', '3']
         with self.assertRaises(ValueError):
             bench.intel_text_config(source, 'clover', ROOT / 'unused', 18019, CASES)
+
+    def test_image_capable_target_profiles_disable_images_only_in_the_benchmark_copy(self):
+        from serve.intel_backend import engine_args
+        for model in ('gemma', 'clover'):
+            source = self.original(model)
+            source.update(vision_mode='gpu', vision_exe='runtime/vision.exe', vision_mmproj='models/mmproj.gguf',
+                          vision={'exe': 'runtime/vision.exe', 'mmproj': 'models/mmproj.gguf', 'gpu': True, 'elastic': False})
+            before = copy.deepcopy(source)
+            cfg = bench.intel_text_config(source, model, ROOT / 'unused', 18019, CASES)
+            with self.subTest(model=model):
+                self.assertEqual(cfg['vision_mode'], 'no')
+                for key in ('vision', 'vision_exe', 'vision_mmproj'):
+                    self.assertNotIn(key, cfg)
+                self.assertNotIn('--vision', engine_args(cfg, allow_uninstalled=True))
+                self.assertEqual(source, before)
+        with self.assertRaisesRegex(ValueError, 'text-only'):
+            bench.intel_text_config({**self.original('lfm'), 'vision_mode': 'gpu'},
+                                   'lfm', ROOT / 'unused', 18019, CASES)
 
     def test_native_info_identity_and_target_only_mode_are_checked(self):
         for model in bench.INTEL_TARGET_ONLY:

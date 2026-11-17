@@ -137,6 +137,8 @@ and file-level copyright notices are preserved.
 Gemma's tool-call/thought-channel parsing and one-dimensional image embedding
 format also adapt serve/frontend.py and tools/vision/strata_vision.cpp from
 the same PolyStrata commit.
+The Gemma malformed-list parser progress guard follows PolyStrata commit
+048d3e1aaa74b855a592b02059400c10dc4224b2 (MIT, credited above).
 
 The optional browser UI in ui/web adapts serve/web from Niko1221/Strata at
 5e8a4cca7d690ac60ca37eb09e7d0e010099ad6d (MIT). TinyStrata adds its terminal
@@ -317,3 +319,29 @@ Strata commits 38ad0bcbd107fd92c77376f4715e5d54c3af8e7a and
 3e1fcaaf67e04c096b8172682817f427883515a0 (MIT; Copyright (c) 2026
 Niko1221 and the Strata contributors). Explicit developer backtrace
 settings remain effective. The upstream MIT license is retained in LICENSE.
+
+Cancellation during native child close/restart and schema-aware Python-spelled
+boolean tool arguments adapt Niko1221/Strata commits
+bbf97633c8de03a7f6258bc7f68d0be4eb40bcfc and
+1aabfb1ce42fec46dab317f5a528589568870192 (MIT; Copyright (c) 2026
+Niko1221 and the Strata contributors). Complete and streamed arguments use
+the same conversion; declared string values retain their existing treatment.
+
+Ordering complete parallel tool-result runs before positional prompt rendering
+follows aflin/momoe commit e5f04fcf48f8778e5bb718ce17f81e72ed688544,
+originally Niko1221/Strata commit 95381770f814a89435b8ead91a33efa02730ab2a
+(MIT; Copyright (c) 2026 Niko1221 and the Strata contributors). TinyStrata
+requires a complete, unambiguous one-to-one call-ID match and also applies
+this ordering to native Qwen-family tool-response envelopes.
+
+Per-attempt image encoder scratch files, atomic cache publication and cleanup
+that preserves the encode outcome follow jesdga95/basalt commit
+fb2746541e9e7ada4be68c57da8f3cc2af38b66c (MIT; Copyright (c) 2026
+Eason Liang and Jesús Gulfo).
+
+Windows child creation inside a kill-on-close job before execution adapts
+Niko1221/Strata commit 5d87c4d8eb9d536c663698fdc38a9fc90537090a (MIT;
+Copyright (c) 2026 Niko1221 and the Strata contributors). TinyStrata preserves
+caller flags and pipes, resumes after assignment refusal, and cleans up an
+unpublished child when assignment or resumption raises.
+

@@ -114,6 +114,11 @@ class ChatTemplate:
                 raise ValueError("No messages provided")
             messages = _answers_in_call_order(messages)
             tools = [{"type": "function", "function": t} if "function" not in t else t for t in tools or []] or None
+        elif self.call_format == "function" and "<tool_response>" in self.source:
+            # Native Qwen-family responses carry neither the call ID nor its
+            # name in the rendered envelope, so parallel results pair by order.
+            # Unrelated custom templates retain their original message order.
+            messages = _answers_in_call_order(messages)
         return self.template.render(messages=messages, tools=tools, add_generation_prompt=add_generation_prompt,
                                     **kwargs)
 
@@ -638,19 +643,27 @@ def _tool_list(value, wrapper: str | None) -> list[dict]:
 
 
 def _answers_in_call_order(messages: list[dict]) -> list[dict]:
-    """Gemma writes tool results without IDs, so match their order to the preceding calls."""
+    """Match complete, unambiguous tool-result runs to their preceding calls.
+
+    Gemma and Qwen's native envelopes omit IDs. Completion order can differ
+    from call order; histories without a full one-to-one ID match stay intact.
+    """
     out, i = [], 0
     while i < len(messages):
-        out.append(messages[i])
-        ids = [c.get("id") for c in messages[i].get("tool_calls") or []]
+        previous = messages[i]
+        out.append(previous)
+        ids = [c.get("id") for c in previous.get("tool_calls") or []]
         i += 1
         end = i
         while end < len(messages) and messages[end].get("role") == "tool":
             end += 1
         run = messages[i:end]
         named = [t.get("tool_call_id") for t in run]
-        if len(run) > 1 and all(ids) and len(set(named)) == len(named) and set(named) <= set(ids):
-            run = sorted(run, key=lambda t: ids.index(t["tool_call_id"]))
+        if (previous.get("role") == "assistant" and len(run) > 1 and len(run) == len(ids)
+                and all(isinstance(value, str) and value for value in ids + named)
+                and len(set(ids)) == len(ids) and len(set(named)) == len(named) and set(named) == set(ids)):
+            order = {call_id: index for index, call_id in enumerate(ids)}
+            run = sorted(run, key=lambda t: order[t["tool_call_id"]])
         out += run
         i = end
     return out
@@ -1148,6 +1161,20 @@ def json_tool_call(body: str, schemas: dict) -> ToolCall | None:
     return ToolCall(name=obj["name"], arguments=args) if isinstance(args, dict) else None
 
 
+def coerce_tool_value(value: str, declared):
+    """Decode a parameter; Python boolean spellings require a boolean-only schema."""
+    if declared == "string":
+        return value
+    boolean = declared == "boolean" or (
+        isinstance(declared, list) and "boolean" in declared and "string" not in declared)
+    if boolean and value.strip().lower() in ("true", "false"):
+        return value.strip().lower() == "true"
+    try:
+        return json.loads(value)
+    except ValueError:
+        return value
+
+
 def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
     """`<function=NAME>\\n<parameter=P>\\nVALUE\\n</parameter>...</function>` -> ToolCall. Values are JSON-decoded
     when the tool's schema says the parameter is not a string (or, without a schema, when they parse as JSON
@@ -1171,13 +1198,7 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
         if value.endswith("\n"):
             value = value[:-1]
         declared = (props.get(pname) or {}).get("type")
-        if declared == "string":
-            args[pname] = value
-        else:
-            try:
-                args[pname] = json.loads(value)
-            except ValueError:
-                args[pname] = value
+        args[pname] = coerce_tool_value(value, declared)
     return ToolCall(name=name, arguments=args)
 
 
@@ -1219,6 +1240,11 @@ def _gemma_value(s: str, i: int):
                 i += 1
             if i >= len(s) or s[i] == close:
                 return out, i + 1
+            if not mapping and s[i] == "}":
+                # Gemma sometimes closes a list with its enclosing mapping's
+                # bracket. Leave it for the mapping; reading an empty value
+                # here would never advance and would block the request thread.
+                return out, i
             if mapping:
                 colon = s.find(":", i)
                 if colon < 0:
@@ -1572,10 +1598,7 @@ class OutputParser:
                     value = value[1:]
                 if value.endswith("\n"):
                     value = value[:-1]
-                try:
-                    v = json.loads(value)
-                except ValueError:
-                    v = value
+                v = coerce_tool_value(value, self.sdeclared.get(self.spname))
                 args(json.dumps(v, ensure_ascii=False))
                 self.sp += end + len(PARAM_END)
                 self.ss = "between"

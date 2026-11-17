@@ -69,18 +69,12 @@ class AmdSensors:
     def _run(self):
         proc = None
         try:
-            proc = subprocess.Popen(
+            from .winjob import start_contained
+            proc = start_contained(
                 [sys.executable, "-I", "-B", str(Path(__file__).resolve()), "--worker", self._luid],
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
-            # Use the server's existing kill-on-close job; no vendor DLL in the
-            # API process, even when the API exits without running close().
-            try:
-                from .winjob import contain
-                contain(proc)
-            except (ImportError, OSError, AttributeError):
-                pass
             with self._lock:
                 self._proc = proc
             if self._stop.is_set():

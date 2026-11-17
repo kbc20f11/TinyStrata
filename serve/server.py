@@ -66,7 +66,7 @@ from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import config  # noqa: E402
 from serve.tinyconfig import clover_vision_enabled  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
-from serve.winjob import contain  # noqa: E402
+from serve.winjob import start_contained  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve import thinking as thinking_api  # noqa: E402
@@ -88,7 +88,7 @@ def popen(what: str, args: list, **kw):
     if os.name == "nt":
         kw["creationflags"] = kw.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
     try:
-        return subprocess.Popen(args, **kw)
+        return start_contained(args, **kw)
     except OSError as e:
         if getattr(e, "winerror", None) in (4551, 1260):
             raise OSError(f"Windows blocked {what} ({args[0]}): Smart App Control, or an application-control policy, does "
@@ -920,7 +920,6 @@ class StrataEngine:
             if log:
                 self.log.close()
             raise
-        contain(self.proc)                               # ends with the server, however it ends (Windows)
         # the READY read has a timeout (#1317): the lines come from a thread, up to READY, so the rest of the stream
         # stays for _pump (one reader at a time)
         ready_q: queue.Queue = queue.Queue()
@@ -2084,11 +2083,14 @@ class StrataEngine:
                     raise ValueError(line[4:].strip())
         finally:
             if not done:                                  # the consumer stopped early: stop the engine, drain to DONE
-                if self.can_stop:
+                # close/restart can close stdin or clear proc while the consumer
+                # is leaving. A failed STOP must not replace its own outcome.
+                proc = self.proc
+                if self.can_stop and proc is not None:
                     try:
-                        self.proc.stdin.write("STOP\n")
-                        self.proc.stdin.flush()
-                    except OSError:
+                        proc.stdin.write("STOP\n")
+                        proc.stdin.flush()
+                    except (OSError, ValueError):
                         pass
                 # #481: never an untimed wait here - it holds the request FIFO, and an engine that lost step never
                 # answers.  An engine that honours STOP gets the current allowance in all (a STOP during a prompt
@@ -2438,7 +2440,6 @@ class Vision:
         self.proc = popen("the image encoder", args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           stderr=log or subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", bufsize=1, env=env,
                           cwd=self.dir)
-        contain(self.proc)
         strays = []
         try:
             line = self._await_ready(VISION_READY_S, strays)
@@ -2817,11 +2818,13 @@ class Vision:
             if key in self.cache:
                 self.cache[key] = self.cache.pop(key)                  # most recently used last
                 return self.cache[key]
-            img, out = self.dir / f"{key}.img", self.dir / f"{key}.sve"
-            img.write_bytes(data)
+            tag = uuid.uuid4().hex
+            img, part = self.dir / f"{key}-{tag}.img", self.dir / f"{key}-{tag}.part"
+            out = self.dir / f"{key}.sve"
             try:
-                command = (f"ENC\t{img.name}\t{out.name}\n" if self.input_protocol == "enc-tabs" else
-                           f"ENC {img.name} {out.name}\n")
+                img.write_bytes(data)
+                command = (f"ENC\t{img.name}\t{part.name}\n" if self.input_protocol == "enc-tabs" else
+                           f"ENC {img.name} {part.name}\n")
                 self.proc.stdin.write(command)      # relative to the encoder's cwd (#480)
                 self.proc.stdin.flush()
                 try:
@@ -2829,19 +2832,31 @@ class Vision:
                 except RuntimeError as e:                 # silent for VISION_ENCODE_S: the encoder was ended (#1317)
                     self.stopped = True                   # alive() is False, so the next request starts it again
                     raise ValueError(str(e)) from None
-            finally:                                                   # #352: also when the encoder's pipe is gone
-                img.unlink(missing_ok=True)
-            if not line.startswith("OK"):
-                raise ValueError("the image could not be read: " + (line[4:] if line.startswith("ERR") else
-                                                                     "the vision encoder stopped"))
-            self.cache[key] = (out, int(line.split()[1]))
+                if not line.startswith("OK"):
+                    raise ValueError("the image could not be read: " + (line[4:] if line.startswith("ERR") else
+                                                                         "the vision encoder stopped"))
+                rows = int(line.split()[1])
+                os.replace(part, out)                       # only a complete encode becomes a cache entry
+            finally:
+                # A Windows encoder can still hold its input when OK arrives.
+                # Cleanup must not replace its result or the original failure.
+                self._unlink_scratch(img)
+                self._unlink_scratch(part)
+            self.cache[key] = (out, rows)
             held = {str(p) for p in keep} | {str(out)}
             for old in list(self.cache):                               # oldest first, but never one still in use
                 if len(self.cache) <= 64:
                     break
                 if str(self.cache[old][0]) not in held:
-                    self.cache.pop(old)[0].unlink(missing_ok=True)
+                    self._unlink_scratch(self.cache.pop(old)[0])
             return self.cache[key]
+
+    @staticmethod
+    def _unlink_scratch(path: Path) -> None:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def close(self):
         proc, self.proc = self.proc, None
