@@ -547,9 +547,10 @@ void ExpertPool::worker(int id) {
         // invalidating each other's caches and the very line the host writes to publish work.  The counter was
         // diagnostic and nothing branched on it.  See the note on the atomics in pool.hpp.
         //
-        // After `kSpinBeforeSleep` with no work the worker sleeps instead (issue #4).  The clock is read once
-        // every 1024 pauses, so the spin itself is unchanged.
+        // Yield periodically while parked so a runnable worker sharing this core
+        // can finish; otherwise pause until work arrives or the sleep deadline.
         const auto parked_at = std::chrono::steady_clock::now();
+        auto yield_at = parked_at + kYieldEvery;
         uint32_t spins = 0;
         const uint64_t um = umwait_cycles();
 #if defined(_MSC_VER) && defined(_M_X64) && !defined(__clang__)   // MSVC proper: clang-cl (the Windows HIP build) has no WAITPKG intrinsics by default
@@ -570,9 +571,16 @@ void ExpertPool::worker(int id) {
 #endif
             {
                 _mm_pause();
-                if ((++spins & 1023u) != 0) continue;
+                if ((++spins & 63u) != 0) continue;
             }
-            if (std::chrono::steady_clock::now() - parked_at < spin_before_sleep_) continue;
+            const auto now = std::chrono::steady_clock::now();
+            if (now - parked_at < spin_before_sleep_) {
+                if (now >= yield_at) {
+                    std::this_thread::yield();
+                    yield_at = now + kYieldEvery;
+                }
+                continue;
+            }
             std::unique_lock<std::mutex> lk(sleep_mu_);
             wstate_[(size_t) id].store(kSleeping, std::memory_order_relaxed);
             sleepers_.fetch_add(1, std::memory_order_seq_cst);

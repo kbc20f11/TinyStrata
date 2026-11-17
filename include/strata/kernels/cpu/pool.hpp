@@ -179,6 +179,9 @@ public:
     /// also sleep mid-request - which the claim protocol above must survive (issue #29).
     /// `STRATA_POOL_SPIN_US` overrides it (a test knob: a short spin makes the workers sleep constantly).
     static constexpr std::chrono::milliseconds kSpinBeforeSleep{20};
+    /// A parked worker yields at this cadence so runnable threads sharing its core
+    /// can proceed without a scheduler-slice wait. No system calls between yields.
+    static constexpr std::chrono::microseconds kYieldEvery{50};
     /// A pool wait that sees no completion for this long is a bug; the engine stops with a message instead of
     /// spinning forever, and the server starts it again (issue #29).
     static constexpr std::chrono::seconds kStall{60};

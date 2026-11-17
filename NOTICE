@@ -345,3 +345,8 @@ Copyright (c) 2026 Niko1221 and the Strata contributors). TinyStrata preserves
 caller flags and pipes, resumes after assignment refusal, and cleans up an
 unpublished child when assignment or resumption raises.
 
+The CPU Expert pool's bounded parked-worker yield cadence follows
+jesdga95/basalt commit febc72de27efb5884c3c339bba39153f3082de74 (MIT;
+Copyright (c) 2026 Jesús Gulfo). TinyStrata retains its claim protocol,
+sleep/wake handshake, optional UMWAIT path and existing Expert arithmetic;
+the host completion/stall-wait sampling intervals are unchanged.
