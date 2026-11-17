@@ -115,7 +115,7 @@ inline Footprint lfm(uint64_t c,const LfmSpec& s={}){
 }
 struct QwenSpec {
     uint64_t chunk=128,vocabulary=248320,draft_vocabulary=0,verify_capacity=8;
-    bool int8=false,mtp=false,mkl=false,dp4a=false,dense_split=false,support=false;
+    bool int8=false,fp8_e4m3=false,mtp=false,mkl=false,dp4a=false,dense_split=false,support=false;
     bool device_state=false,turn_checkpoint=true,graph=true,verify_graph=false,npu=false,npu_split=false;
     bool vision=false,clover_vision_aliases=false;
 };
@@ -132,12 +132,14 @@ inline CloverPhaseLayout clover_phase_layout(uint64_t tokens,uint64_t raw_width,
     return {query,add(query,mul(tokens,query_width)),mul(tokens,routed_width),mul(tokens,expert_gate_width)};
 }
 inline Footprint qwen(uint64_t c,const QwenSpec& s={}){
+    const bool quantized=s.int8||s.fp8_e4m3; // Both formats use byte blocks plus one FP16 scale per32 values.
+    if(s.fp8_e4m3&&s.clover_vision_aliases)throw std::invalid_argument("FP8 KV is experimental Qwen3.6 only");
     if(s.clover_vision_aliases&&(!s.vision||s.mtp))throw std::invalid_argument("Clover image workspace aliases require vision and MTP0");
     Footprint p;const auto n=s.chunk;const bool shared=!s.device_state;
     const auto a=[&](uint64_t count,uint64_t size=4,uint64_t copies=1){p.allocation(count,size,shared,copies);};
     const auto control=[&](uint64_t count){p.allocation(count,4,true);};
     const auto cells=mul(mul(2,c),256),layers=10+uint64_t(s.mtp);
-    if(s.int8)q8_cache(p,cells,shared,layers);else p.allocation(cells,4,shared,2*layers,true);
+    if(quantized)q8_cache(p,cells,shared,layers);else p.allocation(cells,4,shared,2*layers,true);
     const uint64_t recurrent=30ull*(32*128*128+64*128*3)*4;
     a(32*128*128,4,60);a(64*128*3,4,60);
     a(mul(n,2048),4,3);
@@ -149,14 +151,14 @@ inline Footprint qwen(uint64_t c,const QwenSpec& s={}){
     a(mul(n,512),4,s.clover_vision_aliases?2:3);a(mul(n,2048));a(n);
     if(!s.clover_vision_aliases)a(mul(n,16*256),4,2); // query is a routed-output view; gate reuses GDN gate
     a(mul(n,2*256),4,2);
-    const auto rows=mul(16,s.int8?std::min(n,s.verify_capacity):1);
+    const auto rows=mul(16,quantized?std::min(n,s.verify_capacity):1);
     a(mul(rows,c));a(mul(rows,round256(c)));
     if(!s.clover_vision_aliases)a(mul(n,16*256)); // attention output is a disjoint routed-output view
     control(s.vocabulary);control(256);a(mul(256,n));
     const auto tiles=add(add(mul(n,8),3)/4,256);a(tiles,4,2);a(1);
     control(n);control(n);a(2048);
     if(s.vision)a(mul(c,3)); // persistent interleaved temporal/height/width positions
-    if(s.int8){control(1);a(cells,4,2);}
+    if(quantized){control(1);a(cells,4,2);}
     if(s.mtp){
         a(mul(n,4096));a(mul(n,2048),4,4);a(2048,4,2);
         control(s.draft_vocabulary?s.draft_vocabulary:s.vocabulary);

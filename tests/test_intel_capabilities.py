@@ -30,6 +30,29 @@ def report(*, mkl=True, xmx=True):
 
 
 class CompatibilityPolicy(unittest.TestCase):
+    def test_fp8_requires_qwen_only_explicit_codec_metadata_and_never_enables_old_runtimes(self):
+        from serve.intel_models import EXPERIMENTAL_KV_MODELS,FP8_KV_FORMAT,TIEL_MODEL
+        current=report()
+        for native in (current,legacy_report()):
+            with self.assertRaisesRegex(intel.IntelCapabilityError,"requested model-specific KV"):
+                intel.validate_capabilities(native,requested_kv="fp8",allow_legacy=True)
+        current.update(kv_types=["fp32","int8","fp8"],experimental_kv_models=deepcopy(EXPERIMENTAL_KV_MODELS),
+                       fp8_kv_format=FP8_KV_FORMAT)
+        intel.validate_capabilities(current,requested_kv="fp8")
+        current.update(experimental_models=[intel.QWEN_MODEL,TIEL_MODEL,GEMMA_MODEL,LFM_MODEL,CLOVER_MODEL],
+                       experimental_model_contracts=deepcopy(MODEL_CONTRACTS))
+        for model in (TIEL_MODEL,GEMMA_MODEL,LFM_MODEL,CLOVER_MODEL):
+            with self.subTest(model=model),self.assertRaisesRegex(intel.IntelCapabilityError,"requested model-specific KV"):
+                intel.validate_capabilities(current,model=model,requested_kv="fp8")
+        for field,bad in (("experimental_kv_models",{}),("experimental_kv_models",{"fp8":[intel.QWEN_MODEL,TIEL_MODEL]}),
+                          ("fp8_kv_format","e5m2"),("fp8_kv_format",None)):
+            changed=deepcopy(current);changed[field]=bad
+            with self.subTest(field=field,bad=bad),self.assertRaisesRegex(intel.IntelCapabilityError,"codec contract"):
+                intel.validate_capabilities(changed)
+        changed=report();changed["experimental_kv_models"]=deepcopy(EXPERIMENTAL_KV_MODELS)
+        with self.assertRaisesRegex(intel.IntelCapabilityError,"Partial experimental FP8"):
+            intel.validate_capabilities(changed)
+
     def test_images_require_explicit_protocol_and_model_contract(self):
         from serve.intel_models import VISION_MODELS, VISION_MODEL_CONTRACTS
         for model in VISION_MODELS:

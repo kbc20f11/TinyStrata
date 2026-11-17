@@ -332,13 +332,33 @@ class IntelBackendPolicy(unittest.TestCase):
                 intel.configure_backend(configuration(*arguments))
 
     def test_unsupported_kv_and_unprofiled_optimizations_are_rejected(self):
-        for kv in ("fp8", "fp8-mma", "fp16", "other"):
+        for kv in ("fp8-mma", "fp16", "other"):
             with self.subTest(kv=kv), self.assertRaisesRegex(ValueError, "Intel KV"):
                 intel.configure_backend(configuration("--kv-type", kv))
         with self.assertRaisesRegex(ValueError, "explicitly requested"):
             intel.configure_backend(configuration("--decode-dp4a"))
         with self.assertRaises(ValueError):
             intel.configure_backend(configuration(), profile="xe2-guessed-from-name")
+
+    def test_fp8_is_explicit_qwen_only_and_preserves_the_measured_mtp3_policy(self):
+        source = configuration("--kv-type", "fp8", "--verify-graph", intel_profile=intel.B390_PROFILE,
+                               sampling={"temperature":.37},enable_thinking=False,api_key="private",max_tokens=7654)
+        before = deepcopy(source)
+        result = intel.configure_backend(source)
+        args = intel.engine_args(result)
+        self.assertEqual(value(args,"--kv-type"),"fp8")
+        self.assertEqual(value(args,"--mtp"),"3")
+        self.assertEqual(value(args,"--draft-vocab"),"2048")
+        self.assertIn("--mtp-stochastic",args)
+        self.assertIn("--verify-graph",args)
+        self.assertEqual(source,before)
+        for key in ("sampling","enable_thinking","api_key","max_tokens"):
+            self.assertEqual(result[key],before[key])
+        for model in (intel.TIEL_MODEL,intel.GEMMA_MODEL,intel.LFM_MODEL,intel.CLOVER_MODEL):
+            other = configuration("--kv-type","fp8",arch=intel.MODEL_ARCHES[model],model_name=model,
+                                  intel_profile=intel.MODEL_PROFILES[model])
+            with self.subTest(model=model),self.assertRaisesRegex(ValueError,"Qwen3.6 only"):
+                intel.configure_backend(other)
 
     def test_invalid_draft_and_mtp_dependencies_are_rejected(self):
         for arguments in (("--mtp", "0", "--mtp-stochastic"), ("--mtp", "8"), ("--chunk", "1", "--mtp", "3"),

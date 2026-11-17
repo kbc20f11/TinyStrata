@@ -110,14 +110,14 @@ def validate_intel_executable(cfg: dict, *, allow_legacy: bool = True):
             from serve.gguf_reader import GGUFFile
             required = {"scalar": sorted({tensor.type_id for tensor in GGUFFile(selected_path).tensors})}
     requested_context = context_tokens(cfg)
+    launch = engine_args(cfg, allow_uninstalled=True)
+    kv = launch[launch.index("--kv-type") + 1]
     validate_capabilities(proof.report, model=model, profile=cfg.get("intel_profile", "generic"),
                           required_types=required, allow_legacy=allow_legacy,
                           requested_context="auto" if requested_context is None else requested_context,
-                          require_images=cfg.get("vision_mode", "no") in ("gpu", "cpu"))
-    launch = engine_args(cfg, allow_uninstalled=True)
+                          require_images=cfg.get("vision_mode", "no") in ("gpu", "cpu"), requested_kv=kv)
     if "--prefill-mkl" in launch and not proof.report.get("build", {}).get("mkl") and not proof.legacy:
         raise ValueError("The selected Intel runtime does not compile the requested MKL path")
-    kv = launch[launch.index("--kv-type") + 1]
     if kv not in proof.report["kv_types"]:
         raise ValueError("The selected Intel runtime does not support the requested KV format")
     return proof

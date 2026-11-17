@@ -25,6 +25,8 @@ QWEN_ENGINE_MODELS = frozenset((QWEN_MODEL, TIEL_MODEL))
 VISION_MODELS = frozenset((QWEN_MODEL, TIEL_MODEL, GEMMA_MODEL, CLOVER_MODEL))
 VISION_PROTOCOL = "geni_sve1"
 VISION_CONTRACT_VERSION = 1
+EXPERIMENTAL_KV_MODELS = {"fp8": [QWEN_MODEL]}
+FP8_KV_FORMAT = "e4m3fn_block32_fp16_scale"
 MODEL_CONTRACTS = {
     GEMMA_MODEL: {"version": 1, "architecture": "gemma4", "kv_types": ["int8"], "mtp": False,
                   "experimental_mtp_max_depth": 0, "images": False, "thinking": "on_off", "mode": "target_only", "context_max": 262144},

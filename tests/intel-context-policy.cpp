@@ -72,6 +72,18 @@ int main(){try{
     // A remaining10GiB RAM/commit snapshot means6GiB after the existing OS
     // floor, once. All full model limits fit this synthetic UMA budget.
     MemoryBudget uma{10*GiB,10*GiB,12*GiB,true,true};
+    // FP8 changes the byte codec, not allocation sizes, scales, workspace,
+    // snapshot ownership, or memory admission compared with INT8.
+    for(uint64_t c:{1024,16384,65536,262144})for(bool mtp:{false,true})for(bool device:{false,true}){
+        cp::QwenSpec i;i.int8=true;i.mtp=mtp;i.device_state=device;i.chunk=1024;i.mkl=true;i.dp4a=true;
+        i.graph=true;i.verify_graph=mtp;i.support=mtp;i.draft_vocabulary=mtp?2048:0;
+        auto f=i;f.int8=false;f.fp8_e4m3=true;
+        const auto a=cp::qwen(c,i),b=cp::qwen(c,f);
+        check(a.cache==b.cache&&a.device==b.device&&a.host_visible==b.host_visible&&a.host_only==b.host_only);
+        check(a.owned_device==b.owned_device&&a.owned_host_visible==b.owned_host_visible&&a.uma_total()==b.uma_total());
+        check(cp::select(0,262144,uma,16*GiB,[&](uint64_t n){return cp::qwen(n,i);}).tokens==
+              cp::select(0,262144,uma,16*GiB,[&](uint64_t n){return cp::qwen(n,f);}).tokens);
+    }
     check(cp::select(0,262144,uma,16*GiB,[](uint64_t c){return cp::gemma(c);}).tokens==262144);
     check(cp::select(0,131072,uma,16*GiB,[](uint64_t c){return cp::lfm(c);}).tokens==131072);
     check(cp::select(0,262144,uma,16*GiB,[&](uint64_t c){return cp::qwen(c,q);}).tokens==262144);

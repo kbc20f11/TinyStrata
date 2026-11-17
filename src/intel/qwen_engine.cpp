@@ -82,6 +82,7 @@ class Engine {
     float *mtp_norm_ = nullptr, *mtp_last_norm_ = nullptr, *checkpoint_norm_ = nullptr, *mtp_logits_ = nullptr;
     float *verify_logits_ = nullptr, *verify_raw_ = nullptr, *verify_norm_ = nullptr;
     bool kv_int8_ = false;
+    bool kv_fp8_ = false; // kv_int8_ selects shared byte-block cache paths; this flag identifies their codec.
     int32_t* kv_error_ = nullptr;
     float *kv_float_key_ = nullptr, *kv_float_value_ = nullptr;
     std::vector<int> mtp_pending_;
@@ -170,12 +171,12 @@ class Engine {
     void allocate_kv(LayerState& state) {
         const size_t count = size_t(kv_heads_) * context_ * 256;
         if (kv_int8_) state.q8 = {alloc<int8_t>(count), alloc<int8_t>(count), alloc<sycl::half>(count / 32),
-            alloc<sycl::half>(count / 32), context_, kv_heads_};
+            alloc<sycl::half>(count / 32), context_, kv_heads_, kv_fp8_};
         else { state.key = alloc<float>(count); state.value = alloc<float>(count); }
     }
     void check_numeric_flags() const {
         if (dp4a_ && !dp4a_->valid()) throw std::runtime_error("Non-finite Intel Q8 activation");
-        if (kv_error_ && kv_error_[0]) throw std::runtime_error("Invalid/non-finite Intel INT8 KV input");
+        if (kv_error_ && kv_error_[0]) throw std::runtime_error(kv_fp8_ ? "Invalid/non-finite Intel FP8 KV input" : "Invalid/non-finite Intel INT8 KV input");
     }
     const ResidentTensor& tensor(const std::string& name) const {
         const auto it = weights_->tensors().find(name);
@@ -368,9 +369,9 @@ class Engine {
         small_gemm_attention = verify_mkl_attention_ && gemm_ && tokens > 1 && tokens <= verify_capacity && position >= 512;
 #endif
         if (kv_int8_) {
-            remember("store_int8_kv", store_q8_kv(q_, key_, value_, state.q8, position_input_, tokens, kv_error_));
+            remember(kv_fp8_ ? "store_fp8_kv" : "store_int8_kv", store_q8_kv(q_, key_, value_, state.q8, position_input_, tokens, kv_error_));
             if (tokens > verify_capacity || small_gemm_attention) {
-                remember("dequantize_int8_kv", dequantize_q8_kv(q_, state.q8, kv_float_key_, kv_float_value_, position + tokens));
+                remember(kv_fp8_ ? "dequantize_fp8_kv" : "dequantize_int8_kv", dequantize_q8_kv(q_, state.q8, kv_float_key_, kv_float_value_, position + tokens));
                 visible_keys = kv_float_key_; visible_values = kv_float_value_;
             }
         }
@@ -723,7 +724,7 @@ class Engine {
         }
     }
 public:
-    Engine(const std::string& path, int context, unsigned device_index, WeightMemory memory = WeightMemory::Host, int chunk = 128, bool use_graph = true, bool profiling = false, bool prefill_xmx = false, bool prefill_npu = false, bool prefill_mkl = false, bool decode_dp4a = false, int mtp_depth = 0, bool verify_xmx = false, bool kv_int8 = false, bool prefill_int8_xmx = false, bool vocab_xmx = false, bool verify_mkl_attention = false, bool expert_layout = false, bool device_state = false, bool verify_graph = false, bool dense_layout = false, bool dense_split_k = false, int draft_vocab_limit = 0, bool experimental_tiel = false, bool experimental_clover = false, bool vision = false) :
+    Engine(const std::string& path, int context, unsigned device_index, WeightMemory memory = WeightMemory::Host, int chunk = 128, bool use_graph = true, bool profiling = false, bool prefill_xmx = false, bool prefill_npu = false, bool prefill_mkl = false, bool decode_dp4a = false, int mtp_depth = 0, bool verify_xmx = false, bool kv_int8 = false, bool prefill_int8_xmx = false, bool vocab_xmx = false, bool verify_mkl_attention = false, bool expert_layout = false, bool device_state = false, bool verify_graph = false, bool dense_layout = false, bool dense_split_k = false, int draft_vocab_limit = 0, bool experimental_tiel = false, bool experimental_clover = false, bool vision = false, bool kv_fp8 = false) :
         q_(select_device(device_index), [](sycl::exception_list errors) { for (const auto& error : errors) std::rethrow_exception(error); },
            profiling ? sycl::property_list{sycl::property::queue::in_order{}, sycl::property::queue::enable_profiling{}}
                      : sycl::property_list{sycl::property::queue::in_order{}}), profiling_(profiling), prefill_xmx_(prefill_xmx), context_(context), chunk_(chunk) {
@@ -743,6 +744,9 @@ public:
         if (!selected_device.capabilities.esimd) decode_dp4a = false;
         if (!selected_device.integrated) device_state = true;
         graph_enabled_ = use_graph;
+        if (kv_fp8 && (experimental_tiel || experimental_clover)) throw std::runtime_error("FP8 KV is experimental Qwen3.6 only");
+        kv_fp8_ = kv_fp8;
+        kv_int8 = kv_int8 || kv_fp8;
         kv_int8_ = kv_int8;
         verify_xmx_ = verify_xmx;
         verify_mkl_attention_ = verify_mkl_attention;
@@ -865,7 +869,7 @@ public:
             const auto remaining_memory = memory_budget(selected_device);
             context_policy::QwenSpec context_shape;
             context_shape.chunk=chunk_;context_shape.vocabulary=g.n_vocab;context_shape.draft_vocabulary=draft_vocab_limit_;
-            context_shape.int8=kv_int8_;context_shape.mtp=mtp_depth_>0;context_shape.mkl=prefill_mkl;context_shape.dp4a=decode_dp4a;
+            context_shape.int8=kv_int8_&&!kv_fp8_;context_shape.fp8_e4m3=kv_fp8_;context_shape.mtp=mtp_depth_>0;context_shape.mkl=prefill_mkl;context_shape.dp4a=decode_dp4a;
             context_shape.dense_split=dense_split_k;context_shape.support=gpu_support_sampling_;context_shape.device_state=device_state_;
             context_shape.turn_checkpoint=turn_checkpoint_enabled_;context_shape.graph=use_graph&&!profiling;context_shape.verify_graph=verify_graph;
             context_shape.npu=prefill_npu;context_shape.npu_split=std::getenv("STRATA_REVIEW_NPU_SPLIT")!=nullptr;
@@ -982,7 +986,7 @@ public:
             if (use_graph && !profiling) prepare_graph();
             const auto device = inspect_device(q_.get_device());
             std::fprintf(stderr, "Intel causal Qwen: %s, architecture=%s, context=%d, KV=%s, MTP=%d, images=%s, weight_memory=%s\n",
-                         device.name.c_str(), device.architecture.c_str(), context, kv_int8_ ? "INT8" : "FP32",
+                         device.name.c_str(), device.architecture.c_str(), context, kv_fp8_ ? "FP8_E4M3FN" : kv_int8_ ? "INT8" : "FP32",
                          mtp_depth_, vision_enabled_ ? "on" : "off", memory == WeightMemory::Host ? "host" : memory == WeightMemory::Shared ? "shared" : "device");
             print_memory("engine_ready", device);
             context_policy::report(chosen,context_limit,remaining_memory,selected_device.max_allocation);
@@ -1075,7 +1079,7 @@ public:
         ++draft_vocab_updates_;
         draft_vocab_prepare_ms_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     }
-    const char* kv_type() const { return kv_int8_ ? "int8" : "fp32"; }
+    const char* kv_type() const { return kv_fp8_ ? "fp8" : kv_int8_ ? "int8" : "fp32"; }
     std::pair<uint64_t, uint64_t> speculation_counts() const { return {mtp_accepted_, mtp_offered_}; }
     struct SpecResult { std::vector<int> inputs, output; };
     template<class Select> SpecResult speculate(int anchor, int remaining, Select select, const std::atomic<bool>* cancelled = nullptr,
@@ -1597,7 +1601,7 @@ int main(int argc, char** argv) {
         }
         std::string path, token_list, token_file, dump_path;
         int count = 32, context = 0, device = 0, chunk = 128, mtp_depth = 0, draft_vocab = 0;
-        bool serve = false, use_graph = true, profiling = false, prefill_xmx = false, prefill_npu = false, prefill_mkl = false, decode_dp4a = false, verify_xmx = false, kv_int8 = false, prefill_int8_xmx = false, vocab_xmx = false, verify_mkl_attention = false, stochastic_mtp = false, expert_layout = false, device_state = false, verify_graph = false, dense_layout = false, dense_split_k = false, experimental_tiel = false, experimental_clover = false, explicit_kv = false, vision = false;
+        bool serve = false, use_graph = true, profiling = false, prefill_xmx = false, prefill_npu = false, prefill_mkl = false, decode_dp4a = false, verify_xmx = false, kv_int8 = false, prefill_int8_xmx = false, vocab_xmx = false, verify_mkl_attention = false, stochastic_mtp = false, expert_layout = false, device_state = false, verify_graph = false, dense_layout = false, dense_split_k = false, experimental_tiel = false, experimental_clover = false, explicit_kv = false, vision = false, kv_fp8 = false;
         std::string clover_mode = "causal";
         int clover_drafts = 0;
         bool clover_options = false;
@@ -1626,7 +1630,7 @@ int main(int argc, char** argv) {
             if (option == "--host-profile") { strata::intel::host_profile::enabled = true; continue; }
             if (option == "--no-graph") { use_graph = false; continue; }
             if (option == "--help") {
-                std::puts("tinystrata-intel --model MODEL [--serve | --tokens IDS | --tokens-file FILE] [--n N] [--max-context auto|N] [--device N] [--chunk 1..1024] [--mtp 0..7] [--kv-type fp32|int8] [--draft-vocab 0|64..4096] [--dump-full-logits FILE] [--experimental-tiel | --experimental-clover] [--vision] [--host-profile]\ntinystrata-intel --device-info [--device N]\nExperimental Intel multimodal driver. Qwen/Tiel KV defaults to FP32; MTP and draft vocabulary selection default to 0 (off); --vision enables bounded SVE1 image input through GENI; ordinary GEN remains available. A nonzero draft vocabulary requires --serve --mtp-stochastic --mtp --vocab-xmx. --host-profile enables host phase wall timers without changing decode graphs. --experimental-tiel selects the separately pinned Ornith IQ3_XXS artifact. --experimental-clover selects the pinned Clover AD-IQ3_S-IQ3_XXS artifact with INT8 KV and causal D0 only (--clover-mode causal --clover-draft 0). It preserves Clover response-only penalties and stopping ramps; Clover MTP remains disabled; Clover images use the Qwen-compatible projector and interleaved M-RoPE.");
+                std::puts("tinystrata-intel --model MODEL [--serve | --tokens IDS | --tokens-file FILE] [--n N] [--max-context auto|N] [--device N] [--chunk 1..1024] [--mtp 0..7] [--kv-type fp32|int8|fp8] [--draft-vocab 0|64..4096] [--dump-full-logits FILE] [--experimental-tiel | --experimental-clover] [--vision] [--host-profile]\ntinystrata-intel --device-info [--device N]\nExperimental Intel multimodal driver. Explicit FP8 uses E4M3FN with FP16 block32 scales for Qwen3.6 only. Qwen/Tiel KV defaults to FP32; MTP and draft vocabulary selection default to 0 (off); --vision enables bounded SVE1 image input through GENI; ordinary GEN remains available. A nonzero draft vocabulary requires --serve --mtp-stochastic --mtp --vocab-xmx. --host-profile enables host phase wall timers without changing decode graphs. --experimental-tiel selects the separately pinned Ornith IQ3_XXS artifact. --experimental-clover selects the pinned Clover AD-IQ3_S-IQ3_XXS artifact with INT8 KV and causal D0 only (--clover-mode causal --clover-draft 0). It preserves Clover response-only penalties and stopping ramps; Clover MTP remains disabled; Clover images use the Qwen-compatible projector and interleaved M-RoPE.");
                 return 0;
             }
             if (option == "--capabilities") {
@@ -1654,7 +1658,7 @@ int main(int argc, char** argv) {
 #else
                 constexpr const char* aot_target = "";
 #endif
-                std::printf("{\"backend\":\"sycl\",\"experimental\":true,\"model_families\":[],\"kv_types\":[\"fp32\",\"int8\"],\"images\":true,\"image_protocol\":\"geni_sve1\",\"vision_contract_version\":1,\"vision_max_embedding_bytes\":268435456,\"mtp\":true,\"experimental_mtp_max_depth\":7,\"serve\":true,"
+                std::printf("{\"backend\":\"sycl\",\"experimental\":true,\"model_families\":[],\"kv_types\":[\"fp32\",\"int8\",\"fp8\"],\"experimental_kv_models\":{\"fp8\":[\"qwen3.6-35b-a3b\"]},\"fp8_kv_format\":\"e4m3fn_block32_fp16_scale\",\"images\":true,\"image_protocol\":\"geni_sve1\",\"vision_contract_version\":1,\"vision_max_embedding_bytes\":268435456,\"mtp\":true,\"experimental_mtp_max_depth\":7,\"serve\":true,"
                             "\"capabilities_schema\":1,\"context_auto\":true,\"max_context\":262144,\"experimental_models\":%s,\"experimental_profiles\":%s,"
                             "\"experimental_model_contracts\":{\"clover-35b-a3b-preview\":{\"version\":2,\"architecture\":\"clover_moe\",\"kv_types\":[\"int8\"],\"mtp\":false,\"experimental_mtp_max_depth\":0,\"images\":true,\"thinking\":\"on_off\",\"mode\":\"causal_d0\",\"context_max\":131072}},"
                             "\"build\":{\"mkl\":%s,\"int8_xmx\":%s,\"aot_target\":\"%s\"},"
@@ -1680,8 +1684,9 @@ int main(int argc, char** argv) {
             }
             else if (option == "--kv-type") {
                 const std::string kind(argv[++i]);
-                if (kind != "fp32" && kind != "int8") throw std::runtime_error("Intel supports explicit --kv-type fp32 or int8");
-                kv_int8 = kind == "int8";
+                if (kind != "fp32" && kind != "int8" && kind != "fp8") throw std::runtime_error("Intel supports explicit --kv-type fp32, int8 or experimental Qwen3.6 fp8");
+                kv_fp8 = kind == "fp8";
+                kv_int8 = kind != "fp32";
                 explicit_kv = true;
             }
             else if (option == "--clover-mode") { clover_mode = argv[++i]; clover_options = true; }
@@ -1691,6 +1696,7 @@ int main(int argc, char** argv) {
             else if (option == "--batch") { if (strata::intel::number(argv[++i], 16) != 1) throw std::runtime_error("The initial Intel route serves one request at a time"); }
             else throw std::runtime_error("Unsupported Intel option: " + option);
         }
+        if (kv_fp8 && (experimental_tiel || experimental_clover)) throw std::runtime_error("FP8 KV is experimental Qwen3.6 only");
         if (path.empty()) throw std::runtime_error("--gguf is required");
         if (vision && !serve) throw std::runtime_error("Intel --vision requires --serve and GENI image input");
         if (experimental_clover) {
@@ -1705,7 +1711,7 @@ int main(int argc, char** argv) {
         if (serve) {
             if (!token_list.empty() || !token_file.empty() || !dump_path.empty()) throw std::runtime_error("Token CLI options cannot accompany --serve");
             std::optional<strata::intel::ExecutionRequest> loading(std::in_place);
-            strata::intel::Engine engine(path, context, unsigned(device), memory, chunk, use_graph, profiling, prefill_xmx, prefill_npu, prefill_mkl, decode_dp4a, mtp_depth, verify_xmx, kv_int8, prefill_int8_xmx, vocab_xmx, verify_mkl_attention, expert_layout, device_state, verify_graph, dense_layout, dense_split_k, draft_vocab, experimental_tiel, experimental_clover, vision);
+            strata::intel::Engine engine(path, context, unsigned(device), memory, chunk, use_graph, profiling, prefill_xmx, prefill_npu, prefill_mkl, decode_dp4a, mtp_depth, verify_xmx, kv_int8, prefill_int8_xmx, vocab_xmx, verify_mkl_attention, expert_layout, device_state, verify_graph, dense_layout, dense_split_k, draft_vocab, experimental_tiel, experimental_clover, vision, kv_fp8);
             loading.reset();
             return strata::intel::serve(engine, stochastic_mtp);
         }
@@ -1718,7 +1724,7 @@ int main(int argc, char** argv) {
         auto tokens = strata::intel::parse_tokens(token_list);
         if (context>0&&tokens.size() + size_t(count) > size_t(context)) throw std::runtime_error("Prompt and requested output exceed --context");
         strata::intel::ExecutionRequest active_request;
-        strata::intel::Engine engine(path, context, unsigned(device), memory, chunk, use_graph, profiling, prefill_xmx, prefill_npu, prefill_mkl, decode_dp4a, mtp_depth, verify_xmx, kv_int8, prefill_int8_xmx, vocab_xmx, verify_mkl_attention, expert_layout, device_state, verify_graph, dense_layout, dense_split_k, draft_vocab, experimental_tiel, experimental_clover, vision);
+        strata::intel::Engine engine(path, context, unsigned(device), memory, chunk, use_graph, profiling, prefill_xmx, prefill_npu, prefill_mkl, decode_dp4a, mtp_depth, verify_xmx, kv_int8, prefill_int8_xmx, vocab_xmx, verify_mkl_attention, expert_layout, device_state, verify_graph, dense_layout, dense_split_k, draft_vocab, experimental_tiel, experimental_clover, vision, kv_fp8);
         if(tokens.size()+size_t(count)>size_t(engine.context()))throw std::runtime_error("Prompt and requested output exceed allocated Intel context");
         const float* logits = nullptr;
         const auto start = std::chrono::steady_clock::now();

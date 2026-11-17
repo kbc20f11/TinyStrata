@@ -130,8 +130,8 @@ def _chunk(cfg, values):
 
 def _kv(values):
     value = values.get("--kv-type", "auto")
-    if value not in ("auto", "int8", "fp32"):
-        raise ValueError("Intel KV supports auto (actual INT8), int8 or explicit fp32")
+    if value not in ("auto", "int8", "fp32", "fp8"):
+        raise ValueError("Intel KV supports auto (actual INT8), int8, fp32 or experimental Qwen3.6 fp8")
     return "int8" if value == "auto" else value
 
 
@@ -235,6 +235,8 @@ def validate_config(cfg: dict, *, allow_uninstalled: bool = False) -> None:
     context_tokens(cfg)
     chunk = _chunk(cfg, values)
     kv = _kv(values)
+    if kv == "fp8" and model != QWEN_MODEL:
+        raise ValueError("Intel FP8 KV is experimental Qwen3.6 only")
     mtp = _integer(values.get("--mtp", "0"), "Intel MTP depth", 0, 7)
     model = canonical_model(cfg)
     if model in TARGET_ONLY_MODELS:
@@ -272,8 +274,8 @@ def validate_config(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         raise ValueError("Intel Clover optimized flags require its B390 profile")
     if "--mtp-stochastic" in switches and not mtp:
         raise ValueError("Intel --mtp-stochastic requires --mtp >= 1")
-    if "--verify-graph" in switches and (not mtp or kv != "int8"):
-        raise ValueError("Intel --verify-graph requires MTP and actual INT8 KV")
+    if "--verify-graph" in switches and (not mtp or kv not in ("int8", "fp8")):
+        raise ValueError("Intel --verify-graph requires MTP and quantized INT8 or experimental FP8 KV")
     for flag in ("--verify-xmx", "--prefill-int8-xmx", "--vocab-xmx", "--expert-xmx-layout", "--dense-xmx-layout"):
         if flag in switches and "--decode-dp4a" not in switches:
             raise ValueError(f"Intel {flag} requires --decode-dp4a")

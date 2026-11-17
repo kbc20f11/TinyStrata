@@ -277,6 +277,20 @@ class IntelServerIntegration(unittest.TestCase):
         svc.engine.close.assert_not_called()
         self.assertEqual(self.path.read_bytes(), before)
 
+    def test_old_runtime_rejects_fp8_before_config_save_worker_or_unload(self):
+        svc = self.service()
+        cfg = deepcopy(self.cfg)
+        cfg["args"][cfg["args"].index("--kv-type")+1] = "fp8"
+        self.path.write_text(json.dumps(cfg),encoding="utf-8")
+        before = self.path.read_bytes()
+        control = ModelSwitcher(svc,cfg,self.path,server)
+        with patch("serve.model_switch.threading.Thread") as thread,patch.object(model_setup,"save_settings") as save:
+            with self.assertRaisesRegex(intel_capabilities.IntelCapabilityError,"requested model-specific KV"):
+                control._validate_intel_runtime(QWEN)
+            thread.assert_not_called();save.assert_not_called()
+        svc.engine.unload.assert_not_called();svc.engine.close.assert_not_called()
+        self.assertEqual(self.path.read_bytes(),before)
+
     def test_child_environment_uses_only_intel_runtime_policy(self):
         with patch.dict(os.environ, {"PATH": "parent-path"}, clear=True), \
              patch.object(server, "ordered_gpus", side_effect=AssertionError("CUDA ordinal")), \

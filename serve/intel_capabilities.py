@@ -22,7 +22,7 @@ import stat
 import subprocess
 from serve.intel_models import (MODEL_PROFILES, MODEL_CONTRACTS, TARGET_ONLY_MODELS,
                                 QWEN_ENGINE_MODELS, VISION_MODELS, VISION_MODEL_CONTRACTS,
-                                VISION_PROTOCOL, VISION_CONTRACT_VERSION)
+                                VISION_PROTOCOL, VISION_CONTRACT_VERSION, EXPERIMENTAL_KV_MODELS, FP8_KV_FORMAT)
 
 
 QWEN_MODEL = "qwen3.6-35b-a3b"
@@ -78,9 +78,14 @@ def _check_report(report):
                             report["vision_contract_version"] != VISION_CONTRACT_VERSION):
         raise IntelCapabilityError("Intel images require the explicit GENI/SVE1 vision contract")
     kv = report.get("kv_types")
-    if (not isinstance(kv, list) or not kv or any(item not in ("fp32", "int8") for item in kv) or
+    if (not isinstance(kv, list) or not kv or any(item not in ("fp32", "int8", "fp8") for item in kv) or
             len(set(kv)) != len(kv)):
         raise IntelCapabilityError("Invalid Intel KV capability list")
+    if "fp8" in kv and ("capabilities_schema" not in report or
+            report.get("experimental_kv_models") != EXPERIMENTAL_KV_MODELS or report.get("fp8_kv_format") != FP8_KV_FORMAT):
+        raise IntelCapabilityError("FP8 requires the explicit experimental Qwen3.6 E4M3FN codec contract")
+    if "fp8" not in kv and any(key in report for key in ("experimental_kv_models", "fp8_kv_format")):
+        raise IntelCapabilityError("Partial experimental FP8 metadata is unsupported")
     depth = report.get("experimental_mtp_max_depth")
     if type(depth) is not int or not 0 <= depth <= 7 or (depth == 0) != (report["mtp"] is False):
         raise IntelCapabilityError("Invalid Intel experimental MTP depth")
@@ -106,6 +111,8 @@ def _check_report(report):
         _identifier(model, "experimental model ID")
     if len(set(models)) != len(models):
         raise IntelCapabilityError("Duplicate Intel experimental model ID")
+    if "fp8" in kv and QWEN_MODEL not in models:
+        raise IntelCapabilityError("FP8 requires the experimental Qwen3.6 model identity")
     profiles = report.get("experimental_profiles")
     if not isinstance(profiles, dict):
         raise IntelCapabilityError("Intel experimental_profiles must be an object")
@@ -148,7 +155,8 @@ def _check_report(report):
 
 def validate_capabilities(report: dict, *, model: str = QWEN_MODEL, profile: str = "generic",
                           required_types: Mapping | None = None, allow_legacy: bool = False,
-                          requested_context: int | str | None = None, require_images: bool = False) -> None:
+                          requested_context: int | str | None = None, require_images: bool = False,
+                          requested_kv: str | None = None) -> None:
     """Pure compatibility check; never start a process or inspect a device.
 
     New imports should keep ``allow_legacy=False``. Explicit legacy compatibility
@@ -169,6 +177,12 @@ def validate_capabilities(report: dict, *, model: str = QWEN_MODEL, profile: str
         if any(type(item) is not int or not 0 <= item <= 65535 for item in types):
             raise IntelCapabilityError("Invalid required Intel GGUF type")
     _check_report(report)
+    if requested_kv is not None:
+        if requested_kv not in ("int8", "fp32", "fp8"):
+            raise IntelCapabilityError("Invalid requested Intel KV format")
+        if (requested_kv not in report["kv_types"] or requested_kv == "fp8" and model != QWEN_MODEL
+                or model in TARGET_ONLY_MODELS and requested_kv != "int8"):
+            raise IntelCapabilityError("The selected Intel runtime lacks the requested model-specific KV format")
     if type(require_images) is not bool:
         raise IntelCapabilityError("require_images must be a boolean")
     if require_images and not supports_images(report, model):
