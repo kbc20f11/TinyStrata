@@ -40,7 +40,14 @@
     };
   }
 
-  const api = {getCurrentTime};
+  function getCurrentDateContext(options = {}) {
+    const {date, timezone} = getCurrentTime({}, options);
+    // Day and timezone are enough for temporal grounding. Keeping time out of
+    // the initial system prompt avoids invalidating its cache every second.
+    return `Current date from the TinyStrata computer clock: ${date} (${timezone}). Use this as the present, not your training cutoff.`;
+  }
+
+  const api = {getCurrentTime, getCurrentDateContext};
   root.StrataGrounding = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(globalThis);

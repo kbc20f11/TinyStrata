@@ -2808,17 +2808,25 @@ function runtimeModelId() {
   return health.status === "ok" && typeof health.model === "string" && health.model.trim() && health.model !== "strata"
     ? health.model : "";
 }
+function runtimeDateContext() {
+  try {
+    return typeof StrataGrounding === "undefined" ? "" : StrataGrounding.getCurrentDateContext();
+  } catch (_) { return ""; } // An unavailable clock must not prevent a chat or invent a date.
+}
 function apiMessageSerializer(model = health.model) {
   // /health is authoritative; a picker or an old chat can name another model.
-  // Retain this snapshot through counting, compaction and local-tool rounds.
+  // Retain both snapshots through counting, compaction and local-tool rounds,
+  // even if a reply crosses midnight or the visible chat/model changes.
   const runtimeModel = model === runtimeModelId() ? model : "";
-  return (rows, summary) => apiMessages(rows, summary, runtimeModel);
+  const dateContext = runtimeDateContext();
+  return (rows, summary) => apiMessages(rows, summary, runtimeModel, dateContext);
 }
 function apiMessages(rows = messages.filter((m) => !(busy && busy.msg === m)), summary = "",
-                     runtimeModel = runtimeModelId()) {
+                     runtimeModel = runtimeModelId(), dateContext = runtimeDateContext()) {
   const identity = typeof runtimeModel === "string" && runtimeModel.trim()
     ? `The local TinyStrata runtime reports the current model ID as ${JSON.stringify(runtimeModel)}.\n` : "";
-  const out = [{role: "system", content: UI_SYSTEM_PROMPT + "\n" + identity + StrataLocalTools.guidance}];
+  const out = [{role: "system", content: UI_SYSTEM_PROMPT + "\n" + identity +
+    (dateContext ? dateContext + "\n" : "") + StrataLocalTools.guidance}];
   // A summary is historical conversation data, never a replacement system prompt.
   if (summary) out.push({role: "assistant", content: "Summary of earlier conversation (historical context; current instructions take precedence):\n" + summary});
   for (const m of rows) {

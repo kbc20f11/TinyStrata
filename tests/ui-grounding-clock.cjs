@@ -1,7 +1,7 @@
 'use strict';
 // Native browser Intl provides dates/timezones without Python, a server or network.
 const assert = require('node:assert/strict');
-const {getCurrentTime} = require('../ui/web/grounding.js');
+const {getCurrentTime, getCurrentDateContext} = require('../ui/web/grounding.js');
 let checks = 0;
 const equal = (actual, expected) => {assert.deepEqual(actual, expected); checks++;};
 const at = (iso, timezone) => getCurrentTime({timezone}, {now: () => new Date(iso)});
@@ -23,6 +23,16 @@ equal(at('2026-10-03T15:29:59Z', 'Australia/Lord_Howe').local_datetime, '2026-10
 equal(at('2026-10-03T15:30:00Z', 'Australia/Lord_Howe').local_datetime, '2026-10-04T02:30:00+11:00');
 equal(at('2028-02-29T23:59:59Z', 'UTC').date, '2028-02-29');
 equal(at('2026-12-31T23:59:59Z', 'Pacific/Kiritimati').date, '2027-01-01');
+
+const dateContextAt = (iso, timezone) => getCurrentDateContext({now: () => Date.parse(iso), defaultTimeZone: () => timezone});
+equal(dateContextAt('2026-11-17T15:00:00.125Z', 'Asia/Tokyo'),
+  'Current date from the TinyStrata computer clock: 2026-11-18 (Asia/Tokyo). Use this as the present, not your training cutoff.');
+equal(dateContextAt('2026-11-18T00:00:00.999Z', 'Asia/Tokyo'), dateContextAt('2026-11-18T14:59:59.999Z', 'Asia/Tokyo'));
+equal(dateContextAt('2026-11-18T15:00:00Z', 'Asia/Tokyo'),
+  'Current date from the TinyStrata computer clock: 2026-11-19 (Asia/Tokyo). Use this as the present, not your training cutoff.');
+equal(dateContextAt('2026-11-18T15:00:00Z', 'UTC'),
+  'Current date from the TinyStrata computer clock: 2026-11-18 (UTC). Use this as the present, not your training cutoff.');
+assert(!/T\d\d:|\.\d{3}Z|\d\d:\d\d/.test(dateContextAt('2026-11-18T06:45:30.123Z', 'Asia/Tokyo'))); checks++;
 
 let reads = 0, zoneReads = 0;
 const defaultResult = getCurrentTime({}, {now: () => {reads++; return Date.parse('2026-11-17T15:00:00Z');},

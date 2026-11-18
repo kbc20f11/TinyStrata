@@ -14,7 +14,7 @@ class GroundingClock(unittest.TestCase):
             [shutil.which("node"), str(ROOT / "tests/ui-grounding-clock.cjs")],
             capture_output=True, text=True, encoding="utf-8", timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("PASS 27 clock checks", result.stdout)
+        self.assertRegex(result.stdout, r"PASS \d+ clock checks")
 
 
 if __name__ == "__main__":
