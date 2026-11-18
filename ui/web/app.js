@@ -38,24 +38,103 @@ const store = {
 };
 
 // ------------------------------------------------------------------ toasts
-function toast(kind, title, text = "", ms = 3500, action = null) {
+const toastQueue = [], activeToasts = [];
+let toastWindowPaused = false;
+function pumpToasts() {
+  while (activeToasts.length < 4 && toastQueue.length) {
+    const notice = toastQueue.shift();
+    activeToasts.push(notice);
+    $("toasts").appendChild(notice.el);
+    notice.resume();
+  }
+}
+function pauseToasts() { for (const notice of activeToasts) notice.pause(); }
+function resumeToasts() { for (const notice of activeToasts) notice.resume(); }
+window.addEventListener("blur", () => { toastWindowPaused = true; pauseToasts(); });
+window.addEventListener("focus", () => { toastWindowPaused = false; resumeToasts(); });
+document.addEventListener("visibilitychange", () => { if (document.hidden) pauseToasts(); else resumeToasts(); });
+function toast(kind, title, text = "", ms = 7000, action = null) {
+  // Status notices do not capture clicks elsewhere in the app. Explicit close
+  // controls leave their text selectable and their action unambiguous.
+  if (!action) {
+    const duplicate = [...activeToasts, ...toastQueue].find((notice) =>
+      !notice.action && notice.kind === kind && notice.title === title && notice.text === text);
+    if (duplicate) return duplicate.el;             // polling must not extend a notice forever
+  }
   const names = {info: "info", success: "check", warn: "warning", error: "error"};
   const el = document.createElement("div");
   el.className = `st-toast st-toast--${kind}`;
-  el.innerHTML = `${icon(names[kind] || "info")}<div><div class="st-toast__title"></div><div class="t-text"></div></div>`;
+  el.innerHTML = `${icon(names[kind] || "info")}<div class="st-toast__body"><div class="st-toast__title"></div><div class="t-text"></div></div>`;
   el.querySelector(".st-toast__title").textContent = title;
   el.querySelector(".t-text").textContent = text;
+  let timer = 0, started = 0, hovered = false, focused = false, closed = false;
+  let remaining = Number.isFinite(ms) && ms > 0 ? ms : 7000;
+  if (action) remaining = Math.max(remaining, 10000);
+  const previousFocus = document.activeElement;
+  const notice = {el, kind, title, text, action,
+    pause() {
+      if (!timer) return;
+      clearTimeout(timer); timer = 0;
+      remaining = Math.max(0, remaining - (performance.now() - started));
+    },
+    resume() {
+      if (closed || timer || hovered || focused || toastWindowPaused || document.hidden) return;
+      started = performance.now();
+      timer = setTimeout(() => dismiss(), remaining);
+    }};
+  function dismiss(restoreFocus = false, pump = true) {
+    if (closed) return;
+    closed = true;
+    clearTimeout(timer); timer = 0;
+    const hadFocus = el.contains(document.activeElement);
+    el.remove();
+    for (const list of [activeToasts, toastQueue]) {
+      const index = list.indexOf(notice);
+      if (index >= 0) list.splice(index, 1);
+    }
+    if (restoreFocus && hadFocus && previousFocus?.isConnected) previousFocus.focus({preventScroll: true});
+    if (pump) pumpToasts();
+  }
+  notice.dismiss = dismiss;
+  el.addEventListener("pointerenter", () => { hovered = true; notice.pause(); });
+  el.addEventListener("pointerleave", () => { hovered = false; notice.resume(); });
+  el.addEventListener("focusin", () => { focused = true; notice.pause(); });
+  el.addEventListener("focusout", (event) => {
+    if (el.contains(event.relatedTarget)) return;
+    focused = false; notice.resume();
+  });
+  el.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault(); event.stopPropagation(); dismiss(true);
+  });
   if (action) {
     const b = document.createElement("button");
-    b.className = "st-btn st-btn--secondary";
-    b.style.height = "32px";
-    b.style.marginLeft = "auto";
+    b.type = "button";
+    b.className = "st-btn st-btn--secondary st-toast__action";
     b.textContent = action.label;
-    b.onclick = () => { action.run(); el.remove(); };
+    b.onclick = () => { if (closed) return; dismiss(); action.run(); };
     el.appendChild(b);
   }
-  $("toasts").appendChild(el);
-  setTimeout(() => el.remove(), ms);
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "st-btn st-btn--icon st-toast__close";
+  close.setAttribute("aria-label", tr("close", "Close"));
+  close.title = tr("close", "Close");
+  close.innerHTML = '<svg class="st-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+  close.onclick = () => dismiss(true);
+  el.appendChild(close);
+  // Replace an idle passive notice when full; actions and notices being read
+  // keep their place. Queued notices receive their full time once visible.
+  if (activeToasts.length >= 4) {
+    const replace = activeToasts.find((item) => !item.action && !item.el.matches(":hover, :focus-within"));
+    if (replace) replace.dismiss(false, false);
+  }
+  if (!action && toastQueue.filter((item) => !item.action).length >= 4) {
+    toastQueue.find((item) => !item.action).dismiss(false, false);
+  }
+  toastQueue.push(notice);
+  pumpToasts();
+  return el;
 }
 
 async function copyText(text, btn) {
@@ -1159,7 +1238,7 @@ function activeModelNeedsDownload() {
 }
 function syncComposerInput(on = !!busy) {
   const missing = activeModelNeedsDownload();
-  $("send-btn").disabled = missing || modelSwitching || !!resourceOperation || (on && !parksWhileBusy()) || !!panel;
+  $("send-btn").disabled = missing || modelSwitching || !!resourceOperation || (on && (!generatingChat() || !parksWhileBusy())) || !!panel;
   $("input").disabled = missing || modelSwitching || !!resourceOperation || !!panel;
   $("input").placeholder = resourceOperation === "placement" ? tr("resources.applying", "Reloading model…")
     : resourceOperation === "compact" ? tr("resources.compacting", "Summarizing earlier conversation…")
@@ -1367,7 +1446,7 @@ function syncThinkingControls(drawerSettings = null) {
     const label = thinkingLabel(value);
     if (option.textContent !== label) option.textContent = label;
   }
-  const current = effortForModel(), locked = spec.mode === "always" || modelSwitching || sharedSaving || pageBusy();
+  const current = effortForModel(), locked = spec.mode === "always" || modelSwitching || sharedSaving || !!resourceOperation;
   if (select.value !== current) select.value = current;
   if (select.disabled !== locked) select.disabled = locked;
   const title = spec.mode === "always" ? tr("thinking.alwaysOn", "Always on") : "";
@@ -1413,7 +1492,7 @@ function syncThinkingControls(drawerSettings = null) {
   if ($("o-thinking").textContent !== hint) $("o-thinking").textContent = hint;
 }
 function syncComposerControls() {
-  $("home-btn").disabled = modelSwitching || !!modelOp || pageBusy();
+  $("home-btn").disabled = !!resourceOperation;
   $("composer").dataset.switching = String(modelSwitching);
   $("composer").setAttribute("aria-busy", String(modelSwitching));
   const select = $("composer-model");
@@ -2786,12 +2865,13 @@ async function countContext(request, signal) {
   }
   return counted;
 }
-async function prepareContext(body, rows, m, signal, serialize = apiMessageSerializer(body.model)) {
-  const owner = chat, transcript = messages;
-  const checkpoint = chat?.compaction || null;
+async function prepareContext(body, rows, m, signal, serialize = apiMessageSerializer(body.model),
+                              run = {chat, messages, settings}) {
+  const owner = run.chat, transcript = run.messages;
+  const checkpoint = owner?.compaction || null;
   const projection = await StrataContextCompaction.project(rows, checkpoint);
   if (!canUseModelImages(projection.messages)) throw new Error(tr("model.noVision", "This model does not support images. Start a text-only chat or choose a vision model."));
-  if (settings.autoCompact === false) return {...body, messages: serialize(projection.messages, projection.summary)};
+  if (run.settings.autoCompact === false) return {...body, messages: serialize(projection.messages, projection.summary)};
   try {
     const prepared = await StrataContextCompaction.prepare({
       messages: rows, checkpoint, request: body, signal,
@@ -2801,11 +2881,11 @@ async function prepareContext(body, rows, m, signal, serialize = apiMessageSeria
       summarize: (history, maxTokens) => summarizeContext(history, maxTokens, body, signal),
     });
     if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
-    if (owner !== chat || transcript !== messages || !messages.includes(m)) throw new DOMException("Cancelled", "AbortError");
+    if (owner?.messages !== transcript || !transcript.includes(m)) throw new DOMException("Cancelled", "AbortError");
     if (prepared.changed) {
-      chat.compaction = prepared.checkpoint;
+      owner.compaction = prepared.checkpoint;
       m.compaction = {summary: prepared.checkpoint.summary, beforeTokens: prepared.beforeTokens, afterTokens: prepared.afterTokens};
-      saveChat();
+      saveChat(owner);
       const element = terminalMessageElement(m);
       if (element) updateAssistant(element, m, true);
     }
@@ -2855,6 +2935,7 @@ function assistantMessages(m) {
 }
 
 function busyHint() {
+  if (busy && !generatingChat()) return tr("chat.backgroundReply", "Replying in another chat");
   const mode = settings.whileBusy;
   return mode === "queue" ? tr("composer.hintQueue", "Enter sends when the answer is done")
        : mode === "interject" ? tr("composer.hintInterject", "Enter stops the answer here and sends now") : "";
@@ -2862,15 +2943,39 @@ function busyHint() {
 // While an answer is written, Send is off ("wait", as always) or parks the message ("queue", "interject": Chat settings)
 const parksWhileBusy = () => settings.whileBusy === "queue" || settings.whileBusy === "interject";
 function setBusy(on) {
-  $("stop-btn").hidden = !on;
+  $("stop-btn").hidden = !on || !generatingChat();
   syncComposerInput(on);
   syncActions();                                      // the answer being written has no history controls
   $("s-list").disabled = !!busy || !!resourceOperation || !!panel; // the list changes the messages on the screen
-  $("s-compact").disabled = !!busy || !!resourceOperation || !!panel;
+  $("s-compact").disabled = !!resourceOperation;
   renderUndoBar();
   renderPending();
+  renderBackgroundReply();
   syncComposerControls();
   if (typeof StrataCodeRunner !== "undefined") for (const button of document.querySelectorAll("[data-python-run]")) button.disabled = on || modelSwitching;
+}
+
+function renderBackgroundReply() {
+  let bar = $("background-reply");
+  const target = busy && !generatingChat() ? busy.chat : pending && pending.chatId !== chatId ? pending.chat : null;
+  if (!target) { if (bar) bar.remove(); return; }
+  if (!bar) {
+    bar = node("div", "background-reply");
+    bar.id = "background-reply";
+    const label = node("span", "background-reply__label");
+    label.setAttribute("role", "status");
+    const open = node("button", "st-btn st-btn--secondary");
+    open.type = "button";
+    open.onclick = () => { if (bar._chatId) openChat(bar._chatId); };
+    bar.append(label, open);
+    $("composer").before(bar);
+  }
+  bar._chatId = target.id;
+  bar.querySelector("span").textContent = busy?.chat === target
+    ? tr("chat.backgroundReply", "Replying in another chat")
+    : tr("chat.backgroundPending", "An unsent message is waiting in another chat");
+  bar.querySelector("button").textContent = tr("chat.openReply", "Open chat");
+  bar.querySelector("button").title = titleOf(target);
 }
 
 function saveCodeMessage(message) {
@@ -2884,9 +2989,9 @@ function saveCodeMessage(message) {
 // answer stops where it is (what is written stays, marked interrupted) and the message goes at once; if a tool is running, the
 // tool finishes first. Only one message waits. Off by default: with "wait" the page does nothing, as before.
 function park(p, own) {
-  if (!parksWhileBusy()) return;
+  if (!parksWhileBusy() || !generatingChat()) return;
   if (pending) { toast("warn", tr("pending.one", "A message is already waiting"), tr("pending.oneText", "Take it back or wait until it is sent.")); return; }
-  pending = {...p, mode: settings.whileBusy};
+  pending = {...p, mode: settings.whileBusy, chat: busy.chat, chatId: busy.chatId};
   if (own) { attachments = []; renderAttachments(); $("input").value = ""; autosize(); }
   if (pending.mode === "interject") requestCut();
   setBusy(!!busy);
@@ -2899,7 +3004,7 @@ function requestCut() {
 }
 function renderPending() {
   let el = $("pending");
-  if (!pending) { if (el) el.remove(); return; }
+  if (!pending || pending.chatId && pending.chatId !== chatId) { if (el) el.remove(); return; }
   if (!el) {
     el = node("div", "pending");
     el.id = "pending";
@@ -2911,29 +3016,39 @@ function renderPending() {
     $("composer").before(el);
   }
   const quote = (pending.text || (pending.files[0] || pending.images[0] || {}).name || "").replace(/\s+/g, " ").slice(0, 70);
-  const text = !busy ? tr("pending.ready", "Not sent yet: “{text}”", {text: quote})
+  const sameRun = !!busy && busy.chatId === pending.chatId;
+  const text = !sameRun ? tr("pending.ready", "Not sent yet: “{text}”", {text: quote})
     : pending.mode === "queue" ? tr("pending.queued", "Sends when this answer is done: “{text}”", {text: quote})
     : busy.cutAfterTool ? tr("pending.afterTool", "Waiting for the tool to finish, then sending: “{text}”", {text: quote})
     : tr("pending.cutting", "Stopping the answer, then sending: “{text}”", {text: quote});
   el.querySelector(".pending__text").textContent = text;
   const now = el.querySelector("[data-pending-now]");
-  now.textContent = busy ? tr("pending.sendNow", "Send now") : tr("pending.send", "Send");
-  now.hidden = !!busy && pending.mode === "interject";            // already on its way
+  now.disabled = !!busy && busy.chatId !== pending.chatId;
+  now.textContent = sameRun ? tr("pending.sendNow", "Send now") : tr("pending.send", "Send");
+  now.hidden = sameRun && pending.mode === "interject";           // already on its way
   el.querySelector("[data-pending-back]").textContent = tr("pending.takeBack", "Take back");
 }
 function pendingNow() {
-  if (!pending) return;
+  if (!pending || pending.chatId && pending.chatId !== chatId) return;
+  if (busy && busy.chatId !== pending.chatId) return;
   if (busy) { pending.mode = "interject"; requestCut(); setBusy(true); return; }
   const p = pending;
   pending = null;
   setBusy(false);
-  send(p);
+  send(p, p.chat || chat);
 }
 // the waiting message goes back into the message box (a chat switch or a new chat must not lose it)
 function releasePending() {
   if (!pending) return;
   const p = pending;
   pending = null;
+  if (p.chat && p.chatId !== chatId) {
+    const draft = chatDraft(p.chat);
+    draft.text = draft.text.trim() ? `${p.text}\n\n${draft.text}` : p.text;
+    draft.attachments = [...p.images, ...p.files, ...draft.attachments];
+    setBusy(!!busy);
+    return;
+  }
   if (!$("input").value.trim()) $("input").value = p.text;
   else $("input").value = `${p.text}\n\n${$("input").value}`;
   attachments = [...p.images, ...p.files, ...attachments];
@@ -2941,46 +3056,48 @@ function releasePending() {
   setBusy(!!busy);
 }
 // after an answer: an interrupted one sends an interjection, a finished one sends a queued message
-function settlePending(cut, finished) {
-  if (!pending) return;
+function settlePending(cut, finished, owner = chat) {
+  if (!pending || pending.chatId && pending.chatId !== owner.id) return;
   if ((pending.mode === "interject" && cut) || (pending.mode === "queue" && finished)) {
     const p = pending;
     pending = null;
     setBusy(false);
-    send(p);
+    send(p, p.chat || owner);
   }
 }
 
 // the message box (or a parked message, `payload`) becomes a user turn and a reply is asked for
-async function send(payload) {
+async function send(payload, targetChat = chat) {
   if (modelSwitching || resourceOperation || activeModelNeedsDownload()) return;
   const own = !payload;
   const p = payload || {text: $("input").value.trim(), images: attachments.filter((a) => a.kind !== "file"),
                         files: attachments.filter((a) => a.kind === "file")};
   if (!p.text && !p.images.length && !p.files.length) return;
-  if (panel) return;                                  // something is open above (an edit): finish it first
+  if (panel && targetChat === chat) return;            // something is open above (an edit): finish it first
   if (!canUseModelImages([], p.images)) return;
-  if (busy) { park(p, own); return; }
-  if (typeof StrataCodeRunner !== "undefined") StrataCodeRunner.cancelAll();
-  clearUndo();
-  messages.push({role: "user", text: p.text, images: p.images, files: p.files, time: Date.now()});
+  if (busy) { if (targetChat.id === busy.chatId) park(p, own); return; }
+  if (targetChat === chat) {
+    if (typeof StrataCodeRunner !== "undefined") StrataCodeRunner.cancelAll();
+    clearUndo();
+  }
+  targetChat.messages.push({role: "user", text: p.text, images: p.images, files: p.files, time: Date.now()});
   if (own) {
     attachments = [];
     renderAttachments();
     $("input").value = "";
     autosize();
   }
-  return generateReply();
+  return generateReply(targetChat);
 }
 // an answer for the messages as they are: the last one is a user turn
-async function generateReply() {
-  if (modelSwitching || resourceOperation || activeModelNeedsDownload()) return;
+async function generateReply(targetChat = chat) {
+  if (busy || modelSwitching || resourceOperation || activeModelNeedsDownload()) return;
   const m = {role: "assistant", text: "", reasoning: "", model: health.model, time: Date.now(),
              stats: {startedAt: Date.now(), elapsedMs: 0, firstTokenMs: null}};
-  messages.push(m);
-  saveChat();                                       // Keep the question even if this page closes during generation.
-  renderChat();
-  let el = $("chat").lastElementChild;
+  targetChat.messages.push(m);
+  saveChat(targetChat);                             // Keep the question even if this page closes during generation.
+  if (targetChat === chat) renderChat();
+  let el = terminalMessageElement(m);
   // Language changes may rebuild the message nodes while this stream stays open.
   const currentElement = () => {
     el = terminalMessageElement(m, el);
@@ -2988,13 +3105,17 @@ async function generateReply() {
     return el;
   };
   const controller = new AbortController();
-  busy = {controller, msg: m, cut: false, cutAfterTool: false, element: el, startedMono: performance.now(), outputPhase: "preparing"};
+  const owner = {controller, msg: m, chat: targetChat, chatId: targetChat.id, messages: targetChat.messages,
+                 settings: {...settings}, cut: false, cutAfterTool: false, element: el,
+                 startedMono: performance.now(), outputPhase: "preparing"};
+  busy = owner;
+  renderSidebar();
   const stopStatsClock = startTerminalClock(busy);
   setBusy(true);
   paintLive();
 
   const model = health.model, serialize = apiMessageSerializer(model);
-  const body = {model, messages: serialize(), stream: true, return_progress: true, return_live_stats: true,
+  const body = {model, messages: serialize(owner.messages.filter((row) => row !== m)), stream: true, return_progress: true, return_live_stats: true,
                 ...thinkingPayload()};
   if (!samplingUntouched(settings)) {
     if (!(settings.temperature > 0)) body.temperature = 0;
@@ -3005,16 +3126,17 @@ async function generateReply() {
   if (projectionLoaded()) body.experimental_speed_projection = !!settings.esp;
   if (settings.mcp !== false && mcpInfo.tools > 0) body.strata_mcp = true;   // this server may run MCP tools for it
 
-  const enabledTools = {...settings}, localSession = StrataLocalTools.session(enabledTools, {headers});
+  const enabledTools = owner.settings, localSession = StrataLocalTools.session(enabledTools, {headers});
+  const toolConcurrency = globalTools?.max_concurrency || 1;
   const completedRounds = [];
   let firstAt = null, thinkStart = null, usage = null, timings = null, frame = 0;
-  const paint = () => { frame = 0; const target = currentElement(); if (target) updateAssistant(target, m, true); scrollDown(); };
+  const paint = () => { frame = 0; const target = currentElement(); if (target) { updateAssistant(target, m, true); scrollDown(); } };
   try {
    for (let round = 0; round <= StrataLocalTools.MAX_ROUNDS; round++) {
     const offered = round < StrataLocalTools.MAX_ROUNDS ? StrataLocalTools.definitions(enabledTools) : [];
     if (offered.length) body.tools = offered; else delete body.tools;
     // Include completed local-tool rounds as a single intact UI exchange.
-    const prepared = await prepareContext(body, round ? messages : messages.filter((row) => row !== m), m, controller.signal, serialize);
+    const prepared = await prepareContext(body, round ? owner.messages : owner.messages.filter((row) => row !== m), m, controller.signal, serialize, owner);
     body.messages = prepared.messages;
     const calls = new Map();
     const roundBase = Math.max(0, ...(m.tools || []).map((tool) => tool.round || 0)) + 1;
@@ -3105,7 +3227,7 @@ async function generateReply() {
         server: "TinyStrata", arguments: args, round: localRound});
     }
     paint();
-    await StrataLocalTools.mapLimit(requested, globalTools?.max_concurrency || 1, async (call) => {
+    await StrataLocalTools.mapLimit(requested, toolConcurrency, async (call) => {
       const started = performance.now(), result = await localSession.run(call, controller.signal);
       if (controller.signal.aborted) return;
       onTool(m, {event: "result", id: call.id, ok: result.ok, text: result.text,
@@ -3115,7 +3237,7 @@ async function generateReply() {
       view.sources = result.sources || []; view.files = result.files || []; view.local = true;
       if (!frame) frame = requestAnimationFrame(paint);
     });
-    saveChat();                                     // Tool results survive a later round being interrupted.
+    saveChat(owner.chat);                           // Tool results survive a later round being interrupted.
     if (controller.signal.aborted) throw new DOMException("Cancelled", "AbortError");
     if (busy.cutAfterTool && !busy.cut) { busy.cut = true; controller.abort(); throw new DOMException("Cancelled", "AbortError"); }
    }
@@ -3137,7 +3259,7 @@ async function generateReply() {
     const secs = (performance.now() - firstAt) / 1000;
     const rate = terminalNumber(m.stats.decodeRate) ? m.stats.decodeRate : secs > 0.25 ? n / secs : null;
     m.meta = tr("chat.tokens", "{n} tokens", {n: fmt(n)}) + (rate != null ? ` · ${fmt(rate, 1)} tok/s` : "") + (m.stopped ? ` · ${ended}` : "") +
-             (projectionLoaded() ? (settings.esp ? ` · ${tr("chat.projectionOn", "projection on")}` : ` · ${tr("chat.projectionOff", "projection off")}`) : "");
+             (projectionLoaded() ? (owner.settings.esp ? ` · ${tr("chat.projectionOn", "projection on")}` : ` · ${tr("chat.projectionOff", "projection off")}`) : "");
   } else if (m.stopped) {
     m.meta = cut ? tr("chat.interrupted", "Interrupted") : tr("chat.stopped", "Stopped");
   }
@@ -3152,9 +3274,10 @@ async function generateReply() {
   if (frame) cancelAnimationFrame(frame);
   const target = currentElement();
   if (target) updateAssistant(target, m, false);
-  saveChat();
-  scrollDown();
-  settlePending(cut, !m.stopped && !m.error);
+  saveChat(owner.chat);
+  if (target) scrollDown();
+  renderSidebar();
+  settlePending(cut, !m.stopped && !m.error, owner.chat);
 }
 
 $("composer").onsubmit = (e) => { e.preventDefault(); send(); };
@@ -3458,7 +3581,7 @@ $("s-apply").onclick = async () => {
               max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
               math: checked("s-math"), show: checked("s-show"), esp: checked("s-esp"), mcp: checked("s-mcp"),
               webSearch: prev.webSearch,
-              autoCompact: locked ? prev.autoCompact !== false : checked("s-compact"),
+              autoCompact: checked("s-compact"),
               chatList: locked ? !!prev.chatList : checked("s-list"),
               whileBusy: segValue("s-busy") || "wait"};
   store.set("sampling", settings);

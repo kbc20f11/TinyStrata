@@ -673,5 +673,8 @@
   "resources.fixedPolicy": "Fixed execution policy",
   "about.umaKv": "shared system RAM",
   "about.memoryTopology": "Memory",
-  "about.umaMemory": "CPU/GPU share system RAM"
+  "about.umaMemory": "CPU/GPU share system RAM",
+  "chat.backgroundReply": "Replying in another chat",
+  "chat.backgroundPending": "An unsent message is waiting in another chat",
+  "chat.openReply": "Open chat"
 }

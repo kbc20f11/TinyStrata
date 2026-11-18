@@ -247,6 +247,7 @@ button, input, textarea, select { -webkit-tap-highlight-color: transparent; }
 .meta-text { font-family: var(--st-font-mono); }
 
 .composer-wrap { padding: 12px 40px calc(10px + env(safe-area-inset-bottom, 0px)); }
+.background-reply { max-width: 1024px; }
 .chat-resources {
   display: flex;
   flex-wrap: wrap;

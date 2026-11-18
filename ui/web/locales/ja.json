@@ -667,5 +667,8 @@
   "resources.fixedPolicy": "実行先は固定",
   "about.umaKv": "共有システムRAMに保持",
   "about.memoryTopology": "メモリー",
-  "about.umaMemory": "CPUとGPUでシステムRAMを共有"
+  "about.umaMemory": "CPUとGPUでシステムRAMを共有",
+  "chat.backgroundReply": "別のチャットで回答中",
+  "chat.backgroundPending": "別のチャットに未送信のメッセージがあります",
+  "chat.openReply": "チャットを開く"
 }

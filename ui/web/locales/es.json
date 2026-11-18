@@ -667,5 +667,8 @@
   "models.selectModel": "Seleccionar modelo",
   "models.downloadFirst": "Descarga un modelo desde Modelos para empezar",
   "placement.umaHint": "Los expertos se ejecutan con RAM compartida del sistema, fijos en GPU 100% / CPU 0%. Es una política, no la utilización de la GPU ni el uso de memoria dedicada.",
-  "resources.fixedPolicy": "Política de ejecución fija"
+  "resources.fixedPolicy": "Política de ejecución fija",
+  "chat.backgroundReply": "Respondiendo en otro chat",
+  "chat.backgroundPending": "Hay un mensaje sin enviar en otro chat",
+  "chat.openReply": "Abrir chat"
 }

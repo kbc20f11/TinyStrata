@@ -72,7 +72,19 @@ function setMessages(next) {
   messages = next;
   if (chat) chat.messages = next;
 }
-function saveChat() {
+function generatingChat(c = chat) { return !!(busy && c && busy.chatId === c.id); }
+function saveChat(owner = chat) {
+  // A reply may finish while another conversation is on screen. Persist its
+  // own record without changing the selected chat or its single-chat copy.
+  if (owner && owner !== chat) {
+    const index = chats.findIndex((item) => item.id === owner.id);
+    if (index >= 0) chats[index] = owner;
+    else if (H.hasConversation(owner)) chats.push(owner);
+    owner.time = Date.now();
+    chatStore.put(owner);
+    renderSidebar();
+    return;
+  }
   if (!chat || chat.id !== chatId) {
     chat = chats.find((item) => item.id === chatId) || {...H.newChat(), id: chatId || H.newChat().id};
     chatId = chat.id;
@@ -150,19 +162,22 @@ function chatItem(c) {
   const row = node("div", `chat-item${c.id === chatId ? " on" : ""}`);
   row.dataset.id = c.id;
   row.innerHTML = `<button class="chat-item__title" data-open-chat title="${esc(t)}">${esc(t)}</button>` +
+    (generatingChat(c) ? `<span class="chat-item__busy" role="status" aria-label="${esc(tr("busy.stillWriting", "Still writing"))}">${statusIcon("running")}</span>` : "") +
     `<span class="chat-item__actions">` +
     `<button class="st-btn st-btn--icon" data-rename aria-label="${esc(tr("sidebar.rename", "Rename this chat"))}" title="${esc(tr("sidebar.renameShort", "Rename"))}">${icon("edit")}</button>` +
     `<button class="st-btn st-btn--icon" data-delete aria-label="${esc(tr("sidebar.delete", "Delete this chat"))}" title="${esc(tr("sidebar.deleteShort", "Delete"))}">${icon("trash")}</button>` +
     `</span>`;
+  row.querySelector("[data-delete]").disabled = generatingChat(c) || pending?.chatId === c.id;
   return row;
 }
-function renderSidebar() {
+function renderSidebar(force = false) {
   if (!listOn) return;
   // the search reads every chat's message text, so the whole store is in memory after the first load
   // Keep old empty records for revision/Undo recovery, outside the visible list.
   const visible = chats.filter(H.hasConversation);
   const list = H.filterChats(visible, sidebarQuery, untitled());
   const box = $("sidebar-list");
+  if (!force && box.querySelector(".chat-item__input")) return; // do not replace an active rename field
   box.innerHTML = "";
   if (!list.length) {
     box.appendChild(node("p", "muted small sidebar-empty", sidebarQuery.trim() ? tr("sidebar.noMatch", "No chat matches") : tr("sidebar.none", "No chats yet")));
@@ -181,6 +196,7 @@ function renderSidebar() {
 
 function showChat(c) {
   if (typeof StrataCodeRunner !== "undefined") StrataCodeRunner.cancelAll();
+  if (generatingChat()) saveChat(chat);
   saveComposerDraft();
   clearUndo();
   chat = c; chatId = c.id; messages = c.messages;
@@ -189,18 +205,17 @@ function showChat(c) {
   if (!H.hasConversation(chat) || !listOn) store.set("chat", H.cleanMessages(messages));
   if (H.hasConversation(chat)) chatStore.put(chat);
   renderChat();
+  setBusy(!!busy);
 }
 function openChat(id) {
-  if (busy || resourceOperation) { stillWriting(); return; }
+  if (resourceOperation) { stillWriting(); return; }
   const c = chats.find((x) => x.id === id);
   if (!c || c === chat) return;
-  releasePending();
   closePanel();
   showChat(c);
 }
 function startChat() {
-  if (historyOperationBusy()) { stillWriting(); return false; }
-  releasePending();
+  if (resourceOperation) { stillWriting(); return false; }
   closePanel();
   const c = homePage();
   if (chat !== c) showChat(c);
@@ -210,7 +225,7 @@ function startChat() {
   return true;
 }
 function deleteChat(c) {
-  if ((busy || resourceOperation) && c.id === chatId) { stillWriting(); return; }
+  if (generatingChat(c) || pending?.chatId === c.id || (resourceOperation && c.id === chatId)) { stillWriting(); return; }
   const i = chats.indexOf(c), wasOpen = c.id === chatId;
   if (i < 0) return;                                // the list only ever passes a chat it holds
   if (wasOpen) saveComposerDraft();
@@ -218,7 +233,6 @@ function deleteChat(c) {
   chats.splice(i, 1);
   chatStore.remove(c.id);                           // the record; the Undo puts it back
   if (wasOpen) {
-    releasePending();
     closePanel();
     const next = chats.find(H.hasConversation) || homePage();
     showChat(next);
@@ -244,7 +258,7 @@ function renameChat(row, c) {
     if (done) return;
     done = true;
     if (keep) { c.title = input.value.trim(); chatStore.put(c); }
-    renderSidebar();
+    renderSidebar(true);
   };
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); finish(true); }
@@ -279,10 +293,14 @@ function renderParent() {
 }
 
 // ------------------------------------------------------------------ edit, regenerate, go back (#2615, #3823)
-// Every change keeps the messages it replaced for one Undo: a new question, another chat or a reload ends it. The controls
-// are off while an answer is written (stop it first), while something is open, and while a message waits to be sent.
-const historyOperationBusy = () => modelSwitching || !!modelOp || pageBusy();
-const historyLocked = () => historyOperationBusy() || !!panel || !!pending;
+// Every change keeps the messages it replaced for one Undo: a new question, another chat or a reload ends it.
+// Local edits belong to the visible chat. Another chat's run only blocks
+// actions that send a new model request, not local edits, rewinds or Undo.
+const pendingForChat = () => !!(pending && (!pending.chatId || pending.chatId === chatId));
+const historyOperationBusy = () => modelSwitching || !!modelOp || !!resourceOperation || generatingChat();
+const historyRequestBusy = () => historyOperationBusy() || !!busy;
+const historyLocked = () => historyOperationBusy() || !!panel || pendingForChat();
+const historyRequestLocked = () => historyRequestBusy() || !!panel || pendingForChat();
 function clearUndo() { undoState = null; renderUndoBar(); }
 function renderUndoBar() {
   let el = $("history-undo");
@@ -342,9 +360,9 @@ function msgActions(m, i) {
   if (user) {
     const copy = tr("hist.copyUser", "Copy message"), edit = tr("hist.editUser", "Edit message");
     add("copy", copy, copy, (b) => copyText(m.text || "", b), !m.text, "data-msg-user-copy");
-    add("edit", edit, edit, () => editUserAt(i), lock, "data-msg-user-edit");
+    add("edit", edit, edit, () => editUserAt(i), historyRequestLocked(), "data-msg-user-edit");
   } else {
-    add("refresh", tr("hist.regenerate", "Regenerate"), tr("hist.regenerateTitle", "Ask for a new answer to this question. Tools may run again."), () => regenerateAt(i));
+    add("refresh", tr("hist.regenerate", "Regenerate"), tr("hist.regenerateTitle", "Ask for a new answer to this question. Tools may run again."), () => regenerateAt(i), historyRequestLocked());
     add("edit", tr("hist.editAnswer", "Edit answer"), tr("hist.editAnswerTitle", "Correct the answer's text. No request is sent."), () => editAnswerAt(i));
     add("clock", tr("hist.rewind", "Rewind to here"), tr("hist.rewindTitle", "Go back to this point in the chat"), () => openRewind(i));
   }
@@ -368,12 +386,12 @@ function mountMsgActions(el, m, i) {
   if (row) (m.role === "assistant" ? el.querySelector(".st-msg__meta") || el : el).appendChild(row);
 }
 // true when a history change may start now (and says why not when it may not)
-function historyReady() {
+function historyReady(request = false) {
   if (modelSwitching) { toast("warn", tr("model.switching", "Switching model…"), ""); return false; }
-  if (busy || resourceOperation) { stillWriting(); return false; }
-  if (modelOp || pageBusy()) { toast("warn", tr("model.switchBusy", "Wait for the current reply or operation to finish."), ""); return false; }
+  if ((request && busy) || generatingChat() || resourceOperation) { stillWriting(); return false; }
+  if (modelOp) { toast("warn", tr("model.switchBusy", "Wait for the current reply or operation to finish."), ""); return false; }
   if (panel) { toast("warn", tr("hist.finishFirst", "Finish what is open first"), tr("hist.finishFirstText", "Save it or press Cancel.")); return false; }
-  if (pending) { toast("warn", tr("hist.pendingFirst", "A message is waiting"), tr("hist.pendingFirstText", "Send it or take it back first.")); return false; }
+  if (pendingForChat()) { toast("warn", tr("hist.pendingFirst", "A message is waiting"), tr("hist.pendingFirstText", "Send it or take it back first.")); return false; }
   return true;
 }
 // Update the action locks without replacing message contents (an answer may be streaming into one).
@@ -393,7 +411,7 @@ function closePanel() {
   setBusy(!!busy);
 }
 function regenerateAt(i) {
-  if (!historyReady()) return false;
+  if (!historyReady(true)) return false;
   const plan = H.regenerate(messages, i);
   if (!plan) return false;
   // generateReply validates the projected history after checking its summary.
@@ -408,7 +426,7 @@ function regenerateAt(i) {
 // Edit a user turn in place. Opening/cancelling never touches history or the
 // composer; Send replaces only text and retains the original attachment data.
 function editUserAt(i) {
-  if (!historyReady() || !messages[i] || messages[i].role !== "user") return false;
+  if (!historyReady(true) || !messages[i] || messages[i].role !== "user") return false;
   const m = messages[i], el = $("chat").querySelector(`[data-i="${i}"]`);
   if (!el) return false;
   const box = node("div", "history-editor history-editor--user");
@@ -442,7 +460,7 @@ function editUserAt(i) {
   return true;
 }
 function sendUserEdit(i, text) {
-  if (historyOperationBusy() || pending || !panel || panel.kind !== "edit-user" || panel.index !== i ||
+  if (historyRequestBusy() || pendingForChat() || !panel || panel.kind !== "edit-user" || panel.index !== i ||
       panel.message !== messages[i] || messages[i].role !== "user" || typeof text !== "string") return false;
   const original = messages[i], plan = H.rewind(messages, i);
   if (!plan) return false;
@@ -496,7 +514,7 @@ function editAnswerAt(i) {
   return true;
 }
 function saveAnswerEdit(i, text) {
-  if (historyOperationBusy() || pending || !panel || panel.kind !== "edit" || panel.index !== i) return false;
+  if (historyOperationBusy() || pendingForChat() || !panel || panel.kind !== "edit" || panel.index !== i) return false;
   if (typeof text !== "string" || !text.trim()) { toast("warn", tr("hist.empty", "The answer is empty"), tr("hist.emptyText", "Write something before saving.")); return false; }
   const plan = H.editAnswer(messages, i, text, tr("hist.edited", "Edited"));
   if (!plan) return false;
@@ -553,7 +571,7 @@ function fillBox(draft) {
   if (draft.lost) toast("warn", tr("hist.lostTitle", "Attachments need to be added again"), tr("hist.lostText2", "This browser kept their names, not their contents. Attach them again."), 7000);
 }
 function rewindHere(i) {
-  if (historyOperationBusy() || pending || !panel || panel.kind !== "rewind") return false;     // called from the open panel
+  if (historyOperationBusy() || pendingForChat() || !panel || panel.kind !== "rewind") return false; // called from the open panel
   const plan = H.rewind(messages, i);
   if (!plan) return false;
   const draftBefore = {text: $("input").value, attachments: attachments.slice()};
@@ -564,7 +582,7 @@ function rewindHere(i) {
   return true;
 }
 function branchHere(i) {
-  if (!listOn || historyOperationBusy() || pending || !panel || panel.kind !== "rewind") return false;
+  if (!listOn || historyOperationBusy() || pendingForChat() || !panel || panel.kind !== "rewind") return false;
   const plan = H.rewind(messages, i);
   if (!plan) return false;
   closePanel();

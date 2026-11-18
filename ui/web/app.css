@@ -316,6 +316,13 @@ main { flex: 1; min-height: 0; display: flex; }
 .pending { justify-content: space-between; padding: 6px 10px; border: 1px solid var(--st-line); border-radius: var(--st-r-md); background: var(--st-surface); }
 .pending__text { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; color: var(--st-ink-soft); }
 .pending__actions { display: flex; gap: var(--st-s-2); }
+.background-reply { display: flex; align-items: center; flex-wrap: wrap; gap: var(--st-s-2); width: 100%; max-width: 1100px;
+  margin: 0 auto var(--st-s-2); padding: 6px 10px; border: 1px solid var(--st-line); border-radius: var(--st-r-md);
+  background: var(--st-surface); color: var(--st-ink-soft); font-size: var(--st-fs-sm); }
+.background-reply__label { flex: 1 1 10rem; min-width: 0; }
+.background-reply .st-btn { height: 30px; padding: 0 10px; font-size: var(--st-fs-xs); }
+.chat-item__busy { display: flex; flex: none; align-items: center; padding: 0 4px; color: var(--st-ink-soft); }
+.chat-item__busy .st-icon { width: 14px; height: 14px; }
 
 /* Chat settings: the button says what it is, and the drawer groups the chat switches */
 .chat-settings-button { height: 36px; padding: 0 10px; gap: 6px; white-space: nowrap; font-size: var(--st-fs-sm); }
@@ -340,6 +347,13 @@ main { flex: 1; min-height: 0; display: flex; }
 /* a message may use the room a wide window gives the chat column (#3176 widened the column; the kit's 720px kept the messages narrow in it) */
 .st-msg { max-width: min(100%, 900px); }
 .st-toast .st-btn { white-space: nowrap; }
+.st-toasts { pointer-events: none; max-width: calc(100vw - 24px); }
+.st-toast { pointer-events: auto; }
+.st-toast > .st-icon { flex-shrink: 0; }
+.st-toast__body { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.st-toast__action { height: 32px; flex-shrink: 0; }
+.st-toast .st-toast__close { width: 32px; height: 32px; flex-shrink: 0; color: var(--st-ink-soft); }
+.st-toast .st-toast__close .st-icon { color: inherit; }
 .context-summary { margin-block: var(--st-s-3); }
 .context-summary summary { color: var(--st-ink-muted); font-size: 0.85em; }
 .context-summary .st-collapse__body { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 20rem; overflow: auto; }

@@ -113,6 +113,12 @@
 !/tests/test_ui_server_tools.py
 !/tests/test_ui_launcher_upgrade.py
 !/tests/ui-chatstore.cjs
+!/tests/ui-background-chat.cjs
+!/tests/test_ui_background_chat.py
+!/tests/ui-background-history.cjs
+!/tests/test_ui_background_history.py
+!/tests/ui-toasts.cjs
+!/tests/test_ui_toasts.py
 !/tests/ui-local-tools.cjs
 !/tests/ui-runtime-model.cjs
 !/tests/ui-sampling-defaults.cjs

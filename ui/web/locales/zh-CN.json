@@ -661,5 +661,8 @@
   "models.selectModel": "选择模型",
   "models.downloadFirst": "请先在模型管理中下载模型",
   "placement.umaHint": "专家使用共享系统内存，执行位置固定为 GPU 100% / CPU 0%。这是执行策略，并非 GPU 利用率或专用显存使用量。",
-  "resources.fixedPolicy": "固定执行策略"
+  "resources.fixedPolicy": "固定执行策略",
+  "chat.backgroundReply": "正在另一个对话中回复",
+  "chat.backgroundPending": "另一个对话中有一条待发送的消息",
+  "chat.openReply": "打开对话"
 }

@@ -667,5 +667,8 @@
   "models.selectModel": "Modell auswählen",
   "models.downloadFirst": "Zum Start ein Modell unter Modelle herunterladen",
   "placement.umaHint": "Experten werden mit gemeinsamem System-RAM fest zu 100% auf der GPU und zu 0% auf der CPU ausgeführt. Dies ist eine Richtlinie, keine GPU-Auslastung oder Nutzung von dediziertem Speicher.",
-  "resources.fixedPolicy": "Feste Ausführungsrichtlinie"
+  "resources.fixedPolicy": "Feste Ausführungsrichtlinie",
+  "chat.backgroundReply": "Antwort in einem anderen Chat läuft",
+  "chat.backgroundPending": "In einem anderen Chat wartet eine ungesendete Nachricht",
+  "chat.openReply": "Chat öffnen"
 }
