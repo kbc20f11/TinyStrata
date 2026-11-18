@@ -2219,6 +2219,17 @@ const TOOL_STATE = {writing: ["st-badge--reading", () => tr("tool.writing", "Wri
 function toolPreview(t, args) {
   let preview = t.result != null ? t.result : args.replace(/\s+/g, " ");
   if (t.local && t.name === "web_search") preview = t.arguments?.query || "";
+  if (t.local && t.name === "read_webpage") preview = t.arguments?.url || "";
+  if (t.local && ["get_current_time", "calculate"].includes(t.name)) {
+    preview = t.arguments?.expression || t.arguments?.timezone || "";
+    if (t.result != null) {
+      try {
+        const result = JSON.parse(t.result);
+        preview = result.error?.message || result.error || (t.name === "calculate"
+          ? `${result.expression} = ${result.result}` : `${result.local_datetime} (${result.timezone})`);
+      } catch (_) { preview = t.result; }
+    }
+  }
   if (t.local && t.name === "run_python") {
     preview = t.arguments?.code || "";
     if (t.result != null) {
@@ -3223,7 +3234,10 @@ async function generateReply(targetChat = chat) {
       let args = {};
       try { args = StrataLocalTools.parseCall(call); } catch (_) { /* The bounded executor returns the argument error. */ }
       onTool(m, {event: "call", id: call.id, name: call.name, tool: call.name === "web_search"
-        ? tr("localTools.search", "Web search") : call.name === "run_python" ? tr("localTools.python", "Python") : call.name,
+        ? tr("localTools.search", "Web search") : call.name === "run_python" ? tr("localTools.python", "Python")
+        : call.name === "read_webpage" ? tr("localTools.webpage", "Read webpage")
+        : call.name === "get_current_time" ? tr("localTools.clock", "Current time")
+        : call.name === "calculate" ? tr("localTools.calculate", "Calculator") : call.name,
         server: "TinyStrata", arguments: args, round: localRound});
     }
     paint();
@@ -3231,7 +3245,7 @@ async function generateReply(targetChat = chat) {
       const started = performance.now(), result = await localSession.run(call, controller.signal);
       if (controller.signal.aborted) return;
       onTool(m, {event: "result", id: call.id, ok: result.ok, text: result.text,
-        chars: result.text.length, truncated: false, ms: performance.now() - started,
+        chars: result.text.length, truncated: !!result.truncated, ms: performance.now() - started,
         images: result.images || [], vision: !!health.images});
       const view = m.tools.find((item) => item.id === call.id);
       view.sources = result.sources || []; view.files = result.files || []; view.local = true;

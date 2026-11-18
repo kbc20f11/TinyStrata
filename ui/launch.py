@@ -86,10 +86,14 @@ def available_default_family(runtime):
     return "qwen36"
 
 
+UI_BACKEND_FILES = ("server.py", "launch.py", "stdio.py", "chat_history.py", "web_search.py", "tool_settings.py",
+                    "sandbox_runtime.py", "calculator.py", "web_page.py")
+
+
 def backend_revision(source):
     """Identify Python code loaded by a UI, independently of changing web assets."""
     digest = hashlib.sha256()
-    for name in ("server.py", "launch.py", "stdio.py", "chat_history.py", "web_search.py", "tool_settings.py", "sandbox_runtime.py"):
+    for name in UI_BACKEND_FILES:
         digest.update(name.encode("ascii") + b"\0")
         digest.update((Path(source) / "ui" / name).read_bytes())
     return digest.hexdigest()

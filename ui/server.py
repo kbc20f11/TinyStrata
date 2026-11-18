@@ -11,16 +11,19 @@ import select
 import socket
 import sys
 import threading
+import time
 from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from ui.chat_history import HistoryStore, handle_history
+from ui.calculator import calculate
 from ui.launch import backend_revision
 from ui.sandbox_runtime import RuntimeCache
 from ui.tool_settings import ToolSettings
 from ui.web_search import SearchError, SearchService
+from ui.web_page import TIMEOUT as PAGE_TIMEOUT, PageError, PageService, WebRequestGate
 
 APP_ID = "tinystrata-ui"
 WEB = Path(__file__).resolve().parent / "web"
@@ -51,14 +54,20 @@ class UIServer(ThreadingHTTPServer):
         self.chat_history = HistoryStore(self.data_dir / "chat-history.sqlite3")
         self.tool_settings = ToolSettings(self.data_dir / "search-settings.json")
         self.search = SearchService()
+        self.pages = PageService()
+        self.web_gate = WebRequestGate()
         self.sandbox_runtime = RuntimeCache(self.data_dir / "python-runtime")
         super().__init__(("127.0.0.1", port), Handler)
 
     def server_close(self):
         try:
+            self.web_gate.close()
             self.search.close()
         finally:
-            super().server_close()
+            try:
+                self.pages.close()
+            finally:
+                super().server_close()
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -190,6 +199,12 @@ class Handler(SimpleHTTPRequestHandler):
             cancel.set()
 
     def local_tools(self, path):
+        def web_request(service, value, cancel, *, page=False):
+            settings = self.server.tool_settings.read()
+            deadline = time.monotonic() + PAGE_TIMEOUT if page else None
+            with self.server.web_gate.acquire(settings["max_concurrency"], cancel):
+                return service(value, settings=settings, cancel=cancel, **({"deadline": deadline} if page else {}))
+
         try:
             if path == "/local-ui/settings":
                 if self.command in {"GET", "HEAD"}:
@@ -198,12 +213,23 @@ class Handler(SimpleHTTPRequestHandler):
                     self.json_response(200, self.server.tool_settings.update(self.json_body()))
                 else:
                     self.send_error(405)
+            elif path == "/local-ui/calculate" and self.command == "POST":
+                body = self.json_body(12288)
+                if set(body) != {"expression"}:
+                    raise ValueError("Expected only an arithmetic expression")
+                self.json_response(200, calculate(body["expression"]))
             elif path == "/local-ui/search" and self.command == "POST":
                 body = self.json_body(4096)
                 if set(body) - {"query"}:
                     raise ValueError("Expected only a search query")
-                result = self.cancellable(lambda cancel: self.server.search.search(
-                    body.get("query"), settings=self.server.tool_settings.read(), cancel=cancel))
+                result = self.cancellable(lambda cancel: web_request(self.server.search.search, body.get("query"), cancel))
+                if result is not None:
+                    self.json_response(200, result)
+            elif path == "/local-ui/webpage" and self.command == "POST":
+                body = self.json_body(12288)
+                if set(body) != {"url"}:
+                    raise ValueError("Expected only a public webpage URL")
+                result = self.cancellable(lambda cancel: web_request(self.server.pages.read, body["url"], cancel, page=True))
                 if result is not None:
                     self.json_response(200, result)
             elif path == "/local-ui/sandbox" and self.command in {"GET", "HEAD"}:
@@ -229,6 +255,9 @@ class Handler(SimpleHTTPRequestHandler):
                             self.copyfile(source, self.wfile)
             else:
                 return False
+        except PageError as error:
+            self.json_response(429 if error.code == "busy" else 400 if error.code in {"invalid_url", "blocked_address"} else 503,
+                               {"error": error.to_dict()})
         except SearchError as error:
             self.json_response(429 if error.code in {"rate_limited", "busy", "quota_exceeded"} else 400 if error.code == "invalid_query" else 503,
                                {"error": error.to_dict()}, {"Retry-After": error.retry_after} if error.retry_after is not None else None)

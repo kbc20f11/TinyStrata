@@ -104,13 +104,17 @@ Pour l’installation avec API seule, utilisez `run-api.bat` :
 & "$env:LOCALAPPDATA\TinyStrata\run-api.bat" --port 18080
 ```
 
-### Recherche et Python dans l’UI
+### Outils de l’UI et conversations enregistrées
 
 L’onglet **Modèles** permet de télécharger des modèles ou de supprimer leurs fichiers téléchargés. Le sélecteur du chat n’affiche que les modèles installés. Une confirmation est demandée avant suppression. Passez à un autre modèle avant de supprimer le modèle actif. Les fichiers partagés nécessaires à un autre modèle sont conservés.
 
 Les options de réflexion dépendent du modèle : Qwen3.6, Clover et Gemma 4 proposent **Activée / Désactivée**, avec **Activée** par défaut ; LFM2.5 reste toujours **Activée**. Tiel Coder propose **Désactivée / Faible / Moyen / Élevé**, avec **Moyen** par défaut (`xhigh` pour Élevé). L’UI mémorise le choix séparément pour chaque modèle. Les niveaux du [template Sharp](https://huggingface.co/peculiar-ragdoll/Qwen-Sharp-Chat-Templates#setting-reasoning-effort) de Tiel ajoutent des instructions au prompt : ils ne constituent pas un budget numérique de tokens, et Élevé ne garantit pas une meilleure réponse.
 
 Dans une nouvelle UI, la recherche web est **activée par défaut** et utilise **DDGS sans clé API** si aucun fournisseur n’a été enregistré. Décochez **Recherche web**, à côté des **Paramètres de discussion**, pour la désactiver ; ce navigateur conserve ce choix après les redémarrages pour tous les modèles pris en charge. Les choix d’activation, le fournisseur et les clés API déjà enregistrés sont conservés. Le fournisseur, la clé API et le nombre de recherches simultanées se règlent dans ces paramètres. L’exécution Python dans l’environnement isolé est toujours disponible lorsque le modèle en a besoin. Les blocs Python terminés peuvent aussi être exécutés manuellement avec **Exécuter Python**.
+
+- **Recherche :** la recherche et la lecture de pages partagent une limite de 3 consultations web par réponse. Lorsque la recherche web est activée, le modèle peut lire des pages HTTP(S) publiques, sans prise en charge de JavaScript, de l’authentification ou des PDF. La lecture est limitée à 10 secondes ; les réponses de plus de 512 Kio sont rejetées. Le texte renvoyé est limité à 20 000 caractères, avec signalement de toute troncature. Les lectures utilisent un cache de 5 minutes, un intervalle minimal de 2 secondes et la limite de concurrence configurée pour la recherche.
+- **Date et heure :** disponibles à la demande dans le fuseau local du navigateur ou un fuseau IANA indiqué. La source est l’horloge du PC, sans vérification sur Internet ; aucune date variable n’est ajoutée au prompt système initial.
+- **Calculatrice :** calcul décimal limité à 100 chiffres significatifs, avec signalement des arrondis, toujours disponible sans lancer Pyodide ni installer de dépendances. Ces outils sont propres à l’UI ; l’inférence par API seule reste inchangée.
 
 ### Compaction automatique du contexte
 

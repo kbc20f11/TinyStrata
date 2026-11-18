@@ -143,7 +143,7 @@ For the API-only installation, use `run-api.bat`:
 & "$env:LOCALAPPDATA\TinyStrata\run-api.bat" --port 18080
 ```
 
-### UI search, Python and saved chats
+### UI tools and saved chats
 
 Use the **Models** tab to download models or remove their downloaded files. The chat model picker lists installed models only. Deletion requires confirmation. Switch to another model before deleting the active one. Shared files needed by another model are retained.
 
@@ -151,7 +151,9 @@ Thinking controls follow the selected model: Qwen3.6, Clover and Gemma 4 offer *
 
 Web search is **on by default** in a fresh UI, using **DDGS without an API key** when no provider has been saved. Turn off the **Web search** checkbox beside **Chat settings** to disable it; this browser remembers that choice across restarts for all supported models. Previously saved on/off, provider and API-key choices are preserved. Configure the provider, API key and concurrency in Chat settings. Python execution is always available when the model needs it; completed Python code blocks also have a **Run Python** button for manual execution.
 
-- **Search:** DDGS needs no key and defaults to one concurrent search with at least 2 seconds between starts. Brave needs an API key and defaults to one concurrent search with at least 1.1 seconds between starts; rate-limit headers are respected. Queries are cached for 5 minutes, with at most 3 searches per reply. Provider, key and concurrency settings are shared across models by the UI server; keys are protected with Windows DPAPI and are not returned to the browser.
+- **Search:** DDGS needs no key and defaults to one concurrent search with at least 2 seconds between starts. Brave needs an API key and defaults to one concurrent search with at least 1.1 seconds between starts; rate-limit headers are respected. Search results are cached for 5 minutes. Search and page reads share a limit of 3 web lookups per reply. With Web search on, models can also read public HTTP(S) pages, without JavaScript, login or PDF support. Reads have a 10-second limit and reject responses over 512 KiB; returned text is limited to 20,000 characters with truncation flagged. Reads use a 5-minute cache and at least 2 seconds between starts, and share the configured concurrency. Provider, key and concurrency settings are shared across models by the UI server; keys are protected with Windows DPAPI and are not returned to the browser.
+- **Current time:** always available on request, using the browser's local timezone or a specified IANA timezone. The source is the PC clock, not verified internet time; changing dates are not inserted into the initial system prompt.
+- **Calculator:** always available for bounded decimal arithmetic with 100 significant digits and disclosed rounding, without starting Pyodide. No additional dependencies are installed.
 - **Python:** standard-library code runs in an isolated browser iframe/worker using Pyodide, with a 10-second execution limit and no network, host filesystem, shell or `pip` access. First use downloads a pinned, SHA-256-verified runtime of about **13.5 MB** into the work directory, outside Git; later runs reuse it.
 - **History:** chats, tool results and manual Python results are saved in SQLite at `TinyStrata-work/runtime/ui/chat-history.sqlite3` by default and can be reopened in another browser. Existing browser history is imported, with the original import retained as a backup.
 

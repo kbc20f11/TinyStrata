@@ -351,3 +351,11 @@ CMakeFiles/
 !/tests/installer-native-fingerprint.ps1
 !/tests/installer-ui-flow.ps1
 !/tests/installer-service-update.ps1
+!/tests/ui-grounding-clock.cjs
+!/tests/test_ui_grounding_clock.py
+!/tests/test_ui_calculator.py
+!/tests/test_ui_web_page.py
+!/tests/test_ui_webpage_http.py
+!/tests/test_ui_grounding_tools.py
+!/ui/calculator.py
+!/ui/web_page.py

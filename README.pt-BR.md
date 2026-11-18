@@ -104,13 +104,17 @@ Para a instalação somente com API, use `run-api.bat`:
 & "$env:LOCALAPPDATA\TinyStrata\run-api.bat" --port 18080
 ```
 
-### Busca e Python na UI
+### Ferramentas da UI e chats salvos
 
 Use a aba **Modelos** para baixar modelos ou remover os arquivos baixados. O seletor do chat mostra apenas modelos instalados. A exclusão exige confirmação. Mude para outro modelo antes de excluir o ativo. Os arquivos compartilhados necessários para outro modelo são preservados.
 
 Os controles de raciocínio dependem do modelo: Qwen3.6, Clover e Gemma 4 oferecem **Ativado / Desativado**, inicialmente **Ativado**; LFM2.5 fica sempre **Ativado**. Tiel Coder oferece **Desativado / Baixo / Médio / Alto**, inicialmente **Médio** (`xhigh` para Alto). A UI salva a escolha de cada modelo separadamente. Os níveis do [template Sharp](https://huggingface.co/peculiar-ragdoll/Qwen-Sharp-Chat-Templates#setting-reasoning-effort) do Tiel adicionam instruções ao prompt: não são um orçamento numérico de tokens, e Alto não garante uma resposta melhor.
 
 A busca na web fica **ativada por padrão** em uma UI nova e usa **DDGS sem chave API** quando nenhum provedor foi salvo. Desmarque **Busca na web**, ao lado de **Configurações do chat**, para desativá-la; este navegador mantém a escolha após reiniciar para todos os modelos compatíveis. As preferências de ativação, o provedor e as chaves API já salvos são preservados. O provedor, a chave API e a concorrência são definidos nessas configurações. A execução Python no ambiente isolado está sempre disponível quando o modelo precisa dela. Blocos Python concluídos também podem ser executados manualmente com **Executar Python**.
+
+- **Busca:** buscas e leituras de páginas compartilham o limite de 3 consultas web por resposta. Com a busca na web ativada, o modelo pode ler páginas HTTP(S) públicas, sem JavaScript, login ou PDF. A leitura tem limite de 10 segundos e rejeita respostas acima de 512 KiB. O texto retornado tem limite de 20.000 caracteres, com indicação de cortes. As leituras usam cache de 5 minutos, intervalo mínimo de 2 segundos e a concorrência configurada para a busca.
+- **Data e hora:** sempre disponíveis quando solicitadas, no fuso local do navegador ou em um fuso IANA indicado. A fonte é o relógio do PC, sem conferir a hora pela internet; datas variáveis não são inseridas no prompt inicial do sistema.
+- **Calculadora:** aritmética decimal limitada a 100 algarismos significativos, com indicação de arredondamento, sem iniciar o Pyodide nem instalar dependências. Essas ferramentas pertencem à UI; a inferência apenas pela API não muda.
 
 ### Compactação automática do contexto
 

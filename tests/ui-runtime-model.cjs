@@ -98,6 +98,7 @@ async function main() {
     {role: "assistant", text: `資料${i}を確認`}]).flat();
   const m = {role: "assistant", text: "", reasoning: ""};
   f.messages = history.concat(m);
+  f.chat.messages = f.messages; // The compaction checkpoint belongs to this transcript.
   const body = {model: f.health.model, max_tokens: 1024, tools: f.StrataLocalTools.definitions({webSearch: true}), temperature: .7};
   const serialize = f.apiMessageSerializer(body.model), counts = [], summaries = [];
   f.contextJson = async (url, request) => {

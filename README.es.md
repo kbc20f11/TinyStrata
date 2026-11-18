@@ -104,13 +104,17 @@ Para la instalación de solo API, usa `run-api.bat`:
 & "$env:LOCALAPPDATA\TinyStrata\run-api.bat" --port 18080
 ```
 
-### Búsqueda y Python en la UI
+### Herramientas de la UI y chats guardados
 
 En la pestaña **Modelos** puedes descargar modelos o eliminar sus archivos descargados. El selector del chat solo muestra modelos instalados. La eliminación requiere confirmación. Cambia a otro modelo antes de eliminar el activo. Se conservan los archivos compartidos que necesita otro modelo.
 
 Los controles de razonamiento dependen del modelo: Qwen3.6, Clover y Gemma 4 permiten **Activado / Desactivado**, inicialmente **Activado**; LFM2.5 está siempre **Activado**. Tiel Coder ofrece **Desactivado / Bajo / Medio / Alto**, inicialmente **Medio** (`xhigh` para Alto). La UI guarda la selección de cada modelo por separado. Los niveles de la [plantilla Sharp](https://huggingface.co/peculiar-ragdoll/Qwen-Sharp-Chat-Templates#setting-reasoning-effort) de Tiel añaden instrucciones al prompt: no son un presupuesto numérico de tokens, y Alto no garantiza una respuesta mejor.
 
 En una UI nueva, la búsqueda web está **activada por defecto** y usa **DDGS sin clave API** si no hay un proveedor guardado. Desmarca **Búsqueda web**, junto a **Ajustes del chat**, para desactivarla; este navegador conserva la elección después de reiniciar para todos los modelos compatibles. Se mantienen las preferencias de activación, el proveedor y las claves API ya guardados. El proveedor, la clave API y la concurrencia se configuran en esos ajustes. La ejecución de Python en el entorno aislado está siempre disponible cuando el modelo la necesita. Los bloques Python terminados también se pueden ejecutar manualmente con **Ejecutar Python**.
+
+- **Búsqueda:** las búsquedas y las lecturas de páginas comparten un límite de 3 consultas web por respuesta. Con la búsqueda web activada, el modelo puede leer páginas HTTP(S) públicas, sin JavaScript, inicio de sesión ni PDF. La lectura tiene un límite de 10 segundos y rechaza respuestas de más de 512 KiB. El texto devuelto se limita a 20.000 caracteres e indica si se ha recortado. Las lecturas usan una caché de 5 minutos, un intervalo mínimo de 2 segundos y la concurrencia configurada para las búsquedas.
+- **Fecha y hora:** siempre disponibles a petición, en la zona local del navegador o una zona IANA indicada. Se usa el reloj del PC, sin verificar la hora por Internet; no se añaden fechas variables al prompt inicial del sistema.
+- **Calculadora:** aritmética decimal limitada a 100 cifras significativas, con aviso de redondeo, disponible sin iniciar Pyodide ni instalar dependencias. Estas herramientas son exclusivas de la UI; la inferencia mediante la API no cambia.
 
 ### Compactación automática del contexto
 

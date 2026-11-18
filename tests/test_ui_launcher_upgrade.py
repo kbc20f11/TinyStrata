@@ -406,8 +406,12 @@ class LauncherUpgradeTests(unittest.TestCase):
     def test_real_temporary_legacy_ui_upgrade_and_reuse(self):
         ui = self.source / "ui"
         ui.mkdir()
-        for name in ("launch.py", "server.py", "stdio.py", "chat_history.py", "tool_settings.py", "web_search.py", "sandbox_runtime.py"):
+        for name in launch.UI_BACKEND_FILES:
             shutil.copy2(ROOT / "ui" / name, ui / name)
+        support = self.source / "serve"
+        support.mkdir()
+        for name in ("__init__.py", "winjob.py"):
+            shutil.copy2(ROOT / "serve" / name, support / name)
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             self.launcher.port = probe.getsockname()[1]

@@ -1,6 +1,7 @@
 'use strict';
 // Bounded UI tool protocol and accounting. No browser, network, model or GPU.
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),assert=require('node:assert/strict');
+const grounding=fs.readFileSync(path.join(__dirname,'..','ui','web','grounding.js'),'utf8');
 const source=fs.readFileSync(path.join(__dirname,'..','ui','web','local-tools.js'),'utf8');
 let checks=0;
 const ok=(value,label)=>{assert(value,label);checks++;};
@@ -8,16 +9,36 @@ function fixture(){
  const calls=[],executed=[];
  const ctx={console,URL,Map,Set,Promise,JSON,Number,Object,Array,Error,DOMException,
   StrataSandbox:{execute:async({code,signal})=>{executed.push(code);if(signal?.aborted)throw new DOMException('cancelled','AbortError');return {stdout:'42\n',stderr:'',result:'',exitstatus:0,timeMs:1,images:[{name:'x.png',mime:'image/png',size:3,data_url:'data:image/png;base64,AAAA'}],files:[]};}},
-  fetch:async(url,options)=>{calls.push({url,options});return {ok:true,json:async()=>url.endsWith('/prepare')?{ready:true}:{query:JSON.parse(options.body).query,provider:'ddgs',results:[{title:'Source',url:'https://example.org/',snippet:'Result'}]}};}};
- vm.createContext(ctx);vm.runInContext(source,ctx);return {api:ctx.StrataLocalTools,ctx,calls,executed};
+  fetch:async(url,options)=>{calls.push({url,options});return {ok:true,json:async()=>url.endsWith('/prepare')?{ready:true}:{result:'42',expression:JSON.parse(options.body).expression,query:JSON.parse(options.body).query,provider:'ddgs',results:[{title:'Source',url:'https://example.org/',snippet:'Result'}]}};}};
+ vm.createContext(ctx);vm.runInContext(grounding,ctx);vm.runInContext(source,ctx);return {api:ctx.StrataLocalTools,ctx,calls,executed};
 }
 const call=(name,args,id='call_test')=>({id,name,arguments:JSON.stringify(args)});
 async function main(){
  let f=fixture(),a=f.api;
- ok(a.definitions({}).map(t=>t.function.name).join(',')==='run_python','Python is available by default while search remains opt-in');
- ok(a.definitions({codeExecution:false}).map(t=>t.function.name).join(',')==='run_python','retired saved code-off preference does not disable Python');
+ ok(a.definitions({}).map(t=>t.function.name).join(',')==='get_current_time,calculate,run_python','clock, calculator and Python work with search off');
+ ok(a.definitions({codeExecution:false}).map(t=>t.function.name).join(',')==='get_current_time,calculate,run_python','retired saved code-off preference does not disable Python');
  ok(f.calls.length===0&&f.executed.length===0,'offering Python does not download or start its runtime');
- ok(a.definitions({webSearch:true,codeExecution:true}).map(t=>t.function.name).join(',')==='web_search,run_python','tools are model-independent');
+ ok(a.definitions({webSearch:true,codeExecution:true}).map(t=>t.function.name).join(',')==='web_search,read_webpage,get_current_time,calculate,run_python','tools are model-independent');
+ let lightweight=a.session({webSearch:false});
+ let clock=await lightweight.run(call('get_current_time',{}));
+ ok(clock.ok&&JSON.parse(clock.text).source==='computer_clock'&&f.calls.length===0,'clock reads browser time without network or Python');
+ let calc=await lightweight.run(call('calculate',{expression:'6*7'}));
+ ok(calc.ok&&JSON.parse(calc.text).result==='42'&&f.calls[0].url==='local-ui/calculate'&&f.executed.length===0,'calculator never bootstraps Python');
+ ok(!(await lightweight.run(call('calculate',{expression:'1',code:'print(1)'}))).ok,'calculator rejects extra arguments before HTTP');
+ ok(!(await lightweight.run(call('get_current_time',{code:'x'}))).ok,'clock rejects unrelated arguments');
+ f.calls.length=0;
+ const choice={webSearch:true}, snapshot=a.session(choice);choice.webSearch=false;
+ ok((await snapshot.run(call('web_search',{query:'snapshot'}))).ok,'reply snapshots original search setting');
+ let pages=a.session({webSearch:false});
+ ok(!(await pages.run(call('read_webpage',{url:'https://example.org/'}))).ok,'page read cannot bypass search-off preference');
+ pages=a.session({webSearch:true});
+ ok((await pages.run(call('read_webpage',{url:'https://example.org/'}))).ok,'page lookup runs only when enabled');
+ ok(!(await pages.run(call('read_webpage',{url:'https://example.org/#section'}))).ok,'same-page anchor cannot repeat lookup');
+ ok((await pages.run(call('web_search',{query:'page context'}))).ok,'search shares page lookup budget');
+ ok(!(await pages.run(call('web_search',{query:'fourth lookup'}))).ok,'combined web budget includes repeats');
+ const cancelled=new AbortController();cancelled.abort();
+ await assert.rejects(a.session({}).run(call('get_current_time',{}),cancelled.signal),e=>e.name==='AbortError');checks++;
+ f.calls.length=0;
  const collected=new Map();
  a.mergeCalls(collected,[{index:0,id:'call_a',function:{name:'web_search',arguments:'{"que'}}]);
  const merged=a.mergeCalls(collected,[{index:0,function:{arguments:'ry":"hello"}'}}]);

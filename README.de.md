@@ -104,13 +104,17 @@ Für die reine API-Installation verwenden Sie `run-api.bat`:
 & "$env:LOCALAPPDATA\TinyStrata\run-api.bat" --port 18080
 ```
 
-### UI-Suche und Python
+### UI-Werkzeuge und gespeicherte Chats
 
 Im Tab **Modelle** können Sie Modelle herunterladen oder ihre heruntergeladenen Dateien entfernen. Die Modellauswahl im Chat zeigt nur installierte Modelle. Vor dem Löschen ist eine Bestätigung erforderlich. Wechseln Sie zu einem anderen Modell, bevor Sie das aktive löschen. Gemeinsam genutzte Dateien, die ein anderes Modell benötigt, bleiben erhalten.
 
 Die Denkoptionen richten sich nach dem Modell: Qwen3.6, Clover und Gemma 4 bieten **Ein / Aus**, anfangs **Ein**; LFM2.5 bleibt immer **Ein**. Tiel Coder bietet **Aus / Niedrig / Mittel / Hoch**, anfangs **Mittel** (`xhigh` für Hoch). Die UI merkt sich die Auswahl für jedes Modell getrennt. Tiels [Sharp-Vorlage](https://huggingface.co/peculiar-ragdoll/Qwen-Sharp-Chat-Templates#setting-reasoning-effort) steuert diese Stufen durch Prompt-Anweisungen. Sie sind kein numerisches Token-Budget, und Hoch garantiert keine bessere Antwort.
 
 In einer neuen UI ist die Websuche **standardmäßig eingeschaltet**. Ohne gespeicherten Suchanbieter wird **DDGS ohne API-Schlüssel** verwendet. Über das Kontrollkästchen **Websuche** neben **Chat-Einstellungen** lässt sie sich ausschalten; dieser Browser behält die Auswahl auch nach Neustarts für alle unterstützten Modelle bei. Bereits gespeicherte Ein-/Aus-Einstellungen, Suchanbieter und API-Schlüssel bleiben erhalten. Suchanbieter, API-Schlüssel und Parallelität werden in den Chat-Einstellungen festgelegt. Python im isolierten Browserbereich steht dem Modell bei Bedarf immer zur Verfügung. Fertig generierte Python-Codeblöcke lassen sich auch über **Python ausführen** manuell starten.
+
+- **Suche:** Suchanfragen und Seitenabrufe teilen sich ein Limit von 3 Webabfragen pro Antwort. Bei aktivierter Websuche kann das Modell öffentliche HTTP(S)-Seiten lesen, ohne JavaScript, Anmeldung oder PDF-Unterstützung. Abrufe sind auf 10 Sekunden begrenzt; Antworten über 512 KiB werden abgelehnt. Der zurückgegebene Text ist auf 20.000 Zeichen begrenzt, und Kürzungen werden ausgewiesen. Seitenabrufe verwenden einen 5-Minuten-Cache, mindestens 2 Sekunden Startabstand und die für die Suche eingestellte Parallelität.
+- **Datum und Uhrzeit:** bei Bedarf immer verfügbar, mit der lokalen Zeitzone des Browsers oder einer angegebenen IANA-Zeitzone. Die Quelle ist die PC-Uhr, ohne Abgleich mit einer Internet-Zeitquelle; wechselnde Datumswerte werden nicht in den anfänglichen Systemprompt eingefügt.
+- **Rechner:** begrenzte Dezimalarithmetik mit 100 signifikanten Stellen und ausgewiesener Rundung, ohne Pyodide zu starten oder weitere Abhängigkeiten zu installieren. Diese Werkzeuge gehören zur UI; reine API-Inferenz bleibt unverändert.
 
 ### Automatische Kontextkomprimierung
 
