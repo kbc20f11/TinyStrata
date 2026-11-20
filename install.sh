@@ -9,15 +9,18 @@
 #
 # Usage: ./install.sh [options]
 #   --dry-run            Detect and print the plan; change nothing (also: --check)
-#   --install-deps       Install missing build packages with the distribution's package manager (uses sudo unless run as root)
+#   --install-deps       Install missing build packages with the distribution's package manager (uses sudo
+#                        unless run as root), then check again before building
 #   --arch LIST          CUDA architectures, e.g. 86 or "86;89". Overrides detection (needed for GPUs
 #                        outside 86/89/120, e.g. Turing: --arch 75; these are not officially supported)
 #   --cuda-root DIR      CUDA toolkit root (default: $CUDA_HOME, $CUDA_PATH, nvcc on PATH, /usr/local/cuda, /opt/cuda)
-#   --build-dir DIR      Build directory (default: ./build)
+#   --build-dir DIR      Build directory (default: ./build). An existing directory keeps its CMake generator.
 #   --portable           Pass -DSTRATA_PORTABLE=ON (AVX2 floor, for use on other PCs)
 #   --jobs N             Parallel build jobs (default: number of CPUs)
-#   --no-venv            Do not create the Python virtual environment
+#   --no-venv            Do not create the Python virtual environment (and do not require venv/pip support)
 #   -h, --help           Show this help
+#
+# Environment (for tests): TINYSTRATA_OS_RELEASE overrides /etc/os-release.
 set -euo pipefail
 
 DRY_RUN=0 INSTALL_DEPS=0 ARCH="" CUDA_ROOT="" BUILD_DIR="" PORTABLE=0 JOBS="" NO_VENV=0
@@ -49,10 +52,11 @@ BUILD_DIR="${BUILD_DIR:-$SRC/build}"
 [ "$(uname -s)" = "Linux" ] || die "this script is for Linux (use install.ps1 on Windows)"
 
 # --- distribution and package manager -----------------------------------------------------------
-ID="" ID_LIKE=""
-if [ -r /etc/os-release ]; then
-  # shellcheck disable=SC1091
-  . /etc/os-release
+ID="" ID_LIKE="" PRETTY_NAME=""
+OS_RELEASE="${TINYSTRATA_OS_RELEASE:-/etc/os-release}"
+if [ -r "$OS_RELEASE" ]; then
+  # shellcheck disable=SC1090
+  . "$OS_RELEASE"
 fi
 PM="" PKGS=() INSTALL_CMD=""
 SUDO="sudo "; [ "$(id -u)" -eq 0 ] && SUDO=""
@@ -69,19 +73,80 @@ case " ${ID:-} ${ID_LIKE:-} " in
 esac
 say "Distribution: ${PRETTY_NAME:-unknown} (package manager: ${PM:-unknown})"
 
-# --- build tools --------------------------------------------------------------------------------
-missing=()
-for tool in cmake git python3; do
-  command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
-done
-if ! command -v g++ >/dev/null 2>&1 && ! command -v c++ >/dev/null 2>&1; then missing+=("a C++ compiler (g++)"); fi
-GENERATOR="Unix Makefiles"
-if command -v ninja >/dev/null 2>&1; then GENERATOR="Ninja"; else missing+=("ninja (optional, faster builds)"); fi
-if [ "${#missing[@]}" -gt 0 ]; then
-  say "Missing: ${missing[*]}"
-  if [ -n "$INSTALL_CMD" ]; then say "Install with: $INSTALL_CMD"; else say "Install the equivalents with your package manager."; fi
+# --- build tools and the Python environment ---------------------------------------------------------
+# Sets `missing` (required) and `optional`. It runs once up front and again after --install-deps, so the
+# result that decides the build is always the one measured after any installation.
+missing=() optional=()
+
+# True when a virtual environment with pip can really be created here. `import venv` is not enough: on
+# Debian/Ubuntu the module imports without python3-venv, and creation then fails for lack of ensurepip.
+venv_ready() {
+  local tmp
+  tmp="$(mktemp -d)" || return 1
+  if python3 -m venv "$tmp/venv" >/dev/null 2>&1 && "$tmp/venv/bin/python" -m pip --version >/dev/null 2>&1; then
+    rm -rf "$tmp"; return 0
+  fi
+  rm -rf "$tmp"; return 1
+}
+
+detect_tools() {
+  missing=() optional=()
+  local tool
+  for tool in cmake git python3; do
+    command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+  done
+  if ! command -v g++ >/dev/null 2>&1 && ! command -v c++ >/dev/null 2>&1; then missing+=("a C++ compiler (g++)"); fi
+  command -v ninja >/dev/null 2>&1 || optional+=("ninja (faster builds)")
+  if [ "$NO_VENV" -eq 0 ] && command -v python3 >/dev/null 2>&1 && ! venv_ready; then
+    missing+=("Python venv/pip support (python3-venv on Debian/Ubuntu)")
+  fi
+}
+
+report_tools() {
+  if [ "${#missing[@]}" -gt 0 ]; then say "Missing: ${missing[*]}"; fi
+  if [ "${#optional[@]}" -gt 0 ]; then say "Optional, not installed: ${optional[*]}"; fi
+  if [ "${#missing[@]}" -gt 0 ] || [ "${#optional[@]}" -gt 0 ]; then
+    if [ -n "$INSTALL_CMD" ]; then say "Install with: $INSTALL_CMD"; else say "Install the equivalents with your package manager."; fi
+  fi
+}
+
+detect_tools
+report_tools
+
+if [ "$INSTALL_DEPS" -eq 1 ] && { [ "${#missing[@]}" -gt 0 ] || [ "${#optional[@]}" -gt 0 ]; }; then
+  [ -n "$INSTALL_CMD" ] || die "--install-deps does not know this distribution; install the packages yourself"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    say "(dry run) would run: $INSTALL_CMD, then check the tools again"
+  else
+    say "Running: $INSTALL_CMD"
+    $INSTALL_CMD
+    detect_tools
+    if [ "${#missing[@]}" -gt 0 ]; then die "still missing after installing packages: ${missing[*]}"; fi
+    say "After installation: all required tools are present."
+  fi
 fi
-python3 -c 'import venv' >/dev/null 2>&1 || { say "Missing: the Python venv module (python3-venv on Debian/Ubuntu)"; }
+
+# CMake refuses to reuse a build directory with another generator, so an existing directory keeps its own.
+# A new directory gets Ninja when it is available now, i.e. after any installation above.
+GENERATOR="" GENERATOR_NOTE="" GENERATOR_ERROR=""
+select_generator() {
+  local cached=""
+  if [ -f "$BUILD_DIR/CMakeCache.txt" ]; then
+    cached="$(sed -n 's/^CMAKE_GENERATOR:INTERNAL=//p' "$BUILD_DIR/CMakeCache.txt" | head -n1)"
+  fi
+  if [ -n "$cached" ]; then
+    GENERATOR="$cached" GENERATOR_NOTE=" (kept from the existing build directory)"
+    case "$cached" in
+      Ninja*) command -v ninja >/dev/null 2>&1 || GENERATOR_ERROR="$BUILD_DIR was configured with $cached but ninja is not installed; install ninja or use another --build-dir" ;;
+      "Unix Makefiles") command -v make >/dev/null 2>&1 || GENERATOR_ERROR="$BUILD_DIR was configured with Unix Makefiles but make is not installed" ;;
+    esac
+  elif command -v ninja >/dev/null 2>&1; then
+    GENERATOR="Ninja"
+  else
+    GENERATOR="Unix Makefiles"
+  fi
+}
+select_generator
 
 # --- GPU and CUDA toolkit ------------------------------------------------------------------------
 # GPU architectures the CMake default and the Windows installer accept.
@@ -143,21 +208,18 @@ fi
 
 # --- plan ----------------------------------------------------------------------------------------
 say ""
-say "Plan: configure with $GENERATOR, TINYSTRATA_BACKEND=CUDA, CMAKE_CUDA_ARCHITECTURES='${ARCH:-<unset>}'$( [ "$PORTABLE" -eq 1 ] && printf ', STRATA_PORTABLE=ON' )"
+say "Plan: configure with $GENERATOR$GENERATOR_NOTE, TINYSTRATA_BACKEND=CUDA, CMAKE_CUDA_ARCHITECTURES='${ARCH:-<unset>}'$( [ "$PORTABLE" -eq 1 ] && printf ', STRATA_PORTABLE=ON' )"
 say "      build directory: $BUILD_DIR"
 [ "$NO_VENV" -eq 1 ] || say "      Python virtual environment: $SRC/.venv (requirements.txt)"
-
-if [ "$INSTALL_DEPS" -eq 1 ] && [ "${#missing[@]}" -gt 0 ]; then
-  [ -n "$INSTALL_CMD" ] || die "--install-deps does not know this distribution; install the packages yourself"
-  if [ "$DRY_RUN" -eq 1 ]; then say "(dry run) would run: $INSTALL_CMD"; else say "Running: $INSTALL_CMD"; $INSTALL_CMD; fi
-fi
+[ -z "$GENERATOR_ERROR" ] || say "      problem: $GENERATOR_ERROR"
 
 if [ "$DRY_RUN" -eq 1 ]; then say "Dry run: nothing was changed."; exit 0; fi
 
+# Everything that can stop the build is checked here, before the expensive part.
 [ -n "$ARCH" ] || die "no CUDA architecture selected (see above)"
 [ "$CUDA_OK" -eq 1 ] || die "no usable CUDA toolkit (see above)"
-for tool in cmake git python3; do command -v "$tool" >/dev/null 2>&1 || die "$tool is required (see above)"; done
-command -v g++ >/dev/null 2>&1 || command -v c++ >/dev/null 2>&1 || die "a C++ compiler is required (see above)"
+[ "${#missing[@]}" -eq 0 ] || die "missing: ${missing[*]} (see above; --install-deps can install packages)"
+[ -z "$GENERATOR_ERROR" ] || die "$GENERATOR_ERROR"
 
 # --- build ---------------------------------------------------------------------------------------
 JOBS="${JOBS:-$(nproc 2>/dev/null || echo 4)}"
