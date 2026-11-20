@@ -3640,9 +3640,33 @@ $("scrim").onclick = () => openDrawer(false);
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("drawer").dataset.open === "true") openDrawer(false); });
 
 // ------------------------------------------------------------------ language (serve/web/i18n.js)
-// The user's own choice, kept in this browser: English until they pick another. /?lang=de shows one for this visit only.
+// A URL can preview a language, but an explicit choice supersedes that preview.
 const urlLang = new URLSearchParams(location.search).get("lang");
+let languageChangeEpoch = 0;
 $("lang").innerHTML = StrataI18n.LANGUAGES.map(([code, name]) => `<option value="${esc(code)}">${esc(name)}</option>`).join("");
+async function changeLanguage(code, persist = false) {
+  const epoch = ++languageChangeEpoch;
+  try {
+    await StrataI18n.setLanguage(code);
+    if (epoch !== languageChangeEpoch) return false;
+    if (persist) {
+      const saved = store.set("lang", StrataI18n.lang);
+      const url = new URL(location.href);
+      url.searchParams.delete("lang");
+      history.replaceState(null, "", url.pathname + url.search + url.hash);
+      if (!saved) toast("warn", tr("settings.languageUnsaved", "The language changed for this page, but could not be saved in this browser."));
+    }
+    return true;
+  } catch (e) {
+    if (epoch === languageChangeEpoch) {
+      toast("error", tr("settings.languageFailed", "Could not load the language"),
+        tr("settings.languageRetry", "Your current language was kept. Check the connection and try again."));
+    }
+    return false;
+  } finally {
+    if (epoch === languageChangeEpoch) $("lang").value = StrataI18n.lang;
+  }
+}
 function showLanguage() {
   $("lang").value = StrataI18n.lang;
   renderEmptyChat();
@@ -3659,14 +3683,12 @@ function showLanguage() {
   if (lastMetrics) render(lastMetrics);
 }
 $("lang").onchange = async () => {
-  store.set("lang", $("lang").value);
-  await StrataI18n.setLanguage($("lang").value);
-  showLanguage();
+  if (await changeLanguage($("lang").value, true)) showLanguage();
 };
 
 // ------------------------------------------------------------------ start
 async function start() {
-  await StrataI18n.setLanguage(urlLang || store.get("lang", "ja"));
+  await changeLanguage(urlLang || store.get("lang", "ja"));
   $("lang").value = StrataI18n.lang;
   applyTheme();
   renderEmptyChat();

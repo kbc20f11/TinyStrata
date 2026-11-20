@@ -5,7 +5,7 @@
 // data-i18n="key" (also data-i18n-title, data-i18n-label, data-i18n-placeholder) and holds its English text in the HTML.
 // So the page reads fine with no catalog at all.  Every other language is a catalog, serve/web/locales/<lang>.json
 // (a flat {"key": "text"} object; a plural is {"one": "...", "other": "..."}, the CLDR names of the language).
-// serve/test_web_i18n.py keeps the catalogs complete: same keys as the English text in the code, same {placeholders}.
+// tests/ui-language.cjs checks switching/failure behavior and the related notices.
 //
 // The language is the user's choice (About > Settings), kept in this browser.  Nothing is chosen for them from the
 // browser's language: a page that is translated in part would mix two languages.
@@ -60,20 +60,21 @@
     if (root.document && root.document.documentElement) root.document.documentElement.lang = lang;
   }
 
-  // load a catalog; English, or a catalog that cannot be read, leaves the English text in the code
+  // Apply a complete language change only after its catalog has loaded. A failed
+  // request keeps the current language; the caller can report it and allow retry.
   async function setLanguage(code) {
     const epoch = ++languageEpoch;
     code = normalizeLanguage(code);
     let next = null;
     if (code !== "en") {
       try {
-        const r = await root.fetch(`web/locales/${code}.json?v=20261101.12`, {cache: "no-store"});
+        const r = await root.fetch(`web/locales/${code}.json?v=20261120.1`, {cache: "no-store"});
         const j = r.ok ? await r.json() : null;
         if (j && typeof j === "object" && !Array.isArray(j)) next = j;
-      } catch (e) { /* the English text stays */ }
-      if (!next) code = "en";
+      } catch (e) { /* keep the current language and report below */ }
     }
     if (epoch !== languageEpoch) return lang;
+    if (code !== "en" && !next) throw new Error(`Could not load language: ${code}`);
     lang = code; catalog = next; rules = null;
     try { rules = new Intl.PluralRules(lang); } catch (e) { /* other */ }
     apply();
