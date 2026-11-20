@@ -308,7 +308,10 @@ renderMonitor({state: "idle"}, hw, {}, {}, history, null, [request], null, 1);
 assert.equal(($("req-body").innerHTML.match(/<td\b/g) || []).length, 9);
 assert.ok($("req-body").innerHTML.includes("50.0%"));
 '''
-        result = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=15)
+        # Keep the generated fixture off the Windows command line and allow
+        # for slower process startup on hosted CI runners.
+        result = subprocess.run([NODE, "--input-type=commonjs", "-"], input=script,
+                                capture_output=True, encoding="utf-8", timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_uma_locale_keys_are_available_in_english_and_japanese(self):
