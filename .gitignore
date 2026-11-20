@@ -3,6 +3,11 @@
 !/.gitattributes
 !/.gitignore
 !/AGENTS.md
+!/.github/
+/.github/**
+!/.github/workflows/
+/.github/workflows/**
+!/.github/workflows/tests.yml
 !/docs/
 /docs/**
 !/docs/development-memory.md
