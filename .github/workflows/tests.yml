@@ -1,0 +1,105 @@
+name: tests
+
+# CPU-only checks: nothing here needs a GPU, CUDA, HIP or SYCL toolchain.
+# The GPU backends are not built or run in this workflow.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-cpu:
+    name: Native CPU tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Configure without a GPU backend
+        run: cmake -S . -B build -DTINYSTRATA_BACKEND=NONE -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build the CPU-only test executables
+        run: >
+          cmake --build build --config Release --parallel --target
+          native_conversations_test native_command_inbox_test
+          q36_expert_profile_test q36_topic_policy_test
+          mmq_ids_margin_test gemma_image_text_prefill_test hip_vmm_policy_test
+
+      - name: Run the tests
+        run: |
+          failed=0
+          for t in native_conversations_test native_command_inbox_test \
+                   q36_expert_profile_test q36_topic_policy_test \
+                   mmq_ids_margin_test gemma_image_text_prefill_test hip_vmm_policy_test; do
+            exe=$(find build -type f \( -name "$t" -o -name "$t.exe" \) | head -n 1)
+            if [ -z "$exe" ]; then echo "::error::$t was not built"; failed=1; continue; fi
+            echo "::group::$t"
+            if "$exe" < /dev/null; then echo "PASS $t"; else echo "::error::$t failed"; failed=1; fi
+            echo "::endgroup::"
+          done
+          exit $failed
+
+  python:
+    name: Python tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install the pinned requirements
+        run: python -m pip install -r requirements.txt
+
+      - name: Run the Python tests
+        # The tests import `serve` and `run`, so the repository root goes on PYTHONPATH.
+        # Skipped everywhere: q36-prefill-cancel.py needs --command-json/--output, and
+        # test_native_command_inbox.py needs a compiled executable (covered by the native job).
+        # Skipped on Linux only: two tests that assume Windows behaviour and fail there
+        # (test_hip_runtime_integration.py, test_vision_startup_resilience.py).
+        # The Windows runner's default TEMP is an 8.3 short path (C:\Users\RUNNER~1\...), but the
+        # tests compare it with resolved long paths. Point TEMP/TMP at the long RUNNER_TEMP path.
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: |
+          export PYTHONPATH="$PWD"
+          skip=" q36-prefill-cancel.py test_native_command_inbox.py "
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            skip="$skip test_hip_runtime_integration.py test_vision_startup_resilience.py "
+          fi
+          failed=0; passed=0
+          for f in tests/*.py; do
+            b=$(basename "$f")
+            case "$skip" in *" $b "*) echo "SKIP $b"; continue;; esac
+            echo "::group::$b"
+            if timeout 180 python "$f"; then passed=$((passed+1)); echo "PASS $b"
+            else echo "::error::$b failed"; failed=$((failed+1)); fi
+            echo "::endgroup::"
+          done
+          echo "passed=$passed failed=$failed"
+          [ "$failed" -eq 0 ]
