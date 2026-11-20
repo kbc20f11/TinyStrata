@@ -203,7 +203,13 @@ class SearchTests(unittest.TestCase):
         runner = Mock(return_value={'results': ROWS})
         s = service(runner, cache_ttl=.001)
         try:
-            s.search('same'); time.sleep(.01); s.search('same')
+            s.search('same')
+            # Wait until the clock has really passed the entry's expiry: a fixed sleep can be shorter
+            # than the Windows monotonic clock tick (~15 ms), so the entry would still look fresh.
+            expiry = max(entry[0] for entry in s._cache.values())
+            while time.monotonic() <= expiry:
+                time.sleep(.001)
+            s.search('same')
             self.assertEqual(runner.call_count, 2)
             with self.assertRaises(search.SearchError) as caught:
                 s.search('private', settings={'provider': 'brave'})

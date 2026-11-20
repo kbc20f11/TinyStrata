@@ -29,6 +29,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install the pinned requirements (for the Python wrappers below)
+        run: python -m pip install -r requirements.txt
+
       - name: Configure without a GPU backend
         run: cmake -S . -B build -DTINYSTRATA_BACKEND=NONE -DCMAKE_BUILD_TYPE=Release
 
@@ -38,6 +45,7 @@ jobs:
           native_conversations_test native_command_inbox_test
           q36_expert_profile_test q36_topic_policy_test
           mmq_ids_margin_test gemma_image_text_prefill_test hip_vmm_policy_test
+          unicode_paths_test native_utf8_args_test
 
       - name: Run the tests
         run: |
@@ -49,6 +57,35 @@ jobs:
             if [ -z "$exe" ]; then echo "::error::$t was not built"; failed=1; continue; fi
             echo "::group::$t"
             if "$exe" < /dev/null; then echo "PASS $t"; else echo "::error::$t failed"; failed=1; fi
+            echo "::endgroup::"
+          done
+          exit $failed
+
+      - name: Run the Python wrappers of the native tests
+        # These wrappers need a compiled executable, so they run here and not in the Python job.
+        # A wrapper whose executable is missing skips itself and still exits 0, so fail the step
+        # unless every wrapper really ran: no "skipped" and a non-zero test count.
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: |
+          export PYTHONPATH="$PWD"
+          find_exe() { find build -type f \( -name "$1" -o -name "$1.exe" \) | head -n 1; }
+          inbox=$(find_exe native_command_inbox_test); unicode=$(find_exe unicode_paths_test); utf8=$(find_exe native_utf8_args_test)
+          for e in "$inbox" "$unicode" "$utf8"; do [ -n "$e" ] || { echo "::error::a native test executable was not built"; exit 1; }; done
+          export NATIVE_COMMAND_INBOX_TEST_EXE="$PWD/$inbox"
+          export TINYSTRATA_UNICODE_PATH_TEST_EXE="$PWD/$unicode"
+          export NATIVE_UTF8_ARGS_TEST_EXE="$PWD/$utf8"
+          failed=0
+          for t in test_native_command_inbox.py test_unicode_paths.py test_native_utf8_args.py; do
+            echo "::group::$t"
+            if timeout 300 python "tests/$t" >"$RUNNER_TEMP/$t.log" 2>&1; then
+              cat "$RUNNER_TEMP/$t.log"
+              ran=$(sed -n 's/^Ran \([0-9]*\) test.*/\1/p' "$RUNNER_TEMP/$t.log")
+              if grep -qi "skipped" "$RUNNER_TEMP/$t.log" || [ "${ran:-0}" -eq 0 ]; then echo "::error::$t was skipped or ran nothing"; failed=1
+              else echo "PASS $t ($ran tests)"; fi
+            else cat "$RUNNER_TEMP/$t.log"; echo "::error::$t failed"; failed=1; fi
             echo "::endgroup::"
           done
           exit $failed
@@ -76,12 +113,11 @@ jobs:
 
       - name: Run the Python tests
         # The tests import `serve` and `run`, so the repository root goes on PYTHONPATH.
-        # Skipped everywhere: q36-prefill-cancel.py needs --command-json/--output,
-        # test_native_command_inbox.py needs a compiled executable (covered by the native job), and
-        # the intel-*.py reference/fixture generators are tools that need a model or --input/--output
-        # arguments, or numpy/gguf (not in requirements.txt), rather than self-contained tests.
-        # Skipped on Windows only: test_ui_web_search.py expires a 1 ms cache with a 10 ms sleep, which is
-        # shorter than the Windows monotonic clock tick (~15 ms), so the entry may not have expired yet.
+        # Not run here: the three wrappers of compiled native tests (test_native_command_inbox.py,
+        # test_unicode_paths.py, test_native_utf8_args.py) run in the native job, which builds their
+        # executables and fails if any of them is skipped. Also not run: q36-prefill-cancel.py needs
+        # --command-json/--output, and the intel-*.py reference/fixture generators are tools that need a
+        # model or --input/--output arguments, or numpy/gguf (not in requirements.txt), not self-contained tests.
         # Skipped on Linux only: two tests that assume Windows behaviour and fail there
         # (test_hip_runtime_integration.py, test_vision_startup_resilience.py).
         # The Windows runner's default TEMP is an 8.3 short path (C:\Users\RUNNER~1\...), but the
@@ -92,12 +128,9 @@ jobs:
           TMP: ${{ runner.temp }}
         run: |
           export PYTHONPATH="$PWD"
-          skip=" q36-prefill-cancel.py test_native_command_inbox.py intel-gemma-normal.py intel-lfm-q4-dp4a-reference.py intel-lfm-q4-reference.py intel-projection-fixture.py intel-quant-reference.py "
+          skip=" q36-prefill-cancel.py test_native_command_inbox.py test_unicode_paths.py test_native_utf8_args.py intel-gemma-normal.py intel-lfm-q4-dp4a-reference.py intel-lfm-q4-reference.py intel-projection-fixture.py intel-quant-reference.py "
           if [ "$RUNNER_OS" = "Linux" ]; then
             skip="$skip test_hip_runtime_integration.py test_vision_startup_resilience.py "
-          fi
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            skip="$skip test_ui_web_search.py "
           fi
           failed=0; passed=0
           for f in tests/*.py; do
