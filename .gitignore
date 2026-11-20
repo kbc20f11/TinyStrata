@@ -3,11 +3,13 @@
 !/.gitattributes
 !/.gitignore
 !/AGENTS.md
+!/install.sh
 !/.github/
 /.github/**
 !/.github/workflows/
 /.github/workflows/**
 !/.github/workflows/tests.yml
+!/.github/workflows/install-script.yml
 !/docs/
 /docs/**
 !/docs/development-memory.md

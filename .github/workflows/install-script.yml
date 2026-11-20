@@ -1,0 +1,64 @@
+name: install-script
+
+# Checks install.sh without a GPU: shellcheck, and on four distributions a run of the package
+# command it suggests followed by a dry run. The CUDA build itself is not run here.
+on:
+  pull_request:
+    paths:
+      - install.sh
+      - .github/workflows/install-script.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-script-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: shellcheck install.sh
+
+  distros:
+    name: dry run on ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:24.04", "debian:12", "fedora:latest", "archlinux:latest"]
+    container: ${{ matrix.image }}
+    steps:
+      - name: Minimal prerequisites (bash and the tools the checkout needs)
+        run: |
+          if command -v apt-get >/dev/null; then apt-get update && apt-get install -y --no-install-recommends bash ca-certificates
+          elif command -v dnf >/dev/null; then dnf install -y bash ca-certificates
+          elif command -v pacman >/dev/null; then pacman -Sy --noconfirm bash ca-certificates; fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Dry run before installing packages (reports what is missing)
+        shell: bash
+        run: bash install.sh --dry-run
+
+      - name: Run the package command the script suggests
+        shell: bash
+        run: |
+          cmd="$(bash install.sh --dry-run | sed -n 's/^Install with: //p')"
+          echo "suggested: $cmd"
+          [ -n "$cmd" ] || { echo "::error::no package command was suggested"; exit 1; }
+          # Arch images need a package database refresh first; the others refresh on install.
+          if command -v pacman >/dev/null; then pacman -Sy --noconfirm; cmd="${cmd/-S --needed/-S --needed --noconfirm}"; fi
+          if command -v apt-get >/dev/null; then apt-get update; fi
+          eval "$cmd"
+
+      - name: Dry run after installing packages (nothing but CUDA should be missing)
+        shell: bash
+        run: |
+          out="$(bash install.sh --dry-run)"; echo "$out"
+          if echo "$out" | grep -q '^Missing:'; then echo "::error::packages are still reported missing"; exit 1; fi
+          echo "$out" | grep -q 'nvcc not found' || { echo "::error::expected the no-CUDA report"; exit 1; }
