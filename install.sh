@@ -11,8 +11,7 @@
 #   --dry-run            Detect and print the plan; change nothing (also: --check)
 #   --install-deps       Install missing build packages with the distribution's package manager (uses sudo
 #                        unless run as root), then check again before building
-#   --arch LIST          CUDA architectures, e.g. 86 or "86;89". Overrides detection (needed for GPUs
-#                        outside 86/89/120, e.g. Turing: --arch 75; these are not officially supported)
+#   --arch LIST          CUDA architectures, e.g. 75 or "86;89". Overrides GPU detection.
 #   --cuda-root DIR      CUDA toolkit root (default: $CUDA_HOME, $CUDA_PATH, nvcc on PATH, /usr/local/cuda, /opt/cuda)
 #   --build-dir DIR      Build directory (default: ./build). An existing directory keeps its CMake generator.
 #   --portable           Pass -DSTRATA_PORTABLE=ON (AVX2 floor, for use on other PCs)
@@ -149,13 +148,13 @@ select_generator() {
 select_generator
 
 # --- GPU and CUDA toolkit ------------------------------------------------------------------------
-# GPU architectures the CMake default and the Windows installer accept.
-SUPPORTED="8.6 8.9 12.0"
+# Select sm_75 when Turing is present, without adding it to the generic build.
+AUTO_ARCHS="7.5 8.6 8.9 12.0"
 DETECTED=() UNSUPPORTED=()
 if command -v nvidia-smi >/dev/null 2>&1; then
   while IFS= read -r cap; do
     cap="${cap//[[:space:]]/}"; [ -n "$cap" ] || continue
-    case " $SUPPORTED " in
+    case " $AUTO_ARCHS " in
       *" $cap "*) DETECTED+=("${cap/./}") ;;
       *) UNSUPPORTED+=("$cap") ;;
     esac
@@ -169,12 +168,12 @@ if [ -z "$ARCH" ]; then
   if [ "${#DETECTED[@]}" -gt 0 ]; then
     ARCH="$(printf '%s\n' "${DETECTED[@]}" | sort -un | paste -sd ';' -)"
   elif [ "${#UNSUPPORTED[@]}" -gt 0 ]; then
-    say "Detected compute capability ${UNSUPPORTED[*]}, which is outside the supported 86 / 89 / 120."
+    say "Detected compute capability ${UNSUPPORTED[*]}, outside automatic targets ($AUTO_ARCHS)."
     say "Pass --arch (for example --arch ${UNSUPPORTED[0]/./}) to try it anyway; this is not officially supported."
     ARCH=""
   else
     ARCH="86;89;120"
-    say "No GPU detected; using the installer default of 86;89;120 (a build that runs on any supported GPU)."
+    say "No GPU detected; using the installer default of 86;89;120."
   fi
 fi
 

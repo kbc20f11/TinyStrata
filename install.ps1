@@ -756,7 +756,7 @@ function Get-TinyStrataBuildArchitectures {
     if ($smi) {
         $capabilities = @(& $smi.Source --query-gpu=compute_cap --format=csv,noheader 2>$null)
         if ($LASTEXITCODE -eq 0) {
-            $architectures = @($capabilities | ForEach-Object { if ($_.Trim() -match '^(8\.6|8\.9|12\.0)$') { $Matches[1].Replace('.', '') } } | Select-Object -Unique)
+            $architectures = @($capabilities | ForEach-Object { if ($_.Trim() -match '^(7\.5|8\.6|8\.9|12\.0)$') { $Matches[1].Replace('.', '') } } | Select-Object -Unique)
             if ($architectures.Count -gt 0) { return $architectures -join ';' }
         }
     }

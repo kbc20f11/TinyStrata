@@ -59,9 +59,10 @@ exit 0
 STUB_OK = "#!/bin/sh\nexit 0\n"
 STUB_NVCC = '#!/bin/sh\necho "Cuda compilation tools, release 13.4, V13.4.92"\n'
 STUB_SMI = r"""#!/bin/sh
+capabilities="$(cat "$FAKE_STATE/compute-cap" 2>/dev/null || echo 8.6)"
 case "$*" in
-  *compute_cap*name*|*name*compute_cap*) echo "Fake GPU, 8.6" ;;
-  *compute_cap*) echo "8.6" ;;
+  *compute_cap*name*|*name*compute_cap*) printf '%s\n' "$capabilities" | sed '/^$/d; s/^/Fake GPU, /' ;;
+  *compute_cap*) printf '%s\n' "$capabilities" ;;
 esac
 """
 
@@ -152,6 +153,28 @@ class InstallScript(unittest.TestCase):
     def configured_generator(self):
         text = (self.build / "CMakeCache.txt").read_text()
         return text.split("CMAKE_GENERATOR:INTERNAL=")[1].splitlines()[0]
+
+    def test_cuda_architecture_selection(self):
+        for detected, arguments, expected in (
+            ("7.5", (), "75"),
+            ("8.9\n7.5\n7.5", (), "75;89"),
+            ("12.0", (), "120"),
+            ("", (), "86;89;120"),
+            ("7.5", ("--arch", "89"), "89"),
+        ):
+            with self.subTest(detected=detected, arguments=arguments):
+                (self.state / "compute-cap").write_text(detected)
+                result = self.run_script("--no-venv", *arguments)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                configure = self.log("cmake.log").splitlines()[-2]
+                self.assertIn(f"-DCMAKE_CUDA_ARCHITECTURES={expected} ", configure)
+
+    def test_volta_is_not_automatically_selected(self):
+        (self.state / "compute-cap").write_text("7.0")
+        result = self.run_script("--no-venv")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no CUDA architecture selected", result.stderr)
+        self.assertEqual(self.log("cmake.log"), "")
 
     # --- generator across installation and repeat runs ---
     def test_clean_environment_installs_ninja_first_then_builds_with_ninja_and_repeats(self):
