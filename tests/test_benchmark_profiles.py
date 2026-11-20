@@ -306,7 +306,7 @@ class IntelTextBenchmarkVariant(unittest.TestCase):
     def test_actual_api_profile_fixed_kv_and_uma_metadata_are_required(self):
         cfg, info, health = self.configured(), self.engine(), self.health()
         bench.validate_intel_text_engine(info, health, cfg)
-        for change in ({'backend': 'cuda'}, {'intel_profile': 'generic'}, {'experimental': False}, {'images': True}):
+        for change in ({'backend': 'cuda'}, {'intel_profile': 'generic'}, {'experimental': 'false'}, {'images': True}):
             with self.subTest(health=change), self.assertRaises(ValueError):
                 bench.validate_intel_text_engine(info, {**health, **change}, cfg)
         for change in ({'backend': 'cuda'}, {'mtp': 0}, {'kv': 'fp32'}, {'max_context': 8192},

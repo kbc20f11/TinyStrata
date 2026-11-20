@@ -138,7 +138,7 @@ class ModelProfiles:
     def _resolve_intel(name: str) -> str:
         selected = ModelProfiles.resolve(name)
         if selected not in _INTEL_PROFILE_FILES:
-            raise ValueError("Intel requires a pinned experimental text model")
+            raise ValueError("Intel requires a pinned model")
         return selected
 
     @classmethod

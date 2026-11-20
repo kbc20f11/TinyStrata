@@ -6,7 +6,7 @@
 
 Use **`tinystrata-bench-v1`** when submitting comparable TinyStrata measurements. The runner, fixed texts and image in this directory define the workload. Keep the protocol version and input SHA-256 hashes with the results; changing the workload requires a new protocol version. Older README measurements do not automatically become v1 results.
 
-The experimental Windows Intel text route has an explicit **`--intel-text`** variant:
+The Windows Intel text route has an explicit **`--intel-text`** variant:
 
 ```powershell
 & $python .\benchmark\run.py --intel-text --model qwen --config-dir PATH_TO_CONFIG_DIRECTORY

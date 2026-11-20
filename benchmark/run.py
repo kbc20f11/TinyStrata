@@ -309,9 +309,9 @@ def intel_text_parameters(cfg):
 def validate_intel_text_engine(info, health, cfg):
     """Confirm the actual API/device and the fixed-context text variant."""
     if (health.get('backend') != 'sycl' or health.get('intel_profile') != cfg['intel_profile'] or
-            health.get('experimental') is not True or health.get('model') != cfg['model_name'] or
+            not isinstance(health.get('experimental'), bool) or health.get('model') != cfg['model_name'] or
             health.get('images') is not False):
-        raise ValueError('The owned API does not identify the selected experimental Intel text profile')
+        raise ValueError('The owned API does not identify the selected Intel text profile')
     from serve.intel_backend import canonical_model
     from serve.intel_models import TARGET_ONLY_MODELS
     target = canonical_model(cfg) in TARGET_ONLY_MODELS

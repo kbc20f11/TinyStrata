@@ -291,7 +291,7 @@ def main() -> int:
     ap.add_argument("--draft-model", type=Path, help="existing Gemma4 QAT assistant GGUF for MTP")
     ap.add_argument("--exe", type=Path, help="built tinystrata executable")
     ap.add_argument("--backend", choices=("auto", "cuda", "hip", "sycl"), default="auto",
-                    help="GPU backend; experimental sycl text uses a separate model-specific config and runtime")
+                    help="GPU backend; Intel SYCL uses a separate model-specific config and runtime")
     from serve.intel_models import MODEL_PROFILES
     ap.add_argument("--intel-profile", choices=("generic", *MODEL_PROFILES.values()),
                     help="explicit model-specific Intel profile; B390 profiles select the tested execution options")

@@ -1,7 +1,7 @@
 # Intel is opt-in. These targets establish the native Windows foundation only;
 # no model is advertised as supported until its engine and quality gates pass.
 if(NOT WIN32)
-  message(FATAL_ERROR "TinyStrata's experimental SYCL route currently targets native Windows")
+  message(FATAL_ERROR "TinyStrata's Intel SYCL backend currently targets native Windows")
 endif()
 if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM" OR CMAKE_CXX_COMPILER_VERSION VERSION_LESS 2026.2)
   message(FATAL_ERROR "The initial Windows Intel route requires oneAPI DPC++/C++ 2026.2 or newer")
@@ -159,7 +159,7 @@ install(TARGETS tinystrata-intel tinystrata-intel-gemma4 tinystrata-intel-lfm2 t
 install(FILES LICENSE NOTICE DESTINATION share/licenses/TinyStrata)
 install(FILES third_party/ggml/LICENSE DESTINATION share/licenses/TinyStrata/ggml)
 install(FILES third_party/licenses/gufo.txt DESTINATION share/licenses/TinyStrata/gufo RENAME LICENSE)
-message(STATUS "Experimental Intel engines: image input requires --vision and a matching resident encoder")
+message(STATUS "Intel engines: image input requires --vision and a matching resident encoder")
 
 # PRIVATE opt-in review fixture; never part of the automatic CPU CTest group.
 add_executable(intel_gpu_sampling_test EXCLUDE_FROM_ALL tests/intel-gpu-sampling.cpp)

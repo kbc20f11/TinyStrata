@@ -306,7 +306,7 @@ try {
     $normalLinkHash=(Get-FileHash -LiteralPath (Join-Path $desktop 'TinyStrata.lnk') -Algorithm SHA256).Hash
     Initialize-TinyStrataDesktopShortcut -SourceRoot $shortcutSource -WorkRoot $shortcutWork -DesktopDirectory $desktop -Backend sycl -IntelProfile b390-qwen36
     $intelHelper=Join-Path $shortcutWork 'runtime\ui-sycl\desktop-launch.ps1'
-    $intelLink=Join-Path $desktop 'TinyStrata Intel (Experimental).lnk'
+    $intelLink=Join-Path $desktop 'TinyStrata Intel.lnk'
     Assert-Intel ((Test-Path -LiteralPath $intelLink) -and (Test-Path -LiteralPath $intelHelper)) 'Intel shortcut and launcher have distinct names and state paths'
     Assert-Intel ((Get-FileHash -LiteralPath (Join-Path $desktop 'TinyStrata.lnk') -Algorithm SHA256).Hash -eq $normalLinkHash -and
         [IO.File]::ReadAllText((Join-Path $shortcutWork 'runtime\ui\history.json')) -eq 'ordinary history') 'Intel shortcut installation preserves the ordinary shortcut and history'
@@ -736,7 +736,7 @@ class IntelLauncherFixtures(unittest.TestCase):
         health={'status':'ok','service':'strata','backend':'sycl','model':'qwen3.6-35b-a3b'}
         request=mock.Mock(return_value=health)
         hold=mock.Mock(side_effect=AssertionError('no termination handle'))
-        with mock.patch.dict(n,process=lambda pid:object(),meta=lambda p:{'pid':555,'started':100,'command':command},verify_process=lambda *a:None,listeners=lambda port:{555},request=request,hold=hold,verify_connection_settings=mock.Mock(side_effect=AssertionError('no CUDA profile mapping'))), self.assertRaisesRegex(RuntimeError,'separate experimental Intel'):
+        with mock.patch.dict(n,process=lambda pid:object(),meta=lambda p:{'pid':555,'started':100,'command':command},verify_process=lambda *a:None,listeners=lambda port:{555},request=request,hold=hold,verify_connection_settings=mock.Mock(side_effect=AssertionError('no CUDA profile mapping'))), self.assertRaisesRegex(RuntimeError,'separate Intel'):
             n['stop'](self.source,self.work)
         self.assertEqual([c.args[1] for c in request.call_args_list],['/health'])
         hold.assert_not_called()
@@ -746,7 +746,7 @@ class IntelLauncherFixtures(unittest.TestCase):
         (self.launcher.state_dir/'ui-process.json').write_text(json.dumps(state),encoding='utf-8')
         request=mock.Mock(side_effect=AssertionError('no HTTP needed'))
         hold=mock.Mock(side_effect=AssertionError('no termination handle'))
-        with mock.patch.dict(n,process=lambda pid:object(),meta=lambda p:{'pid':555,'started':100},request=request,hold=hold), self.assertRaisesRegex(RuntimeError,'separate experimental Intel'):
+        with mock.patch.dict(n,process=lambda pid:object(),meta=lambda p:{'pid':555,'started':100},request=request,hold=hold), self.assertRaisesRegex(RuntimeError,'separate Intel'):
             n['stop'](self.source,self.work)
         request.assert_not_called()
         hold.assert_not_called()

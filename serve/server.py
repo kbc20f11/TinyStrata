@@ -7554,7 +7554,10 @@ def intel_health_fields(svc) -> dict:
     """Public opt-in runtime identity; existing CUDA/HIP health stays unchanged."""
     if getattr(svc, "backend", None) != "sycl":
         return {}
-    return {"backend": "sycl", "intel_profile": getattr(svc, "intel_profile", None), "experimental": True}
+    from serve.intel_models import MODEL_PROFILES
+    profile = getattr(svc, "intel_profile", None)
+    return {"backend": "sycl", "intel_profile": profile,
+            "experimental": profile not in MODEL_PROFILES.values()}
 
 
 def intel_feature_fields(svc) -> dict:

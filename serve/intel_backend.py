@@ -180,7 +180,7 @@ def validate_config(cfg: dict, *, allow_uninstalled: bool = False) -> None:
     if cfg.get("backend") not in (None, "sycl"):
         raise ValueError("The Intel helper requires an explicitly selected sycl backend")
     if not supports_model(cfg):
-        raise ValueError("Intel requires a pinned supported experimental text identity")
+        raise ValueError("Intel requires a pinned supported model identity")
     profile = _profile(cfg)
     model = canonical_model(cfg)
     values, switches = _options({"args": _profile_arguments(cfg)})

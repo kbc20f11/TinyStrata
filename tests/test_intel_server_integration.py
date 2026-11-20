@@ -368,7 +368,7 @@ class IntelServerIntegration(unittest.TestCase):
     def test_service_initializes_identity_preserving_generation_policy(self):
         svc = self.service()
         self.assertEqual(server.intel_health_fields(svc),
-                         {"backend": "sycl", "intel_profile": "b390-qwen36", "experimental": True})
+                         {"backend": "sycl", "intel_profile": "b390-qwen36", "experimental": False})
         self.assertEqual(svc.sampling_defaults, self.cfg["sampling"])
         self.assertFalse(svc.default_enable_thinking)
         self.assertEqual(svc.default_max_tokens, 4096)
@@ -693,6 +693,26 @@ class IntelServerIntegration(unittest.TestCase):
         self.assertTrue(path.is_file())
         self.assertEqual(self.path.read_bytes(), before)
 
+    def test_disable_configured_intel_vision_before_executable_validation(self):
+        cfg = {**self.cfg, "vision_mode": "no", "args": [*self.cfg["args"], "--vision"],
+               "vision": {"exe": "encoder.exe", "mmproj": "projector.gguf", "max_tokens": 1024}}
+
+        def probe(prepared):
+            self.assertNotIn("vision", prepared)
+            self.assertNotIn("--vision", prepared["args"])
+
+        with patch.object(model_setup, "validate_intel_executable", side_effect=probe):
+            result = model_setup.configure_vision(cfg, self.root / "model.gguf")
+
+        self.assertEqual(result["vision_exe"], "encoder.exe")
+        self.assertEqual(result["vision_mmproj"], "projector.gguf")
+        self.assertEqual(result["vision_tokens"], 1024)
+        self.assertIn("vision", cfg)
+
+    def test_generic_intel_health_remains_experimental(self):
+        svc = SimpleNamespace(backend="sycl", intel_profile="generic")
+        self.assertIs(server.intel_health_fields(svc)["experimental"], True)
+
     def test_health_http_exposes_only_nonsecret_intel_identity(self):
         svc = self.service()
         with patch.object(svc, "start_telemetry"):
@@ -708,7 +728,7 @@ class IntelServerIntegration(unittest.TestCase):
             self.assertEqual(response.status, 200)
             self.assertEqual(body["backend"], "sycl")
             self.assertEqual(body["intel_profile"], "b390-qwen36")
-            self.assertIs(body["experimental"], True)
+            self.assertIs(body["experimental"], False)
             self.assertNotIn(self.cfg["api_key"], json.dumps(body))
             self.assertFalse(body["images"])
             self.assertFalse(body["features"]["images"])

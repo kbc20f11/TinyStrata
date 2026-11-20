@@ -12,7 +12,7 @@ param(
     [string]$WorkDir,
     [ValidateSet('auto', 'cuda', 'hip', 'sycl')][string]$Backend = 'auto',
     [switch]$SelectBackend,
-    # Explicit Intel uses separate ui-sycl history/settings and an experimental shortcut.
+    # Explicit Intel uses separate ui-sycl history/settings and a dedicated desktop shortcut.
     [string]$IntelRuntimeDirectory,
     [ValidateSet('generic','b390-qwen36','b390-tiel-coder','b390-gemma4','b390-lfm25','b390-clover')][string]$IntelProfile = 'b390-qwen36',
     [string]$HipDirectory,

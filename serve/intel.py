@@ -1,4 +1,4 @@
-"""Explicit experimental Intel entry point using the normal API.
+"""Explicit Intel entry point using the normal API.
 
 This does not migrate existing profiles or select Intel automatically. Model
 switching and persistent conversation snapshots are not enabled.
@@ -65,7 +65,7 @@ def main(argv=None, *, stop_event: threading.Event | None = None) -> int:
     parser.add_argument("--work-dir", type=Path, default=root.with_name(root.name + "-work") / "intel-runtime")
     args = parser.parse_args(argv)
     if os.name != "nt":
-        parser.error("The experimental Intel entry point currently requires native Windows")
+        parser.error("The Intel entry point currently requires native Windows")
     if not 1 <= args.port <= 65535 or args.device < 0 or not 1 <= args.chunk <= 1024 or args.max_tokens < 1:
         parser.error("Invalid context, port, device index, chunk or output token limit")
     if args.mtp and args.chunk < max(4, args.mtp + 1):
@@ -105,7 +105,7 @@ def main(argv=None, *, stop_event: threading.Event | None = None) -> int:
                 (QWEN_MODEL if arch == "qwen35moe" and "qwen3.6" in name.lower() else
                  TIEL_MODEL if arch == "qwen35moe" and name == "Ornith-1.5-35B" else None))
     if selected is None:
-        parser.error("The GGUF does not identify a pinned experimental Intel text family")
+        parser.error("The GGUF does not identify a pinned Intel model family")
     requested = {"qwen36": QWEN_MODEL, "tiel": TIEL_MODEL, "gemma4": GEMMA_MODEL,
                  "lfm2": LFM_MODEL, "clover": CLOVER_MODEL}.get(args.model_family)
     if requested is not None and requested != selected:
@@ -196,7 +196,7 @@ def main(argv=None, *, stop_event: threading.Event | None = None) -> int:
             sampling_defaults=migrate_generation_settings(generation)[0]["sampling"], generation_defaults=generation)
         service.backend = "sycl"
         httpd = serve(service, "127.0.0.1", args.port)
-        print(f"Experimental Intel API: http://127.0.0.1:{args.port} ({args.kv_type} KV, MTP={args.mtp}, vision={args.vision_mode})", flush=True)
+        print(f"Intel API: http://127.0.0.1:{args.port} ({args.kv_type} KV, MTP={args.mtp}, vision={args.vision_mode})", flush=True)
         stopping.wait()
     finally:
         if httpd is not None:

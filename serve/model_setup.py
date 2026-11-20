@@ -296,6 +296,8 @@ def configure_vision(cfg: dict, model: Path, *, projector: Path | None = None,
         new["vision_mmproj"] = str(projector)
     elif previous.get("mmproj") and not new.get("vision_mmproj"):
         new["vision_mmproj"] = previous["mmproj"]
+    if mode == "no":
+        new = disable_vision(new)
     if cfg.get("backend") == "sycl":
         from serve.intel_capabilities import supports_images
         from serve.intel_models import VISION_PROTOCOL, VISION_CONTRACT_VERSION
@@ -308,7 +310,7 @@ def configure_vision(cfg: dict, model: Path, *, projector: Path | None = None,
         else:
             new.pop("intel_vision_contract", None)
     if mode == "no":
-        return disable_vision(new)
+        return new
     if cfg.get("backend") == "sycl" and not new.get("intel_vision_contract"):
         new.pop("vision", None)
         new["vision_download_required"] = True

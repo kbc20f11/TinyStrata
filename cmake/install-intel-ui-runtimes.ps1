@@ -127,7 +127,7 @@ function Prepare-TinyStrataIntelUiRuntimes {
             ($mode -eq 'gpu' -and ($prepared.vision_exe -ne $imageExe -or ($prepared.vision -and ($prepared.vision.exe -ne $imageExe -or $prepared.vision.gpu -ne $true)))) -or
             @($prepared.lib_dirs).Count -ne 1 -or
             $prepared.lib_dirs[0] -ne (Split-Path -Parent $runtime.Exe)) { throw 'Prepared Intel UI model settings do not match their dedicated runtime.' }
-        Write-Host "Prepared dedicated experimental Intel runtime for $($family.Model); its model file is downloaded only when requested."
+        Write-Host "Prepared dedicated Intel runtime for $($family.Model); its model file is downloaded only when requested."
     }
 }
 

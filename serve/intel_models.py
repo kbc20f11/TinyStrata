@@ -1,4 +1,4 @@
-"""Pure identities/contracts for experimental Intel text engines.
+"""Pure identities/contracts for Intel model engines.
 
 Listing an identity does not install a runtime or establish hardware/quality
 support. New families require their own explicit executable and native contract.
@@ -47,7 +47,7 @@ def runtime_features(model: str, *, images: bool = False) -> dict:
     separately before a model is activated.
     """
     if model not in MODEL_PROFILES:
-        raise ValueError("Unknown experimental Intel model identity")
+        raise ValueError("Unknown Intel model identity")
     return {"images": bool(images and model in VISION_MODELS), "assistant": False, "lookup": False,
             "mtp": model in QWEN_ENGINE_MODELS, "target_only": model in TARGET_ONLY_MODELS,
             "clover_draft": False, "clover_modes": ["causal"] if model == CLOVER_MODEL else [],
