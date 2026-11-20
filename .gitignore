@@ -3,11 +3,13 @@
 !/.gitattributes
 !/.gitignore
 !/AGENTS.md
+!/install.sh
 !/.github/
 /.github/**
 !/.github/workflows/
 /.github/workflows/**
 !/.github/workflows/tests.yml
+!/.github/workflows/install-script.yml
 !/docs/
 /docs/**
 !/docs/development-memory.md
@@ -115,6 +117,7 @@
 !/tests/q36-prefill-cancel.py
 !/tests/test_ui_chat_history.py
 !/tests/test_ui_web_search.py
+!/tests/test_install_sh.py
 !/tests/test_ui_server_tools.py
 !/tests/test_ui_launcher_upgrade.py
 !/tests/ui-chatstore.cjs
