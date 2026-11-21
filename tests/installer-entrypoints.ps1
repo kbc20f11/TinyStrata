@@ -379,15 +379,17 @@ Assert-Entrypoint ($result.Caught -and $result.Shortcut) 'a launch failure retai
 
 # Exercise actual Shell Link serialization, but only in a private temporary
 # desktop. No launcher, interpreter, application or production desktop is used.
-$shortcutFunction = $readinessAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Initialize-TinyStrataDesktopShortcut' }, $true)
-if (-not $shortcutFunction) { throw 'Desktop shortcut helper is missing.' }
-Invoke-Expression $shortcutFunction.Extent.Text
+foreach ($name in @('Initialize-TinyStrataShellLink', 'Initialize-TinyStrataDesktopShortcut')) {
+    $shortcutFunction = $readinessAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
+    if (-not $shortcutFunction) { throw "Desktop shortcut helper is missing: $name" }
+    Invoke-Expression $shortcutFunction.Extent.Text
+}
 $shortcutTempRoot = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) ('tinystrata-shortcut-test-' + [Guid]::NewGuid().ToString('N'))))
 try {
-    $shortcutUnicode = [string][char]0x65E5 + [string][char]0x672C
+    $shortcutUnicode = [string][char]0x65E5 + [string][char]0x672C + [string][char]0x05D0
     $shortcutSource = Join-Path $shortcutTempRoot ("source ' quoted & " + $shortcutUnicode)
     $shortcutWork = Join-Path $shortcutTempRoot ("work ' quoted & " + $shortcutUnicode)
-    $shortcutDesktop = Join-Path $shortcutTempRoot 'private desktop'
+    $shortcutDesktop = Join-Path $shortcutTempRoot ("private desktop " + $shortcutUnicode)
     $shortcutWeb = Join-Path $shortcutSource 'ui\web'
     New-Item -ItemType Directory -Path $shortcutWeb -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $entrypointRoot 'ui\web\terminal-logo.ico') -Destination (Join-Path $shortcutWeb 'terminal-logo.ico')
@@ -396,11 +398,11 @@ try {
     $shortcutHelper = Join-Path $shortcutWork 'runtime\ui\desktop-launch.ps1'
     $shortcutBytes = [IO.File]::ReadAllBytes($shortcutHelper)
     Assert-Entrypoint ($shortcutBytes[0] -eq 239 -and $shortcutBytes[1] -eq 187 -and $shortcutBytes[2] -eq 191) 'desktop launcher keeps Unicode paths readable by Windows PowerShell 5.1'
-    $shortcutShell = New-Object -ComObject WScript.Shell
-    $shortcut = $shortcutShell.CreateShortcut($shortcutPath)
+    $shortcut = [TinyStrata.WindowsShellLink]::Read($shortcutPath)
     Assert-Entrypoint ($shortcut.TargetPath -eq (Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe')) 'shortcut uses the stable system PowerShell executable'
-    Assert-Entrypoint ($shortcut.Arguments -eq ('-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $shortcutHelper)) 'shortcut quotes its persistent helper path and starts hidden'
-    Assert-Entrypoint ($shortcut.WorkingDirectory -eq $shortcutSource -and $shortcut.IconLocation -eq ((Join-Path $shortcutWeb 'terminal-logo.ico') + ',0')) 'shortcut has the installation working directory and app icon'
+    $expectedShortcutArguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $shortcutHelper
+    Assert-Entrypoint ($shortcut.Arguments -ceq $expectedShortcutArguments -and $shortcut.ShowCommand -eq 7) "shortcut preserves Unicode arguments and starts hidden. Expected [$expectedShortcutArguments], read [$($shortcut.Arguments)]."
+    Assert-Entrypoint ($shortcut.WorkingDirectory -ceq $shortcutSource -and $shortcut.IconPath -ceq (Join-Path $shortcutWeb 'terminal-logo.ico') -and $shortcut.IconIndex -eq 0) 'shortcut preserves the Unicode working directory and app icon'
     $shortcutHelperTokens = $null; $shortcutHelperErrors = $null
     $shortcutHelperAst = [System.Management.Automation.Language.Parser]::ParseFile($shortcutHelper, [ref]$shortcutHelperTokens, [ref]$shortcutHelperErrors)
     Assert-Entrypoint ($shortcutHelperErrors.Count -eq 0) 'generated launcher parses with apostrophes spaces ampersands and Unicode paths'
@@ -419,7 +421,8 @@ try {
     Assert-Entrypoint (@(Get-ChildItem -LiteralPath $shortcutDesktop -File).Count -eq 1 -and [IO.File]::ReadAllText($shortcutHelper) -eq $shortcutHelperText) 'reinstall refreshes one shortcut idempotently without duplicate launchers'
     Remove-Item -LiteralPath (Join-Path $shortcutWeb 'terminal-logo.ico')
     Initialize-TinyStrataDesktopShortcut -SourceRoot $shortcutSource -WorkRoot $shortcutWork -DesktopDirectory $shortcutDesktop
-    Assert-Entrypoint ($shortcutShell.CreateShortcut($shortcutPath).IconLocation -eq ((Join-Path $env:WINDIR 'System32\shell32.dll') + ',1')) 'older UI assets retain a working shortcut with a fallback icon'
+    $fallbackShortcut = [TinyStrata.WindowsShellLink]::Read($shortcutPath)
+    Assert-Entrypoint ($fallbackShortcut.IconPath -eq (Join-Path $env:WINDIR 'System32\shell32.dll') -and $fallbackShortcut.IconIndex -eq 1) 'older UI assets retain a working shortcut with a fallback icon'
     Remove-Item -LiteralPath $shortcutPath
     New-Item -ItemType Directory -Path $shortcutPath | Out-Null
     Assert-EntrypointThrows { Initialize-TinyStrataDesktopShortcut -SourceRoot $shortcutSource -WorkRoot $shortcutWork -DesktopDirectory $shortcutDesktop } 'an existing directory at the shortcut path is never overwritten'

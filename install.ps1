@@ -1695,6 +1695,98 @@ for raw in open(sys.argv[1], encoding='utf-8-sig'):
     if ($LASTEXITCODE -ne 0) { throw "DDGS could not be loaded by the UI's private Python: $Python. The UI was not started; inspect the import error above." }
 }
 
+function Initialize-TinyStrataShellLink {
+    if ('TinyStrata.WindowsShellLink' -as [type]) { return }
+    # WScript.Shell can replace characters outside the system code page
+    # before saving them, even in a Unicode .lnk file. Use IShellLinkW directly.
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+using System.Text;
+
+namespace TinyStrata {
+    public sealed class WindowsShellLink {
+        [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+        private class ShellLink {}
+
+        // Keep the method order of IShellLinkW in the Windows SDK.
+        [ComImport, Guid("000214F9-0000-0000-C000-000000000046")]
+        [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IShellLinkW {
+            void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int length, IntPtr findData, uint flags);
+            void GetIDList(out IntPtr idList);
+            void SetIDList(IntPtr idList);
+            void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder description, int length);
+            void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string description);
+            void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder directory, int length);
+            void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string directory);
+            void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder arguments, int length);
+            void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string arguments);
+            void GetHotkey(out ushort hotkey);
+            void SetHotkey(ushort hotkey);
+            void GetShowCmd(out int showCmd);
+            void SetShowCmd(int showCmd);
+            void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int length, out int index);
+            void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string path, int index);
+            void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string path, uint reserved);
+            void Resolve(IntPtr window, uint flags);
+            void SetPath([MarshalAs(UnmanagedType.LPWStr)] string path);
+        }
+
+        public string TargetPath { get; private set; }
+        public string Arguments { get; private set; }
+        public string WorkingDirectory { get; private set; }
+        public string IconPath { get; private set; }
+        public int IconIndex { get; private set; }
+        public int ShowCommand { get; private set; }
+
+        public static void Save(string filename, string target, string arguments, string directory,
+                                string description, string icon, int iconIndex) {
+            object instance = new ShellLink();
+            try {
+                var link = (IShellLinkW)instance;
+                link.SetPath(target);
+                link.SetArguments(arguments);
+                link.SetWorkingDirectory(directory);
+                link.SetDescription(description);
+                link.SetShowCmd(7); // SW_SHOWMINNOACTIVE
+                link.SetIconLocation(icon, iconIndex);
+                ((IPersistFile)instance).Save(filename, true);
+            } finally {
+                Marshal.FinalReleaseComObject(instance);
+            }
+        }
+
+        public static WindowsShellLink Read(string filename) {
+            object instance = new ShellLink();
+            try {
+                ((IPersistFile)instance).Load(filename, 0); // STGM_READ
+                var link = (IShellLinkW)instance;
+                var text = new StringBuilder(32768);
+                var result = new WindowsShellLink();
+                link.GetPath(text, text.Capacity, IntPtr.Zero, 0);
+                result.TargetPath = text.ToString();
+                link.GetArguments(text, text.Capacity);
+                result.Arguments = text.ToString();
+                link.GetWorkingDirectory(text, text.Capacity);
+                result.WorkingDirectory = text.ToString();
+                int iconIndex, showCmd;
+                link.GetIconLocation(text, text.Capacity, out iconIndex);
+                link.GetShowCmd(out showCmd);
+                result.IconPath = text.ToString();
+                result.IconIndex = iconIndex;
+                result.ShowCommand = showCmd;
+                return result;
+            } finally {
+                Marshal.FinalReleaseComObject(instance);
+            }
+        }
+    }
+}
+'@
+}
+
 function Initialize-TinyStrataDesktopShortcut {
     param([string]$SourceRoot, [string]$WorkRoot,
           [string]$DesktopDirectory = [Environment]::GetFolderPath('DesktopDirectory'),
@@ -1763,21 +1855,21 @@ exit 0
     $temporary = $helperPath + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
     [IO.File]::WriteAllText($temporary, $helperText, (New-Object Text.UTF8Encoding($true)))
     Move-Item -LiteralPath $temporary -Destination $helperPath -Force
-    $shell = New-Object -ComObject WScript.Shell
+    Initialize-TinyStrataShellLink
     # Save a complete link before replacing our named shortcut. An interrupted
     # COM save must not truncate an existing working link or touch other files.
     $shortcutTemporary = Join-Path $DesktopDirectory ('.TinyStrata-' + [Guid]::NewGuid().ToString('N') + '.lnk')
-    $shortcut = $shell.CreateShortcut($shortcutTemporary)
-    $shortcut.TargetPath = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $shortcut.Arguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $helperPath
-    $shortcut.WorkingDirectory = $source
-    $shortcut.Description = if ($Backend -eq 'sycl') { 'Start TinyStrata for Intel and open the chat UI' } else { 'Start TinyStrata and open the chat UI' }
-    $shortcut.WindowStyle = 7
+    $target = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $arguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $helperPath
+    $description = if ($Backend -eq 'sycl') { 'Start TinyStrata for Intel and open the chat UI' } else { 'Start TinyStrata and open the chat UI' }
     $icon = Join-Path $source 'ui\web\terminal-logo.ico'
-    $shortcut.IconLocation = if (Test-Path -LiteralPath $icon -PathType Leaf) { $icon + ',0' }
-                             else { (Join-Path $env:WINDIR 'System32\shell32.dll') + ',1' }
+    $iconIndex = 0
+    if (-not (Test-Path -LiteralPath $icon -PathType Leaf)) {
+        $icon = Join-Path $env:WINDIR 'System32\shell32.dll'
+        $iconIndex = 1
+    }
     try {
-        $shortcut.Save()
+        [TinyStrata.WindowsShellLink]::Save($shortcutTemporary, $target, $arguments, $source, $description, $icon, $iconIndex)
         if (-not (Test-Path -LiteralPath $shortcutTemporary -PathType Leaf)) {
             throw "Windows did not save the desktop shortcut in $DesktopDirectory."
         }
@@ -1791,8 +1883,9 @@ exit 0
         $legacyPath = Join-Path $DesktopDirectory 'TinyStrata Intel (Experimental).lnk'
         $legacy = Get-Item -LiteralPath $legacyPath -Force -ErrorAction SilentlyContinue
         if ($legacy -and -not $legacy.PSIsContainer -and -not ($legacy.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            $oldShortcut = $shell.CreateShortcut($legacyPath)
-            if ($oldShortcut.TargetPath -eq $shortcut.TargetPath -and $oldShortcut.Arguments -eq $shortcut.Arguments) {
+            $oldShortcut = $null
+            try { $oldShortcut = [TinyStrata.WindowsShellLink]::Read($legacyPath) } catch { }
+            if ($oldShortcut -and $oldShortcut.TargetPath -eq $target -and $oldShortcut.Arguments -eq $arguments) {
                 Remove-Item -LiteralPath $legacyPath -ErrorAction Continue
             }
         }
