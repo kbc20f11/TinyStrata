@@ -143,3 +143,8 @@ jobs:
           done
           echo "passed=$passed failed=$failed"
           [ "$failed" -eq 0 ]
+
+      - name: Check Windows installer entry points
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: .\tests\installer-entrypoints.ps1

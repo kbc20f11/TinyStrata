@@ -192,10 +192,42 @@ Assert-Entrypoint ($result.Forwarded.Origin -eq 'local' -and $result.Forwarded.C
 Assert-EntrypointThrows { Invoke-MockedUiBootstrap -UiText $entrypointUiText -CoreHeader $entrypointCoreHeader -LocalInstaller -DownloadFails -Arguments @{ Update = $true } } 'failed Update download does not silently execute stale local installer'
 Assert-EntrypointThrows { Invoke-MockedUiBootstrap -UiText $entrypointUiText -CoreHeader $entrypointCoreHeader -LocalInstaller -Revision 'not-a-commit' -Arguments @{ Update = $true } } 'invalid Update revision never executes adjacent installer'
 
-# Evaluate only the pure readiness predicate, never the installer body.
+# Read the production functions without executing the installer.
 $readinessTokens = $null
 $readinessErrors = $null
 $readinessAst = [System.Management.Automation.Language.Parser]::ParseFile($entrypointCorePath, [ref]$readinessTokens, [ref]$readinessErrors)
+# Pass detected targets through the builder's real parameter binding. The
+# previous Turing regression returned 75 from detection but rejected it here.
+foreach ($name in @('Test-TinyStrataCudaBuildArchitectures', 'Get-TinyStrataBuildArchitectures')) {
+    $definition = $readinessAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
+    if ($definition) { Invoke-Expression $definition.Extent.Text }
+}
+$cudaBuilder = $readinessAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-TinyStrataPortableBuild' }, $true)
+$cudaBuildBinding = [scriptblock]::Create($cudaBuilder.Body.ParamBlock.Extent.Text + [Environment]::NewLine + 'return $Architectures')
+& {
+    function Get-Command {
+        param([string]$Name)
+        if ($Name -ne 'nvidia-smi.exe') { throw "Unexpected fixture command: $Name" }
+        return [pscustomobject]@{Source='Get-FixtureComputeCapability'}
+    }
+    function Get-FixtureComputeCapability { return $case.Detected }
+    $LASTEXITCODE = 0
+    foreach ($case in @(
+        @{Detected=@('7.5'); Expected='75'},
+        @{Detected=@('7.5', '8.6', '8.9', '12.0', '7.5'); Expected='75;86;89;120'},
+        @{Detected=@('12.0'); Expected='120'},
+        @{Detected=@('7.0'); Expected='86;89;120'},
+        @{Detected=@(); Expected='86;89;120'}
+    )) {
+        $selectedTargets = Get-TinyStrataBuildArchitectures
+        Assert-Entrypoint ($selectedTargets -eq $case.Expected) "CUDA detection selects $($case.Expected)"
+        $boundTargets = & $cudaBuildBinding -SourceDirectory 'source' -BuildDirectory 'build' -Architectures $selectedTargets
+        Assert-Entrypoint ($boundTargets -eq $case.Expected) "CUDA builder accepts detected $($case.Expected)"
+    }
+}
+foreach ($badTargets in @('70', '75;70', '75;', '75;;86')) {
+    Assert-EntrypointThrows { & $cudaBuildBinding -SourceDirectory 'source' -BuildDirectory 'build' -Architectures $badTargets } "CUDA builder rejects $badTargets"
+}
 $familyFunction = $readinessAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-TinyStrataModelFamily' }, $true)
 if (-not $familyFunction) { throw 'Installer family helper is missing.' }
 Invoke-Expression $familyFunction.Extent.Text

@@ -749,6 +749,15 @@ function Get-TinyStrataHipRuntimeDirectories {
     return @(@('bin', 'lib', 'lib\llvm\bin') | ForEach-Object { Join-Path $Directory $_ } | Where-Object { Test-Path -LiteralPath $_ -PathType Container })
 }
 
+function Test-TinyStrataCudaBuildArchitectures {
+    param([string]$Architectures)
+    $supported = @('75', '86', '89', '120')
+    foreach ($architecture in ($Architectures -split ';')) {
+        if ($architecture -notin $supported) { return $false }
+    }
+    return $true
+}
+
 function Get-TinyStrataBuildArchitectures {
     [CmdletBinding()]
     param()
@@ -756,7 +765,10 @@ function Get-TinyStrataBuildArchitectures {
     if ($smi) {
         $capabilities = @(& $smi.Source --query-gpu=compute_cap --format=csv,noheader 2>$null)
         if ($LASTEXITCODE -eq 0) {
-            $architectures = @($capabilities | ForEach-Object { if ($_.Trim() -match '^(7\.5|8\.6|8\.9|12\.0)$') { $Matches[1].Replace('.', '') } } | Select-Object -Unique)
+            $architectures = @($capabilities | ForEach-Object {
+                $architecture = $_.Trim().Replace('.', '')
+                if (Test-TinyStrataCudaBuildArchitectures -Architectures $architecture) { $architecture }
+            } | Select-Object -Unique)
             if ($architectures.Count -gt 0) { return $architectures -join ';' }
         }
     }
@@ -850,7 +862,7 @@ function Invoke-TinyStrataPortableBuild {
         [ValidateSet('cuda', 'hip')][string]$Backend = 'cuda',
         [string]$HipDirectory,
         [ValidatePattern('^gfx[0-9a-f]+(;gfx[0-9a-f]+)*$')][string]$HipArchitectures,
-        [ValidatePattern('^(86|89|120)(;(86|89|120))*$')][string]$Architectures = (Get-TinyStrataBuildArchitectures),
+        [ValidateScript({ Test-TinyStrataCudaBuildArchitectures -Architectures $_ })][string]$Architectures = (Get-TinyStrataBuildArchitectures),
         [ValidateRange(1, 32)][int]$Parallel = 4,
         [switch]$Clean
     )
