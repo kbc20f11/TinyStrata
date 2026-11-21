@@ -20,6 +20,16 @@ CP::Bytes mask_oracle(CP::Bytes ctx, CP::Bytes rows, CP::Bytes heads, CP::Bytes 
 }
 
 int main() {
+    // RTX 2060 report: the old 384 MiB score workspace was allocated before
+    // an initial 220 MiB KV commit. Budget scores from the space left after KV.
+    constexpr auto preferred = 64ull << 20;
+    constexpr auto headroom = 64 * CP::MiB;
+    constexpr auto minimum = 16ull * 65536;
+    REQUIRE(CP::fallback_score_floats(164 * CP::MiB, headroom, 16, 65536, preferred) == (16ull << 20));
+    REQUIRE(CP::fallback_score_floats(448 * CP::MiB, headroom, 16, 65536, preferred) == preferred);
+    REQUIRE(CP::fallback_score_floats(headroom + 6 * minimum, headroom, 16, 65535, preferred) == minimum);
+    REQUIRE(CP::fallback_score_floats(headroom + 6 * minimum - 1, headroom, 16, 65535, preferred) == 0);
+    REQUIRE(CP::fallback_score_floats(0, headroom, 16, 65536, preferred) == 0);
     CP::Geometry q;
     q.context = 262144; q.attention_layers = 10; q.mtp_attention = true;
     q.kv_heads = 2; q.head_dim = 256; q.kv_format = 3;

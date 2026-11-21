@@ -29,6 +29,21 @@ inline bool rounded(Bytes bytes, Bytes granularity, Bytes& out) {
     return !remainder ? (out = bytes, true) : add(bytes, granularity - remainder, out);
 }
 
+// The FP16-staging prompt path slices queries to fit its FP32 scores and
+// FP16 probabilities. It still needs one padded row per head at full context.
+inline std::uint64_t fallback_score_floats(Bytes free, Bytes headroom, std::uint64_t heads,
+                                          std::uint64_t context, std::uint64_t preferred) {
+    std::uint64_t padded = 0, minimum = 0;
+    if (!heads || !context || !rounded(context, 8, padded) ||
+        !mul(heads, padded, minimum) || preferred < minimum || free <= headroom) return 0;
+    const auto affordable = (free - headroom) / 6; // 4 bytes for a score, 2 for a probability
+    if (affordable >= preferred) return preferred;
+    constexpr std::uint64_t compact = 16ull << 20;
+    const auto target = std::min(preferred, std::max(minimum, compact));
+    if (affordable >= target) return target;
+    return affordable >= minimum ? affordable : 0;
+}
+
 struct Geometry {
     Bytes context = 0;
     Bytes attention_layers = 0; // main layers which actually own K/V

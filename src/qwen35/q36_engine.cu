@@ -1713,11 +1713,17 @@ struct Engine {
                          int8_prompt ? "INT8 dense tiled kernel" : "FP16 staging fallback");
 #endif
         sk_part = dalloc((size_t) kSplitK * T * (g.n_expert + 1));
+        // On WDDM Turing, a fixed 384 MiB score workspace can exhaust
+        // dedicated VRAM before the initial KV pages are mapped.
+#if defined(_WIN32) && !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
+        const bool defer_att_scores = gpu_cc == 75 && !m->clover && kv_grow && !tiled_prompt();
+#else
+        const bool defer_att_scores = false;
+#endif
         if (tiled_prompt()) {
             kAttScoreFloats = 0; // tiled attention reads byte KV directly; no full-context FP16 copies or score matrix
         } else {
-            att_s = dalloc(kAttScoreFloats);
-            att_p16 = dalloc_t<__half>(kAttScoreFloats);
+            if (!defer_att_scores) allocate_att_scores(kAttScoreFloats);
             k16 = dalloc_t<__half>((size_t) g.n_head_kv * ctx * g.head_dim);
             v16 = dalloc_t<__half>((size_t) g.n_head_kv * ctx * g.head_dim);
             q16 = dalloc_t<__half>(T * g.n_head * g.head_dim);
@@ -1963,6 +1969,26 @@ struct Engine {
         }
         if (kv_grow) ensure_kv(std::min(ctx, 16384));
         else kv_committed_rows = ctx;
+        if (defer_att_scores) {
+            namespace CP = strata::qwen35::chunk_policy;
+            strata::qwen35::hybrid_buffer_policy::Layout cpu_results;
+            if (!strata::qwen35::hybrid_buffer_policy::layout(tmax, m->top_k, g.n_embd, cpu_results))
+                throw std::overflow_error("hybrid CPU result buffer size overflow");
+            size_t free = 0, total = 0;
+            CK(resident_mem_info(&free, &total));
+            // Leave room for hybrid CPU results and small lazy CUDA allocations.
+            const auto headroom = std::max<CP::Bytes>(64 * CP::MiB, cpu_results.total_bytes);
+            const auto floats = CP::fallback_score_floats(free, headroom, g.n_head, ctx, kAttScoreFloats);
+            if (!floats) {
+                std::fprintf(stderr, "tinystrata: %zu MiB of VRAM left after initial KV; FP16 prompt attention "
+                                     "cannot fit at context %d (try a shorter --max-context or CPU vision)\n",
+                             free >> 20, ctx);
+                std::exit(1);
+            }
+            allocate_att_scores(static_cast<size_t>(floats));
+            std::fprintf(stderr, "tinystrata: Turing FP16 prompt score workspace %zu MiB (%zu MiB free before allocation)\n",
+                         (kAttScoreFloats * 6) >> 20, free >> 20);
+        }
         CK(cudaDeviceSynchronize());   // every legacy-stream cudaMemset of the buffers above is done
         const auto memory = available_vram();
         std::fprintf(stderr, "tinystrata: context %d cells, prompt chunk %d%s, %.2f GiB of VRAM free\n", ctx, tmax,
@@ -3694,14 +3720,17 @@ struct Engine {
                     expert_prompt_read, expert_prompt_entries);
     }
 
+    void allocate_att_scores(size_t floats) {
+        kAttScoreFloats = floats;
+        att_s = dalloc(floats);
+        att_p16 = dalloc_t<__half>(floats);
+    }
     void shrink_att(size_t floats) {
         if (tiled_prompt()) return;
         CK(cudaDeviceSynchronize());
         CK(cudaFree(att_s));
         CK(cudaFree(att_p16));
-        kAttScoreFloats = floats;
-        att_s = dalloc(kAttScoreFloats);
-        att_p16 = dalloc_t<__half>(kAttScoreFloats);
+        allocate_att_scores(floats);
         CK(cudaDeviceSynchronize());
     }
     void reset_graphs() {
