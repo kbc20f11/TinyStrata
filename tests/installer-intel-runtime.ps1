@@ -169,7 +169,8 @@ try {
     $installerAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $repository 'install.ps1'), [ref]$tokens, [ref]$parseErrors)
     Assert-Intel ($parseErrors.Count -eq 0) 'installer parses under PowerShell 5.1'
     foreach ($name in @('Invoke-TinyStrataInstaller','Get-TinyStrataBackend','Get-TinyStrataConfig','Get-TinyStrataModelFamily',
-        'Enter-TinyStrataInstallationGuard','Exit-TinyStrataInstallationGuard','Remove-TinyStrataNativeGeneration','Initialize-TinyStrataDesktopShortcut','Assert-TinyStrataIntelCapabilities','Assert-TinyStrataIntelManagedDeviceSelection','Test-TinyStrataIntelRuntimeCurrent','Get-TinyStrataIntelRuntimeSelection','Select-TinyStrataBackend','Test-TinyStrataInteractiveConsole','Get-VerifiedDownload')) {
+        'Enter-TinyStrataInstallationGuard','Exit-TinyStrataInstallationGuard','Remove-TinyStrataNativeGeneration','Initialize-TinyStrataShellLink','Initialize-TinyStrataDesktopShortcut',
+        'Assert-TinyStrataIntelCapabilities','Assert-TinyStrataIntelManagedDeviceSelection','Test-TinyStrataIntelRuntimeCurrent','Get-TinyStrataIntelRuntimeSelection','Select-TinyStrataBackend','Test-TinyStrataInteractiveConsole','Get-VerifiedDownload')) {
         $definition = $installerAst.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
         Invoke-Expression $definition.Extent.Text
     }

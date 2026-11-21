@@ -14,10 +14,11 @@ function Read-InstallerFunction {
     return $node.Extent.Text
 }
 $shortcutText = Read-InstallerFunction 'Initialize-TinyStrataDesktopShortcut'
+Invoke-Expression (Read-InstallerFunction 'Initialize-TinyStrataShellLink')
 $optionalText = Read-InstallerFunction 'Initialize-TinyStrataOptionalUI'
 $root = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) ('tinystrata-desktop-' + [Guid]::NewGuid().ToString('N'))))
 try {
-    $unicode = [string][char]0x8cc7 + [string][char]0x6599
+    $unicode = [string][char]0x8cc7 + [string][char]0x6599 + [string][char]0x05D0
     $source = Join-Path $root ("source [literal] ' & " + $unicode)
     $work = Join-Path $root ("work [literal] ' & " + $unicode)
     $desktop = Join-Path $root ("OneDrive ' & " + $unicode + '\Redirected Desktop')
@@ -34,8 +35,7 @@ try {
     $link = Join-Path $desktop 'TinyStrata.lnk'
     $helper = Join-Path $work 'runtime\ui\desktop-launch.ps1'
     Assert-Shortcut ((Test-Path -LiteralPath $link -PathType Leaf)) 'Redirected private Desktop receives a real Shell Link.'
-    $shell = New-Object -ComObject WScript.Shell
-    $saved = $shell.CreateShortcut($link)
+    $saved = [TinyStrata.WindowsShellLink]::Read($link)
     Assert-Shortcut ($saved.TargetPath -eq (Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe')) 'Shortcut uses system PowerShell.'
     Assert-Shortcut ($saved.Arguments -eq ('-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $helper)) 'Hidden launcher quotes the persistent Unicode helper.'
     Assert-Shortcut ($saved.WorkingDirectory -eq $source) 'Shortcut keeps the exact Unicode source path.'
@@ -54,6 +54,15 @@ try {
     Initialize-TinyStrataDesktopShortcut -SourceRoot $source -WorkRoot $work -DesktopDirectory $desktop
     Assert-Shortcut ((Get-ChildItem -LiteralPath $desktop -Filter '*.lnk').Count -eq 1) 'Repeated install replaces only the named shortcut, without staging leftovers.'
     Assert-Shortcut ([IO.File]::ReadAllText($unrelated) -eq 'unrelated desktop file') 'Unrelated Desktop files are preserved.'
+    Initialize-TinyStrataDesktopShortcut -SourceRoot $source -WorkRoot $work -DesktopDirectory $desktop -Backend sycl
+    $intelLink = Join-Path $desktop 'TinyStrata Intel.lnk'
+    $legacyLink = Join-Path $desktop 'TinyStrata Intel (Experimental).lnk'
+    Copy-Item -LiteralPath $link -Destination $legacyLink
+    Initialize-TinyStrataDesktopShortcut -SourceRoot $source -WorkRoot $work -DesktopDirectory $desktop -Backend sycl
+    Assert-Shortcut (Test-Path -LiteralPath $legacyLink -PathType Leaf) 'An unrelated link with the old Intel name is preserved.'
+    Copy-Item -LiteralPath $intelLink -Destination $legacyLink -Force
+    Initialize-TinyStrataDesktopShortcut -SourceRoot $source -WorkRoot $work -DesktopDirectory $desktop -Backend sycl
+    Assert-Shortcut (-not (Test-Path -LiteralPath $legacyLink)) 'A matching legacy Intel link is removed after Unicode comparison.'
     $blockedDesktop = Join-Path $root 'blocked desktop'
     [IO.Directory]::CreateDirectory((Join-Path $blockedDesktop 'TinyStrata.lnk')) | Out-Null
     $blocked = $false
