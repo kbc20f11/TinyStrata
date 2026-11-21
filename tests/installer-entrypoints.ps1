@@ -448,3 +448,7 @@ Assert-Entrypoint ($rootRequirements -notmatch '(?im)^ddgs' -and $uiRequirements
     NetworkRequests = 0
     NativeProcesses = 0
 } | ConvertTo-Json -Compress
+
+# GitHub Actions forwards LASTEXITCODE from PowerShell. The launcher fixtures
+# intentionally set it to nonzero; reaching this point means all checks passed.
+exit 0
