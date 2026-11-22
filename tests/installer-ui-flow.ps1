@@ -45,7 +45,7 @@ try {
 
     # Evaluate the actual installer function, but reuse a harmless mock API so
     # no preparation branch, process creation, native probe or network can run.
-    foreach ($name in @('Invoke-TinyStrataInstaller', 'Get-TinyStrataConfig', 'Get-TinyStrataModelFamily', 'Test-TinyStrataInferenceReady')) {
+    foreach ($name in @('Invoke-TinyStrataInstaller', 'Get-TinyStrataConfig', 'Get-TinyStrataModelFamily', 'Get-TinyStrataRunningApiProfiles', 'Test-TinyStrataInferenceReady')) {
         $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
         Invoke-Expression $definition.Extent.Text
     }

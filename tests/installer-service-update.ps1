@@ -96,6 +96,66 @@ class Contracts(unittest.TestCase):
   k=Kernel();m={'pid':42};item={'Kind':'ui','Port':19191,'Processes':[m]}
   with mock.patch.dict(n,collect=lambda s,w:[item],idle=lambda i:None,hold=lambda m:(k,123),process=lambda pid:object(),meta=lambda p:m,active_children=lambda p,known:[]),self.assertRaisesRegex(RuntimeError,'did not stop') as raised:n['stop'](Path.cwd(),Path.cwd().parent/'work-fixture')
   self.assertEqual(raised.exception.snapshot['Uis'],[item]);self.assertEqual(k.closed,[123])
+ def stop_api_fixture(self,*,loaded=False,resident=False,unload_status='unloaded',remove_children=True,late_child=False,busy=False):
+  events=[];state={'stopped':False,'resident':resident,'reads':0}
+  child=mock.Mock(pid=99);child.name.return_value='tinystrata-vision.exe'
+  m={'pid':42};item={'Kind':'api','Port':19191,'OriginalConfig':'fixture.json','Loaded':loaded,'Processes':[m]}
+  class Kernel:
+   def WaitForSingleObject(self,*args):return 0 if state['stopped'] else 258
+   def TerminateProcess(self,*args):events.append('terminate');state['stopped']=True;return 1
+   def CloseHandle(self,handle):events.append('close')
+  def request(port,path,*args,**kwargs):
+   events.append(path)
+   if path=='/status':return {'busy':busy,'queued':0}
+   if path=='/v1/model/switch':return {'in_flight':0,'switching':False,'downloading':False}
+   if path=='/v1/models':return {'data':[]}
+   if path=='/unload':
+    if remove_children:state['resident']=False
+    return {'status':unload_status}
+   raise AssertionError('Unexpected update request: '+path)
+  def children(p,known):
+   self.assertEqual(known,{42});state['reads']+=1
+   return [child] if state['resident'] or (late_child and state['reads']>1) else []
+  with mock.patch.dict(n,collect=lambda s,w:[item],request=request,hold=lambda m:(Kernel(),123),
+       process=lambda pid:object(),meta=lambda p:m,active_children=children):
+   try:result=n['stop'](Path.cwd(),Path.cwd().parent/'work-fixture');error=None
+   except RuntimeError as caught:result=None;error=caught
+  return result,error,events
+ def test_unloaded_lazy_or_bootstrap_api_needs_no_unload_endpoint(self):
+  result,error,events=self.stop_api_fixture(unload_status='unsupported')
+  self.assertIsNone(error);self.assertTrue(result['Stopped']);self.assertFalse(result['Api']['Loaded'])
+  self.assertNotIn('/unload',events);self.assertEqual(events.count('terminate'),1);self.assertEqual(events.count('close'),1)
+  self.assertEqual(events.count('/status'),3)
+ def test_loaded_api_still_unloads_even_if_no_child_is_visible(self):
+  result,error,events=self.stop_api_fixture(loaded=True)
+  self.assertIsNone(error);self.assertTrue(result['Stopped']);self.assertIn('/unload',events)
+  self.assertLess(events.index('/unload'),events.index('terminate'))
+ def test_unloaded_api_with_resident_vision_or_native_child_still_unloads(self):
+  result,error,events=self.stop_api_fixture(resident=True)
+  self.assertIsNone(error);self.assertTrue(result['Stopped']);self.assertIn('/unload',events)
+  self.assertLess(events.index('/unload'),events.index('terminate'))
+ def test_resident_child_after_not_loaded_response_blocks_termination(self):
+  result,error,events=self.stop_api_fixture(resident=True,unload_status='not loaded',remove_children=False)
+  self.assertIsNone(result);self.assertIn('active child processes',str(error));self.assertIn('/unload',events)
+  self.assertNotIn('terminate',events);self.assertEqual(events.count('close'),1)
+ def test_unloaded_api_with_unsupported_unload_and_live_child_is_not_killed(self):
+  result,error,events=self.stop_api_fixture(resident=True,unload_status='unsupported')
+  self.assertIsNone(result);self.assertIn('did not unload safely',str(error));self.assertNotIn('terminate',events)
+  self.assertEqual(events.count('close'),1)
+ def test_child_appearing_after_unloaded_check_still_blocks_termination(self):
+  result,error,events=self.stop_api_fixture(late_child=True)
+  self.assertIsNone(result);self.assertIn('active child processes',str(error))
+  self.assertNotIn('/unload',events);self.assertNotIn('terminate',events);self.assertEqual(events.count('close'),1)
+ def test_unloaded_api_still_refuses_busy_work_before_any_mutation(self):
+  result,error,events=self.stop_api_fixture(busy=True)
+  self.assertIsNone(result);self.assertIn('busy',str(error));self.assertNotIn('/unload',events);self.assertNotIn('terminate',events)
+ def test_verified_redirector_and_console_do_not_hide_a_resident_vision_child(self):
+  known=mock.Mock(pid=43)
+  console=mock.Mock(pid=44);console.ppid.return_value=42
+  console.exe.return_value=str(Path(os.environ.get('SystemRoot','C:/Windows'))/'System32/conhost.exe')
+  vision=mock.Mock(pid=45);vision.ppid.return_value=42;vision.exe.return_value='C:/TinyStrata/tinystrata-vision.exe'
+  parent=mock.Mock();parent.children.return_value=[known,console,vision]
+  self.assertEqual(n['active_children'](parent,{42,43}),[vision])
  def test_different_profile_connection_fields_fail_closed_without_logging_values(self):
   for field,before,after in (('api_key','original-secret','different-secret'),
       ('allowed_hosts',['original.local'],['different.local']),('cors_origins',['https://original.local'],[]),

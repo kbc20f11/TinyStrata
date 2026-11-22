@@ -1553,6 +1553,29 @@ function Test-TinyStrataRunningApiCurrent {
     } catch { return $false }
 }
 
+function Get-TinyStrataRunningApiProfiles {
+    param([string]$SourceRoot, [string]$RuntimeRoot, [string[]]$Families, [int]$Port)
+    $configRoot = Join-Path $RuntimeRoot '.tinystrata'
+    foreach ($name in $Families) {
+        $family = Get-TinyStrataModelFamily -Name $name
+        $statePath = Join-Path $RuntimeRoot $family.StateFile
+        $state = Get-TinyStrataConfig -Path $statePath
+        $savedPort = 0
+        if (-not $state -or -not [int]::TryParse([string]$state.port, [ref]$savedPort) -or
+            $savedPort -lt 1 -or $savedPort -gt 65535 -or ($Port -and $savedPort -ne $Port)) { continue }
+        $configPath = Join-Path $configRoot $family.ConfigFile
+        if ($family.Name -eq 'qwen36' -and $state.config -eq (Join-Path $configRoot 'config-qwen36.json')) {
+            $configPath = [string]$state.config
+        }
+        $cfg = Get-TinyStrataConfig -Path $configPath
+        if (-not $cfg -or $cfg.backend -eq 'sycl') { continue }
+        $server = Get-TinyStrataSavedProcess -StatePath $statePath -ConfigPath $configPath -SourcePath $SourceRoot -ApiPort $savedPort
+        if ($server) {
+            [pscustomobject]@{ Family=$family; ConfigPath=$configPath; Configuration=$cfg; StatePath=$statePath; Port=$savedPort; Server=$server }
+        }
+    }
+}
+
 function Test-TinyStrataPortOwner {
     param([int]$ApiPort, [int]$RootProcessId)
     $listeners = @(Get-NetTCPConnection -LocalPort $ApiPort -State Listen -ErrorAction SilentlyContinue)
@@ -2291,6 +2314,16 @@ def stop(source,work):
                     raise RuntimeError('The UI has active tool/search child processes; no service was stopped')
         for item in apis:
             idle(item)
+            if item.get('Loaded') is False:
+                # A bootstrap/lazy API can have no native engine at all, so
+                # /unload may be unsupported. Images advertised by /health
+                # describe capability, not a resident encoder. Only skip the
+                # request when no native/Vision/unknown child is still alive.
+                resident=False
+                for m in item['Processes']:
+                    p=process(m['pid'])
+                    if p is not None and active_children(p,known):resident=True;break
+                if not resident:continue
             result=request(item['Port'],'/unload',item['OriginalConfig'],'POST')
             if result.get('status') not in ('unloaded','not loaded'):raise RuntimeError('The model did not unload safely; services were left running')
         # Unload has joined native workers. Never kill an unverified model or
@@ -2629,6 +2662,7 @@ function Invoke-TinyStrataInstaller {
     if ($IntelRuntimeDirectory -and $Backend -notin @('auto','sycl')) { throw '-IntelRuntimeDirectory requires an Intel backend selection.' }
     if ($IntelProfile -notin @('generic','b390-qwen36','b390-tiel-coder','b390-gemma4','b390-lfm25','b390-clover')) { throw 'Unknown Intel profile.' }
     $portAutomatic = $ApiPort -eq 0
+    $familyExplicitHere = if ($PSBoundParameters.ContainsKey('FamilyExplicit')) { $FamilyExplicit } else { $PSBoundParameters.ContainsKey('Family') }
     $selectedFamily = if ($Backend -eq 'sycl') { Get-TinyStrataModelFamily -Name $Family -Backend sycl } else { Get-TinyStrataModelFamily -Name $Family }
     $configPath = Join-Path (Join-Path $runtimeRoot '.tinystrata') $selectedFamily.ConfigFile
     $statePath = Join-Path $runtimeRoot $selectedFamily.StateFile
@@ -2644,7 +2678,6 @@ function Invoke-TinyStrataInstaller {
     $uiSelection = @{}
     if ($Vision) { $uiSelection.Vision = $Vision }
     if ($selectedBackend -eq 'sycl') {
-        $familyExplicitHere = if ($PSBoundParameters.ContainsKey('FamilyExplicit')) { $FamilyExplicit } else { $PSBoundParameters.ContainsKey('Family') }
         $intelSettings = Join-Path $runtimeRoot 'ui-sycl\settings.json'
         $settings = $null
         if ($IncludeUI -and (Test-Path -LiteralPath $intelSettings -PathType Leaf)) {
@@ -2699,26 +2732,49 @@ function Invoke-TinyStrataInstaller {
     $updateFailure = $null
     try {
     $updateServices = $RefreshSource -or $BuildAgain -or $HipDirectory -or ($Revision -and $IncludeUI -and $archiveInstall)
-    if (-not $updateServices -and $sourceReady -and -not $DoNotStart -and -not $IncludeUI -and $selectedBackend -ne 'sycl') {
-        $running = Get-TinyStrataSavedProcess -StatePath $statePath -ConfigPath $configPath -SourcePath $sourceRoot -ApiPort $ApiPort
-        if ($running -and -not (Test-TinyStrataRunningApiCurrent -Server $running -Configuration $cfg -SourceRoot $sourceRoot -Backend $selectedBackend)) {
-            Write-Host 'The running API needs updated sources or a new native build. Updating this installation...'
-            $updateServices = $true
+    $runningTarget = $null
+    if ($sourceReady -and -not $IncludeUI -and $selectedBackend -ne 'sycl') {
+        $families = @($selectedFamily.Name)
+        if (-not $familyExplicitHere) { $families = @($families + @('qwen36','gemma4','lfm2','clover','tiel') | Select-Object -Unique) }
+        $profiles = @(Get-TinyStrataRunningApiProfiles -SourceRoot $sourceRoot -RuntimeRoot $runtimeRoot -Families $families `
+            -Port $(if ($portAutomatic) { 0 } else { $ApiPort }))
+        if ($profiles.Count) {
+            $runningTarget = $profiles[0]
+            if (-not $updateServices -and -not $DoNotStart) {
+                foreach ($profile in $profiles) {
+                    $backendForProfile = Get-TinyStrataBackend -Requested $Backend -Configuration $profile.Configuration
+                    if (Test-TinyStrataRunningApiCurrent -Server $profile.Server -Configuration $profile.Configuration -SourceRoot $sourceRoot -Backend $backendForProfile) { continue }
+                    $runningTarget = $profile
+                    $updateServices = $true
+                    Write-Host "The running $($profile.Family.Name) API needs updated sources or a new native build. Updating this installation..."
+                    break
+                }
+            }
+            $selectedFamily = $runningTarget.Family
+            $configPath = $runningTarget.ConfigPath
+            $statePath = $runningTarget.StatePath
+            $cfg = $runningTarget.Configuration
+            $ApiPort = $runningTarget.Port
+            $selectedBackend = Get-TinyStrataBackend -Requested $Backend -Configuration $cfg
+            $baseUrl = "http://127.0.0.1:$ApiPort"
         }
     }
     if ($updateServices) {
         $updateGuard = Enter-TinyStrataInstallationGuard -WorkRoot $workRoot
         if ($selectedBackend -eq 'sycl') { Assert-TinyStrataInstallationIdle -SourceRoot $sourceRoot -WorkRoot $workRoot }
         else { $ownedServices = Stop-TinyStrataOwnedServicesForUpdate -SourceRoot $sourceRoot -WorkRoot $workRoot }
-        if ($ownedServices.Api) {
-            if (-not $FamilyExplicit) {
-                $selectedFamily = Get-TinyStrataModelFamily -Name $ownedServices.Api.Family
-                $configPath = [string]$ownedServices.Api.Config
+        $ownedApi = if ($runningTarget) {
+            $ownedServices.Apis | Where-Object { $_.Port -eq $runningTarget.Port } | Select-Object -First 1
+        } else { $ownedServices.Api }
+        if ($ownedApi) {
+            if (-not $familyExplicitHere) {
+                $selectedFamily = Get-TinyStrataModelFamily -Name $ownedApi.Family
+                $configPath = [string]$ownedApi.Config
                 $statePath = Join-Path $runtimeRoot $selectedFamily.StateFile
                 $cfg = Get-TinyStrataConfig -Path $configPath
                 $selectedBackend = Get-TinyStrataBackend -Requested $Backend -Configuration $cfg
             }
-            if ($portAutomatic) { $ApiPort = [int]$ownedServices.Api.Port }
+            if ($portAutomatic) { $ApiPort = [int]$ownedApi.Port }
         }
         if ($ownedServices.Ui -and -not $UiPortExplicit) { $UiPort = [int]$ownedServices.Ui.Port }
         if ($IncludeUI -and $ApiPort -eq $UiPort) { throw 'The UI and API must use different ports.' }

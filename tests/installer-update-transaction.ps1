@@ -2,7 +2,7 @@
 <# Pure fixture update transactions; no native executable, GPU, download or real installation is started. #>
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'installer-hip-runtime.ps1')
-foreach ($name in @('Invoke-TinyStrataInstaller', 'Get-TinyStrataConfig', 'Get-TinyStrataModelFamily', 'Restore-TinyStrataSource', 'Assert-TinyStrataInstallationIdle', 'New-TinyStrataNativeGeneration', 'Remove-TinyStrataNativeGeneration', 'Get-TinyStrataPrivateHipDirectory', 'Enter-TinyStrataInstallationGuard', 'Exit-TinyStrataInstallationGuard', 'Backup-TinyStrataPython', 'Complete-TinyStrataPythonTransaction', 'Get-TinyStrataApiSourceFingerprint', 'Test-TinyStrataRunningApiCurrent', 'Test-TinyStrataInferenceReady')) {
+foreach ($name in @('Invoke-TinyStrataInstaller', 'Get-TinyStrataConfig', 'Get-TinyStrataModelFamily', 'Restore-TinyStrataSource', 'Assert-TinyStrataInstallationIdle', 'New-TinyStrataNativeGeneration', 'Remove-TinyStrataNativeGeneration', 'Get-TinyStrataPrivateHipDirectory', 'Enter-TinyStrataInstallationGuard', 'Exit-TinyStrataInstallationGuard', 'Backup-TinyStrataPython', 'Complete-TinyStrataPythonTransaction', 'Get-TinyStrataApiSourceFingerprint', 'Test-TinyStrataRunningApiCurrent', 'Get-TinyStrataRunningApiProfiles', 'Test-TinyStrataInferenceReady')) {
     $definition = $runtimeAst.Find({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name}, $true)
     if (-not $definition) { throw "Missing function $name" }
     Invoke-Expression $definition.Extent.Text
@@ -144,7 +144,11 @@ try {
 
     # A normal local rerun after a source update must enter the same transaction
     # as an explicit update. Keep the process and hardware boundaries mocked.
-    function Get-TinyStrataSavedProcess { return $script:fixtureServer }
+    function Get-TinyStrataSavedProcess {
+        param($StatePath,$ConfigPath,$SourcePath,$ApiPort)
+        if ($ConfigPath -eq $script:fixtureSecondaryConfig -and $ApiPort -eq 18080) { return $script:fixtureSecondaryServer }
+        if ($ConfigPath -eq $script:fixtureConfig -and $ApiPort -eq $script:fixturePort) { return $script:fixtureServer }
+    }
     function Get-NetTCPConnection { if ($script:fixtureServer) { [pscustomobject]@{OwningProcess=$script:fixtureServer.Id} } }
     function Test-TinyStrataPortOwner { param($ApiPort,$RootProcessId) return $true }
     function Stop-TinyStrataOwnedServicesForUpdate {
@@ -152,10 +156,17 @@ try {
         if ($script:fixtureScenario -eq 'busy') { throw 'fixture API is busy' }
         $script:fixtureEvents += 'stop'
         $script:fixtureServer = $null
-        return [pscustomobject]@{ Stopped=$true }
+        $profile = [pscustomobject]@{ Family=$script:fixtureFamily; Config=$script:fixtureConfig; Port=$script:fixturePort }
+        $primary = if ($script:fixtureSecondaryServer) {
+            $script:fixtureSecondaryServer = $null
+            [pscustomobject]@{ Family='qwen36'; Config=$script:fixtureSecondaryConfig; Port=18080 }
+        } else { $profile }
+        return [pscustomobject]@{ Stopped=$true; Api=$primary; Apis=@($primary, $profile) }
     }
     function Restore-TinyStrataOwnedServicesAfterUpdate { $script:fixtureEvents += 'restore' }
     function Start-Process {
+        param($FilePath,$ArgumentList,$WorkingDirectory,$WindowStyle,$RedirectStandardOutput,$RedirectStandardError,[switch]$PassThru)
+        Assert-Runtime ($ArgumentList -eq ('-B -m serve.server --engine tinystrata --config "{0}" --port {1}' -f $script:fixtureConfig, $script:fixturePort)) 'restart preserves the matched profile and custom port'
         $script:fixtureEvents += 'start'
         $script:fixtureServer = [pscustomobject]@{ Id=52; HasExited=$false; StartTime=[DateTime]::Now }
         $script:fixtureServer | Add-Member -MemberType ScriptMethod -Name Refresh -Value {}
@@ -166,7 +177,7 @@ try {
         if ($Path -ne '/health') { throw "Unexpected model download or API call: $Path" }
         return [pscustomobject]@{ status='ok'; loaded=$true; images=$true }
     }
-    foreach ($case in @('unchanged','api-only','native','busy')) {
+    foreach ($case in @('unchanged','api-only','native','busy','gemma-current','gemma-update','gemma-beside-qwen')) {
         $root = Join-Path $transactionRoot ('local-' + $case)
         $source = Join-Path $root 'source'
         $work = Join-Path $root 'work'
@@ -174,7 +185,14 @@ try {
         $script:fixtureScenario = $case
         $script:fixtureEvents = @()
         $script:fixtureFailure = ''
-        $script:fixtureNativeChanged = $case -in @('native','busy')
+        $script:fixtureNativeChanged = $case -in @('native','busy','gemma-update','gemma-beside-qwen')
+        $script:fixtureFamily = if ($case -like 'gemma-*') { 'gemma4' } else { 'qwen36' }
+        $script:fixturePort = if ($case -like 'gemma-*') { 19082 } else { 18080 }
+        $family = Get-TinyStrataModelFamily -Name $script:fixtureFamily
+        $configRoot = Join-Path $work 'runtime\.tinystrata'
+        $script:fixtureConfig = Join-Path $configRoot $family.ConfigFile
+        $script:fixtureSecondaryConfig = $null
+        $script:fixtureSecondaryServer = $null
         Write-RuntimeFixture $source '.git' 'gitdir: private test checkout'
         Write-RuntimeFixture $source 'run.py' 'fixture run.py'
         Write-RuntimeFixture $source 'requirements.txt' 'fixture requirements'
@@ -185,28 +203,43 @@ try {
         $oldEngine = Join-Path $work 'build-hip'
         foreach ($name in @('tinystrata.exe','tinystrata-lfm2.exe','tinystrata-gemma4.exe','tinystrata-vision.exe')) { Write-RuntimeFixture $oldEngine $name 'old-native' }
         Install-TinyStrataHipRuntime @($script:fixtureSdk) $oldEngine
-        $oldExe = Join-Path $oldEngine 'tinystrata.exe'
+        $oldExe = Join-Path $oldEngine $family.NativeFile
         $stamp = @{ schema=2; backend='hip'; source_fingerprint=$(if ($script:fixtureNativeChanged) { 'old-native-fingerprint' } else { 'fixture-native-fingerprint' });
-                   files=@{'tinystrata.exe'=(Get-FileHash -LiteralPath $oldExe -Algorithm SHA256).Hash}; build_inputs=@{complete=$false} }
+                   files=@{}; build_inputs=@{complete=$false} }
+        $stamp.files[$family.NativeFile] = (Get-FileHash -LiteralPath $oldExe -Algorithm SHA256).Hash
         Write-RuntimeFixture $oldEngine '.tinystrata-native-build.json' ($stamp | ConvertTo-Json -Depth 4)
-        $oldCfg = [ordered]@{backend='hip';port=18080;exe=$oldExe;lib_dirs=@($script:fixtureSdk)} | ConvertTo-Json
-        Write-RuntimeFixture (Join-Path $work 'runtime\.tinystrata') 'config.json' $oldCfg
+        $oldCfg = [ordered]@{backend='hip';port=$script:fixturePort;exe=$oldExe;lib_dirs=@($script:fixtureSdk)} | ConvertTo-Json
+        Write-RuntimeFixture $configRoot $family.ConfigFile $oldCfg
+        Write-RuntimeFixture (Join-Path $work 'runtime') $family.StateFile (@{ config=$script:fixtureConfig; port=$script:fixturePort } | ConvertTo-Json)
+        if ($case -eq 'gemma-beside-qwen') {
+            $script:fixtureSecondaryConfig = Join-Path $configRoot 'config.json'
+            $script:fixtureSecondaryServer = [pscustomobject]@{ Id=50; HasExited=$false; TinyStrataApiSourceFingerprint=$fingerprint }
+            $currentEngine = Join-Path $work 'current-qwen'
+            Write-RuntimeFixture $currentEngine 'tinystrata.exe' 'current Qwen engine'
+            $currentExe = Join-Path $currentEngine 'tinystrata.exe'
+            $stamp.source_fingerprint = 'fixture-native-fingerprint'
+            $stamp.files['tinystrata.exe'] = (Get-FileHash -LiteralPath $currentExe -Algorithm SHA256).Hash
+            Write-RuntimeFixture $currentEngine '.tinystrata-native-build.json' ($stamp | ConvertTo-Json -Depth 4)
+            Write-RuntimeFixture $configRoot 'config.json' (@{backend='hip';port=18080;exe=$currentExe} | ConvertTo-Json)
+            Write-RuntimeFixture (Join-Path $work 'runtime') 'server-state.json' (@{config=$script:fixtureSecondaryConfig;port=18080} | ConvertTo-Json)
+        }
         Write-RuntimeFixture (Join-Path $work 'runtime\.tinystrata\model-files') 'model.gguf' 'keep cached model bytes'
-        $argsForInstall = @{ SourceDirectory=$source; WorkingDirectory=$work; Backend='hip'; ApiPort=18080 }
+        $argsForInstall = @{ SourceDirectory=$source; WorkingDirectory=$work; Backend='hip' }
         if ($case -eq 'busy') {
             Assert-RuntimeThrows { Invoke-TinyStrataInstaller @argsForInstall } 'fixture API is busy'
             Assert-Runtime ($script:fixtureServer.Id -eq 51 -and $script:fixtureEvents.Count -eq 0) 'busy API keeps its process and configuration'
         } else {
             Invoke-TinyStrataInstaller @argsForInstall
-            $published = Get-TinyStrataConfig (Join-Path $work 'runtime\.tinystrata\config.json')
-            if ($case -eq 'unchanged') { Assert-Runtime ($script:fixtureServer.Id -eq 51 -and $script:fixtureEvents.Count -eq 0) 'same command reuses a current running API without reconfiguring' }
+            $published = Get-TinyStrataConfig $script:fixtureConfig
+            if ($case -in @('unchanged','gemma-current')) { Assert-Runtime ($script:fixtureServer.Id -eq 51 -and $script:fixtureEvents.Count -eq 0) 'same command reuses a current running API without reconfiguring' }
             else {
                 Assert-Runtime ($script:fixtureServer.Id -eq 52 -and $script:fixtureEvents[0] -eq 'stop' -and $script:fixtureEvents -contains 'configure') "$case restarts API on a plain rerun"
-                $state = Get-TinyStrataConfig (Join-Path $work 'runtime\server-state.json')
+                $state = Get-TinyStrataConfig (Join-Path (Join-Path $work 'runtime') $family.StateFile)
                 Assert-Runtime ($state.api_source_fingerprint -eq (Get-TinyStrataApiSourceFingerprint -SourceRoot $source)) "$case records the replacement API source identity"
             }
-            Assert-Runtime ([bool]($script:fixtureEvents -like 'build:*') -eq ($case -eq 'native')) "$case rebuilds only for changed native sources"
-            Assert-Runtime ([IO.File]::ReadAllText($published.exe) -eq $(if ($case -eq 'native') { 'new-native' } else { 'old-native' })) "$case activates the expected engine bytes"
+            Assert-Runtime ([bool]($script:fixtureEvents -like 'build:*') -eq $script:fixtureNativeChanged) "$case rebuilds only for changed native sources"
+            Assert-Runtime ([IO.File]::ReadAllText($published.exe) -eq $(if ($script:fixtureNativeChanged) { 'new-native' } else { 'old-native' })) "$case activates the expected engine bytes"
+            if ($case -eq 'gemma-update') { Assert-Runtime (-not (Test-Path -LiteralPath (Join-Path $configRoot 'config.json'))) 'Gemma-only rerun does not create Qwen configuration' }
         }
         Assert-Runtime ([IO.File]::ReadAllText((Join-Path $work 'runtime\.tinystrata\model-files\model.gguf')) -eq 'keep cached model bytes') "$case preserves downloaded models"
         Assert-Runtime (-not (Test-Path -LiteralPath (Join-Path $work '.tinystrata-installing.json'))) "$case releases the installation guard"
