@@ -125,6 +125,8 @@ On an Intel Arc B390-only Windows PC with 32 GB shared RAM, the installer select
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex"
 ```
 
+Model weights are not downloaded automatically. Choose a model through the API, or opt in during setup from a local checkout with `.\install.ps1 -ModelFamily gemma4 -DownloadModel`.
+
 Use the same command for installation and updates. In a local Git checkout, normally update with:
 
 ```powershell
@@ -185,10 +187,11 @@ The design follows [Open WebUI’s rolling context compaction](https://docs.open
 
 ### Switch models without restarting
 
-The API-only installer starts with Qwen by default. To prepare Gemma on the same running API server, download it and check its progress:
+`GET /v1/models` lists the supported models. To download Gemma on the running API server and check its progress:
 
 ```powershell
 $api = 'http://127.0.0.1:18080'
+Invoke-RestMethod "$api/v1/models"
 Invoke-RestMethod "$api/v1/model/download" -Method Post -ContentType 'application/json' -Body '{"model":"gemma-4-26b-a4b-it"}'
 Invoke-RestMethod "$api/v1/model/download?model=gemma-4-26b-a4b-it"
 ```
@@ -418,7 +421,7 @@ For Qwen and Clover, `run-api.bat --vision gpu` uses GPU image processing (the d
 
 The API can start before the model files are installed. With Qwen selected, `POST /v1/model/download` with an empty JSON body (`{}`) downloads the fixed [Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS language model](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf) (14.1 GB, including MTP weights) and its [vision projector](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/mmproj-F16.gguf) (0.9 GB), about **15.0 GB in total**. It verifies both files' SHA-256 checksums, extracts the tokenizer and loads them. `GET /v1/model/download` reports progress; interrupted downloads can resume. A repeated download request reuses the active job, and `POST /v1/model/download/cancel` can cancel transfer or verification. Download completion is not inference readiness: wait for the download state to become `ready` and `/health` to report `loaded: true`, plus `images: true` when images are enabled.
 
-UI setup prepares the engines and GPU runtime libraries; download models from the Models tab. The API-only installer still downloads Qwen and its vision projector by default. Existing configurations keep their selected local model until you explicitly change it.
+Windows setup prepares engines and GPU runtime libraries without downloading model weights. Download models from the Models tab or through the API. For API-only setup, `-DownloadModel` enables a setup-time download. Existing configurations keep their selected local model until you change it.
 
 ## Acknowledgments
 

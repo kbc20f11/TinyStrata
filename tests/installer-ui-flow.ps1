@@ -36,7 +36,13 @@ try {
     $explicit = & $entry -SourceDir $source -WorkDir $work -WithUI -ModelFamily lfm2
     Assert-Flow ($explicit.DoNotDownload -and $explicit.Family -eq 'lfm2' -and $explicit.FamilyExplicit) 'explicit UI family also does not trigger a model transfer'
     $api = & $entry -SourceDir $source -WorkDir $work
-    Assert-Flow (-not $api.IncludeUI -and -not $api.DoNotDownload) 'API-only installer retains its intentional model installation behavior'
+    Assert-Flow (-not $api.IncludeUI -and $api.DoNotDownload) 'API-only setup starts without automatic downloads'
+    $apiModel = & $entry -SourceDir $source -WorkDir $work -ModelFamily gemma4 -DownloadModel
+    Assert-Flow (-not $apiModel.DoNotDownload -and $apiModel.Family -eq 'gemma4') 'API-only setup can explicitly download the selected family'
+    $skip = & $entry -SourceDir $source -WorkDir $work -DownloadModel -SkipModelDownload
+    Assert-Flow ($skip.DoNotDownload) 'legacy skip switch overrides an explicit download request'
+    $uiOptIn = & $entry -SourceDir $source -WorkDir $work -WithUI -DownloadModel
+    Assert-Flow ($uiOptIn.DoNotDownload) 'UI still leaves downloads to Models'
     [IO.File]::WriteAllText((Join-Path $work 'runtime\ui\settings.json'), '{"model_family":"gemma4","port":3001}', (New-Object Text.UTF8Encoding($false)))
     $existing = & $entry -SourceDir $source -WorkDir $work -WithUI
     Assert-Flow ($existing.Family -eq 'gemma4' -and -not $existing.FamilyExplicit -and $existing.UiPort -eq 3001) 'ordinary repeated UI command preserves saved model and UI port'
@@ -59,18 +65,31 @@ try {
     function Initialize-TinyStrataOptionalUI { param($SourceRoot,$WorkRoot,$ApiPort,$UiPort,$Family,[switch]$ConfigureOnly) $script:uiPrepared++ }
     function Invoke-TinyStrataApi {
         param($BaseUrl,$Path,$Method,$Headers)
-        if ($Path -eq '/health') { return [pscustomobject]@{ status='ok'; loaded=($script:transfers -gt 0); images=$false } }
+        if ($Path -eq '/health') { return [pscustomobject]@{ status='ok'; loaded=($script:installed -or ($script:transfers -gt 0 -and $script:downloadState -eq 'ready')); images=$false } }
         if ($Path -eq '/v1/model/download' -and $Method -eq 'POST') { $script:transfers++; return [pscustomobject]@{ state='ready' } }
-        if ($Path -eq '/v1/model/download') { return [pscustomobject]@{ state='ready' } }
+        if ($Path -eq '/v1/model/download') { return [pscustomobject]@{ state=$script:downloadState; error='mocked load failure' } }
         throw "Unexpected fixture endpoint $Path"
     }
     [IO.Directory]::CreateDirectory((Join-Path $work 'runtime\.tinystrata')) | Out-Null
     [IO.File]::WriteAllText((Join-Path $work 'runtime\.tinystrata\config.json'), '{"arch":"qwen35moe","vision_mode":"no","port":18080}', (New-Object Text.UTF8Encoding($false)))
-    $script:transfers=0; $script:uiPrepared=0
+    $script:transfers=0; $script:uiPrepared=0; $script:installed=$false; $script:downloadState='ready'
     Invoke-TinyStrataInstaller -SourceDirectory $source -WorkingDirectory $work -ApiPort 18080 -IncludeUI $true -DoNotDownload $false -DoNotStart $false
     Assert-Flow ($script:transfers -eq 0 -and $script:uiPrepared -eq 1) 'an unloaded API opens the UI without calling model download, even if a caller passes DoNotDownload=false'
-    Invoke-TinyStrataInstaller -SourceDirectory $source -WorkingDirectory $work -ApiPort 18080 -IncludeUI $false -DoNotDownload $false -DoNotStart $false
-    Assert-Flow ($script:transfers -eq 1) 'API-only readiness still requests its intentional fixed-model installation'
+    $argsForApi = @{ SourceDirectory=$source; WorkingDirectory=$work; ApiPort=18080 }
+    Invoke-TinyStrataInstaller @argsForApi
+    Assert-Flow ($script:transfers -eq 0 -and $script:uiPrepared -eq 1) 'API setup completes with a live unloaded device and zero model transfers'
+    $script:installed = $true
+    Invoke-TinyStrataInstaller @argsForApi -DoNotDownload $false
+    Assert-Flow ($script:transfers -eq 0) 'already prepared models are reused even with opt-in'
+    $script:installed = $false
+    Invoke-TinyStrataInstaller @argsForApi -DoNotDownload $false
+    Assert-Flow ($script:transfers -eq 1) 'only opting in starts a download and waits for inference readiness'
+    $script:downloadState = 'error'
+    $failure = $null
+    try { Invoke-TinyStrataInstaller @argsForApi -DoNotDownload $false } catch { $failure = $_ }
+    Assert-Flow ($script:transfers -eq 2 -and $failure.Exception.Message -like '*-DownloadModel*') 'failed opt-in points to an explicit retry'
+    Invoke-TinyStrataInstaller @argsForApi
+    Assert-Flow ($script:transfers -eq 2) 'the same API stays usable after a load failure without triggering a download retry'
     [pscustomobject]@{ Result='passed'; Checks=$checks; RealNetworkRequests=0; NativeProcesses=0; RealModelTransfers=0 } | ConvertTo-Json -Compress
 } finally {
     $target=[IO.Path]::GetFullPath($fixtureRoot)

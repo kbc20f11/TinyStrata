@@ -250,8 +250,12 @@ Assert-Entrypoint ($apiBootstrap.Requests.Count -eq 2 -and $apiBootstrap.Calls.C
 $apiForwarded = $apiBootstrap.Calls[0]
 Assert-Entrypoint ($apiForwarded.Origin -eq 'pinned' -and $apiForwarded.Arguments.Revision -eq ('2' * 40)) 'API IEX runs the installer from its one resolved commit'
 Assert-Entrypoint ($apiForwarded.Arguments.Backend -eq 'auto' -and $apiForwarded.Arguments.Family -eq 'qwen36' -and
-    -not $apiForwarded.Arguments.IncludeUI -and -not $apiForwarded.Arguments.DoNotDownload) 'API IEX preserves API-only defaults and normal model download'
+    -not $apiForwarded.Arguments.IncludeUI -and $apiForwarded.Arguments.DoNotDownload) 'documented API IEX starts without downloading a model'
 Assert-Entrypoint ($apiForwarded.Arguments.SourceDirectory -eq (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'TinyStrata')) 'API IEX preserves its resolved installation path across pinned handoff'
+
+$apiBootstrap = Invoke-MockedApiBootstrap -Arguments @{ DownloadModel = $true; ModelFamily = 'gemma4' }
+Assert-Entrypoint ($apiBootstrap.Calls.Count -eq 1 -and -not $apiBootstrap.Calls[0].Arguments.DoNotDownload -and
+    $apiBootstrap.Calls[0].Arguments.Family -eq 'gemma4') 'pinned API bootstrap retains model download opt-in and family'
 
 $apiBootstrap = Invoke-MockedApiBootstrap -Arguments @{
     SourceDir = 'C:\API checkout'; WorkDir = 'C:\API work'; Backend = 'hip'; HipDirectory = 'C:\custom SDK'

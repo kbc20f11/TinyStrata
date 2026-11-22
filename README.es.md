@@ -86,6 +86,8 @@ Usa el mismo comando para instalar y actualizar. Abre **TinyStrata → Modelos**
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex"
 ```
 
+Los pesos de los modelos no se descargan automáticamente. Elige un modelo mediante la API o activa la descarga durante la instalación desde una copia local con `.\install.ps1 -ModelFamily gemma4 -DownloadModel`.
+
 **Runtime AMD predeterminado:** las instalaciones y actualizaciones automáticas usan el **SDK ROCm privado `10.2.0a20260930` (HIP 7.17)** del directorio de trabajo, en lugar de un `HIP_PATH` global antiguo o un SDK del sistema. `-HipDirectory` sigue permitiendo seleccionar explícitamente un SDK personalizado. Los motores y Vision comparten archivos HIP/COMGR/Kpack compatibles y rutas verificadas de las bibliotecas matemáticas del SDK; las actualizaciones preparan una generación nativa aparte antes de publicar los ajustes. No se modifican los controladores, System32 ni el PATH permanente del sistema.
 
 Windows HIP usa la granularidad VMM mínima del controlador solo tras verificar los tres archivos locales, el runtime cargado y su versión HIP compilada correspondiente (7.17 o posterior). Los runtimes antiguos, incompatibles o sin verificar conservan un **mínimo de asignación de 4 MiB**. Para recuperar los bloques gruesos, establece `$env:TINYSTRATA_HIP_VMM_COARSE='1'` antes de iniciar; **cualquier valor no vacío los fuerza**. Elimina la variable para restaurar la selección automática. Solo **HIP verificado con granularidad inferior a 4 MiB** permite **60 segundos** para finalizar normalmente la descarga nativa; las otras rutas mantienen su plazo. La limitación de vídeo AMD indicada arriba sigue vigente. Consulta la [validación y las limitaciones restantes](benchmark/results/hip-runtime-vmm-20261107.md).
@@ -133,10 +135,11 @@ Referencias: [Open WebUI](https://docs.openwebui.com/troubleshooting/context-win
 
 ### Cambiar de modelo sin reiniciar
 
-El instalador de solo API inicia Qwen de forma predeterminada. Para preparar Gemma en el mismo servidor API, inicia la descarga y consulta el progreso:
+`GET /v1/models` enumera los modelos compatibles. Para descargar Gemma en el servidor API en ejecución y consultar el progreso:
 
 ```powershell
 $api = 'http://127.0.0.1:18080'
+Invoke-RestMethod "$api/v1/models"
 Invoke-RestMethod "$api/v1/model/download" -Method Post -ContentType 'application/json' -Body '{"model":"gemma-4-26b-a4b-it"}'
 Invoke-RestMethod "$api/v1/model/download?model=gemma-4-26b-a4b-it"
 ```
@@ -338,7 +341,7 @@ Para Qwen y Clover, `run-api.bat --vision gpu` procesa las imágenes en la GPU (
 
 La API puede iniciarse antes de que se instalen los archivos del modelo. Con Qwen seleccionado, `POST /v1/model/download` con un cuerpo JSON vacío (`{}`) descarga el [modelo de lenguaje fijo Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf) (14.1 GB, incluidos los pesos de MTP) y su [proyector de visión](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/mmproj-F16.gguf) (0.9 GB), unos **15.0 GB en total**. Verifica las sumas de comprobación SHA-256 de ambos archivos, extrae el tokenizador y los carga. `GET /v1/model/download` informa del progreso; las descargas interrumpidas se pueden reanudar. Repetir la solicitud de descarga reutiliza el trabajo activo, y `POST /v1/model/download/cancel` puede cancelar la transferencia o la verificación. Que la descarga haya finalizado no significa que la inferencia esté lista: espera a que el estado de la descarga sea `ready` y a que `/health` indique `loaded: true` y, si las imágenes están activadas, también `images: true`.
 
-La instalación de la interfaz prepara los motores y las bibliotecas de la GPU; descarga los modelos desde la pestaña Modelos. El instalador de solo API sigue descargando Qwen y su proyector de visión de forma predeterminada. Las configuraciones existentes conservan el modelo local seleccionado hasta que lo cambies explícitamente.
+La instalación de Windows prepara los motores y las bibliotecas de la GPU sin descargar los pesos de los modelos. Descárgalos desde la pestaña Modelos o mediante la API. En la instalación de solo API, `-DownloadModel` activa la descarga durante la instalación. Las configuraciones existentes conservan el modelo local seleccionado hasta que lo cambies.
 
 ## Agradecimientos
 

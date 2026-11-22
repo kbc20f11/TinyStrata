@@ -5,6 +5,8 @@ Install and start TinyStrata on Windows.
 .DESCRIPTION
 Run with: irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex
 Uses local sources when available, otherwise downloads them from GitHub.
+The API loads the selected model if it is already installed. Use -DownloadModel
+to install it as part of API-only setup.
 Other downloads use official Python, NVIDIA, AMD and Microsoft endpoints.
 The selected GPU driver must already be installed. AMD builds use the private
 pinned ROCm 10.2.0a20260930 SDK (HIP 7.17) by default; -HipDirectory selects a
@@ -37,6 +39,7 @@ param(
     [switch]$WithUI,
     [ValidateRange(1, 65535)][int]$UiPort = 3000,
     [switch]$NoStart,
+    [switch]$DownloadModel,
     [switch]$SkipModelDownload,
     [switch]$CheckOnly,
     [switch]$Rebuild,
@@ -2638,7 +2641,7 @@ except Exception as error:
 
 function Invoke-TinyStrataInstaller {
     param([string]$SourceDirectory, [string]$WorkingDirectory, [int]$ApiPort,
-          [bool]$DoNotStart, [bool]$DoNotDownload, [bool]$InspectOnly, [bool]$BuildAgain, [bool]$RefreshSource,
+          [bool]$DoNotStart, [bool]$DoNotDownload = $true, [bool]$InspectOnly, [bool]$BuildAgain, [bool]$RefreshSource,
           [string]$Family = 'qwen36', [string]$Backend = 'auto', [string]$HipDirectory, [string]$HipArchitectures,
           [bool]$IncludeUI = $false, [int]$UiPort = 3000, [string]$Revision, [bool]$FamilyExplicit = $false,
           [bool]$UiPortExplicit = $false, [string]$IntelRuntimeDirectory,
@@ -2723,7 +2726,11 @@ function Invoke-TinyStrataInstaller {
         }
         Write-Host 'Plan: reuse installed components; prepare Python/dependencies; reuse or build the selected GPU engine; prepare its runtime; save configuration.'
         if ($selectedBackend -eq 'hip') { Write-Host 'AMD: use the private pinned ROCm 10.2.0a20260930 SDK (HIP 7.17) by default; -HipDirectory selects a custom SDK; Qwen/LFM select native FP8 when available, otherwise INT8; Gemma uses INT8.' }
-        if (-not $DoNotStart) { Write-Host $(if ($DoNotDownload) { 'Then start the API; download a model later from Models.' } else { 'Then start the API and install the fixed model through its API if needed.' }) }
+        if (-not $DoNotStart) {
+            Write-Host $(if (-not $DoNotDownload) { 'Then start the API and install the selected model if needed.' }
+                elseif ($IncludeUI) { 'Then start the API; download a model later from Models.' }
+                else { 'Then start the API; download a model later on request through the API.' })
+        }
         if ($IncludeUI) { Write-Host $(if ($DoNotStart) { 'Prepare the optional UI launcher without starting services.' } else { 'Then start the optional UI and open it in the browser.' }) }
         return
     }
@@ -3098,7 +3105,7 @@ function Invoke-TinyStrataInstaller {
             if ($server.HasExited) { throw 'The API stopped during model installation.' }
             $job = Invoke-TinyStrataApi -BaseUrl $baseUrl -Path '/v1/model/download' -Headers $headers
             if ($job.state -eq 'ready') { break }
-            if ($job.state -in @('error', 'cancelled')) { throw "Model installation $($job.state): $($job.error). Run the installer again to retry/resume." }
+            if ($job.state -in @('error', 'cancelled')) { throw "Model installation $($job.state): $($job.error). Rerun with -DownloadModel to retry/resume." }
             if (([DateTime]::UtcNow - $lastUpdate).TotalSeconds -ge 15) {
                 Write-Host ("Model: {0} ({1:N2} / {2:N2} GB)" -f $job.state, ($job.bytes_downloaded / 1e9), ($job.total_bytes / 1e9))
                 $lastUpdate = [DateTime]::UtcNow
@@ -3114,7 +3121,13 @@ function Invoke-TinyStrataInstaller {
     Write-Host "API:    $baseUrl/v1"
     Write-Host "Config: $configPath"
     Write-Host "Logs:   $runtimeRoot"
-    if ($health.loaded) { Write-Host 'TinyStrata is ready for inference.' } else { Write-Host 'API ready; model installation was skipped.' }
+    if ($health.loaded) { Write-Host 'TinyStrata is ready for inference.' }
+    elseif ($IncludeUI) { Write-Host 'API ready. Download a model from Models.' }
+    else {
+        Write-Host 'API ready. No model is loaded.'
+        Write-Host "List models with GET $baseUrl/v1/models."
+        Write-Host "Start a download with POST $baseUrl/v1/model/download and JSON {`"model`":`"<model-id>`"}."
+    }
     if ($IncludeUI) { Initialize-TinyStrataOptionalUI -SourceRoot $sourceRoot -WorkRoot $workRoot -ApiPort $ApiPort -UiPort $UiPort -Family $selectedFamily.Name @uiSelection }
     } catch {
         $updateFailure = $_
@@ -3173,7 +3186,8 @@ try {
     elseif ($IntelRuntimeDirectory) { throw '-IntelRuntimeDirectory requires an Intel backend selection.' }
     if ($SelectBackend) { $tinyStrataIntelForward.SelectBackend = $true }
     if ($PSBoundParameters.ContainsKey('Vision')) { $tinyStrataIntelForward.Vision = $Vision }
-    Invoke-TinyStrataInstaller -SourceDirectory $SourceDir -WorkingDirectory $WorkDir -ApiPort $Port -DoNotStart $NoStart.IsPresent -DoNotDownload ($WithUI.IsPresent -or $SkipModelDownload.IsPresent) -InspectOnly $CheckOnly.IsPresent -BuildAgain $Rebuild.IsPresent -RefreshSource $Update.IsPresent -Family $ModelFamily -Backend $Backend -HipDirectory $HipDirectory -HipArchitectures $HipArchitectures -IncludeUI $WithUI.IsPresent -UiPort $UiPort -Revision $SourceRevision -FamilyExplicit $PSBoundParameters.ContainsKey('ModelFamily') -UiPortExplicit $PSBoundParameters.ContainsKey('UiPort') @tinyStrataIntelForward
+    $doNotDownload = -not $DownloadModel -or $WithUI -or $SkipModelDownload
+    Invoke-TinyStrataInstaller -SourceDirectory $SourceDir -WorkingDirectory $WorkDir -ApiPort $Port -DoNotStart $NoStart.IsPresent -DoNotDownload $doNotDownload -InspectOnly $CheckOnly.IsPresent -BuildAgain $Rebuild.IsPresent -RefreshSource $Update.IsPresent -Family $ModelFamily -Backend $Backend -HipDirectory $HipDirectory -HipArchitectures $HipArchitectures -IncludeUI $WithUI.IsPresent -UiPort $UiPort -Revision $SourceRevision -FamilyExplicit $PSBoundParameters.ContainsKey('ModelFamily') -UiPortExplicit $PSBoundParameters.ContainsKey('UiPort') @tinyStrataIntelForward
 } finally {
     $ErrorActionPreference = $tinyStrataOldErrorAction
     [Net.ServicePointManager]::SecurityProtocol = $tinyStrataOldSecurityProtocol

@@ -113,6 +113,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubu
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex"
 ```
 
+モデルは自動ダウンロードしません。API で選ぶか、ローカルのインストーラーで `.\install.ps1 -ModelFamily gemma4 -DownloadModel` のように明示的に指定してください。
+
 API のみの構成も、新規インストールと更新は同じコマンドです。ローカルの Git チェックアウトでは、通常は次の手順で更新します。
 
 ```powershell
@@ -173,10 +175,11 @@ UI のチャット設定では、**コンテキストを自動圧縮**が既定�
 
 ### 起動したままモデルを切り替える
 
-API のみのインストーラーは既定で Qwen を起動します。同じ API サーバーで Gemma を使うには、まずダウンロードを開始し、進捗を確認します。
+`GET /v1/models` で対応モデルを確認できます。起動中の API サーバーで Gemma をダウンロードし、進捗を確認する例です。
 
 ```powershell
 $api = 'http://127.0.0.1:18080'
+Invoke-RestMethod "$api/v1/models"
 Invoke-RestMethod "$api/v1/model/download" -Method Post -ContentType 'application/json' -Body '{"model":"gemma-4-26b-a4b-it"}'
 Invoke-RestMethod "$api/v1/model/download?model=gemma-4-26b-a4b-it"
 ```
@@ -404,7 +407,7 @@ Qwen と Clover では `run-api.bat --vision gpu` で GPU（新規構成の既�
 
 API はモデルファイルをインストールする前でも起動できます。Qwen を選択している場合、`POST /v1/model/download` に空の JSON ボディ（`{}`）を指定すると、固定の [Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS 言語モデル](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf)（MTP の重みを含む 14.1 GB）と、その[ビジョンプロジェクタ](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/mmproj-F16.gguf)（0.9 GB）、合計約 **15.0 GB** をダウンロードします。両方のファイルの SHA-256 チェックサムを検証し、トークナイザーを抽出して読み込みます。`GET /v1/model/download` で進捗を確認でき、中断したダウンロードは再開できます。ダウンロードを繰り返し要求した場合は、実行中のジョブを再利用します。`POST /v1/model/download/cancel` で転送や検証をキャンセルできます。ダウンロード完了は推論の準備完了を意味しません。ダウンロード状態が `ready` になり、`/health` が `loaded: true`（画像が有効なら `images: true` も）を返すまで待ってください。
 
-UI のセットアップはエンジンと GPU ランタイムライブラリを準備します。モデルは「モデル」タブからダウンロードしてください。API のみのインストーラーは、従来どおり既定で Qwen とそのビジョンプロジェクタをダウンロードします。既存の構成では、明示的に変更するまで、選択済みのローカルモデルを使用し続けます。
+Windows のセットアップはエンジンと GPU ランタイムライブラリを準備し、モデルは自動ダウンロードしません。「モデル」タブか API からダウンロードしてください。API のみの構成では、`-DownloadModel` でセットアップ時のダウンロードを指定できます。既存の構成では、選択済みのローカルモデルを変更するまで使い続けます。
 
 ## 謝辞
 

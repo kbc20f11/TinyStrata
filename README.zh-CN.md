@@ -86,6 +86,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubu
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/kbc20f11/TinyStrata/refs/heads/main/install.ps1' | iex"
 ```
 
+模型权重不会自动下载。请通过 API 选择模型，或在本地检出目录运行 `.\install.ps1 -ModelFamily gemma4 -DownloadModel`，明确要求在安装时下载。
+
 **AMD 运行时默认设置：** 自动安装和更新使用工作目录中的私有 **ROCm `10.2.0a20260930` SDK（HIP 7.17）**，不会默认选择旧的全局 `HIP_PATH` 或系统 SDK。显式指定 `-HipDirectory` 仍可选择自定义 SDK。模型与 Vision 共用匹配的 HIP／COMGR／Kpack 和经过验证的 SDK 数学库路径；更新先准备独立的 native 版本，再提交设置。不会修改驱动、System32 或持久的系统 PATH。
 
 仅当本地三个核心文件的哈希、实际加载的运行时及编译时 HIP 版本（7.17 或更新）通过验证时，Windows HIP 才使用驱动报告的最小 VMM 粒度。旧版、不匹配或未验证的运行时保留 **4 MiB 分配下限**。恢复时可在启动前设置 `$env:TINYSTRATA_HIP_VMM_COARSE='1'`；**任何非空值都会强制粗粒度**，恢复自动选择时请删除该变量。仅对**验证通过且粒度小于 4 MiB 的 HIP**，正常卸载的 native 退出等待可达 **60 秒**；其他路径保持原有等待时间。上方 AMD 显示输出限制仍然适用。参见[验证结果与剩余限制](benchmark/results/hip-runtime-vmm-20261107.md)。
@@ -133,10 +135,11 @@ UI 的聊天设置默认启用**自动压缩上下文**。在回答前及本地�
 
 ### 无需重启即可切换模型
 
-仅 API 安装器默认启动 Qwen。要在同一个 API 服务中使用 Gemma，请先下载并查看进度：
+`GET /v1/models` 列出支持的模型。以下示例在运行中的 API 服务下载 Gemma 并查看进度：
 
 ```powershell
 $api = 'http://127.0.0.1:18080'
+Invoke-RestMethod "$api/v1/models"
 Invoke-RestMethod "$api/v1/model/download" -Method Post -ContentType 'application/json' -Body '{"model":"gemma-4-26b-a4b-it"}'
 Invoke-RestMethod "$api/v1/model/download?model=gemma-4-26b-a4b-it"
 ```
@@ -338,7 +341,7 @@ API 默认监听 `http://127.0.0.1:18080`。要使用其他端口，请在已安
 
 模型文件尚未安装时，API 也可以启动。选择 Qwen 时，调用 `POST /v1/model/download` 并使用空 JSON 请求体（`{}`），会下载固定的 [Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS 语言模型](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf)（14.1 GB，包含 MTP 权重）及其[视觉投影器](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-MTP-GGUF/blob/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/mmproj-F16.gguf)（0.9 GB），总计约 **15.0 GB**。它会验证两个文件的 SHA-256 校验和，提取分词器并加载模型文件。`GET /v1/model/download` 可报告进度；中断的下载可以续传。重复的下载请求会复用当前任务，`POST /v1/model/download/cancel` 可以取消传输或校验。下载完成并不意味着推理已就绪：请等待下载状态变为 `ready`，且 `/health` 报告 `loaded: true`（启用图像时还需 `images: true`）。
 
-UI 安装会准备引擎和 GPU 运行时库；请在“模型”选项卡下载模型。仅 API 安装器仍默认下载 Qwen 及其视觉投影器。现有配置会继续使用已选择的本地模型，直到你明确更改它。
+Windows 安装会准备引擎和 GPU 运行时库，不会自动下载模型权重。请在“模型”选项卡或通过 API 下载。仅 API 安装可通过 `-DownloadModel` 明确启用安装时下载。现有配置会继续使用已选择的本地模型，直到你更改它。
 
 ## 致谢
 
