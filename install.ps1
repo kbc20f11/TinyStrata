@@ -352,6 +352,15 @@ function Test-TinyStrataNativeBuildStamp {
     } catch { return $false }
 }
 
+function Get-TinyStrataMainRevision {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $commit = Invoke-RestMethod -Uri 'https://api.github.com/repos/kbc20f11/TinyStrata/commits/main' `
+        -Headers @{ 'User-Agent' = 'TinyStrata-Installer'; Accept = 'application/vnd.github+json'; 'Cache-Control' = 'no-cache' } -TimeoutSec 30
+    $revision = [string]$commit.sha
+    if ($revision -notmatch '^[a-f0-9]{40}$') { throw 'GitHub returned an invalid TinyStrata revision.' }
+    return $revision
+}
+
 function Initialize-TinyStrataSource {
     param([string]$SourceRoot, [string]$CacheRoot, [switch]$Refresh, [string]$Revision)
     $SourceRoot = [IO.Path]::GetFullPath($SourceRoot).TrimEnd('\')
@@ -366,11 +375,7 @@ function Initialize-TinyStrataSource {
         }
     } else { Assert-TinyStrataSourceDestination -Directory $SourceRoot }
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    if (-not $Revision) {
-        $commit = Invoke-RestMethod -Uri 'https://api.github.com/repos/kbc20f11/TinyStrata/commits/main' `
-            -Headers @{ 'User-Agent' = 'TinyStrata-Installer'; Accept = 'application/vnd.github+json'; 'Cache-Control' = 'no-cache' } -TimeoutSec 30
-        $Revision = [string]$commit.sha
-    }
+    if (-not $Revision) { $Revision = Get-TinyStrataMainRevision }
     if ($revision -notmatch '^[a-f0-9]{40}$') { throw 'GitHub returned an invalid TinyStrata revision.' }
     if ($existing -and (Test-TinyStrataSourceRevision -Directory $SourceRoot -Revision $Revision)) {
         return [pscustomobject]@{ SourceRoot = $SourceRoot; Backup = $null; Changed = $false; Revision = $Revision }
@@ -1508,8 +1513,44 @@ function Get-TinyStrataSavedProcess {
         $details = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $state.pid)
         if (-not $details.CommandLine -or $details.CommandLine.IndexOf($ConfigPath, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
             $details.CommandLine -notmatch 'serve\.server') { return $null }
+        $process | Add-Member -NotePropertyName TinyStrataApiSourceFingerprint -NotePropertyValue $state.api_source_fingerprint -Force
         return $process
     } catch { return $null }
+}
+
+function Get-TinyStrataApiSourceFingerprint {
+    param([string]$SourceRoot)
+    $root = [IO.Path]::GetFullPath($SourceRoot).TrimEnd('\')
+    $paths = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($name in @('requirements.txt', 'run.py')) { $paths.Add((Join-Path $root $name)) }
+    foreach ($file in Get-ChildItem -LiteralPath (Join-Path $root 'serve') -Recurse -File) {
+        if ($file.Extension -in @('.py', '.jinja')) { $paths.Add($file.FullName) }
+    }
+    $paths.Sort([StringComparer]::Ordinal)
+    $entries = foreach ($path in $paths) {
+        $name = $path.Substring($root.Length + 1).Replace('\', '/')
+        '{0}:{1}' -f $name, (Get-FileHash -LiteralPath $path -Algorithm SHA256 -ErrorAction Stop).Hash
+    }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(($entries -join "`n")))).Replace('-', '').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+}
+
+function Test-TinyStrataRunningApiCurrent {
+    param($Server, $Configuration, [string]$SourceRoot, [string]$Backend)
+    if (-not $Configuration.exe -or $Configuration.backend -ne $Backend -or
+        $Server.TinyStrataApiSourceFingerprint -ne (Get-TinyStrataApiSourceFingerprint -SourceRoot $SourceRoot)) { return $false }
+    $exe = [string]$Configuration.exe
+    if (-not [IO.Path]::IsPathRooted($exe)) { $exe = Join-Path $SourceRoot $exe }
+    $fingerprint = Get-TinyStrataSourceFingerprint -Directory $SourceRoot -NativeOnly -Backend $Backend
+    # Source and binary identity suffice for an already running installation.
+    # Starting from a cached build still requires the full toolchain proof.
+    try {
+        $stamp = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $exe) '.tinystrata-native-build.json') -Raw -ErrorAction Stop | ConvertFrom-Json
+        $name = Split-Path -Leaf $exe
+        return ($stamp.schema -eq 2 -and $stamp.backend -eq $Backend -and $stamp.source_fingerprint -eq $fingerprint -and
+                $stamp.files.$name -eq (Get-FileHash -LiteralPath $exe -Algorithm SHA256 -ErrorAction Stop).Hash)
+    } catch { return $false }
 }
 
 function Test-TinyStrataPortOwner {
@@ -2289,7 +2330,7 @@ def revision(source):
     for name in ('server.py','launch.py','stdio.py','chat_history.py','web_search.py','tool_settings.py','sandbox_runtime.py'):
         digest.update(name.encode()+b'\0');digest.update((source/'ui'/name).read_bytes())
     return digest.hexdigest()
-def resume(source,work,snapshot):
+def resume(source,work,snapshot,api_source_fingerprint=None):
     if norm(snapshot.get('SourceRoot',''))!=norm(source) or norm(snapshot.get('WorkRoot',''))!=norm(work):
         raise RuntimeError('The saved service snapshot belongs to a different installation')
     python=work/'runtime/.venv/Scripts/python.exe';results=[]
@@ -2316,7 +2357,8 @@ def resume(source,work,snapshot):
                 env={**os.environ,'PYTHONUTF8':'1','PYTHONIOENCODING':'utf-8'},creationflags=subprocess.CREATE_NO_WINDOW|subprocess.CREATE_NEW_PROCESS_GROUP)
         created=psutil.Process(p.pid).create_time()
         state={'pid':p.pid,'started':datetime.datetime.fromtimestamp(created,datetime.timezone.utc).isoformat().replace('+00:00','Z')}
-        state.update({'config':item['Config'],'source':str(source),'port':port} if kind=='api' else {'command':command})
+        state.update({'config':item['Config'],'source':str(source),'port':port,'api_source_fingerprint':api_source_fingerprint}
+                     if kind=='api' else {'command':command})
         atomic(item['StatePath'],state)
         deadline=time.monotonic()+(180 if kind=='api' else 20)
         while time.monotonic()<deadline:
@@ -2348,7 +2390,7 @@ def main():
             raise RuntimeError('Acquire this installer installation guard before stopping services')
     elif marker.exists():raise RuntimeError('Release the installation guard before restoring services')
     try:
-        result=stop(source,work) if req['Operation']=='stop' else resume(source,work,req['Snapshot'])
+        result=stop(source,work) if req['Operation']=='stop' else resume(source,work,req['Snapshot'],req.get('ApiSourceFingerprint'))
         print(json.dumps({'ok':True,'result':result},ensure_ascii=True))
     except Exception as error:
         print(json.dumps({'ok':False,'error':str(error),'snapshot':getattr(error,'snapshot',None)},ensure_ascii=True))
@@ -2356,7 +2398,8 @@ def main():
     return 0
 if __name__=='__main__':raise SystemExit(main())
 '@
-    $request = @{ Operation = $Operation; SourceRoot = $source; WorkRoot = $work; Snapshot = $Snapshot } | ConvertTo-Json -Depth 30 -Compress
+    $apiSourceFingerprint = if ($Operation -eq 'restore' -and $Snapshot.Apis) { Get-TinyStrataApiSourceFingerprint -SourceRoot $source }
+    $request = @{ Operation = $Operation; SourceRoot = $source; WorkRoot = $work; Snapshot = $Snapshot; ApiSourceFingerprint = $apiSourceFingerprint } | ConvertTo-Json -Depth 30 -Compress
     $start = New-Object Diagnostics.ProcessStartInfo
     $start.FileName = $python
     $start.Arguments = (@('-I', '-X', 'utf8', '-B', '-c', $code) | ForEach-Object { ConvertTo-TinyStrataUpdateArgument ([string]$_) }) -join ' '
@@ -2655,7 +2698,15 @@ function Invoke-TinyStrataInstaller {
     $ownedServices = $null
     $updateFailure = $null
     try {
-    if ($RefreshSource -or $BuildAgain -or $HipDirectory -or ($Revision -and $IncludeUI -and $archiveInstall)) {
+    $updateServices = $RefreshSource -or $BuildAgain -or $HipDirectory -or ($Revision -and $IncludeUI -and $archiveInstall)
+    if (-not $updateServices -and $sourceReady -and -not $DoNotStart -and -not $IncludeUI -and $selectedBackend -ne 'sycl') {
+        $running = Get-TinyStrataSavedProcess -StatePath $statePath -ConfigPath $configPath -SourcePath $sourceRoot -ApiPort $ApiPort
+        if ($running -and -not (Test-TinyStrataRunningApiCurrent -Server $running -Configuration $cfg -SourceRoot $sourceRoot -Backend $selectedBackend)) {
+            Write-Host 'The running API needs updated sources or a new native build. Updating this installation...'
+            $updateServices = $true
+        }
+    }
+    if ($updateServices) {
         $updateGuard = Enter-TinyStrataInstallationGuard -WorkRoot $workRoot
         if ($selectedBackend -eq 'sycl') { Assert-TinyStrataInstallationIdle -SourceRoot $sourceRoot -WorkRoot $workRoot }
         else { $ownedServices = Stop-TinyStrataOwnedServicesForUpdate -SourceRoot $sourceRoot -WorkRoot $workRoot }
@@ -2956,9 +3007,10 @@ function Invoke-TinyStrataInstaller {
         $stderr = Join-Path $runtimeRoot $(if ($selectedBackend -eq 'sycl') { 'api-sycl.stderr.log' } else { 'api.stderr.log' })
         # Windows command-line quoting is confined to validated path arguments.
         $commandLine = '-B -m serve.server --engine tinystrata --config "{0}" --port {1}' -f $configPath, $ApiPort
+        $apiSourceFingerprint = if ($selectedBackend -ne 'sycl') { Get-TinyStrataApiSourceFingerprint -SourceRoot $sourceRoot }
         $server = Start-Process -FilePath $python -ArgumentList $commandLine -WorkingDirectory $sourceRoot -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
         $server.Refresh()
-        $state = [ordered]@{ pid = $server.Id; started = $server.StartTime.ToUniversalTime().ToString('o'); config = $configPath; source = $sourceRoot; port = $ApiPort }
+        $state = [ordered]@{ pid = $server.Id; started = $server.StartTime.ToUniversalTime().ToString('o'); config = $configPath; source = $sourceRoot; port = $ApiPort; api_source_fingerprint = $apiSourceFingerprint }
         [IO.File]::WriteAllText($statePath, ($state | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
         Write-Host "Starting the API in the background (PID $($server.Id))..."
     } else {
@@ -3032,6 +3084,16 @@ try {
         if ($PSScriptRoot -and (Test-TinyStrataSource -Directory $PSScriptRoot)) { $SourceDir = $PSScriptRoot }
         elseif (Test-TinyStrataSource -Directory (Get-Location).Path) { $SourceDir = (Get-Location).Path }
         else { $SourceDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'TinyStrata' }
+    }
+    if (-not $PSScriptRoot -and -not $SourceRevision -and -not $CheckOnly -and
+        -not (Test-Path -LiteralPath (Join-Path $SourceDir '.git'))) {
+        $pinned = @{}
+        foreach ($name in $PSBoundParameters.Keys) { $pinned[$name] = $PSBoundParameters[$name] }
+        $pinned.SourceDir = $SourceDir
+        $pinned.SourceRevision = Get-TinyStrataMainRevision
+        $response = Invoke-WebRequest -Uri ("https://raw.githubusercontent.com/kbc20f11/TinyStrata/$($pinned.SourceRevision)/install.ps1") -UseBasicParsing -TimeoutSec 60
+        & ([ScriptBlock]::Create([string]$response.Content)) @pinned
+        return
     }
     if ($WithUI) {
         if ($Backend -eq 'sycl' -and -not $PSBoundParameters.ContainsKey('UiPort')) { $UiPort = 3005 }

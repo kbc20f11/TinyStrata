@@ -192,6 +192,93 @@ Assert-Entrypoint ($result.Forwarded.Origin -eq 'local' -and $result.Forwarded.C
 Assert-EntrypointThrows { Invoke-MockedUiBootstrap -UiText $entrypointUiText -CoreHeader $entrypointCoreHeader -LocalInstaller -DownloadFails -Arguments @{ Update = $true } } 'failed Update download does not silently execute stale local installer'
 Assert-EntrypointThrows { Invoke-MockedUiBootstrap -UiText $entrypointUiText -CoreHeader $entrypointCoreHeader -LocalInstaller -Revision 'not-a-commit' -Arguments @{ Update = $true } } 'invalid Update revision never executes adjacent installer'
 
+# Execute the shipping API entrypoint, replacing only the actual installation
+# function. Both the initial IEX script and its pinned second pass retain the
+# real bootstrap, parameter binding and finally block. All HTTP stays mocked.
+function Invoke-MockedApiBootstrap {
+    param([hashtable]$Arguments = @{}, [switch]$Iex, [switch]$GitCheckout,
+          [switch]$DownloadFails, [string]$Revision = ('2' * 40))
+    & {
+        param($probePath, $probeArguments, $probeIex, $probeGit, $probeFails, $probeRevision)
+        $probeRequests = New-Object 'System.Collections.Generic.List[string]'
+        $probeCalls = New-Object 'System.Collections.Generic.List[object]'
+        $probeText = [IO.File]::ReadAllText($probePath)
+        $probeTokens = $null; $probeErrors = $null
+        $probeAst = [Management.Automation.Language.Parser]::ParseInput($probeText, [ref]$probeTokens, [ref]$probeErrors)
+        $probeInstaller = $probeAst.Find({param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Invoke-TinyStrataInstaller'
+        }, $true)
+        if ($probeErrors.Count -or -not $probeInstaller) { throw 'Cannot isolate the API installer entrypoint' }
+        $probeStub = @'
+function Invoke-TinyStrataInstaller {
+__PARAMETERS__
+    $bound = @{}
+    foreach ($name in $PSBoundParameters.Keys) { $bound[$name] = $PSBoundParameters[$name] }
+    $probeCalls.Add([pscustomobject]@{ Origin = '__ORIGIN__'; Arguments = $bound })
+}
+'@
+        $probeStub = $probeStub.Replace('__PARAMETERS__', $probeInstaller.Body.ParamBlock.Extent.Text)
+        $probeLocal = $probeText.Replace($probeInstaller.Extent.Text, $probeStub.Replace('__ORIGIN__', 'local'))
+        $probePinned = $probeText.Replace($probeInstaller.Extent.Text, $probeStub.Replace('__ORIGIN__', 'pinned'))
+        function Test-Path {
+            param([string]$LiteralPath, [string]$PathType)
+            if ((Split-Path -Leaf $LiteralPath) -eq '.git') { return [bool]$probeGit }
+            return $false
+        }
+        function Invoke-RestMethod {
+            param([string]$Uri, $Headers, $TimeoutSec)
+            $probeRequests.Add($Uri)
+            if ($Uri -ne 'https://api.github.com/repos/kbc20f11/TinyStrata/commits/main') { throw "Unexpected API bootstrap request: $Uri" }
+            return [pscustomobject]@{ sha = $probeRevision }
+        }
+        function Invoke-WebRequest {
+            param([string]$Uri, [switch]$UseBasicParsing, $TimeoutSec)
+            $probeRequests.Add($Uri)
+            if ($probeFails) { throw 'mock API installer download failure' }
+            if ($Uri -ne "https://raw.githubusercontent.com/kbc20f11/TinyStrata/$probeRevision/install.ps1") { throw "API installer is not pinned: $Uri" }
+            return [pscustomobject]@{ Content = $probePinned }
+        }
+        if ($probeIex) { $null = Invoke-Expression $probeLocal }
+        else { $null = & ([scriptblock]::Create($probeLocal)) @probeArguments }
+        return [pscustomobject]@{ Calls = $probeCalls.ToArray(); Requests = $probeRequests.ToArray() }
+    } $entrypointCorePath $Arguments $Iex.IsPresent $GitCheckout.IsPresent $DownloadFails.IsPresent $Revision
+}
+
+$apiBootstrap = Invoke-MockedApiBootstrap -Iex
+Assert-Entrypoint ($apiBootstrap.Requests.Count -eq 2 -and $apiBootstrap.Calls.Count -eq 1) 'documented API IEX resolves main once and the pinned pass does not recurse'
+$apiForwarded = $apiBootstrap.Calls[0]
+Assert-Entrypoint ($apiForwarded.Origin -eq 'pinned' -and $apiForwarded.Arguments.Revision -eq ('2' * 40)) 'API IEX runs the installer from its one resolved commit'
+Assert-Entrypoint ($apiForwarded.Arguments.Backend -eq 'auto' -and $apiForwarded.Arguments.Family -eq 'qwen36' -and
+    -not $apiForwarded.Arguments.IncludeUI -and -not $apiForwarded.Arguments.DoNotDownload) 'API IEX preserves API-only defaults and normal model download'
+Assert-Entrypoint ($apiForwarded.Arguments.SourceDirectory -eq (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'TinyStrata')) 'API IEX preserves its resolved installation path across pinned handoff'
+
+$apiBootstrap = Invoke-MockedApiBootstrap -Arguments @{
+    SourceDir = 'C:\API checkout'; WorkDir = 'C:\API work'; Backend = 'hip'; HipDirectory = 'C:\custom SDK'
+    HipArchitectures = 'gfx1200;gfx1201'; ModelFamily = 'gemma4'; Vision = 'gpu'; Port = 18086
+    NoStart = $true; SkipModelDownload = $true; Rebuild = $true; Update = $true
+}
+$apiForwarded = $apiBootstrap.Calls[0].Arguments
+Assert-Entrypoint ($apiBootstrap.Requests.Count -eq 2 -and $apiBootstrap.Calls.Count -eq 1 -and
+    $apiForwarded.SourceDirectory -eq 'C:\API checkout' -and $apiForwarded.WorkingDirectory -eq 'C:\API work') 'API scriptblock handoff retains explicit source and work paths'
+Assert-Entrypoint ($apiForwarded.Backend -eq 'hip' -and $apiForwarded.HipDirectory -eq 'C:\custom SDK' -and
+    $apiForwarded.HipArchitectures -eq 'gfx1200;gfx1201' -and $apiForwarded.Family -eq 'gemma4' -and
+    $apiForwarded.Vision -eq 'gpu' -and $apiForwarded.ApiPort -eq 18086) 'API pinned installer retains backend, model, vision and port arguments'
+Assert-Entrypoint ($apiForwarded.DoNotStart -and $apiForwarded.DoNotDownload -and
+    $apiForwarded.BuildAgain -and $apiForwarded.RefreshSource) 'API pinned installer retains all explicit install switches'
+
+$apiBootstrap = Invoke-MockedApiBootstrap -GitCheckout -Arguments @{ SourceDir = 'C:\local Git checkout' }
+Assert-Entrypoint ($apiBootstrap.Requests.Count -eq 0 -and $apiBootstrap.Calls.Count -eq 1 -and
+    $apiBootstrap.Calls[0].Origin -eq 'local') 'normal local Git API installation stays offline'
+$apiBootstrap = Invoke-MockedApiBootstrap -Arguments @{ CheckOnly = $true; Update = $true }
+Assert-Entrypoint ($apiBootstrap.Requests.Count -eq 0 -and $apiBootstrap.Calls.Count -eq 1 -and
+    $apiBootstrap.Calls[0].Arguments.InspectOnly) 'API CheckOnly stays offline even with Update'
+$apiBootstrap = Invoke-MockedApiBootstrap -Arguments @{ SourceRevision = ('3' * 40) }
+Assert-Entrypoint ($apiBootstrap.Requests.Count -eq 0 -and $apiBootstrap.Calls.Count -eq 1 -and
+    $apiBootstrap.Calls[0].Arguments.Revision -eq ('3' * 40)) 'explicit pinned API pass never resolves main or downloads itself again'
+Assert-EntrypointThrows { Invoke-MockedApiBootstrap -DownloadFails } 'failed API bootstrap download never installs stale local code'
+Assert-EntrypointThrows { Invoke-MockedApiBootstrap -Revision 'not-a-commit' } 'invalid API bootstrap revision is rejected before installation'
+
 # Read the production functions without executing the installer.
 $readinessTokens = $null
 $readinessErrors = $null

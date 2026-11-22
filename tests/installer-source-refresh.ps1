@@ -7,7 +7,7 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $rep
 if ($errors.Count) { throw 'Installer parse failed.' }
 foreach ($name in @('Test-TinyStrataSource', 'Assert-TinyStrataSourceDestination', 'Get-TinyStrataSourceFingerprint',
                     'Test-TinyStrataSourceRevision', 'Get-TinyStrataNativeFlagFingerprint', 'Write-TinyStrataNativeBuildStamp', 'Test-TinyStrataNativeBuildStamp',
-                    'Initialize-TinyStrataSource', 'Restore-TinyStrataSource')) {
+                    'Get-TinyStrataMainRevision', 'Initialize-TinyStrataSource', 'Restore-TinyStrataSource')) {
     $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     if (-not $definition) { throw "Missing source helper: $name" }
     Invoke-Expression $definition.Extent.Text

@@ -28,6 +28,7 @@ try {
     $source = Join-Path $fixtureRoot 'source'
     $work = Join-Path $fixtureRoot 'work'
     [IO.Directory]::CreateDirectory($source) | Out-Null
+    [IO.Directory]::CreateDirectory((Join-Path $source '.git')) | Out-Null
     [IO.Directory]::CreateDirectory((Join-Path $work 'runtime\ui')) | Out-Null
     $entry = [scriptblock]::Create($header + "`n" + $familyDefinition + "`n" + $capture + "`n" + $tail)
     $fresh = & $entry -SourceDir $source -WorkDir $work -WithUI
@@ -51,6 +52,7 @@ try {
     function Test-TinyStrataSource { param($Directory) return $true }
     function Get-TinyStrataBackend { param($Requested,$Configuration) return 'hip' }
     function Get-TinyStrataSavedProcess { param($StatePath,$ConfigPath,$SourcePath,$ApiPort) return [pscustomobject]@{ Id=71; HasExited=$false } }
+    function Test-TinyStrataRunningApiCurrent { return $true }
     function Get-NetTCPConnection { param($LocalPort,$State,$ErrorAction) return [pscustomobject]@{ OwningProcess=71 } }
     function Test-TinyStrataPortOwner { param($ApiPort,$RootProcessId) return $true }
     function Start-Process { throw 'Fixture must not start a process.' }

@@ -2,7 +2,7 @@
 <# Pure fixture update transactions; no native executable, GPU, download or real installation is started. #>
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'installer-hip-runtime.ps1')
-foreach ($name in @('Invoke-TinyStrataInstaller', 'Get-TinyStrataConfig', 'Get-TinyStrataModelFamily', 'Restore-TinyStrataSource', 'Assert-TinyStrataInstallationIdle', 'New-TinyStrataNativeGeneration', 'Remove-TinyStrataNativeGeneration', 'Get-TinyStrataPrivateHipDirectory', 'Enter-TinyStrataInstallationGuard', 'Exit-TinyStrataInstallationGuard', 'Backup-TinyStrataPython', 'Complete-TinyStrataPythonTransaction')) {
+foreach ($name in @('Invoke-TinyStrataInstaller', 'Get-TinyStrataConfig', 'Get-TinyStrataModelFamily', 'Restore-TinyStrataSource', 'Assert-TinyStrataInstallationIdle', 'New-TinyStrataNativeGeneration', 'Remove-TinyStrataNativeGeneration', 'Get-TinyStrataPrivateHipDirectory', 'Enter-TinyStrataInstallationGuard', 'Exit-TinyStrataInstallationGuard', 'Backup-TinyStrataPython', 'Complete-TinyStrataPythonTransaction', 'Get-TinyStrataApiSourceFingerprint', 'Test-TinyStrataRunningApiCurrent', 'Test-TinyStrataInferenceReady')) {
     $definition = $runtimeAst.Find({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name}, $true)
     if (-not $definition) { throw "Missing function $name" }
     Invoke-Expression $definition.Extent.Text
@@ -141,6 +141,77 @@ try {
     $script:fixtureProcesses=@([pscustomobject]@{Name='python.exe';ProcessId=44;ExecutablePath='';CommandLine='python C:\another-install\ui\launch.py'})
     Assert-TinyStrataInstallationIdle -SourceRoot "$transactionRoot\source" -WorkRoot "$transactionRoot\work"
     Assert-Runtime $true 'another installation is left alone'
+
+    # A normal local rerun after a source update must enter the same transaction
+    # as an explicit update. Keep the process and hardware boundaries mocked.
+    function Get-TinyStrataSavedProcess { return $script:fixtureServer }
+    function Get-NetTCPConnection { if ($script:fixtureServer) { [pscustomobject]@{OwningProcess=$script:fixtureServer.Id} } }
+    function Test-TinyStrataPortOwner { param($ApiPort,$RootProcessId) return $true }
+    function Stop-TinyStrataOwnedServicesForUpdate {
+        Assert-Runtime (Test-Path -LiteralPath (Join-Path $script:fixtureWork '.tinystrata-installing.json')) 'automatic restart takes the installation guard before stopping'
+        if ($script:fixtureScenario -eq 'busy') { throw 'fixture API is busy' }
+        $script:fixtureEvents += 'stop'
+        $script:fixtureServer = $null
+        return [pscustomobject]@{ Stopped=$true }
+    }
+    function Restore-TinyStrataOwnedServicesAfterUpdate { $script:fixtureEvents += 'restore' }
+    function Start-Process {
+        $script:fixtureEvents += 'start'
+        $script:fixtureServer = [pscustomobject]@{ Id=52; HasExited=$false; StartTime=[DateTime]::Now }
+        $script:fixtureServer | Add-Member -MemberType ScriptMethod -Name Refresh -Value {}
+        return $script:fixtureServer
+    }
+    function Invoke-TinyStrataApi {
+        param($BaseUrl,$Path,$Method,$Headers)
+        if ($Path -ne '/health') { throw "Unexpected model download or API call: $Path" }
+        return [pscustomobject]@{ status='ok'; loaded=$true; images=$true }
+    }
+    foreach ($case in @('unchanged','api-only','native','busy')) {
+        $root = Join-Path $transactionRoot ('local-' + $case)
+        $source = Join-Path $root 'source'
+        $work = Join-Path $root 'work'
+        $script:fixtureWork = $work
+        $script:fixtureScenario = $case
+        $script:fixtureEvents = @()
+        $script:fixtureFailure = ''
+        $script:fixtureNativeChanged = $case -in @('native','busy')
+        Write-RuntimeFixture $source '.git' 'gitdir: private test checkout'
+        Write-RuntimeFixture $source 'run.py' 'fixture run.py'
+        Write-RuntimeFixture $source 'requirements.txt' 'fixture requirements'
+        Write-RuntimeFixture (Join-Path $source 'serve') 'server.py' 'installed API version'
+        $fingerprint = Get-TinyStrataApiSourceFingerprint -SourceRoot $source
+        if ($case -eq 'api-only') { Write-RuntimeFixture (Join-Path $source 'serve') 'server.py' 'new API version after git pull' }
+        $script:fixtureServer = [pscustomobject]@{ Id=51; HasExited=$false; TinyStrataApiSourceFingerprint=$fingerprint }
+        $oldEngine = Join-Path $work 'build-hip'
+        foreach ($name in @('tinystrata.exe','tinystrata-lfm2.exe','tinystrata-gemma4.exe','tinystrata-vision.exe')) { Write-RuntimeFixture $oldEngine $name 'old-native' }
+        Install-TinyStrataHipRuntime @($script:fixtureSdk) $oldEngine
+        $oldExe = Join-Path $oldEngine 'tinystrata.exe'
+        $stamp = @{ schema=2; backend='hip'; source_fingerprint=$(if ($script:fixtureNativeChanged) { 'old-native-fingerprint' } else { 'fixture-native-fingerprint' });
+                   files=@{'tinystrata.exe'=(Get-FileHash -LiteralPath $oldExe -Algorithm SHA256).Hash}; build_inputs=@{complete=$false} }
+        Write-RuntimeFixture $oldEngine '.tinystrata-native-build.json' ($stamp | ConvertTo-Json -Depth 4)
+        $oldCfg = [ordered]@{backend='hip';port=18080;exe=$oldExe;lib_dirs=@($script:fixtureSdk)} | ConvertTo-Json
+        Write-RuntimeFixture (Join-Path $work 'runtime\.tinystrata') 'config.json' $oldCfg
+        Write-RuntimeFixture (Join-Path $work 'runtime\.tinystrata\model-files') 'model.gguf' 'keep cached model bytes'
+        $argsForInstall = @{ SourceDirectory=$source; WorkingDirectory=$work; Backend='hip'; ApiPort=18080 }
+        if ($case -eq 'busy') {
+            Assert-RuntimeThrows { Invoke-TinyStrataInstaller @argsForInstall } 'fixture API is busy'
+            Assert-Runtime ($script:fixtureServer.Id -eq 51 -and $script:fixtureEvents.Count -eq 0) 'busy API keeps its process and configuration'
+        } else {
+            Invoke-TinyStrataInstaller @argsForInstall
+            $published = Get-TinyStrataConfig (Join-Path $work 'runtime\.tinystrata\config.json')
+            if ($case -eq 'unchanged') { Assert-Runtime ($script:fixtureServer.Id -eq 51 -and $script:fixtureEvents.Count -eq 0) 'same command reuses a current running API without reconfiguring' }
+            else {
+                Assert-Runtime ($script:fixtureServer.Id -eq 52 -and $script:fixtureEvents[0] -eq 'stop' -and $script:fixtureEvents -contains 'configure') "$case restarts API on a plain rerun"
+                $state = Get-TinyStrataConfig (Join-Path $work 'runtime\server-state.json')
+                Assert-Runtime ($state.api_source_fingerprint -eq (Get-TinyStrataApiSourceFingerprint -SourceRoot $source)) "$case records the replacement API source identity"
+            }
+            Assert-Runtime ([bool]($script:fixtureEvents -like 'build:*') -eq ($case -eq 'native')) "$case rebuilds only for changed native sources"
+            Assert-Runtime ([IO.File]::ReadAllText($published.exe) -eq $(if ($case -eq 'native') { 'new-native' } else { 'old-native' })) "$case activates the expected engine bytes"
+        }
+        Assert-Runtime ([IO.File]::ReadAllText((Join-Path $work 'runtime\.tinystrata\model-files\model.gguf')) -eq 'keep cached model bytes') "$case preserves downloaded models"
+        Assert-Runtime (-not (Test-Path -LiteralPath (Join-Path $work '.tinystrata-installing.json'))) "$case releases the installation guard"
+    }
+
     $script:packageMatch=$true
     function Test-TinyStrataRocmPackages {param($Python,$Names) return $script:packageMatch}
     $sdkEnvironment=Join-Path $transactionRoot 'private-rocm-venv'
