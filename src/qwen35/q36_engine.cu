@@ -1875,11 +1875,12 @@ struct Engine {
         ami = dalloc_t<int32_t>((size_t) kArgBlocks * verify_capacity);
         CK(cudaHostAlloc((void**) &hpin, 64 * sizeof(int32_t), cudaHostAllocDefault));
         n_chunk = (ctx + kChunkCells - 1) / kChunkCells;
-        int partial_queries = tiled_prompt() ? 8 : 64;
+        // Turing Qwen/Tiel enter split-K only for batches up to kGemmT.
+        int partial_queries = tiled_prompt() || (gpu_cc == 75 && !m->clover) ? kGemmT : 64;
 #if defined(STRATA_USE_HIP) || defined(__HIPCC__)
         // Larger prompt batches use GEMM (or tiled attention), not these
-        // split-K partials. Decode and verify need at most kGemmT == kVerify
-        // queries. Keep the old allocation available for paired measurements.
+        // split-K partials. The split-K loops reuse the buffers across slices.
+        // Keep the old allocation available for paired measurements.
         const char* legacy_partials = std::getenv("TINYSTRATA_Q36_LEGACY_ATTN_SCRATCH");
         partial_queries = legacy_partials && std::strcmp(legacy_partials, "1") == 0 ? 64 : 8;
 #endif
