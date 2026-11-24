@@ -3,6 +3,7 @@
 Run: python -m unittest discover -s tests -p test_server_stream_stability.py -v
 The socketpair drives the production handler directly with a CPU MockEngine.
 """
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
 from io import StringIO
 import json
@@ -151,26 +152,29 @@ class StreamBackpressure(unittest.TestCase):
         for options in ({"include_usage": True}, {"include_usage": False}, None, "invalid"):
             with self.subTest(options=options):
                 handler, reader, _, _, request = handler_fixture("28")
-                try:
-                    reader.settimeout(2)
-                    handler._openai({**request, "max_tokens": 8, "stream_options": options})
-                    received = bytearray()
-                    while b"data: [DONE]\n\n" not in received:
-                        block = reader.recv(4096)
-                        self.assertTrue(block, "the stream closed before [DONE]")
-                        received.extend(block)
-                    chunks = [json.loads(line[6:]) for line in received.decode().splitlines()
-                              if line.startswith("data: ") and line != "data: [DONE]"]
-                    self.assertEqual(sum("usage" in c for c in chunks), 1)
-                    self.assertGreater(chunks[-1]["usage"]["completion_tokens"], 0)
-                    if options == {"include_usage": True}:
-                        self.assertEqual(chunks[-1]["choices"], [])
-                        self.assertEqual(chunks[-2]["choices"][0]["finish_reason"], "stop")
-                        self.assertEqual(chunks[-1]["id"], chunks[-2]["id"])
-                    else:
-                        self.assertEqual(chunks[-1]["choices"][0]["finish_reason"], "stop")
-                finally:
-                    close_fixture(handler, reader)
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    try:
+                        reader.settimeout(2)
+                        sender = executor.submit(handler._openai,
+                                                 {**request, "max_tokens": 8, "stream_options": options})
+                        received = bytearray()
+                        while b"data: [DONE]\n\n" not in received:
+                            block = reader.recv(4096)
+                            self.assertTrue(block, "the stream closed before [DONE]")
+                            received.extend(block)
+                        sender.result(timeout=2)
+                    finally:
+                        close_fixture(handler, reader)
+                chunks = [json.loads(line[6:]) for line in received.decode().splitlines()
+                          if line.startswith("data: ") and line != "data: [DONE]"]
+                self.assertEqual(sum("usage" in c for c in chunks), 1)
+                self.assertGreater(chunks[-1]["usage"]["completion_tokens"], 0)
+                if options == {"include_usage": True}:
+                    self.assertEqual(chunks[-1]["choices"], [])
+                    self.assertEqual(chunks[-2]["choices"][0]["finish_reason"], "stop")
+                    self.assertEqual(chunks[-1]["id"], chunks[-2]["id"])
+                else:
+                    self.assertEqual(chunks[-1]["choices"][0]["finish_reason"], "stop")
 
     def test_nonreading_open_client_releases_fifo_and_next_request_works(self):
         # Distinct tokens prevent the existing repetition guard from ending the
