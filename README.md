@@ -48,6 +48,8 @@ Gemma automatically groups long text around fresh images when its current Expert
 
 On discrete CUDA/HIP GPUs, Inkling uses automatic context targets of **64K / 128K / 256K** for **8 / 12 / 16+ GB** of VRAM. The managed route budgets device KV before Expert placement. The API reports the capacity the engine can actually use.
 
+[Inkling's four-start RTX 3060 v2 workload results](benchmark/results/rtx-3060-12gb-20261125-v2-inkling.md)
+
 The CUDA/HIP Qwen, Gemma and LFM engines use an automatic VRAM Expert cache, CPU Expert computation from system RAM, prompt weight streaming and CUDA Graphs. They share the same API and support live model switching, with settings saved separately for each model. Selected Experts are not omitted. They also support automatic physical KV growth without changing the maximum context capacity. The following feature/VRAM tables describe CUDA/HIP; [Intel uses its own text contracts and memory-aware fixed allocation](https://github.com/kbc20f11/TinyStrata/issues/19).
 
 **GPT-OSS support is retired.** It is no longer an active download, launch or benchmark target. [Historical measurements](benchmark/results/gptoss-adoption-20261110.md) are retained; see the status and reintroduction requirements.

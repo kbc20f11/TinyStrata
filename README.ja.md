@@ -46,6 +46,8 @@ Qwen・Gemma・Clover・LFM・Tiel Coder はいずれも、空き VRAM に合わ
 
 **Inkling 2 Mini** は専用のループ型 MoE エンジンと画像エンコーダを使います。[固定版の Unsloth UD-IQ4_XS](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/tree/800c946d7b9c830c86290df49afbbe91db8455f5) と [Strata の画像用ファイル](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata/tree/04996a1e2c45009b6a04f2af126cb6bdb2ba3587) を合わせて **約16.37 GB** です。モデル管理からダウンロードでき、`run-api.bat --model-family inkling2` で単独の API プロファイルを起動できます（ポート **18086**）。思考の既定は **中**です。DSpark は対応する重みを `--draft-model` で指定すると選べます。CUDA・HIP のビルドに含まれ、Intel SYCL は `-DTINYSTRATA_INKLING2=ON` で選べる実験的なソースビルドです。
 
+[InklingのRTX 3060 v2計測（4起動）](benchmark/results/rtx-3060-12gb-20261125-v2-inkling.md)
+
 CUDA・HIP のディスクリート GPU では、Inkling も VRAM **8／12／16 GB 以上**に応じて **64K／128K／256K** を自動設定の目安にします。標準の起動経路では KV を GPU に配置する領域を先に確保し、残りの VRAM で Expert の配置を決めます。実際に使える容量は API に表示されます。
 
 **GPT-OSS の対応は終了しました。** 現在のダウンロード・起動・ベンチマークの対象から外し、[過去の計測記録](benchmark/results/gptoss-adoption-20261110.md)は保持しています。[対応状況と再対応の条件](docs/gpt-oss-reintroduction.md)を参照してください。
