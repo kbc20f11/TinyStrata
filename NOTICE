@@ -27,8 +27,9 @@ Optional CUDA prefill experiments draw on Basalt's KV tiling at
 73c95c10650d428fde0fd23ba10ed9bbd481647f and Expert grouping at
 b78aadaaecb622396cb4716dbd997c3522ddde79.
 
-The managed Unsloth UD-IQ3_XXS GGUF and the benchmarked InterpreticAI IQ3_XXS
-GGUF are quantizations of Thinking Machines Lab's Inkling 2 Mini under Apache-2.0.
+The managed Unsloth UD-IQ4_XS GGUF and the benchmarked Unsloth UD-IQ3_XXS and
+InterpreticAI IQ3_XXS GGUFs are quantizations of Thinking Machines Lab's
+Inkling 2 Mini under Apache-2.0.
 https://huggingface.co/unsloth/Inkling-2-Mini-GGUF
 https://huggingface.co/InterpreticAI/Inkling-2-Mini-IQ3_XXS-GGUF
 https://thinkingmachines.ai/model-card/inkling-2-mini/

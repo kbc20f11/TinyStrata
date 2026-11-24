@@ -39,9 +39,22 @@ MoMoE's shared improvements were already included in the tested TinyStrata basel
 
 The native automatic decode probe on this PC selected CPU computation for cold Experts, which is also the explicit mode used in the full InterpreticAI baseline. The first image's encoder runs on CPU on the Strata CUDA path. Reported image time is end-to-end, including the encoder. HIP built and returned native capabilities on the same machine. Hardware inference was exercised on CUDA sm_86. CUDA sm_120 was compiled. The Intel build remains experimental and the oneAPI compiler was unavailable for this run.
 
-The branch uses the pinned Unsloth UD-IQ3_XXS download. It retains most of the previous IQ4 screening throughput while reducing the combined download from 16.37 GB to 12.30 GB. It also completed the RTX 3060 API workflow checks below. [Pinned GGUF](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/tree/800c946d7b9c830c86290df49afbbe91db8455f5)
+The initial IQ3 selection used the pinned Unsloth UD-IQ3_XXS download. It retained most of the previous IQ4 screening throughput while reducing the combined download from 16.37 GB to 12.30 GB. It also completed the RTX 3060 API workflow checks below. [Pinned GGUF](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/tree/800c946d7b9c830c86290df49afbbe91db8455f5)
 
 - A 34,184-token Japanese shipment dossier returned all nine approved facts, with no extra keys, in 102.2 seconds. The fixture included older and similarly numbered records as distractors.
 - The model issued the requested shipment lookup with the correct arguments, and the next completion reported the values from the tool result.
 - A 132,262-token prompt was rejected with HTTP 400. The next short request succeeded on the same engine.
 - A damaged image returned HTTP 400. A follow-up reused the original image's context and read back its label. An equal-sized replacement image used a fresh context and returned its own label.
+
+## Unsloth IQ4 follow-up
+
+The IQ4 follow-up used the same RTX 3060, CUDA binary, workload inputs and 128K FP16 device KV configuration as the full IQ3 test. These are single measurements from separate sessions.
+
+| Unsloth distribution | GPU experts | Decode, three prompts (tok/s) | 4,096-token input (tok/s) | 16,384-token input (tok/s) |
+|---|---:|---:|---:|---:|
+| UD-IQ3_XXS | 519 / 3,072 | 32.7 | 373.89 | 362.28 |
+| UD-IQ4_XS | 624 / 3,072 | 34.6 | 379.48 | 366.95 |
+
+IQ4 ran about 6% faster in generation. Its input measurements were about 1–2% higher. The 29.0-second cold-image run reached the 128-token cap. IQ3 stopped at 127 tokens in 30.1 seconds. IQ4 uses more storage and had more Experts resident on this GPU. The measured decode advantage and the lossless CUDA repack of its 20 paired NVFP4 Expert layers favor IQ4 as the default for this branch. [Pinned IQ4 GGUF](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/blob/800c946d7b9c830c86290df49afbbe91db8455f5/Inkling-2-Mini-UD-IQ4_XS.gguf)
+
+IQ4 returned all nine approved facts in the same 34,184-token dossier in 101.1 seconds. The tool call and continuation, context overflow and retry, and image decode failure, reuse and replacement checks all passed.
