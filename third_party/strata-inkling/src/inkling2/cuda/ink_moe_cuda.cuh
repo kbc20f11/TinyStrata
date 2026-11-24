@@ -509,6 +509,14 @@ __device__ __forceinline__ uint32_t gguf_pack4_i8(int8_t a, int8_t b, int8_t c, 
 }
 
 // Vectorized DP4A multi-token GGUF row dot product: reads & unpacks each weight superblock ONCE across up to MAX_M tokens!
+// Packed IQ3_XXS sign expansion follows Basalt (MIT, Jesus Gulfo), d9915bbc8.
+// The grid bytes are 4..62, so masked two's-complement negation cannot carry
+// into an adjacent byte. Keep the same signed int8 operands for DP4A.
+__device__ __forceinline__ uint32_t gguf_iq3_xxs_signed4(uint32_t grid_word, uint32_t signs) {
+    const uint32_t byte_signs = (signs * 0x00204081u) & 0x01010101u;
+    return (grid_word ^ (byte_signs * 0xffu)) + byte_signs;
+}
+
 // Covers ALL priority Unsloth quants (Q4_K=12, Q5_K=13, Q6_K=14, Q8_0=8, IQ4_XS=23, IQ3_XXS=18, Q3_K=11, Q2_K=10, Q4_0=2, Q5_0=6, IQ4_NL=20)
 // plus multi-token cached MXFP4=39, BF16=30, F16=1, F32=0!
 template <int MAX_M>
@@ -666,16 +674,8 @@ __device__ __forceinline__ void ink_gguf_row_dot_multi(
             const uint32_t signs = s7 | ((uint32_t)(__popc(s7) & 1) << 7);
             const uint32_t g1 = kInkIq3XxsGrid[qs[sub * 8 + 2 * l4 + 0]];
             const uint32_t g2 = kInkIq3XxsGrid[qs[sub * 8 + 2 * l4 + 1]];
-            int8_t wv[8];
-#pragma unroll
-            for (int k = 0; k < 4; ++k) {
-                const int8_t v1 = (int8_t)((g1 >> (8 * k)) & 0xFFu);
-                const int8_t v2 = (int8_t)((g2 >> (8 * k)) & 0xFFu);
-                wv[k]     = ((signs >> k) & 1u) ? (int8_t)(-v1) : v1;
-                wv[k + 4] = ((signs >> (k + 4)) & 1u) ? (int8_t)(-v2) : v2;
-            }
-            const uint32_t w0 = gguf_pack4_i8(wv[0], wv[1], wv[2], wv[3]);
-            const uint32_t w1 = gguf_pack4_i8(wv[4], wv[5], wv[6], wv[7]);
+            const uint32_t w0 = gguf_iq3_xxs_signed4(g1, signs & 0x0fu);
+            const uint32_t w1 = gguf_iq3_xxs_signed4(g2, signs >> 4);
 #pragma unroll
             for (int m = 0; m < MAX_M; ++m) {
                 if (m < n_e) {

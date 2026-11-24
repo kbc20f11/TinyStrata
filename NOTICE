@@ -20,8 +20,16 @@ Project Maya at 381301c5c87d4c5ca026bbd679191e84168e3258 (MIT), adapted to
 TinyStrata's existing KV allocation and Expert formats.
 https://github.com/mw00/project-maya
 
-The separately downloaded InterpreticAI IQ3_XXS GGUF is a quantization of
-Thinking Machines Lab's Inkling 2 Mini under Apache-2.0.
+CUDA IQ3_XXS packed sign expansion adapts jesdga95/basalt commit
+d9915bbc8dc9126b04e06d58d3746312efddea32 (MIT; Copyright (c) 2026 Jesús Gulfo).
+It keeps the signed operands for the existing DP4A dot product unchanged.
+Optional CUDA prefill experiments draw on Basalt's KV tiling at
+73c95c10650d428fde0fd23ba10ed9bbd481647f and Expert grouping at
+b78aadaaecb622396cb4716dbd997c3522ddde79.
+
+The managed Unsloth UD-IQ3_XXS GGUF and the benchmarked InterpreticAI IQ3_XXS
+GGUF are quantizations of Thinking Machines Lab's Inkling 2 Mini under Apache-2.0.
+https://huggingface.co/unsloth/Inkling-2-Mini-GGUF
 https://huggingface.co/InterpreticAI/Inkling-2-Mini-IQ3_XXS-GGUF
 https://thinkingmachines.ai/model-card/inkling-2-mini/
 
