@@ -22,6 +22,9 @@ _FAMILIES = {"qwen35moe", "clover_moe", "gemma4", "lfm2moe"}
 _INKLING_ARCHES = {"inkling2", "inkling2_loop"}
 _INKLING_CUDA_RAW_TYPES = {0, 1, 2, 6, 8, 10, 11, 12, 13, 14, 18, 20, 23, 30, 39}
 _INKLING_HIP_RAW_TYPES = _INKLING_CUDA_RAW_TYPES - {6}
+# The mixed UD-IQ3_XXS artifact can require IQ2_XXS/IQ2_XS/IQ2_S and
+# NVFP4 to be decoded on the CPU before encoding the complete Expert again.
+_INKLING_EXPERT_TYPES = _INKLING_CUDA_RAW_TYPES | {16, 17, 22, 40}
 _INKLING_SK_BLOCK_BYTES = {4: 134, 6: 198, 8: 262}
 
 
@@ -68,12 +71,10 @@ def _payload(tensor, supported):
     return math.prod(tensor.shape) // block[0] * block[1], block[1]
 
 
-def _inkling_raw_body_bytes(gate, down, count):
+def _inkling_raw_body_bytes(gate_bytes, down_bytes, count):
     # The native loader keeps each plane's GGUF row layout (including mixed
     # IQ3_XXS gate/up and IQ4_NL down), with a 32-byte codec header and
     # 32-byte boundary between planes. HIP additionally aligns whole bodies.
-    gate_bytes, _ = _payload(gate, _INKLING_CUDA_RAW_TYPES)
-    down_bytes, _ = _payload(down, _INKLING_CUDA_RAW_TYPES)
     down_offset = (32 + gate_bytes // count + 31) & ~31
     return (down_offset + down_bytes // count + 31) & ~31
 
@@ -116,22 +117,25 @@ def _measure_inkling(metadata, tensors, arch, backend, hip_transcode):
         down = tensors.get(layer_prefix + "down_exps.weight")
         if gate is None or down is None or gate.shape != [width, 2 * hidden, count] or down.shape != [hidden, width, count]:
             raise ValueError(f"Invalid fused Inkling Expert tensors in layer {layer}")
-        if gate.type_id == down.type_id == 40:
-            for plane in ("gate_up", "down"):
-                if layer_prefix + plane + "_exps.scale" not in tensors:
-                    raise ValueError(f"Missing NVFP4 Expert scales in Inkling layer {layer}")
-            # Fused NVFP4 is exactly repacked to SF4: 16-byte header, then
-            # one 4-bit code per weight and one byte of scale per 16 weights.
+        gate_bytes, _ = _payload(gate, _INKLING_EXPERT_TYPES)
+        down_bytes, _ = _payload(down, _INKLING_EXPERT_TYPES)
+        for plane, tensor in (("gate_up", gate), ("down", down)):
+            if tensor.type_id == 40 and layer_prefix + plane + "_exps.scale" not in tensors:
+                raise ValueError(f"Missing NVFP4 Expert scales in Inkling layer {layer}")
+        types = {gate.type_id, down.type_id}
+        if types == {40} or (backend == "cuda" and not types <= _INKLING_CUDA_RAW_TYPES):
+            # Paired NVFP4 repacks exactly to SF4. CUDA requantizes mixed
+            # pairs with an unsupported type to this same wire layout.
             body = 16 + 2 * hidden * (width // 2 + width // 16) + width * (hidden // 2 + hidden // 16)
+        elif backend == "hip" and (force_sk or not types <= _INKLING_HIP_RAW_TYPES):
+            # HIP's S_K transcode uses paired down rows, so 1152 need
+            # not divide 256 as long as their combined width does.
+            gate_block = _inkling_sk_block_bytes(gate.type_id, sk_bits)
+            down_block = _inkling_sk_block_bytes(down.type_id, sk_bits)
+            down_offset = (2 * hidden + 2 * hidden * (width // 256) * gate_block + 63) & ~63
+            body = down_offset + (width // 2) * ((2 * hidden) // 256) * down_block
         else:
-            body = _inkling_raw_body_bytes(gate, down, count)
-            if backend == "hip" and (force_sk or not {gate.type_id, down.type_id} <= _INKLING_HIP_RAW_TYPES):
-                # HIP's S_K transcode uses paired down rows, so 1152 need
-                # not divide 256 as long as their combined width does.
-                gate_block = _inkling_sk_block_bytes(gate.type_id, sk_bits)
-                down_block = _inkling_sk_block_bytes(down.type_id, sk_bits)
-                down_offset = (2 * hidden + 2 * hidden * (width // 256) * gate_block + 63) & ~63
-                body = down_offset + (width // 2) * ((2 * hidden) // 256) * down_block
+            body = _inkling_raw_body_bytes(gate_bytes, down_bytes, count)
         if backend == "hip":
             body = (body + 63) & ~63
         total += body * count

@@ -35,7 +35,10 @@ echo "cmake $*" >> "$FAKE_STATE/cmake.log"
 case "$1" in
   --build)
     dir="$2"
-    for exe in tinystrata tinystrata-lfm2 tinystrata-gemma4 tinystrata-vision; do : > "$dir/$exe"; chmod +x "$dir/$exe"; done
+    for exe in tinystrata tinystrata-lfm2 tinystrata-gemma4 tinystrata-inkling2 tinystrata-vision; do
+      : > "$dir/$exe"
+      chmod +x "$dir/$exe"
+    done
     exit 0 ;;
 esac
 # configure: -S src -B dir -G generator ...

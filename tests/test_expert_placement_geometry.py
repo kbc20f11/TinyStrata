@@ -126,6 +126,36 @@ class ExpertGeometryTests(unittest.TestCase):
                 self.assertEqual(E._measure([header], cfg), {"total_expert_bytes": body * 3072,
                                                               "expert_total": 3072, "experts_per_layer": 128})
 
+    def test_inkling_unsloth_mixed_iq3_xxs_matches_native_requantized_budget(self):
+        header = model("inkling2", blocks=24, experts=128, width=2304, hidden=1152,
+                       gate_type=18, down_type=20, fused=True)
+        header.metadata.update({"inkling2.block_count": 48, "inkling2.num_loops": 3,
+                                "inkling2.loop.core_start": 6, "inkling2.loop.core_end": 18})
+        tensors = {t.name: t for t in header.tensors}
+        tensors["loop_res_query.weight"] = tensor("loop_res_query.weight", [2304, 24], 0)
+        mixed_gate_types = (16, 22, 22, 22, 17, 22, 22, 22, 22, 18,
+                            18, 22, 22, 18, 18, 18, 18, 18, 22, 18)
+        for layer, gate_type in enumerate(mixed_gate_types):
+            prefix = f"blk.{layer}.ffn_"
+            for plane, dtype in (("gate_up", gate_type), ("down", 40)):
+                name = prefix + plane + "_exps.weight"
+                tensors[name] = tensor(name, tensors[name].shape, dtype)
+                scale = prefix + plane + "_exps.scale"
+                tensors[scale] = tensor(scale, [128], 0)
+        header.tensors = list(tensors.values())
+
+        # The first 20 layers are SF4 on CUDA and S4_K on HIP. The final
+        # four keep their raw IQ3_XXS/IQ4_NL bodies on both backends.
+        for backend, total in (("cuda", 13_271_097_344), ("hip", 12_480_708_608)):
+            with self.subTest(backend=backend):
+                cfg = {"arch": "inkling2_loop", "backend": backend}
+                self.assertEqual(E._measure([header], cfg), {"total_expert_bytes": total,
+                                                              "expert_total": 3072, "experts_per_layer": 128})
+        del tensors["blk.0.ffn_down_exps.scale"]
+        header.tensors = list(tensors.values())
+        with self.assertRaisesRegex(ValueError, "Missing NVFP4 Expert scales in Inkling layer 0"):
+            E._measure([header], {"arch": "inkling2_loop"})
+
     def test_inkling_cache_accounts_for_hip_transcode_overrides(self):
         path = Path(__file__)
         cfg = {"arch": "inkling2_loop", "backend": "hip", "args": ["--model", str(path)]}
