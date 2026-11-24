@@ -155,14 +155,17 @@ def child_environment(environ=None):
 
 
 def model_sampling(model, cases):
-    return dict(CLOVER_SAMPLING if model == 'clover' else cases['sampling']['qwen' if model == 'tiel' else model])
+    if model == 'tiel':
+        return dict(temperature=1.0, top_p=0.95, top_k=20, min_p=0.0,
+                    presence_penalty=0.0, frequency_penalty=0.0, repetition_penalty=1.0)
+    return dict(CLOVER_SAMPLING if model == 'clover' else cases['sampling'][model])
 
 
 def model_definition(model):
     return TIEL_MODEL if model == 'tiel' else MODELS[model]
 
 
-def benchmark_models(model, saved_profile=False, *, intel_text=False):
+def benchmark_models(model, saved_profile=False, *, intel_text=False, v2=False):
     if intel_text:
         if model not in INTEL_TEXT_CONFIGS:
             raise ValueError('--intel-text requires one explicit --model qwen, tiel, gemma, lfm or clover')
@@ -173,9 +176,9 @@ def benchmark_models(model, saved_profile=False, *, intel_text=False):
         return [model]
     if model not in (*MODELS, 'tiel', 'all'):
         raise ValueError(f'Unsupported benchmark model: {model}')
-    if model == 'tiel' and not saved_profile:
-        raise ValueError('Tiel benchmarking requires --saved-profile')
-    return [*MODELS, *(['tiel'] if saved_profile else [])] if model == 'all' else [model]
+    if model == 'tiel' and not (saved_profile or v2):
+        raise ValueError('Tiel benchmarking requires v2 or --saved-profile')
+    return [*MODELS, *(['tiel'] if saved_profile or v2 else [])] if model == 'all' else [model]
 
 
 def generation_passes(saved_profile=False):
@@ -887,7 +890,8 @@ def render_report(report):
         def rate(key):
             return f'{result[key]["tok_s"]:.2f}' if key in result else '—'
         image = result['image']
-        image_text = f'{image["first_output_s"]:.2f} / {image["elapsed_s"]:.2f}' if image else 'N/A'
+        image_text = f'{image["first_output_s"]:.2f} / {image["elapsed_s"]:.2f}' if image else (
+            '—' if data.get('image_supported') else 'N/A')
         def span(values):
             if data.get('intel_text'):
                 return 'N/A (UMA)'
@@ -919,20 +923,22 @@ def main():
     local = Path(os.environ.get('LOCALAPPDATA', Path.home() / '.local/share'))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--model', choices=(*MODELS, 'tiel', 'all'), default='all')
+    parser.add_argument('--protocol', choices=('v1', 'v2'),
+                        help='Controlled benchmark defaults to v2; existing diagnostic variants default to v1')
     parser.add_argument('--saved-profile', action='store_true',
                         help='Nonstandard variant: retain saved native/sampling/Vision settings, include Tiel in all, run each generation text once')
     parser.add_argument('--intel-text', action='store_true',
                         help='Nonstandard explicit SYCL text variant; fixed context32768, no Vision/dynamic KV/independent Expert cache')
     parser.add_argument('--config-dir', type=Path, default=local / 'TinyStrata-work/runtime/.tinystrata')
     parser.add_argument('--output', type=Path, default=local / 'TinyStrata-work/benchmarks' / time.strftime('%Y%m%d-%H%M%S'))
-    parser.add_argument('--runs', type=int, default=4, help='Protocol v1 uses4; other counts are diagnostic')
+    parser.add_argument('--runs', type=int, default=4, help='Standard protocols use four starts; other counts are diagnostic')
     parser.add_argument('--request-timeout', type=float, default=600)
     parser.add_argument('--startup-timeout', type=float, default=300)
     parser.add_argument('--label', default='', help='Optional GPU/system label for the report')
     parser.add_argument('--include-64k', action='store_true',
                         help='Clover-only nonstandard extension: add a fresh 65,536-token input after 16K')
     parser.add_argument('--clover-mode', choices=('causal', 'self-spec', 'diffusion'), default='causal',
-                        help='causal retains protocol v1; self-spec/diffusion are separately labelled Clover-only variants')
+                        help='causal is standard; self-spec/diffusion are separately labelled Clover-only variants')
     parser.add_argument('--clover-block-size', type=int, choices=(1, 2, 4, 8, 16, 32), default=32)
     parser.add_argument('--clover-threshold', type=float, default=0.95)
     parser.add_argument('--clover-draft', type=int, metavar='N',
@@ -1006,8 +1012,14 @@ def main():
         parser.error('Unexpected benchmark case manifest')
     if options.include_64k and cases['prefill_max_tokens'] != 32:
         parser.error('--include-64k requires the canonical 32-token long-input output limit')
+    legacy_variant = (options.intel_text or options.saved_profile or options.clover_mode != 'causal'
+                      or manual_variant or options.include_64k or options.clover_vision)
+    v2 = options.protocol == 'v2' or (options.protocol is None and not legacy_variant)
+    if v2 and legacy_variant:
+        parser.error('v2 uses fixed benchmark settings; use v1 for diagnostic variants')
+    base_protocol = 'tinystrata-bench-v2' if v2 else cases['protocol']
     try:
-        models = benchmark_models(options.model, options.saved_profile, intel_text=options.intel_text)
+        models = benchmark_models(options.model, options.saved_profile, intel_text=options.intel_text, v2=v2)
     except ValueError as error:
         parser.error(str(error))
     options.output.mkdir(parents=True, exist_ok=False)
@@ -1026,18 +1038,19 @@ def main():
     if options.clover_vision:
         variant = True
         variant_suffix = (variant_suffix or '-clover-causal') + '-vision'
+    clover_vision = v2 or options.clover_vision
     clover_profile = dict(mode=options.clover_mode, kv=options.kv_type or 'int8',
                           block_size=options.clover_block_size, threshold=options.clover_threshold,
                           cpu_workers=options.cpu_workers if options.cpu_workers is not None else 'auto',
                           chunk=options.chunk if options.chunk is not None else 'auto', env=dict(options.engine_env),
-                          thinking=options.thinking == 'on', vision=options.clover_vision)
+                          thinking=options.thinking == 'on', vision=clover_vision)
     if self_spec_variant:
         clover_profile.update(draft=options.clover_draft, accept=options.clover_accept,
                               accept_ratio=options.clover_accept_ratio, accept_delta=options.clover_accept_delta)
     if options.include_64k:
         clover_profile['include_64k'] = True
-    report = dict(protocol=cases['protocol'] + variant_suffix,
-                  base_protocol=cases['protocol'], standard=options.runs == cases['runs'] and not variant,
+    report = dict(protocol=base_protocol + variant_suffix,
+                  base_protocol=base_protocol, standard=options.runs == cases['runs'] and not variant,
                   clover_mode=options.clover_mode, clover_block_size=options.clover_block_size,
                   clover_threshold=options.clover_threshold, clover_profile=clover_profile if options.model == 'clover' and not options.saved_profile and not options.intel_text else None,
                   complete=False,
@@ -1077,7 +1090,7 @@ def main():
             sampling = (dict(tinyconfig.TIEL_SAMPLING) if options.intel_text and model == 'tiel' else
                         copy.deepcopy(original.get('sampling') or model_sampling(model, cases)) if options.saved_profile else model_sampling(model, cases))
             data = dict(runs=[], sampling=sampling, assets=[],
-                        image_supported=False if options.intel_text else bool(original.get('vision')) if options.saved_profile else model not in TEXT_ONLY_MODELS or (model == 'clover' and options.clover_vision))
+                        image_supported=False if options.intel_text else bool(original.get('vision')) if options.saved_profile else model not in TEXT_ONLY_MODELS or (model == 'clover' and clover_vision))
             if options.intel_text:
                 data.update(intel_text=True, profile_path=str(profile_path), source_config_sha256=sha256(profile_path),
                             intel_profile=original.get('intel_profile'),
@@ -1091,7 +1104,7 @@ def main():
                                    clover_threshold=options.clover_threshold, clover_kv=options.kv_type or 'int8',
                                    clover_workers=options.cpu_workers, clover_chunk=options.chunk if options.chunk is not None else 'auto',
                                    clover_env=dict(options.engine_env), clover_thinking=options.thinking == 'on',
-                                   clover_vision=options.clover_vision)
+                                   clover_vision=model == 'clover' and clover_vision)
             if self_spec_variant:
                 profile_options.update(clover_draft=options.clover_draft, clover_accept=options.clover_accept,
                                        clover_accept_ratio=options.clover_accept_ratio, clover_accept_delta=options.clover_accept_delta)

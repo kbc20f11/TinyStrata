@@ -127,7 +127,7 @@ class Benchmark64K(unittest.TestCase):
                 service.assert_not_called()
 
     def test_02_default_prepare_keeps_v1_metadata(self):
-        report = self.invoke('--prepare-only')
+        report = self.invoke('--prepare-only', '--protocol', 'v1')
         self.assertEqual(report['protocol'], 'tinystrata-bench-v1')
         self.assertTrue(report['standard'])
         self.assertNotIn('include_64k', report)
@@ -144,7 +144,7 @@ class Benchmark64K(unittest.TestCase):
         self.assertEqual(FakeService.instances, [])
 
     def test_04_default_request_sequence_and_body(self):
-        report = self.invoke('--runs', '1')
+        report = self.invoke('--runs', '1', '--protocol', 'v1')
         run = report['models']['clover']['runs'][0]
         self.assertEqual([r['category'] for r in run['records']], ['generation'] * 6 + ['input_4k', 'input_16k'])
         self.assertNotIn('after_64k_engine', run)
@@ -218,7 +218,7 @@ class Benchmark64K(unittest.TestCase):
         self.assertEqual(set(empty['expert_cache']), {'startup_engine', 'after_16k_engine'})
 
     def test_09_renderer_only_extends_flagged_reports(self):
-        original = self.invoke('--runs', '1')
+        original = self.invoke('--runs', '1', '--protocol', 'v1')
         plain = bench.render_report(original)
         self.assertNotIn('64K', plain)
         self.assertIn('Expert cache GiB: startup → after16K', plain)
@@ -254,7 +254,7 @@ class Benchmark64K(unittest.TestCase):
         self.assertEqual(migrated['env'], {})
         self.original = fast_app
         self.saved.write_text(json.dumps(fast_app), encoding='utf-8')
-        report = self.invoke('--runs', '4')
+        report = self.invoke('--runs', '4', '--protocol', 'v1')
         self.assertTrue(report['standard'])
         launched = FakeService.instances[0].cfg
         self.assertEqual(config.clover_mode(launched), 'causal')
@@ -294,6 +294,16 @@ class Benchmark64K(unittest.TestCase):
         self.assertEqual(controlled['vision_mode'], 'no')
         self.assertNotIn('--vision', controlled['args'])
         self.assertEqual(app, before)
+
+    def test_v2_defaults_include_tiel_and_causal_clover_vision(self):
+        self.saved.write_text(json.dumps(self.vision_app()), encoding='utf-8')
+        report = self.invoke('--prepare-only')
+        self.assertEqual(report['protocol'], 'tinystrata-bench-v2')
+        self.assertTrue(report['standard'])
+        self.assertEqual(report['clover_mode'], 'causal')
+        self.assertTrue(report['models']['clover']['image_supported'])
+        self.assertEqual(bench.benchmark_models('all', v2=True), [*bench.MODELS, 'tiel'])
+        self.assertEqual(bench.benchmark_models('tiel', v2=True), ['tiel'])
 
     def test_13_explicit_vision_d3_variant_records_resident_encoder_and_assets(self):
         app = self.vision_app()
