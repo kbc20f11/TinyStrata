@@ -329,6 +329,7 @@ CMakeFiles/
 !/tests/gemma-image-text-prefill.cpp
 !/tests/native-command-inbox.cpp
 !/tests/test_native_command_inbox.py
+!/tests/test_batch_slot_release.py
 !/tests/test_vision_startup_resilience.py
 !/benchmark/results/upstream-refresh-20261111.json
 !/tests/test_model_switch_vision_resilience.py

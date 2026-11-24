@@ -1336,14 +1336,19 @@ class StrataEngine:
         on = sampling.get("experimental_speed_projection")
         return f" cvec={int(on)}" if isinstance(on, bool) else ""
 
-    def _send(self, text: str):
+    def _send(self, text: str, *, target=None):
         btrace("send>", text[:60])
         try:
-            with self.wlock:
-                self.proc.stdin.write(text + "\n")
-                self.proc.stdin.flush()
-        except (OSError, AttributeError):                # the pipe is gone (or a restart's close() took the process):
-            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+            proc, lock = target if target is not None else (self.proc, self.wlock)
+            with lock:
+                proc.stdin.write(text + "\n")
+                proc.stdin.flush()
+        except (OSError, AttributeError, ValueError):     # a restart may have closed this process's pipe
+            if target is None:
+                code = self.exit_code()
+            else:
+                code = proc.poll() if proc is not None else None
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {code})") from None
 
     def _control(self, cancel, on_token, stop_when=None, on_quiet=None):
         """Reads the control lines of the request on them (GEN / BGEN), yielding None heartbeats.  Calls on_token(id)
@@ -1441,17 +1446,18 @@ class StrataEngine:
             self.last = {**self.last, "finish": f[3], "decode_ms": float(f[4]),
                          "generated": int(f[2]) if f[2].isdigit() else self.last.get("generated")}
 
-    def _bdone_after_eos(self, slot: int, wait_s: float = 2.0):
+    def _bdone_after_eos(self, slot: int, born: int, wait_s: float = 2.0):
         """#1869: a request in a slot whose consumer left at the stop token has its BDONE right behind it (the engine prints it
         in the same window).  Read it here, so the request's figures are the slot leg's (the background wait would eat it,
         and the request kept the admission's single token).  None when it does not come in `wait_s`: then the background
         wait takes over."""
-        if slot >= len(self.slot_q):
+        queues = self.slot_q
+        if getattr(self, "starting", False) or self.gen != born or slot >= len(queues):
             return None
         end = time.monotonic() + wait_s
         while time.monotonic() < end:
             try:
-                line = self.slot_q[slot].get(timeout=max(0.05, end - time.monotonic()))
+                line = queues[slot].get(timeout=max(0.05, end - time.monotonic()))
             except queue.Empty:
                 return None
             if line is None:
@@ -1460,19 +1466,25 @@ class StrataEngine:
                 return line
         return None
 
-    def _release_slot_when_done(self, slot: int, stream: list[int] | None = None):
+    def _release_slot_when_done(self, slot: int, stream: list[int] | None = None, *, born: int):
         """A slot whose consumer left (a stop token, a stop string, a disconnect): BSTOP it and free it once the engine
         says BDONE (in the background).  `stream`: the prompt and every token of it so far - with the tokens still to
         come before BDONE, all but the last are what the slot holds then (the next turn of its conversation)."""
-        if slot >= len(self.slot_q):                    # the engine restarted with fewer slots: this one is gone
-            return
+        with self.slot_cv:
+            queues, busy, held = self.slot_q, self.slot_busy, self.slot_held
+            releasing, claims = self.slot_releasing, self.slot_claims
+            target = self.proc, self.wlock
+            if getattr(self, "starting", False) or self.gen != born or slot >= len(queues):
+                return
+            # Transfer the claim before the waiter can free the slot. Its BDONE may already be queued.
+            releasing.add(slot)
+            claims.discard(slot)
+            held[slot] = []
         try:
-            self._send(f"BSTOP {slot}")
+            self._send(f"BSTOP {slot}", target=target)
         except EngineDied:
             pass
-        q, busy, held = self.slot_q[slot], self.slot_busy, self.slot_held   # this process's: restart() replaces them
-        releasing = self.slot_releasing
-        releasing.add(slot)
+        q = queues[slot]
 
         def wait():
             end = time.monotonic() + 600.0
@@ -1894,7 +1906,7 @@ class StrataEngine:
                 pass
             bdone_in = False
             if phase == "slot" and slot is not None and out and out[-1] in EOS_IDS and self.gen == born:
-                bd = self._bdone_after_eos(slot)            # (#1869) the slot's figures, not the admission's
+                bd = self._bdone_after_eos(slot, born)      # (#1869) the slot's figures, not the admission's
                 if bd is not None:
                     self._apply_bdone(bd.split())
                     bdone_in = True
@@ -1907,31 +1919,29 @@ class StrataEngine:
             if admit_wait:
                 with self.slot_cv:
                     self.admitting = max(0, self.admitting - 1)
-            if reserved is not None:
+            if reserved is not None or slot is not None:
+                stream = list(prompt) + out[gen0:] if phase == "slot" and gen0 is not None and len(out) > gen0 else None
                 with self.slot_cv:
-                    self.slot_busy[reserved] = False
-                    self.slot_claims.discard(reserved)
-                    self.slot_cv.notify_all()
-            if slot is not None:
-                self.slot_live[slot] = None
-                self.slot_used[slot] = time.time()
-                if phase == "slot" and bdone_in:
-                    stream = list(prompt) + out[gen0:] if gen0 is not None and len(out) > gen0 else None
-                    self.slot_held[slot] = stream[:-1] if stream else []     # as the BDONE wait leaves it
-                    with self.slot_cv:
-                        self.slot_busy[slot] = False
-                        self.slot_claims.discard(slot)
+                    # Restart replaces these lists. Capture them before checking whose slots these are.
+                    busy, claims, held = self.slot_busy, self.slot_claims, self.slot_held
+                    live, used = self.slot_live, self.slot_used
+                    current = not getattr(self, "starting", False) and self.gen == born
+                    release = current and slot is not None and phase == "slot" and not bdone_in
+                    if current and reserved is not None:
+                        busy[reserved] = False
+                        claims.discard(reserved)
                         self.slot_cv.notify_all()
-                elif phase == "slot":
-                    self.slot_held[slot] = []
-                    stream = list(prompt) + out[gen0:] if gen0 is not None and len(out) > gen0 else None
-                    self._release_slot_when_done(slot, stream)    # freed at its BDONE
-                    self.slot_claims.discard(slot)                # (the BDONE wait owns it now)
-                else:
-                    with self.slot_cv:
-                        self.slot_busy[slot] = False
-                        self.slot_claims.discard(slot)
-                        self.slot_cv.notify_all()
+                    if current and slot is not None:
+                        live[slot] = None
+                        used[slot] = time.time()
+                        if not release:
+                            if bdone_in:
+                                held[slot] = stream[:-1] if stream else []
+                            busy[slot] = False
+                            claims.discard(slot)
+                            self.slot_cv.notify_all()
+                if release:
+                    self._release_slot_when_done(slot, stream, born=born)
 
     slot_groups = 1         # --batch-groups (set when the engine starts)
     SLOT_PREFIX_MIN = 512   # a held prefix shorter than this is not worth unbalancing the pipeline's groups
@@ -2360,6 +2370,8 @@ class Vision:
     lines and writes each image's embeddings; results are cached by the image's hash, so a conversation that
     sends the same picture again (every turn, with most clients) encodes it once."""
 
+    CACHE_LIMIT = 64
+
     @staticmethod
     def work_dir() -> Path:
         """#480: the directory for the encoder's files.  The engine reads the embeddings file named in a `GENI` line
@@ -2406,8 +2418,9 @@ class Vision:
         self.proc = None
         self.stopped = True
         self.startup_error = ""
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.cache: dict[str, tuple[Path, int]] = {}
+        self._cache_pins: dict[Path, int] = {}
         # opt-in (the vision section's "elastic": true, with the config's "vram_elastic"): the encoder starts with the
         # first picture and stops after elastic_idle_s without one; while it runs, the engine's expert cache keeps
         # elastic_mib of VRAM free for it (Service._vision_up / _vision_idle_down)
@@ -2802,6 +2815,40 @@ class Vision:
             out.append(self.encode(src, keep=[p for p, _ in out]))
         return out
 
+    @contextlib.contextmanager
+    def retain_encoded(self, sources: list, cancel=None):
+        """Keep this request's images until it finishes copying their embeddings."""
+        with self.lock:
+            try:
+                encoded = self.encode_all(sources, cancel)
+            except BaseException:
+                self._trim_cache()
+                raise
+            paths = {path for path, _ in encoded}
+            for path in paths:
+                self._cache_pins[path] = self._cache_pins.get(path, 0) + 1
+        try:
+            yield encoded
+        finally:
+            with self.lock:
+                for path in paths:
+                    self._cache_pins[path] -= 1
+                    if not self._cache_pins[path]:
+                        del self._cache_pins[path]
+                self._trim_cache()
+
+    def _trim_cache(self, keep=()):
+        """Evict oldest unpinned images while the caller holds self.lock."""
+        if len(self.cache) <= self.CACHE_LIMIT:
+            return
+        held = {Path(path) for path in keep}
+        for key, (path, _) in list(self.cache.items()):
+            if len(self.cache) <= self.CACHE_LIMIT:
+                break
+            if path not in held and path not in self._cache_pins:
+                del self.cache[key]
+                self._unlink_scratch(path)
+
     def encode(self, source: str | bytes, keep=()) -> tuple[Path, int]:
         """-> (embeddings file, number of image tokens).  `source`: what load() reads, or the image's bytes.
         `keep`: files the caller still needs (never evicted by this call)."""
@@ -2839,12 +2886,7 @@ class Vision:
                 self._unlink_scratch(img)
                 self._unlink_scratch(part)
             self.cache[key] = (out, rows)
-            held = {str(p) for p in keep} | {str(out)}
-            for old in list(self.cache):                               # oldest first, but never one still in use
-                if len(self.cache) <= 64:
-                    break
-                if str(self.cache[old][0]) not in held:
-                    self._unlink_scratch(self.cache.pop(old)[0])
+            self._trim_cache((*keep, out))
             return self.cache[key]
 
     @staticmethod
@@ -4739,104 +4781,108 @@ class Service:
         images = images_of(messages)
         turn_at = (self.prompt_turn_at(messages, tools, kwargs, ids)
                    if (req or {}).get("strata_checkpoint") is not False else None)
-        if not images:
-            self.embeddings.turn_at = turn_at
-        if images:
-            if not self.vision_available():
-                raise ValueError(self.vision_off_reason())
-            gemma = self.call_format == "gemma"
-            mark = "<|image|>" if gemma else IMAGE_PAD
-            def one(text):
-                values = self.tok.encode(text, parse_special=True)
-                if len(values) != 1:
-                    raise ValueError(f"the model tokenizer has no image control token {text}")
-                return values[0]
-            pad = one(mark)
-            start = None if gemma else one(VISION_START)
-            begin, end = ([one("<|image>")], [one("<image|>")]) if gemma else ([], [])
-            # An image URL is downloaded first, outside the FIFO: under it, a slow server held every other request
-            # for as long as urlopen waited.
-            def fetch(src):
-                if cancel is not None and cancel.is_set():
-                    raise ClientGone()
-                return fetched[src] if src in fetched else Vision.download(src) \
-                    if src.startswith(("http://", "https://")) else src
-            images = [fetch(src) for src in images]
-            # Encode only while the engine is idle: the engine and the image encoder (a separate process) must not
-            # run on the GPU at the same time - an encode during a running request left that request stuck at
-            # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
-            # same FIFO as the requests.
-            with self._turn(cancel):
-                self._vision_up()
-                try:
-                    encoded = (self.vision.encode_all(images, cancel) if hasattr(self.vision, "encode_all")
-                               else [self.vision.encode(src) for src in images])
-                finally:
-                    self.last_image_at = time.time()
-            # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
-            # (right after <|vision_start|>) are images: the same text inside a message (an agent reading these docs,
-            # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
-            literal = self.tok.encode(mark, parse_special=False)
-            out, k = [], 0
-            expanded_turn_at = None
-            for j, t in enumerate(ids):
-                if j == turn_at:
-                    # The checkpoint is a token boundary in the rendered
-                    # history. Map it before inserting this source token's
-                    # complete image span; never place it inside image rows.
-                    expanded_turn_at = len(out)
-                if t == pad and (k < len(encoded) if start is None else j > 0 and ids[j - 1] == start):
-                    # more pairs than images: text parts that cut both markers apart (the literal marks keep whole ones text)
-                    if k == len(encoded):
-                        raise ValueError("the prompt and its images do not match")
-                    out += begin + [pad] * encoded[k][1] + end
-                    k += 1
-                elif t == pad:
-                    out += literal
-                else:
-                    out.append(t)
-            if k != len(encoded):
-                raise ValueError("the prompt and its images do not match")
-            ids = out
-            if expanded_turn_at is not None and 0 < expanded_turn_at < len(ids):
-                self.embeddings.turn_at = expanded_turn_at
-        ctx = self.reported_ctx() if self.intel_context() else self.engine.max_context
-        if ctx <= 0:
-            if getattr(self.engine, "starting", False):   # #344: (re)starting, not a prompt that is too long
-                raise EngineStarting("the engine is starting (a minute or two); try again shortly")
-            # a failed restart leaves max_context 0: check against the last known context, so the request reaches
-            # run() - which starts the engine again - instead of failing with "exceeds the context (0)" forever
-            ctx = 0 if self.intel_context() else getattr(self.engine, "known_ctx", 0)
+        with contextlib.ExitStack() as vision_files:
+            if not images:
+                self.embeddings.turn_at = turn_at
+            if images:
+                if not self.vision_available():
+                    raise ValueError(self.vision_off_reason())
+                gemma = self.call_format == "gemma"
+                mark = "<|image|>" if gemma else IMAGE_PAD
+                def one(text):
+                    values = self.tok.encode(text, parse_special=True)
+                    if len(values) != 1:
+                        raise ValueError(f"the model tokenizer has no image control token {text}")
+                    return values[0]
+                pad = one(mark)
+                start = None if gemma else one(VISION_START)
+                begin, end = ([one("<|image>")], [one("<image|>")]) if gemma else ([], [])
+                # An image URL is downloaded first, outside the FIFO: under it, a slow server held every other request
+                # for as long as urlopen waited.
+                def fetch(src):
+                    if cancel is not None and cancel.is_set():
+                        raise ClientGone()
+                    return fetched[src] if src in fetched else Vision.download(src) \
+                        if src.startswith(("http://", "https://")) else src
+                images = [fetch(src) for src in images]
+                # Encode only while the engine is idle: the engine and the image encoder (a separate process) must not
+                # run on the GPU at the same time - an encode during a running request left that request stuck at
+                # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
+                # same FIFO as the requests.
+                with self._turn(cancel):
+                    self._vision_up()
+                    try:
+                        if hasattr(self.vision, "retain_encoded"):
+                            encoded = vision_files.enter_context(self.vision.retain_encoded(images, cancel))
+                        else:
+                            encoded = (self.vision.encode_all(images, cancel) if hasattr(self.vision, "encode_all")
+                                       else [self.vision.encode(src) for src in images])
+                    finally:
+                        self.last_image_at = time.time()
+                # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
+                # (right after <|vision_start|>) are images: the same text inside a message (an agent reading these docs,
+                # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
+                literal = self.tok.encode(mark, parse_special=False)
+                out, k = [], 0
+                expanded_turn_at = None
+                for j, t in enumerate(ids):
+                    if j == turn_at:
+                        # The checkpoint is a token boundary in the rendered
+                        # history. Map it before inserting this source token's
+                        # complete image span; never place it inside image rows.
+                        expanded_turn_at = len(out)
+                    if t == pad and (k < len(encoded) if start is None else j > 0 and ids[j - 1] == start):
+                        # more pairs than images: text parts that cut both markers apart (the literal marks keep whole ones text)
+                        if k == len(encoded):
+                            raise ValueError("the prompt and its images do not match")
+                        out += begin + [pad] * encoded[k][1] + end
+                        k += 1
+                    elif t == pad:
+                        out += literal
+                    else:
+                        out.append(t)
+                if k != len(encoded):
+                    raise ValueError("the prompt and its images do not match")
+                ids = out
+                if expanded_turn_at is not None and 0 < expanded_turn_at < len(ids):
+                    self.embeddings.turn_at = expanded_turn_at
+            ctx = self.reported_ctx() if self.intel_context() else self.engine.max_context
             if ctx <= 0:
-                raise EngineStarting("the engine is starting (a minute or two); try again shortly")
-        room = ctx - CTX_SLACK - len(ids)
-        if room < 1:
-            raise ValueError("request exceeds the context window: "
-                             f"prompt ({len(ids)} tokens) leaves no room to answer in the context "
-                             f"({ctx}); requests are never truncated")
-        if max_new <= 0:
-            max_new = room
-        elif max_new > room:
-            if not self.fit_max_tokens and not default_limit:
+                if getattr(self.engine, "starting", False):   # #344: (re)starting, not a prompt that is too long
+                    raise EngineStarting("the engine is starting (a minute or two); try again shortly")
+                # a failed restart leaves max_context 0: check against the last known context, so the request reaches
+                # run() - which starts the engine again - instead of failing with "exceeds the context (0)" forever
+                ctx = 0 if self.intel_context() else getattr(self.engine, "known_ctx", 0)
+                if ctx <= 0:
+                    raise EngineStarting("the engine is starting (a minute or two); try again shortly")
+            room = ctx - CTX_SLACK - len(ids)
+            if room < 1:
                 raise ValueError("request exceeds the context window: "
-                                 f"prompt ({len(ids)} tokens) + max tokens ({max_new}) exceeds the context "
-                                 f"({ctx}); requests are never truncated. Send a smaller "
-                                 f"max_tokens (at most {max(0, room)} here), or add \"fit_max_tokens\": true to the "
-                                 "model's strata-<model>.json to shorten it to the room left (#545)")
-            max_new = max(1, room)          # --fit-max-tokens: a shorter completion beats a 400
-        max_new = self.fit_clover_preview(len(ids), max_new, ctx, allow_clamp=flexible_limit, req=req)
-        if images:
-            # The request's images in one file for GENI (~10 MB a picture), written once nothing above refuses the
-            # request: one refused after it (the engine starting, no room) left it in the vision directory for good,
-            # one more for every retry of a 503.  run() deletes it; drop_embeddings() if run() never starts.
-            combined = combined_embeddings_path(self.vision.dir, sum(Path(p).stat().st_size for p, _ in encoded))
-            self.embeddings.path = combined             # first, so a half-written one is found as well
-            self.embeddings.pad = pad
-            # #2228: each picture's key is its normalized bytes' hash (the encoder's file name), so the engine's
-            # conversation cache matches a picture by what it is, not by its embedding floats: a picture encoded again
-            # (an encoder restart, the cache's eviction) with other bits still matches its checkpoints
-            self.embeddings.keys = [Path(p).stem[:16] for p, _ in encoded]
-            write_temporary(combined, [p for p, _ in encoded])
+                                 f"prompt ({len(ids)} tokens) leaves no room to answer in the context "
+                                 f"({ctx}); requests are never truncated")
+            if max_new <= 0:
+                max_new = room
+            elif max_new > room:
+                if not self.fit_max_tokens and not default_limit:
+                    raise ValueError("request exceeds the context window: "
+                                     f"prompt ({len(ids)} tokens) + max tokens ({max_new}) exceeds the context "
+                                     f"({ctx}); requests are never truncated. Send a smaller "
+                                     f"max_tokens (at most {max(0, room)} here), or add \"fit_max_tokens\": true to the "
+                                     "model's strata-<model>.json to shorten it to the room left (#545)")
+                max_new = max(1, room)          # --fit-max-tokens: a shorter completion beats a 400
+            max_new = self.fit_clover_preview(len(ids), max_new, ctx, allow_clamp=flexible_limit, req=req)
+            if images:
+                # The request's images in one file for GENI (~10 MB a picture), written once nothing above refuses the
+                # request: one refused after it (the engine starting, no room) left it in the vision directory for good,
+                # one more for every retry of a 503.  run() deletes it; drop_embeddings() if run() never starts.
+                combined = combined_embeddings_path(self.vision.dir, sum(Path(p).stat().st_size for p, _ in encoded))
+                self.embeddings.path = combined             # first, so a half-written one is found as well
+                self.embeddings.pad = pad
+                # #2228: each picture's key is its normalized bytes' hash (the encoder's file name), so the engine's
+                # conversation cache matches a picture by what it is, not by its embedding floats: a picture encoded again
+                # (an encoder restart, the cache's eviction) with other bits still matches its checkpoints
+                self.embeddings.keys = [Path(p).stem[:16] for p, _ in encoded]
+                write_temporary(combined, [p for p, _ in encoded])
         if req is not None and req.get("strata_prefix") is not None:
             req["strata_prefix"] = self.resolve_prefix(req["strata_prefix"], messages, tools, kwargs, ids, bool(images))
         self.embeddings.clover_limit_flexible = flexible_limit
@@ -5715,7 +5761,15 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
         return {"id": cid, "object": "chat.completion.chunk", "created": created, "model": model,
                 "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
 
-    yield chunk({"role": "assistant", "content": ""})
+    opened = False
+
+    def data(frame):
+        nonlocal opened
+        if not opened:
+            opened = True
+            yield chunk({"role": "assistant", "content": ""})
+        yield frame
+
     calls = 0
     streamed = {}                                  # tool call id -> index, for calls sent piece by piece
     finished = set()                               # ... and the ones whose final tool_call came (#211)
@@ -5724,33 +5778,36 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
             # a PP line: the prompt is being read and there is nothing to say yet.  It used to be only the SSE comment;
             # now it carries the progress when the client asked, and stays the comment when there is nothing to report.
             pp = prompt_progress(svc) if want_progress else None
-            yield None if pp is None else {**chunk({}), "prompt_progress": pp}
+            if pp is None:
+                yield None
+            else:
+                yield from data({**chunk({}), "prompt_progress": pp})
         elif kind == "stats":
             if want_stats:
-                yield {**chunk({}), "strata_stats": x}
+                yield from data({**chunk({}), "strata_stats": x})
         elif kind == "mcp":
             c = chunk({})
             c["strata_mcp"] = x
-            yield c
+            yield from data(c)
         elif kind == "event":
             ev: Event = x
             if ev.kind == "reasoning" and ev.text:
-                yield chunk({"reasoning_content": ev.text})
+                yield from data(chunk({"reasoning_content": ev.text}))
             elif ev.kind == "content" and ev.text:
-                yield chunk({"content": ev.text})
+                yield from data(chunk({"content": ev.text}))
             elif ev.kind == "tool_start":
                 streamed[ev.call.id] = calls
                 calls += 1
-                yield chunk({"tool_calls": [{"index": streamed[ev.call.id], "id": ev.call.id, "type": "function",
-                                             "function": {"name": ev.call.name, "arguments": ""}}]})
+                yield from data(chunk({"tool_calls": [{"index": streamed[ev.call.id], "id": ev.call.id, "type": "function",
+                                                        "function": {"name": ev.call.name, "arguments": ""}}]}))
             elif ev.kind == "tool_args":
-                yield chunk({"tool_calls": [{"index": streamed[ev.call.id], "function": {"arguments": ev.text}}]})
+                yield from data(chunk({"tool_calls": [{"index": streamed[ev.call.id], "function": {"arguments": ev.text}}]}))
             elif ev.kind == "tool_call" and ev.call.id in streamed:
                 finished.add(ev.call.id)
             elif ev.kind == "tool_call":
-                yield chunk({"tool_calls": [{"index": calls, "id": ev.call.id, "type": "function",
-                                             "function": {"name": ev.call.name,
-                                                          "arguments": json.dumps(ev.call.arguments, ensure_ascii=False)}}]})
+                yield from data(chunk({"tool_calls": [{"index": calls, "id": ev.call.id, "type": "function",
+                                                        "function": {"name": ev.call.name,
+                                                                     "arguments": json.dumps(ev.call.arguments, ensure_ascii=False)}}]}))
                 calls += 1
         else:
             # a streamed call without its final tool_call is one the output ended inside: not "tool_calls" (#211)
@@ -5764,7 +5821,7 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
                              "prompt_tokens_details": {"cached_tokens": x.get("reused") or 0}}
             if x.get("timings"):
                 last["timings"] = x["timings"]          # llama.cpp's field: the speed its clients show
-            yield last
+            yield from data(last)
 
 
 def _is_json(text: str) -> bool:
@@ -5968,6 +6025,11 @@ class BadBody(Exception):
 def make_handler(svc: Service):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.0"                       # SSE ends by closing the connection
+
+        def setup(self):
+            # Flush each SSE event without waiting for earlier TCP data to be acknowledged.
+            self.disable_nagle_algorithm = self.request.family in (socket.AF_INET, socket.AF_INET6)
+            super().setup()
 
         watch_done = None                                   # #430 #431: stops this request's disconnect watcher
         body_read = False                                   # whether a handler took this request's body
@@ -6748,12 +6810,20 @@ def make_handler(svc: Service):
             if not req.get("stream"):
                 return self._json(200, openai_collect(chunks))
             self._sse()
+            options = req.get("stream_options")
+            include_usage = isinstance(options, dict) and options.get("include_usage") is True
             try:
                 for c in chunks:
                     if c is None:
                         self.wfile.write(b": keep-alive\n\n")      # an SSE comment: clients ignore it
                     else:
-                        self.wfile.write(b"data: " + json.dumps(c, ensure_ascii=False).encode() + b"\n\n")
+                        frames = (c,)
+                        if include_usage and c.get("usage") is not None:
+                            finish = {key: value for key, value in c.items() if key != "usage"}
+                            usage = {key: c[key] for key in ("id", "object", "created", "model", "usage")}
+                            frames = (finish, {**usage, "choices": []})
+                        for frame in frames:
+                            self.wfile.write(b"data: " + json.dumps(frame, ensure_ascii=False).encode() + b"\n\n")
                     self.wfile.flush()
                 self.wfile.write(b"data: [DONE]\n\n")
             except OSError:

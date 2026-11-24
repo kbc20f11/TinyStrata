@@ -41,11 +41,13 @@ class QuotedCallValues(unittest.TestCase):
                     self.assertEqual(walk.call_count, before)
                     for char in "</parameter></function></tool_call>":
                         events.extend(parser.feed(char))
-                    self.assertEqual(walk.call_count, before + 1)
+                    self.assertGreaterEqual(walk.call_count, before + 1)
+                    self.assertLessEqual(walk.call_count, before + 2)
                     # A closed call waits for possible literal closing tags in its value until the turn ends.
                     self.assertFalse(any(event.kind == "tool_call" for event in events))
+                    at_close = walk.call_count
                     events.extend(parser.finish())
-                    self.assertEqual(walk.call_count, before + 2)
+                    self.assertEqual(walk.call_count, at_close + 1)
                     self.assertEqual(parser._call_end_checked, 0)
                     self.assertEqual([event.call.arguments for event in events if event.kind == "tool_call"],
                                      [{"text": "abcdefgh" * 100}])
@@ -72,6 +74,34 @@ class QuotedCallValues(unittest.TestCase):
                         if stream:
                             self.assertEqual(json.loads("".join(e.text for e in events if e.kind == "tool_args")),
                                              expected)
+
+    def test_large_value_preserves_quoted_call_without_wrapper_and_following_call(self):
+        # The quoted opener is already compacted when the inner parameter closer arrives.
+        bare_quote = "<function=read><parameter=path>" + "z" * 4500 + "</parameter></function>"
+        value = "a" * 5000 + "\n" + bare_quote + "\n" + QUOTED + "\n" + "b" * 17000
+        text = call_text(value) + "\n" + call_text("next")
+        for recover in (False, True):
+            with self.subTest(recover=recover):
+                parser = OutputParser(thinking=False, tools=[SCHEMA], stream_tools=True, recover=recover)
+                events = []
+                largest_buffer = 0
+                for start in range(0, len(text), 7):
+                    events.extend(parser.feed(text[start:start + 7]))
+                    if parser._scan_parts:
+                        self.assertTrue(parser.buf)
+                        largest_buffer = max(largest_buffer, len(parser.buf))
+                events.extend(parser.finish())
+                self.assertGreater(largest_buffer, 0)
+                self.assertLess(largest_buffer, 4200)
+                calls = [event.call for event in events if event.kind == "tool_call"]
+                expected = [{"path": "probe.txt", "content": value}, {"path": "probe.txt", "content": "next"}]
+                self.assertEqual([call.arguments for call in calls], expected)
+                self.assertEqual([event.call.id for event in events if event.kind == "tool_start"],
+                                 [call.id for call in calls])
+                for call, args in zip(calls, expected):
+                    streamed = "".join(event.text for event in events if event.kind == "tool_args" and
+                                       event.call.id == call.id)
+                    self.assertEqual(json.loads(streamed), args)
 
     def test_prose_between_two_calls_still_ends_the_first(self):
         first, second = call_text("one"), call_text("two")

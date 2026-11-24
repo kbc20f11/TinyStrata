@@ -126,7 +126,7 @@ def handler_fixture(script):
 
 
 def close_fixture(handler, reader):
-    if hasattr(handler, "watch_done"):
+    if getattr(handler, "watch_done", None) is not None:
         handler.watch_done.set()
     reader.close()
     handler.wfile.close()
@@ -134,6 +134,44 @@ def close_fixture(handler, reader):
 
 
 class StreamBackpressure(unittest.TestCase):
+    def test_stream_role_follows_heartbeat_and_precedes_first_output(self):
+        handler, reader, svc, _, request = handler_fixture("shipment")
+        try:
+            run = iter([("ping", None), ("event", api.Event("content", "shipment")),
+                        ("done", {"finish": "stop", "completion_tokens": 1})])
+            frames = list(api.openai_chunks(svc, request, [1], False, None, 1, threading.Event(), run=run))
+            self.assertIsNone(frames[0])
+            self.assertEqual(frames[1]["choices"][0]["delta"]["role"], "assistant")
+            self.assertEqual(frames[2]["choices"][0]["delta"]["content"], "shipment")
+            self.assertEqual(frames[3]["choices"][0]["finish_reason"], "stop")
+        finally:
+            close_fixture(handler, reader)
+
+    def test_include_usage_sends_one_final_usage_only_frame(self):
+        for options in ({"include_usage": True}, {"include_usage": False}, None, "invalid"):
+            with self.subTest(options=options):
+                handler, reader, _, _, request = handler_fixture("28")
+                try:
+                    reader.settimeout(2)
+                    handler._openai({**request, "max_tokens": 8, "stream_options": options})
+                    received = bytearray()
+                    while b"data: [DONE]\n\n" not in received:
+                        block = reader.recv(4096)
+                        self.assertTrue(block, "the stream closed before [DONE]")
+                        received.extend(block)
+                    chunks = [json.loads(line[6:]) for line in received.decode().splitlines()
+                              if line.startswith("data: ") and line != "data: [DONE]"]
+                    self.assertEqual(sum("usage" in c for c in chunks), 1)
+                    self.assertGreater(chunks[-1]["usage"]["completion_tokens"], 0)
+                    if options == {"include_usage": True}:
+                        self.assertEqual(chunks[-1]["choices"], [])
+                        self.assertEqual(chunks[-2]["choices"][0]["finish_reason"], "stop")
+                        self.assertEqual(chunks[-1]["id"], chunks[-2]["id"])
+                    else:
+                        self.assertEqual(chunks[-1]["choices"][0]["finish_reason"], "stop")
+                finally:
+                    close_fixture(handler, reader)
+
     def test_nonreading_open_client_releases_fifo_and_next_request_works(self):
         # Distinct tokens prevent the existing repetition guard from ending the
         # request before the real OS send buffer fills.

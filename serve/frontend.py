@@ -1495,6 +1495,8 @@ class OutputParser:
 
     def _reset_scan(self):
         self._call_end_checked = 0   # search progress for the current wrapped call's closing tag
+        self._function_end_checked = 0
+        self._scan_parts: list[str] = []
         self.sp = 0                  # how much of self.buf (the call body) the scanner has consumed
         self.ss = "name"             # name -> between -> str|raw -> ... -> done
         self.scall = None            # the ToolCall being streamed (its id is reused by the final event)
@@ -1504,17 +1506,60 @@ class OutputParser:
         self.spname = None
         self.svstart = 0
 
+    def _restore_scan_body(self) -> None:
+        if not self._scan_parts:
+            return
+        prefix = "".join(self._scan_parts)
+        shift = len(prefix)
+        self.buf = prefix + self.buf
+        self.sp += shift
+        if self.ss == "str" and self.sval_started:
+            self.svstart += shift
+        if self._call_end_checked >= 0:
+            self._call_end_checked += shift
+        if self._function_end_checked >= 0:
+            self._function_end_checked += shift
+        self._scan_parts.clear()
+
+    def _compact_scan_body(self) -> None:
+        if self.sp < 4096:
+            return
+        # Keep overlap for split closing tags and keep buf nonempty while the call body is pending.
+        cut = self.sp - max(len(CALL_END), len(FUNC_END))
+        self._scan_parts.append(self.buf[:cut])
+        self.buf = self.buf[cut:]
+        self.sp -= cut
+        if self.ss == "str" and self.sval_started:
+            self.svstart -= cut
+        if self._call_end_checked >= 0:
+            self._call_end_checked = max(0, self._call_end_checked - cut)
+        if self._function_end_checked >= 0:
+            self._function_end_checked = max(0, self._function_end_checked - cut)
+
+    def _function_end(self) -> int:
+        if self._function_end_checked >= 0:
+            start = max(0, self._function_end_checked - len(FUNC_END) + 1)
+            if self.buf.find(FUNC_END, start) < 0:
+                self._function_end_checked = len(self.buf)
+                return -1
+        self._restore_scan_body()
+        end = function_end(self.buf)
+        self._function_end_checked = -1 if end >= 0 else len(self.buf)
+        return end
+
     def _wrapped_call_end(self) -> int:
-        # A structural walk cannot finish before the closing tag arrives. Search only new bytes plus overlap
-        # for a split tag. After any candidate, retain the full walk to disambiguate tags quoted by a value.
-        # Recovery can rewrite the buffer, so it always uses the full walk.
-        if not self.recover and self._call_end_checked >= 0:
+        # Check the arriving text first, then disambiguate possible closing tags against the complete body.
+        if self._call_end_checked >= 0 and not self._final:
             start = max(0, self._call_end_checked - len(CALL_END) + 1)
             if self.buf.find(CALL_END, start) < 0:
                 self._call_end_checked = len(self.buf)
                 return -1
-            self._call_end_checked = -1
-        return call_end(self.buf, self._final)
+        self._restore_scan_body()
+        end = call_end(self.buf, self._final)
+        # A structurally complete call can still be waiting for bounded lookahead or the end of generation.
+        pending = end < 0 and not self._final and call_end(self.buf, final=True) >= 0
+        self._call_end_checked = -1 if end >= 0 or pending else len(self.buf)
+        return end
 
     def _scan(self) -> list[Event]:
         """Advance the streaming view of the call body in self.buf (see stream_tools)."""
@@ -1570,8 +1615,12 @@ class OutputParser:
                         rest = rest[1:]
                     self.sval_started = True
                     self.svstart = self.sp
-                # Keep the value's quoted openers in view even after their bytes have streamed out.
-                end = param_end(self.buf[self.svstart:], self._final, name=self.spname) if PARAM_END in rest else -1
+                # A possible parameter closer needs the entire value to check quoted openers and nested calls.
+                end = -1
+                if PARAM_END in rest:
+                    self._restore_scan_body()
+                    rest = self.buf[self.sp:]
+                    end = param_end(self.buf[self.svstart:], self._final, name=self.spname)
                 end = end - (self.sp - self.svstart) if end >= 0 else end
                 if end >= 0:
                     value = rest[:end]
@@ -2066,7 +2115,7 @@ class OutputParser:
             else:
                 drop = None
                 if self.bare:                       # no wrapper: the call ends at its </function>; a stray
-                    i = function_end(self.buf)      # </tool_call> after it is the wrapper's closer, dropped
+                    i = self._function_end()        # </tool_call> after it is the wrapper's closer, dropped
                     if i >= 0:
                         after = self.buf[i:].lstrip()
                         if after.startswith(CALL_END):
@@ -2078,7 +2127,7 @@ class OutputParser:
                     if i >= 0:
                         drop = len(CALL_END)
                     if self.recover:                # a batch in one wrapper: the next call follows this one's
-                        f = function_end(self.buf)  # </function> (or opens as <parameter=NAME>)
+                        f = self._function_end()    # </function> (or opens as <parameter=NAME>)
                         nxt = self.buf[f:].lstrip() if f >= 0 else ""
                         if nxt.startswith(PARAM_START) and self._follower(nxt) == "param":
                             at = len(self.buf) - len(nxt)
@@ -2096,6 +2145,8 @@ class OutputParser:
                     else:
                         out += self._scan()
                 if i < 0 or drop is None:
+                    if self.stream_tools:
+                        self._compact_scan_body()
                     return out
                 body = self.buf[:i]
                 self.buf = self.buf[i + drop:]
@@ -2122,9 +2173,11 @@ class OutputParser:
             self.buf = ""
             return [Event(kind, text)] if text else []
         out = []
+        self._restore_scan_body()
         if self.buf and self.state in ("call", "rcall"):
             self._final = True
             out += self.feed("")
+        self._restore_scan_body()
         if self.pending:
             out += self._release(reason in (None, "stop") and self.state == "reasoning" and not self.buf)
         if self.state == "call" and self.bare and function_end(self.buf) >= 0:
