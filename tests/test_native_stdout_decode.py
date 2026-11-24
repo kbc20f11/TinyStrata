@@ -18,6 +18,9 @@ out = sys.stdout.buffer
 def emit(value):
     out.write(value)
     out.flush()
+if mode == "startup-error":
+    emit("ERR init: model の読み込みに失敗\n".encode())
+    sys.exit(1)
 if mode.startswith("vision"):
     emit(b"READY \xff " + "日本語".encode() + b"\n")
     for line in sys.stdin:
@@ -85,6 +88,12 @@ class NativeStdoutDecode(unittest.TestCase):
         engine.pump.join(timeout=3)
         self.assertFalse(engine.pump.is_alive())
         self.assertIsNone(engine.lines.get(timeout=1))
+
+    def test_stdout_startup_error_survives_child_exit(self):
+        with self.spawn("startup-error"), patch.object(server, "ENGINE_READY_S", 3):
+            with self.assertRaisesRegex(server.EngineDied, "init: model の読み込みに失敗"):
+                server.StrataEngine("fixture-native", ["--max-context", "8192"])
+        self.assertEqual(len(self.processes), 1)
 
     def test_bad_utf8_then_eof_raises_instead_of_leaving_a_request_waiting(self):
         engine = self.native("eof")

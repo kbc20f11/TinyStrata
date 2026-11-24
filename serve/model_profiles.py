@@ -21,6 +21,7 @@ _MODELS = {
     "gemma-4-26b-a4b-it": "gemma4",
     "clover-35b-a3b-preview": "clover_moe",
     "tiel-coder-35b-a3b": "qwen35moe",
+    "inkling-2-mini": "inkling2_loop",
 }
 _PROFILE_FILES = {
     "qwen3.6-35b-a3b": ("config.json", "config-qwen36.json"),
@@ -28,11 +29,13 @@ _PROFILE_FILES = {
     "gemma-4-26b-a4b-it": ("config-gemma4.json", "config-gemma4-profile.json"),
     "clover-35b-a3b-preview": ("config-clover.json", "config-clover-profile.json"),
     "tiel-coder-35b-a3b": ("config-tiel-coder.json", "config-tiel-coder-profile.json"),
+    "inkling-2-mini": ("config-inkling2.json", "config-inkling2-profile.json"),
 }
 from serve.intel_models import MODEL_CONFIGS as _INTEL_PROFILE_FILES, QWEN_ENGINE_MODELS
 # TinyStrata engine ceilings, not automatically allocated KV capacities. Clover's
 # 256K capacity extends its official 128K limit; general long-context quality is unverified.
-_CONTEXT_LIMITS = {"qwen35moe": 262144, "lfm2moe": 131072, "gemma4": 262144, "clover_moe": 262144}
+_CONTEXT_LIMITS = {"qwen35moe": 262144, "lfm2moe": 131072, "gemma4": 262144, "clover_moe": 262144,
+                   "inkling2_loop": 1048576}
 _ALIASES = {
     "qwen36": "qwen3.6-35b-a3b", "qwen3.6": "qwen3.6-35b-a3b",
     "qwen35moe": "qwen3.6-35b-a3b",
@@ -42,6 +45,7 @@ _ALIASES = {
     "gemma4-26b-a4b": "gemma-4-26b-a4b-it", "gemma4-26b-a4b-it": "gemma-4-26b-a4b-it",
     "clover": "clover-35b-a3b-preview", "clover_moe": "clover-35b-a3b-preview",
     "tiel": "tiel-coder-35b-a3b", "tiel-coder": "tiel-coder-35b-a3b",
+    "inkling2": "inkling-2-mini", "inkling2_loop": "inkling-2-mini",
 }
 
 
@@ -76,6 +80,8 @@ class ModelProfiles:
         if current_arch not in _MODELS.values():
             raise ValueError(f"Unsupported model profile architecture: {current_arch}")
         self.current_id = self._configured_model(cfg)
+        if current_arch == "inkling2_loop" and self._intel:
+            raise ValueError("Inkling 2 Mini is unavailable in the shared Intel API catalog")
         # The initial runtime belongs to this model/group for the API lifetime.
         # current_id changes after a switch and must not reassign that ownership.
         self._runtime_model = self.current_id
@@ -215,7 +221,7 @@ class ModelProfiles:
             return configure_backend(result)
         result = tinyconfig.clover_vision_defaults(tinyconfig.clover_decode_defaults(result))
         if self._engine is not None:
-            filename = {"lfm2moe": "tinystrata-lfm2", "gemma4": "tinystrata-gemma4"}.get(arch, "tinystrata")
+            filename = model_setup.NATIVE_ENGINE_NAMES.get(arch, "tinystrata")
             sibling = self._engine.with_name(filename + self._engine.suffix)
             if sibling.is_file():
                 result["exe"] = str(sibling)
@@ -273,9 +279,9 @@ class ModelProfiles:
         # CUDA profile must not switch an AMD installation back to CUDA.
         backend_changed = (self._hardware.get("backend") is not None and
                            source.get("backend", "cuda") != self._hardware["backend"])
-        filename = {"lfm2moe": "tinystrata-lfm2", "gemma4": "tinystrata-gemma4"}.get(profile.arch, "tinystrata")
+        filename = model_setup.NATIVE_ENGINE_NAMES.get(profile.arch, "tinystrata")
         sibling = self._engine.with_name(filename + self._engine.suffix) if self._engine is not None else None
-        standard = ("tinystrata.exe", "tinystrata-lfm2.exe", "tinystrata-gemma4.exe")
+        standard = ("tinystrata.exe", "tinystrata-lfm2.exe", "tinystrata-gemma4.exe", "tinystrata-inkling2.exe")
         managed_alignment = (sibling is not None and sibling.is_file() and
                              self._managed_executable(self._engine, cfg, standard) and
                              (not source.get("exe") or self._managed_executable(source["exe"], source, standard)))
@@ -361,7 +367,10 @@ class ModelProfiles:
         return result
 
     def get(self, name: str) -> ModelProfile:
-        return self._profiles[self.resolve(name)]
+        selected = self.resolve(name)
+        if selected not in self._profiles:
+            raise ValueError(f"{selected} is unavailable on the selected backend")
+        return self._profiles[selected]
 
     def context_info(self, name: str) -> dict:
         """Configured context and model ceiling; allocation requires native READY."""
@@ -395,7 +404,7 @@ class ModelProfiles:
                             "executable": str(exe) if exe is not None else None,
                             "config_path": str(profile.path), "shared_settings_path": str(profile.shared_path),
                             "context": self.context_info(profile.id),
-                            "vision": profile.arch in ("qwen35moe", "gemma4", "clover_moe") and
+                            "vision": profile.arch in ("qwen35moe", "gemma4", "clover_moe", "inkling2_loop") and
                             profile.config.get("vision_mode", "gpu") != "no" and
                             (not self._intel or configured_images(profile.config))})
         return entries

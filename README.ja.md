@@ -44,6 +44,10 @@ Clover では反復 lookup も任意で使えます。`--clover-lookup N` は提
 
 Qwen・Gemma・Clover・LFM・Tiel Coder はいずれも、空き VRAM に合わせたエキスパートキャッシュ、システム RAM を使った CPU でのエキスパート計算、入力時の重みのストリーミング、CUDA Graph に対応しています。共通の API と起動中のモデル切り替えを利用でき、設定はモデルごとに保存します。モデルが選んだエキスパートは省略しません。また、最大コンテキスト容量を変えずに、会話の長さに応じて KV の物理メモリを自動で増やせます。
 
+**Inkling 2 Mini** は専用のループ型 MoE エンジンと画像エンコーダを使います。[固定版の InterpreticAI IQ3_XXS](https://huggingface.co/InterpreticAI/Inkling-2-Mini-IQ3_XXS-GGUF/tree/4f7704c490494f1448b1011ba1a5104622c31e03) と [Strata の画像用ファイル](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata/tree/04996a1e2c45009b6a04f2af126cb6bdb2ba3587) を合わせて **約12.38 GB** です。モデル管理からダウンロードでき、`run-api.bat --model-family inkling2` で単独の API プロファイルを起動できます（ポート **18086**）。思考の既定は **中**です。DSpark は対応する重みを `--draft-model` で指定すると選べます。CUDA・HIP のビルドに含まれ、Intel SYCL は `-DTINYSTRATA_INKLING2=ON` で選べる実験的なソースビルドです。
+
+CUDA・HIP のディスクリート GPU では、Inkling も VRAM **8／12／16 GB 以上**に応じて **64K／128K／256K** を自動設定の目安にします。標準の起動経路では KV を GPU に配置する領域を先に確保し、残りの VRAM で Expert の配置を決めます。実際に使える容量は API に表示されます。
+
 **GPT-OSS の対応は終了しました。** 現在のダウンロード・起動・ベンチマークの対象から外し、[過去の計測記録](benchmark/results/gptoss-adoption-20261110.md)は保持しています。[対応状況と再対応の条件](docs/gpt-oss-reintroduction.md)を参照してください。
 
 | 機能 | [Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) | [Gemma 4](https://huggingface.co/google/gemma-4-26B-A4B-it) | [LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) | [Clover](https://huggingface.co/Diffuspace/Clover-35B-A3B-Preview) | [Tiel Coder](https://huggingface.co/peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP) |

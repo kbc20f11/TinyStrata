@@ -42,6 +42,17 @@
       "license": "Official DiffuSpace organization avatar; no separate asset license supplied. Do not infer an artwork license from the model-weight license.",
       "sha256": "5e158a23474211644c2759a7958d7ab51447191d35a36598f958d737a2aa3192",
       "modifications": "None; copied original bytes."
+    },
+    {
+      "file": "thinking-machines.png",
+      "represents": "Thinking Machines Lab provider brand for Inkling",
+      "source_page": "https://thinkingmachines.ai/",
+      "source_url": "https://thinkingmachines.ai/images/apple-touch-icon.png",
+      "fetched_date": "2026-11-24",
+      "revision": null,
+      "license": "Official Thinking Machines Lab site artwork; no separate asset license supplied. Brand rights remain with its owner.",
+      "sha256": "ef907e01669290064ce1db3d7902203fb2786dc110d2c496a8a02ad912d32e7e",
+      "modifications": "None; copied original bytes."
     }
   ],
   "fallback": {

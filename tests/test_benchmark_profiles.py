@@ -176,6 +176,65 @@ class BenchmarkProfileMigration(unittest.TestCase):
         self.assertEqual(before, snapshot)
 
 
+class InklingBenchmarkExtension(unittest.TestCase):
+    def original(self):
+        return {'arch': 'inkling2_loop', 'model_name': 'inkling-2-mini', 'backend': 'cuda',
+                'cwd': str(ROOT), 'exe': 'tinystrata-inkling2.exe', 'tokenizer': 'tokenizer',
+                'args': ['--model', 'model.gguf', '--max-context', '32768', '--chunk', '512',
+                         '--kv-type', 'fp16', '--draft-model', 'drafter.gguf'],
+                'inkling_vision': 'vision.strata', 'vision_mode': 'gpu'}
+
+    def test_inkling_keeps_the_v2_workloads_without_changing_the_existing_roster(self):
+        self.assertEqual(bench.benchmark_models('all', v2=True), [*bench.MODELS, 'tiel'])
+        self.assertEqual(bench.benchmark_models('inkling', v2=True), ['inkling'])
+        self.assertEqual(bench.benchmark_models('inkling', saved_profile=True), ['inkling'])
+        for options in ({}, {'intel_text': True}):
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                bench.benchmark_models('inkling', **options)
+        request = bench.request_body('inkling', 'question', 128, CASES)
+        self.assertEqual(request['model'], 'inkling-2-mini')
+        self.assertEqual((request['temperature'], request['top_p'], request['top_k']), (1.0, 1.0, 0))
+        self.assertEqual((request['seed'], request['max_tokens'], request['strata_checkpoint']), (1234, 128, False))
+
+    def test_controlled_config_keeps_native_vision_and_rejects_a_missing_payload(self):
+        source = self.original()
+        with tempfile.TemporaryDirectory() as work:
+            source['cwd'] = work
+            for name in ('tinystrata-inkling2.exe', 'model.gguf', 'vision.strata'):
+                (Path(work) / name).touch()
+            snapshot = copy.deepcopy(source)
+            cfg = bench.controlled_config(source, 'inkling', Path(work), 18019, CASES)
+            tinyconfig.validate(cfg)
+            saved_source = copy.deepcopy(source)
+            saved_source['args'] = saved_source['args'][:-2]
+            saved = bench.saved_config(saved_source, 'inkling', Path(work), 18020, CASES)
+            self.assertTrue(all(path.is_file() for path in bench.assets(saved)))
+        self.assertEqual(source, snapshot)
+        self.assertEqual(config.value_of(cfg, 'kv_type'), 'auto')
+        self.assertNotIn('--kv-grow', cfg['args'])
+        self.assertNotIn('--mtp', cfg['args'])
+        self.assertNotIn('--draft-model', cfg['args'])
+        self.assertNotIn('vision', cfg)
+        self.assertEqual(bench.image_encoder(cfg), 'native')
+        self.assertEqual({p.name for p in bench.assets(cfg)}, {'model.gguf', 'tinystrata-inkling2.exe', 'vision.strata'})
+        source.pop('inkling_vision')
+        with self.assertRaisesRegex(ValueError, 'native Inkling Vision'):
+            bench.controlled_config(source, 'inkling', ROOT / 'unused', 18019, CASES)
+
+    def test_runtime_requires_native_image_support_and_does_not_estimate_cache_bytes(self):
+        source = self.original()
+        info = dict(arch='inkling2_loop', layers=24, visits=48, backend='cuda', images=True,
+                    max_context=32768, drafting='off', kv='fp16', expert_slots=700, expert_total=3072)
+        bench.validate_inkling_engine(bench.engine_snapshot(info), source, 32, controlled=True)
+        for change in ({'images': False}, {'drafting': 'dspark'}, {'max_context': 16384}, {'visits': 24}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                bench.validate_inkling_engine({**info, **change}, source, 32, controlled=True)
+        runs = [dict(complete=True, records=[], startup_engine=info, after_16k_engine=info)]
+        cache = bench.aggregate_model(runs)['expert_cache']
+        self.assertEqual(cache['startup_engine'], [None])
+        self.assertEqual(cache['after_16k_engine_counts'], [{'resident': 700, 'total': 3072}])
+
+
 class IntelTextBenchmarkVariant(unittest.TestCase):
     def original(self):
         from serve.intel_backend import configure_backend

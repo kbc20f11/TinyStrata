@@ -83,7 +83,8 @@ class ChatTemplate:
         self.clover_vision = clover_vision
         if clover_vision:
             self.source = _clover_vision_template(self.source)
-        self.call_format = ("harmony" if all(t in self.source for t in ("<|channel|>", "<|start|>", "<|message|>")) else
+        self.call_format = ("inkling2" if "<|content_invoke_tool_json|>" in self.source else
+                            "harmony" if all(t in self.source for t in ("<|channel|>", "<|start|>", "<|message|>")) else
                             "lfm2" if "<|tool_call_start|>" in self.source else
                             "gemma" if "<|turn>" in self.source else "function")
         self.template = env.from_string(self.source)
@@ -114,13 +115,22 @@ class ChatTemplate:
                 raise ValueError("No messages provided")
             messages = _answers_in_call_order(messages)
             tools = [{"type": "function", "function": t} if "function" not in t else t for t in tools or []] or None
+        elif self.call_format == "inkling2":
+            from serve import inkling_dialect
+            kwargs = inkling_dialect.template_kwargs(kwargs)
+            messages = inkling_dialect.prepare_messages(_answers_in_call_order(messages), has_tools=bool(tools),
+                                                         thinking=kwargs["enable_thinking"])
         elif self.call_format == "function" and "<tool_response>" in self.source:
             # Native Qwen-family responses carry neither the call ID nor its
             # name in the rendered envelope, so parallel results pair by order.
             # Unrelated custom templates retain their original message order.
             messages = _answers_in_call_order(messages)
-        return self.template.render(messages=messages, tools=tools, add_generation_prompt=add_generation_prompt,
-                                    **kwargs)
+        prompt = self.template.render(messages=messages, tools=tools, add_generation_prompt=add_generation_prompt,
+                                      **kwargs)
+        if self.call_format == "inkling2":
+            prompt = inkling_dialect.finish_prompt(prompt, has_tools=bool(tools),
+                                                   thinking=kwargs["enable_thinking"], forced=not add_generation_prompt)
+        return prompt
 
     def _detect_caps(self) -> dict[str, bool]:
         """llama.cpp's capability names, checked at load time against this template and Strata's tool-call format.
@@ -162,6 +172,10 @@ class ChatTemplate:
                 elif self.call_format == "gemma":
                     bodies = re.findall(r"<\|tool_call>(.*?)<tool_call\|>", prompt, re.S)
                     parsed = [parse_gemma_tool_call(body) for body in bodies]
+                elif self.call_format == "inkling2":
+                    bodies = re.findall(r"<\|content_invoke_tool_json\|>(.*?)<\|end_message\|>", prompt, re.S)
+                    schemas = {tool["name"]: tool for tool in tools}
+                    parsed = [call for body in bodies if (call := json_tool_call(body, schemas)) is not None]
                 else:
                     bodies = re.findall(r"<tool_call>\s*(<function=strata_caps_call_\d+>.*?</function>)\s*</tool_call>",
                                         prompt, re.S)
@@ -173,7 +187,7 @@ class ChatTemplate:
 
         history = [user, {"role": "assistant", "content": "strata_caps_answer",
                           "reasoning_content": "strata_caps_reasoning"}, user]
-        tool_markers = () if self.call_format in ("lfm2", "gemma", "harmony") else ("<tool_call>", "<function=")
+        tool_markers = () if self.call_format in ("lfm2", "gemma", "harmony", "inkling2") else ("<tool_call>", "<function=")
         reasoning_prompt = self.render(history, preserve_thinking=True) if self.call_format == "lfm2" else render(history)
         return {"supports_tools": all(s in tool_prompt for s in
                                       ("strata_caps_call_0", "strata_caps_description", *tool_markers)),
@@ -275,12 +289,16 @@ EFFORT = {"none": None, "off": None, "minimal": None, "disabled": None, "false":
           "low": "low", "medium": "medium", "high": "xhigh", "xhigh": "xhigh", "max": "xhigh", "maximum": "xhigh"}
 
 
-def effort_kwargs(value) -> dict:
+def effort_kwargs(value, *, inkling2: bool = False) -> dict:
     """A reasoning effort as given by a client -> the template's kwargs.  Unknown values are a 400, not a crash."""
     if value is None or value == "":
         return {}
     if value is False:
         return {"enable_thinking": False}
+    if inkling2:
+        from serve.inkling_dialect import normalize_effort
+        level = normalize_effort(value)
+        return {"enable_thinking": False} if level == "none" else {"reasoning_effort": level}
     key = str(value).strip().lower()
     if key not in EFFORT:
         raise ValueError(f"unknown reasoning effort {value!r}: use none, low, medium or high")
@@ -686,7 +704,7 @@ def tool_arguments(raw) -> dict:
     return {"arguments": json.dumps(raw, ensure_ascii=False)}
 
 
-def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
+def openai_to_messages(req: dict, *, inkling2: bool = False) -> tuple[list[dict], list[dict] | None, dict]:
     """OpenAI Chat Completions -> (template messages, template tools, template kwargs)."""
     messages = []
     for i, m in enumerate(_object_list(req.get("messages"), "messages")):
@@ -719,13 +737,13 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
     reasoning = req.get("reasoning") if isinstance(req.get("reasoning"), dict) else {}
     given = req.get("reasoning_effort")
     # `false` is a level (thinking off, effort_kwargs): an `or` between the two fields dropped it
-    kwargs.update(effort_kwargs(given if given is not None and given != "" else reasoning.get("effort")))
+    kwargs.update(effort_kwargs(given if given is not None and given != "" else reasoning.get("effort"), inkling2=inkling2))
     # the vLLM / llama.cpp convention: {"chat_template_kwargs": {"enable_thinking": false, "reasoning_effort": "low"}}
     for k, v in (req.get("chat_template_kwargs") or {}).items():
         if k == "enable_thinking" and not v:
             kwargs = {"enable_thinking": False}
         elif k == "reasoning_effort" and "enable_thinking" not in kwargs:
-            kwargs.update(effort_kwargs(v))
+            kwargs.update(effort_kwargs(v, inkling2=inkling2))
     return _env_to_user(_late_system_to_user(messages)), tools, kwargs
 
 
@@ -758,7 +776,7 @@ def pin_billing_stamp(system: str) -> str:
     return "".join(s)
 
 
-def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[dict], list[dict] | None, dict]:
+def anthropic_to_messages(req: dict, think_unasked: bool = True, *, inkling2: bool = False) -> tuple[list[dict], list[dict] | None, dict]:
     """Anthropic Messages -> (template messages, template tools, template kwargs).  `think_unasked`: a request
     without "thinking", an effort or a budget gets the template's default (it thinks), as through 0.1.31; False
     renders it without thinking (#278, the config's "anthropic_thinking": "on_request")."""
@@ -813,7 +831,7 @@ def anthropic_to_messages(req: dict, think_unasked: bool = True) -> tuple[list[d
     if isinstance(thinking, dict) and thinking.get("type") == "disabled":
         kwargs["enable_thinking"] = False
     elif effort:
-        kwargs.update(effort_kwargs(effort))
+        kwargs.update(effort_kwargs(effort, inkling2=inkling2))
     elif isinstance(thinking, dict) and thinking.get("budget_tokens"):
         kwargs.update(budget_effort(thinking["budget_tokens"]))
     elif thinking is None and not req.get("reasoning_budget_tokens") and not think_unasked:
@@ -1077,6 +1095,9 @@ def forced_call(tool_choice, tools: list[dict] | None, call_format: str = "funct
             return GEMMA_CALL + "call:"
         if call_format == "harmony":
             return " to="
+        if call_format == "inkling2":
+            from serve.inkling_dialect import MSG_MODEL
+            return MSG_MODEL
         return CALL_START + "\n<function="
     if kind == "named" and name in names:
         if call_format == "lfm2":
@@ -1085,6 +1106,9 @@ def forced_call(tool_choice, tools: list[dict] | None, call_format: str = "funct
             return GEMMA_CALL + f"call:{name}{{"
         if call_format == "harmony":
             return f" to=functions.{name}<|channel|>commentary json" + HM_MESSAGE
+        if call_format == "inkling2":
+            from serve.inkling_dialect import force_text
+            return force_text(CALL_START + f"\n<function={name}>\n")
         return CALL_START + f"\n<function={name}>\n"
     print(f"[strata] tool_choice {json.dumps(tool_choice)[:200]} is not supported here (or names no tool of the "
           "request): the model decides, as with \"auto\"", flush=True)
@@ -1150,7 +1174,7 @@ def json_tool_call(body: str, schemas: dict) -> ToolCall | None:
         return None
     if not isinstance(obj, dict) or not isinstance(obj.get("name"), str) or obj["name"] not in schemas:
         return None
-    args = obj.get("arguments", obj.get("parameters", {}))
+    args = obj.get("arguments", obj.get("parameters", obj.get("args", {})))
     if isinstance(args, str):
         try:
             args = json.loads(args)
@@ -2223,3 +2247,57 @@ class OutputParser:
         self._reset_scan()
         self.state, self.lead = "content", True
         return [Event("tool_call", call=call)]
+
+
+class InklingOutputParser:
+    """Read Inkling's explicit reasoning, answer and tool channels."""
+
+    pending = ()
+    rescued = refused = 0
+
+    def __init__(self, tools=None):
+        from serve.inkling_dialect import InklingDialect
+        self._dialect = InklingDialect()
+        self.schemas = {tool["name"]: tool for tool in tools or [] if tool.get("name")}
+
+    @property
+    def state(self) -> str:
+        state = self._dialect.state
+        if state == "think":
+            return "reasoning"
+        if state in ("think_end", "text", "text_end"):
+            return "content"
+        return state
+
+    @property
+    def buf(self) -> str:
+        return self._dialect.buf
+
+    def _events(self, chunks) -> list[Event]:
+        events = []
+        for kind, text in chunks:
+            call = None
+            if kind == "content" and text.startswith(CALL_START) and text.endswith(CALL_END):
+                body = text[len(CALL_START):-len(CALL_END)].strip()
+                if body.startswith(FUNC_START) and function_end(body) == len(body):
+                    name = body[len(FUNC_START):].partition(">")[0].strip()
+                    if name in self.schemas:
+                        call = parse_tool_call(body, self.schemas[name])
+                else:
+                    call = json_tool_call(body, self.schemas)
+            if call is None:
+                events.append(Event(kind, text))
+            else:
+                events.extend((Event("tool_start", call=call),
+                               Event("tool_args", json.dumps(call.arguments, ensure_ascii=False), call=call),
+                               Event("tool_call", call=call)))
+        return events
+
+    def feed(self, text: str) -> list[Event]:
+        return self._events(self._dialect.feed_channels(text))
+
+    def feed_token(self, text: str, is_special: bool) -> list[Event]:
+        return self._events(self._dialect.feed_token(text, is_special=is_special))
+
+    def finish(self, reason: str | None = None) -> list[Event]:
+        return self._events(self._dialect.feed_channels(final=True, reason=reason))

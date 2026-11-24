@@ -103,9 +103,17 @@ GPT4O_PATTERN = (
 # GPT-2's byte alphabet. Adapted from PolyStrata tools/strata_tokenizer.py
 # at 51dc242725d9e64e791146f1d13133d5faedb0ce (MIT); merges may contain newlines.
 GEMMA4_PATTERN = r"[^\n]+|\n+"
+# Inkling 2 Mini uses the original o200k Unicode classes; the GPT4O variant
+# above is retained for other models with that pre-tokenizer declaration.
+INKLING_O200K_PATTERN = (
+    r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?"
+    r"|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?"
+    r"|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+"
+)
 SPACE = "\u2581"
 PRE_PATTERNS = {"qwen35": QWEN35_PATTERN, "qwen2": QWEN2_PATTERN,
-                "lfm2": LFM2_PATTERN, "gemma4": GEMMA4_PATTERN, "gpt-4o": GPT4O_PATTERN}
+                "lfm2": LFM2_PATTERN, "gemma4": GEMMA4_PATTERN, "gpt-4o": GPT4O_PATTERN,
+                "o200k": INKLING_O200K_PATTERN}
 
 
 class Tokenizer:
@@ -125,7 +133,7 @@ class Tokenizer:
         self.eos_token_id = self.special_ids.get("tokenizer.ggml.eos_token_id")
         self.add_bos_token = pre == "lfm2" if add_bos_token is None else bool(add_bos_token)
         self.add_eos_token = bool(add_eos_token)
-        self.ignore_merges = pre == "lfm2" if ignore_merges is None else bool(ignore_merges)
+        self.ignore_merges = pre in ("lfm2", "o200k") if ignore_merges is None else bool(ignore_merges)
         self.pre_pattern = PRE_PATTERNS[pre]
         self.template_tokens = {name: tokens[index] for name, index in
                                 (("bos_token", self.bos_token_id), ("eos_token", self.eos_token_id))
@@ -209,10 +217,13 @@ class Tokenizer:
         special = {k: int(md[k]) for k in md
                    if k.startswith("tokenizer.ggml.") and k.endswith("_token_id")}
         pre = "gemma4" if model == "gemma4" else md.get("tokenizer.ggml.pre", "qwen35")
+        if md.get("general.architecture") in ("inkling2", "inkling2_loop") and pre in ("o200k", "o200k_base", "gpt-4o", "inkling", "inkling2"):
+            pre = "o200k"
         return cls(list(md["tokenizer.ggml.tokens"]), list(md["tokenizer.ggml.merges"]),
                    list(md.get("tokenizer.ggml.token_type") or []) or None,
                    pre, special, add_bos_token=md.get("tokenizer.ggml.add_bos_token", pre == "lfm2"),
-                   add_eos_token=md.get("tokenizer.ggml.add_eos_token", False))
+                   add_eos_token=md.get("tokenizer.ggml.add_eos_token", False),
+                   ignore_merges=md.get("tokenizer.ggml.ignore_merges") if pre == "o200k" else None)
 
     @classmethod
     def from_dir(cls, path) -> "Tokenizer":
@@ -454,6 +465,7 @@ def extract(gguf_path, out_dir) -> dict:
                               else "llama.cpp src/llama-vocab.cpp (LLAMA_VOCAB_PRE_TYPE_LLAMA3)" if tk.pre == "lfm2"
                               else "llama.cpp src/llama-vocab.cpp (LLAMA_VOCAB_PRE_TYPE_QWEN2)" if tk.pre == "qwen2"
                               else "llama.cpp src/llama-vocab.cpp (LLAMA_VOCAB_PRE_TYPE_GPT4O)" if tk.pre == "gpt-4o"
+                              else "Strata Inkling 2 Mini o200k pre-tokenizer" if tk.pre == "o200k"
                               else ".ref/llama.cpp src/llama-vocab.cpp L396 (LLAMA_VOCAB_PRE_TYPE_QWEN35)",
         "ignore_merges": tk.ignore_merges,
     }

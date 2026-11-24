@@ -37,6 +37,24 @@ def model(arch="qwen35moe", blocks=2, experts=4, width=2048, hidden=512, gate_ty
     return SimpleNamespace(metadata=metadata, tensors=tensors)
 
 
+def inkling_header():
+    header = model("inkling2", blocks=24, experts=128, width=2304, hidden=1152,
+                   gate_type=40, down_type=40, fused=True)
+    header.metadata.update({"inkling2.block_count": 48, "inkling2.num_loops": 3,
+                            "inkling2.loop.core_start": 6, "inkling2.loop.core_end": 18})
+    header.tensors.append(tensor("loop_res_query.weight", [2304, 24], 0))
+    for layer in range(20):
+        for name in ("gate_up", "down"):
+            header.tensors.append(tensor(f"blk.{layer}.ffn_{name}_exps.scale", [128], 0))
+    for layer, gate_type, down_type in ((20, 13, 6), (21, 13, 6), (22, 12, 6), (23, 23, 20)):
+        for name, dtype, shape in (("gate_up", gate_type, [2304, 2304, 128]),
+                                  ("down", down_type, [1152, 2304, 128])):
+            tname = f"blk.{layer}.ffn_{name}_exps.weight"
+            header.tensors = [t for t in header.tensors if t.name != tname]
+            header.tensors.append(tensor(tname, shape, dtype))
+    return header
+
+
 class ExpertGeometryTests(unittest.TestCase):
     def setUp(self):
         E._cached_geometry.cache_clear()
@@ -81,6 +99,51 @@ class ExpertGeometryTests(unittest.TestCase):
         slot = (payload + 256 + unit - 1) // unit * unit
         self.assertEqual(E._measure([header], {}), {"total_expert_bytes": 2 * 4 * slot + 256, "expert_total": 8,
                                                   "experts_per_layer": 4})
+
+    def test_inkling_physical_layers_and_backend_native_bodies(self):
+        header = inkling_header()
+        # Native full-resident planning sizes. Both use 20 SF4 layers and
+        # four raw GGUF layers. HIP transcodes three of the raw layers and
+        # adds the arena's per-body alignment.
+        for backend, total in (("cuda", 14035509248), ("hip", 14214340608)):
+            with self.subTest(backend=backend):
+                cfg = {"arch": "inkling2_loop", "backend": backend}
+                self.assertEqual(E._measure([header], cfg), {"total_expert_bytes": total, "expert_total": 3072,
+                                                              "experts_per_layer": 128})
+
+    def test_inkling_iq3_xxs_direct_layout_matches_native_budget(self):
+        # InterpreticAI's merged GGUF stores 24 physical layers and visits
+        # layers 6..17 three times. The Expert cache only stores each body once.
+        header = model("inkling2_loop", blocks=24, experts=128, width=2304, hidden=1152,
+                       gate_type=18, down_type=20, fused=True)
+        header.metadata.update({"inkling2_loop.loop.start": 6, "inkling2_loop.loop.end": 18,
+                                "inkling2_loop.loop.count": 3})
+        # 32-byte header, 2304 IQ3_XXS rows of 882 bytes, and 2304 IQ4_NL
+        # rows of 648 bytes. HIP rounds the body up to a multiple of 64.
+        for backend, body in (("cuda", 3_525_152), ("hip", 3_525_184)):
+            with self.subTest(backend=backend):
+                cfg = {"arch": "inkling2_loop", "backend": backend}
+                self.assertEqual(E._measure([header], cfg), {"total_expert_bytes": body * 3072,
+                                                              "expert_total": 3072, "experts_per_layer": 128})
+
+    def test_inkling_cache_accounts_for_hip_transcode_overrides(self):
+        path = Path(__file__)
+        cfg = {"arch": "inkling2_loop", "backend": "hip", "args": ["--model", str(path)]}
+        with patch.object(E, "GGUFFile", return_value=inkling_header()) as reader:
+            default = E.geometry({**cfg, "env": {"INK_HIP_FORCE_SK_TRANSCODE": "0", "INK_GGUF_SK_BITS": "0"}})
+            custom = {**cfg, "env": {"INK_HIP_FORCE_SK_TRANSCODE": "1", "INK_GGUF_SK_BITS": "8"}}
+            changed = E.geometry(custom)
+            self.assertGreater(changed["total_expert_bytes"], default["total_expert_bytes"])
+            self.assertEqual(E.geometry(custom), changed)
+            self.assertEqual(reader.call_count, 2)
+
+    def test_inkling_rejects_incomplete_or_unverified_expert_geometry(self):
+        header = inkling_header()
+        with self.assertRaisesRegex(ValueError, "CUDA or HIP"):
+            E._measure([header], {"arch": "inkling2_loop", "backend": "sycl"})
+        header.tensors = [t for t in header.tensors if t.name != "blk.0.ffn_gate_up_exps.scale"]
+        with self.assertRaisesRegex(ValueError, "Missing NVFP4"):
+            E._measure([header], {"arch": "inkling2_loop"})
 
     def test_shards_merge_without_weight_reads(self):
         full = model()

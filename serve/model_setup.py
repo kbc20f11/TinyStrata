@@ -11,6 +11,8 @@ from serve.model_download import reject_retired_model
 
 ROOT = Path(__file__).resolve().parent.parent
 TOKENIZER_FILES = ("vocab.json", "merges.txt", "token_type.json", "tokenizer.json", "chat_template.jinja")
+NATIVE_ENGINE_NAMES = {"lfm2moe": "tinystrata-lfm2", "gemma4": "tinystrata-gemma4",
+                       "inkling2_loop": "tinystrata-inkling2"}
 
 
 def model_architecture(path: str | Path) -> str:
@@ -19,6 +21,8 @@ def model_architecture(path: str | Path) -> str:
     from serve.tinyconfig import MODEL_NAMES
     arch = GGUFFile(Path(path)).metadata.get("general.architecture")
     reject_retired_model(arch)
+    if arch == "inkling2":
+        arch = "inkling2_loop"
     if arch not in MODEL_NAMES:
         raise ValueError(f"Unsupported GGUF model architecture: {arch}")
     return arch
@@ -48,7 +52,7 @@ def shared_library_dirs(cfg: dict) -> dict:
             # An independently launched model can carry older saved lib_dirs.
             return {**cfg, "lib_dirs": list(dict.fromkeys((*runtime.directories,
                                                            *(cfg.get("lib_dirs") or ()))))}
-    if (cfg.get("arch") not in ("lfm2moe", "gemma4", "clover_moe") and
+    if (cfg.get("arch") not in ("lfm2moe", "gemma4", "clover_moe", "inkling2_loop") and
             cfg.get("model_name") != "tiel-coder-35b-a3b") or "lib_dirs" in cfg:
         return cfg
     work = ROOT.with_name(ROOT.name + "-work")
@@ -149,7 +153,7 @@ def resolve_executable(cfg: dict) -> Path | None:
             if usable(candidate):
                 return candidate.resolve()
         return None
-    name = {"lfm2moe": "tinystrata-lfm2", "gemma4": "tinystrata-gemma4"}.get(cfg.get("arch"), "tinystrata")
+    name = NATIVE_ENGINE_NAMES.get(cfg.get("arch"), "tinystrata")
     backend_build = work / ("build-hip" if cfg.get("backend") == "hip" else "build")
     for folder in (backend_build, backend_build / "Release", work / "build-cuda-132" if cfg.get("backend") != "hip" else backend_build,
                    ROOT / "bin", ROOT / "build", ROOT / "build/Release"):
@@ -257,11 +261,12 @@ def _extract_tokenizer(model: Path, cache: Path) -> None:
     # The same extractor is used for local and API-downloaded model weights.
     from serve.gguf_reader import GGUFFile
     from serve.tokenizer import extract
+    from serve.tinyconfig import MODEL_NAMES
 
     md = GGUFFile(model).metadata
     reject_retired_model(md.get("general.architecture"))
-    if md.get("general.architecture") not in ("qwen35moe", "lfm2moe", "gemma4", "clover_moe"):
-        raise ValueError("This launcher supports qwen35moe, lfm2moe, gemma4 and clover_moe GGUF models")
+    if md.get("general.architecture") not in (*MODEL_NAMES, "inkling2"):
+        raise ValueError(f"Unsupported GGUF model architecture: {md.get('general.architecture')}")
     if not md.get("tokenizer.chat_template"):
         raise ValueError("The GGUF does not contain its chat template")
     print("Extracting the model tokenizer and chat template ...", flush=True)
@@ -320,14 +325,15 @@ def configure_vision(cfg: dict, model: Path, *, projector: Path | None = None,
         raise ValueError("This model has no supported image projector")
     selected_projector = new.get("vision_mmproj")
     projector = Path(selected_projector or Path(cfg["download_dir"]) / artifact.filename)
-    if cfg.get("backend") == "sycl" and not selected_projector and not projector.is_file():
+    native_vision = cfg.get("arch") == "inkling2_loop"
+    if (cfg.get("backend") == "sycl" or native_vision) and not selected_projector and not projector.is_file():
         # Local Intel models may live outside the managed download directory.
         # Reuse their matching projector after the same pinned SHA check.
         beside_model = Path(model).with_name(artifact.filename)
         if beside_model.is_file():
             projector = beside_model
             verified = False
-    encoder = resolve_vision_executable(new)
+    encoder = None if native_vision else resolve_vision_executable(new)
     valid = projector.is_file() and projector.stat().st_size == artifact.size
     if valid and not verified:
         digest = hashlib.sha256()
@@ -335,6 +341,14 @@ def configure_vision(cfg: dict, model: Path, *, projector: Path | None = None,
             for block in iter(lambda: source.read(4 * 1024 * 1024), b""):
                 digest.update(block)
         valid = digest.hexdigest() == artifact.sha256
+    if native_vision:
+        if valid:
+            new["inkling_vision"] = new["vision_mmproj"] = str(projector.resolve())
+            new.pop("vision_download_required", None)
+        else:
+            new.pop("inkling_vision", None)
+            new["vision_download_required"] = True
+        return new
     if valid and encoder is not None:
         if cfg.get("backend") == "sycl":
             new["vision_mmproj"] = str(projector.resolve())
@@ -444,7 +458,7 @@ def prepare_installed_model(cfg: dict, config_path: str | Path, model_path: str 
     from serve.intel_models import MODEL_LOGS
     log_name = (MODEL_LOGS[selected] if cfg.get("backend") == "sycl" else "engine-tiel-coder.log" if cfg.get("model_name") == "tiel-coder-35b-a3b" else
                 {"lfm2moe": "engine-lfm2.log", "gemma4": "engine-gemma4.log",
-                 "clover_moe": "engine-clover.log"}.get(actual_arch, "engine.log"))
+                 "clover_moe": "engine-clover.log", "inkling2_loop": "engine-inkling2.log"}.get(actual_arch, "engine.log"))
     new["log"] = str(path.parent / log_name)
     exe = resolve_executable(new)
     if exe is not None:

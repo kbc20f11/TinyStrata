@@ -31,7 +31,7 @@ class RetirementTests(unittest.TestCase):
     def test_registry_and_all_model_control_entrypoints_reject_retired_aliases(self):
         fixture = library_fixture.create_fixture(self.root)
         self.addCleanup(fixture.control.close)
-        self.assertEqual(len(fixture.control.catalog()), 5)
+        self.assertEqual({row["id"] for row in fixture.control.catalog()}, library_fixture.CATALOG_IDS)
         for alias in ALIASES:
             with self.subTest(alias=alias):
                 for action in (fixture.profiles.get, fixture.control.start, fixture.control.delete,

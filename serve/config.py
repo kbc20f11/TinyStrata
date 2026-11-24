@@ -70,14 +70,19 @@ def check(key: str, value, cfg: dict):
     if isinstance(spec[1], tuple):
         if value not in spec[1]:
             raise ValueError(f"{key}: expected one of {', '.join(spec[1])}, not {value!r}")
-        if key == "kv_type" and cfg.get("backend") == "hip" and value not in ("auto", "int8", "fp8", "fp8-mma"):
-            raise ValueError("The AMD HIP route supports auto, int8 or native fp8")
+        if key == "kv_type" and cfg.get("backend") == "hip":
+            if cfg.get("arch") == "inkling2_loop" and value not in ("auto", "fp16", "fp8"):
+                raise ValueError("The Inkling 2 Mini AMD HIP route supports auto, fp16 or fp8")
+            if cfg.get("arch") != "inkling2_loop" and value not in ("auto", "int8", "fp8", "fp8-mma"):
+                raise ValueError("The AMD HIP route supports auto, int8 or native fp8")
         return value
     if key in ("max_context", "chunk") and value == "auto":
         return value
     if key == "chunk" and not isinstance(value, bool) and isinstance(value, (int, float)) and value == 0:
         return "auto"
     _, lo, hi, whole = spec
+    if key == "max_context" and cfg.get("arch") == "inkling2_loop":
+        lo, hi = 256, 1048576
     if isinstance(value, bool) or not isinstance(value, (int, float)) or \
             value < lo or (hi is not None and value > hi) or not math.isfinite(value) or \
             (whole and value != int(value)):

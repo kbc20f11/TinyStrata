@@ -106,7 +106,8 @@ def prepare(a) -> tuple[dict, Path]:
     requested_arch = {"qwen36": "qwen35moe", "qwen3.6": "qwen35moe",
                       "lfm2": "lfm2moe", "lfm2.5": "lfm2moe",
                       "gemma4": "gemma4", "gemma-4": "gemma4", "clover": "clover_moe",
-                      "tiel": "qwen35moe", "tiel-coder": "qwen35moe"}.get(selected)
+                      "tiel": "qwen35moe", "tiel-coder": "qwen35moe",
+                      "inkling2": "inkling2_loop", "inkling-2-mini": "inkling2_loop"}.get(selected)
     tiel = selected in ("tiel", "tiel-coder")
     if a.model:
         local = a.model.expanduser().resolve()
@@ -118,12 +119,15 @@ def prepare(a) -> tuple[dict, Path]:
         requested_arch = actual_arch
     config_path = getattr(a, "config", None)
     if intel_requested:
+        if requested_arch == "inkling2_loop":
+            raise ValueError("Inkling 2 Mini is unavailable on the configured Intel backend")
         from serve.intel_models import MODEL_CONFIGS, QWEN_MODEL, TIEL_MODEL
         intel_model = TIEL_MODEL if tiel else {"lfm2moe": "lfm2.5-24b-a2b", "gemma4": "gemma-4-26b-a4b-it",
                                              "clover_moe": "clover-35b-a3b-preview"}.get(requested_arch, QWEN_MODEL)
     path = (config_path or RUNTIME / ".tinystrata" / ("config-tiel-coder-sycl.json" if intel_requested and tiel else
             MODEL_CONFIGS[intel_model] if intel_requested else "config-tiel-coder.json" if tiel else
-            {"lfm2moe": "config-lfm2.json", "gemma4": "config-gemma4.json", "clover_moe": "config-clover.json"}
+            {"lfm2moe": "config-lfm2.json", "gemma4": "config-gemma4.json", "clover_moe": "config-clover.json",
+             "inkling2_loop": "config-inkling2.json"}
             .get(requested_arch, "config.json"))).expanduser().resolve()
     from serve.install_guard import assert_installation_ready
     assert_installation_ready(path, allow_installer=getattr(a, "configure_only", False))
@@ -131,11 +135,12 @@ def prepare(a) -> tuple[dict, Path]:
     fresh = not path.exists()
     cfg = config.load(path) if not fresh else {
         "arch": arch, "model_name": ("tiel-coder-35b-a3b" if tiel else
-                                    {"lfm2moe": "lfm2.5-24b-a2b", "gemma4": "gemma-4-26b-a4b-it", "clover_moe": "clover-35b-a3b-preview"}
+                                    {"lfm2moe": "lfm2.5-24b-a2b", "gemma4": "gemma-4-26b-a4b-it", "clover_moe": "clover-35b-a3b-preview",
+                                     "inkling2_loop": "inkling-2-mini"}
                                     .get(arch, "qwen3.6-35b-a3b")),
         "cwd": str(ROOT),
         "args": ["--max-context", "auto", "--kv-type", "auto", "--chunk", "auto"] +
-                ([] if intel_requested or arch in ("clover_moe", "lfm2moe") else ["--mtp", "3"]),
+                ([] if intel_requested or arch in ("clover_moe", "lfm2moe", "inkling2_loop") else ["--mtp", "3"]),
         "memory_policy_version": MEMORY_POLICY_VERSION,
         "host": "127.0.0.1",
     }
@@ -179,7 +184,7 @@ def prepare(a) -> tuple[dict, Path]:
         requested_backend = explicit_backend or hardware_backend()
     cfg = configure_backend(cfg, requested_backend, explicit_kv=a.kv_type)
     cfg.setdefault("port", 18085 if cfg.get("backend") == "sycl" else 18084 if cfg.get("model_name") == "tiel-coder-35b-a3b" else
-                   {"lfm2moe": 18081, "gemma4": 18082, "clover_moe": 18083}.get(cfg.get("arch"), 18080))
+                   {"lfm2moe": 18081, "gemma4": 18082, "clover_moe": 18083, "inkling2_loop": 18086}.get(cfg.get("arch"), 18080))
     if a.model:
         set_arg(cfg, "--model", a.model.expanduser().resolve())
         if cfg.get("arch") == "clover_moe":
@@ -265,7 +270,8 @@ def prepare(a) -> tuple[dict, Path]:
     from serve.intel_models import MODEL_LOGS
     from serve.intel_backend import canonical_model
     cfg["log"] = str(path.parent / (MODEL_LOGS[canonical_model(cfg)] if cfg.get("backend") == "sycl" else "engine-tiel-coder.log" if cfg.get("model_name") == "tiel-coder-35b-a3b" else
-                    {"lfm2moe": "engine-lfm2.log", "gemma4": "engine-gemma4.log", "clover_moe": "engine-clover.log"}
+                    {"lfm2moe": "engine-lfm2.log", "gemma4": "engine-gemma4.log", "clover_moe": "engine-clover.log",
+                     "inkling2_loop": "engine-inkling2.log"}
                     .get(cfg.get("arch"), "engine.log")))
     if model.is_file():
         cfg = prepare_installed_model(cfg, path, model)
@@ -286,9 +292,9 @@ def main() -> int:
 
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", type=Path, help="existing supported GGUF (the local header selects its model family)")
-    ap.add_argument("--model-family", choices=("qwen36", "qwen3.6", "lfm2", "lfm2.5", "gemma4", "gemma-4", "clover", "tiel", "tiel-coder"),
-                    help="Qwen3.6 (default), LFM2.5, Gemma4, Clover or Tiel Coder; settings are separate per model")
-    ap.add_argument("--draft-model", type=Path, help="existing Gemma4 QAT assistant GGUF for MTP")
+    ap.add_argument("--model-family", choices=("qwen36", "qwen3.6", "lfm2", "lfm2.5", "gemma4", "gemma-4", "clover", "tiel", "tiel-coder", "inkling2", "inkling-2-mini"),
+                    help="Select a model family with separate settings; Qwen3.6 is the default")
+    ap.add_argument("--draft-model", type=Path, help="Gemma 4 QAT assistant GGUF or Inkling 2 Mini DSpark checkpoint")
     ap.add_argument("--exe", type=Path, help="built tinystrata executable")
     ap.add_argument("--backend", choices=("auto", "cuda", "hip", "sycl"), default="auto",
                     help="GPU backend; Intel SYCL uses a separate model-specific config and runtime")

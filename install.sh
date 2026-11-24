@@ -227,10 +227,10 @@ cmake_args=(-S "$SRC" -B "$BUILD_DIR" -G "$GENERATOR" -DCMAKE_BUILD_TYPE=Release
 [ "$PORTABLE" -eq 1 ] && cmake_args+=(-DSTRATA_PORTABLE=ON)
 cmake "${cmake_args[@]}"
 cmake --build "$BUILD_DIR" --parallel "$JOBS"
-for exe in tinystrata tinystrata-lfm2 tinystrata-gemma4; do
+for exe in tinystrata tinystrata-lfm2 tinystrata-gemma4 tinystrata-inkling2; do
   [ -x "$BUILD_DIR/$exe" ] || die "expected $BUILD_DIR/$exe was not built"
 done
-say "Built: $BUILD_DIR/tinystrata, tinystrata-lfm2, tinystrata-gemma4"
+say "Built: $BUILD_DIR/tinystrata, tinystrata-lfm2, tinystrata-gemma4, tinystrata-inkling2"
 
 if [ "$NO_VENV" -eq 0 ]; then
   [ -d "$SRC/.venv" ] || python3 -m venv "$SRC/.venv"

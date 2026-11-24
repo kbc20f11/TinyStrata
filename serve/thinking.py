@@ -8,6 +8,7 @@ _MODELS = {
     "qwen3.6-35b-a3b": "toggle", "clover-35b-a3b-preview": "toggle",
     "gemma-4-26b-a4b-it": "toggle", "lfm2.5-24b-a2b": "always",
     "tiel-coder-35b-a3b": "effort",
+    "inkling-2-mini": "effort",
 }
 _ALIASES = {
     "qwen36": "qwen3.6-35b-a3b", "qwen3.6": "qwen3.6-35b-a3b", "qwen35moe": "qwen3.6-35b-a3b",
@@ -16,6 +17,7 @@ _ALIASES = {
     "gemma4-26b-a4b": "gemma-4-26b-a4b-it", "gemma4-26b-a4b-it": "gemma-4-26b-a4b-it",
     "lfm2": "lfm2.5-24b-a2b", "lfm2.5": "lfm2.5-24b-a2b", "lfm2moe": "lfm2.5-24b-a2b",
     "tiel": "tiel-coder-35b-a3b", "tiel-coder": "tiel-coder-35b-a3b",
+    "inkling2": "inkling-2-mini", "inkling2_loop": "inkling-2-mini",
 }
 
 
@@ -26,18 +28,27 @@ def _is_effort(mode: str) -> bool:
 def capabilities(model: str, arch: str | None = None) -> dict | None:
     """Return a fresh catalog value; unknown/custom models keep their legacy controls."""
     name = str(model).strip().lower()
-    mode = _MODELS.get(_ALIASES.get(name, name))
+    name = _ALIASES.get(name, name)
+    mode = _MODELS.get(name)
     if mode is None:
         return None
+    if name == "inkling-2-mini":
+        return {"mode": "effort", "default": "medium", "options": ["none", "minimal", "low", "medium", "high", "xhigh"]}
     return {"mode": mode, "default": "medium" if _is_effort(mode) else "on",
             "options": ["none", "low", "medium", "xhigh"] if mode == "effort" else
                        ["on"] if mode == "always" else ["none", "on"]}
 
 
-def normalize_effort(value, policy: dict) -> str:
+def normalize_effort(value, policy: dict) -> str | float:
     """Use translator-compatible aliases; binary 'on' never reaches effort_kwargs."""
     key = "on" if value is True else "none" if value is False else str(value).strip().lower()
     effort = _is_effort(policy["mode"])
+    if "minimal" in policy["options"] and key not in ("on", "enabled", "true", "default", "auto"):
+        from serve.inkling_dialect import normalize_effort as inkling_effort
+        level = inkling_effort(value)
+        return "xhigh" if level == "max" else level
+    if key in policy["options"] and effort:
+        return key
     if key in ("none", "off", "disabled", "false") or (key == "minimal" and not effort):
         result = "none"
     elif key in ("on", "enabled", "true", "default", "auto"):

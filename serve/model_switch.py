@@ -196,6 +196,10 @@ class ModelSwitcher:
                 if download_conflict:
                     management['can_download'] = False
                 images = self.svc.vision_available() if active else row['vision']
+                if active and not loaded and row['arch'] == 'inkling2_loop':
+                    # The first request can start an already configured native
+                    # encoder even though INFO is absent until that startup.
+                    images = bool(self.profiles.get(model).config.get('inkling_vision'))
                 items.append({'id': model, 'arch': row['arch'], 'installed': row['installed'],
                               'object': 'model', 'active': active,
                               'status': {'value': value},
@@ -887,13 +891,13 @@ class ModelSwitcher:
             manager = FixedModelDownloader(directory, on_ready=prepared,
                                            existing_paths=(existing,) if existing is not None else (),
                                            _manifest=artifact)
-        elif profile.arch == 'clover_moe' and cfg.get('vision_mode') != 'no':
+        elif profile.arch in ('clover_moe', 'inkling2_loop') and cfg.get('vision_mode') != 'no':
             projector = (cfg.get('vision') or {}).get('mmproj') or cfg.get('vision_mmproj')
             manager = FixedModelBundleDownloader(directory, on_ready=prepared,
                                                  existing_paths=(existing,) if existing is not None else (),
                                                  projector_paths=(Path(projector),) if projector else (),
                                                  _manifests=(artifact, projector_artifact))
-        elif profile.arch in ('lfm2moe', 'clover_moe'):
+        elif profile.arch in ('lfm2moe', 'clover_moe', 'inkling2_loop'):
             manager = FixedModelDownloader(directory, on_ready=prepared,
                                            existing_paths=(existing,) if existing is not None else (),
                                            _manifest=artifact)

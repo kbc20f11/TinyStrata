@@ -31,7 +31,7 @@ param(
     [string]$HipDirectory,
     # An omitted value is empty under irm | iex and selects GPU auto-detection.
     [ValidatePattern('^(gfx[0-9a-f]+(;gfx[0-9a-f]+)*)?$')][string]$HipArchitectures,
-    [ValidateSet('qwen36', 'qwen3.6', 'lfm2', 'lfm2.5', 'gemma4', 'gemma-4', 'clover', 'tiel', 'tiel-coder')][string]$ModelFamily = 'qwen36',
+    [ValidateSet('qwen36', 'qwen3.6', 'lfm2', 'lfm2.5', 'gemma4', 'gemma-4', 'clover', 'tiel', 'tiel-coder', 'inkling2', 'inkling-2-mini')][string]$ModelFamily = 'qwen36',
     # Omission preserves each model's selection. Intel images require a new
     # verified image-capable runtime and are enabled only by explicit choice.
     [ValidateSet('', 'gpu', 'cpu', 'no')][string]$Vision,
@@ -343,7 +343,7 @@ function Test-TinyStrataNativeBuildStamp {
             if (-not [IO.Path]::IsPathRooted($input.path) -or $input.sha256 -notmatch '^[a-f0-9]{64}$' -or
                 (Get-FileHash -LiteralPath $input.path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant() -ne $input.sha256) { return $false }
         }
-        foreach ($name in @('tinystrata.exe', 'tinystrata-lfm2.exe', 'tinystrata-gemma4.exe', 'tinystrata-vision.exe') + $(if ($Backend -eq 'cuda') { @('strata_kq.dll') } else { @() })) {
+        foreach ($name in @('tinystrata.exe', 'tinystrata-lfm2.exe', 'tinystrata-gemma4.exe', 'tinystrata-inkling2.exe', 'tinystrata-vision.exe') + $(if ($Backend -eq 'cuda') { @('strata_kq.dll') } else { @() })) {
             if ($stamp.files.$name -ne (Get-FileHash -LiteralPath (Join-Path $Directory $name) -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()) { return $false }
         }
         $actualFiles = @(Get-ChildItem -LiteralPath $Directory -File | Where-Object { $_.Extension -in @('.exe','.dll') })
@@ -921,7 +921,7 @@ function Invoke-TinyStrataPortableBuild {
             }
         }
         $env:VSLANG = '1033'
-        $configure = @('-S', $sourceRoot, '-B', $buildRoot, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', "-DTINYSTRATA_BACKEND=$($Backend.ToUpperInvariant())", '-DTINYSTRATA_LFM2=ON', '-DTINYSTRATA_GEMMA4=ON', '-DSTRATA_PORTABLE=ON', "-DCMAKE_MAKE_PROGRAM=$($tools.Ninja)")
+        $configure = @('-S', $sourceRoot, '-B', $buildRoot, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', "-DTINYSTRATA_BACKEND=$($Backend.ToUpperInvariant())", '-DTINYSTRATA_LFM2=ON', '-DTINYSTRATA_GEMMA4=ON', '-DTINYSTRATA_INKLING2=ON', '-DSTRATA_PORTABLE=ON', "-DCMAKE_MAKE_PROGRAM=$($tools.Ninja)")
         if ($Backend -eq 'hip') {
             $env:HIP_PLATFORM = 'amd'
             $env:HIP_PATH = $hipRoot
@@ -959,14 +959,15 @@ function Invoke-TinyStrataPortableBuild {
         $visionExe = Join-Path $buildRoot 'tinystrata-vision.exe'
         $lfmExe = Join-Path $buildRoot 'tinystrata-lfm2.exe'
         $gemmaExe = Join-Path $buildRoot 'tinystrata-gemma4.exe'
+        $inklingExe = Join-Path $buildRoot 'tinystrata-inkling2.exe'
         if (-not (Test-Path -LiteralPath $exe -PathType Leaf) -or ($Backend -eq 'cuda' -and -not (Test-Path -LiteralPath $kq -PathType Leaf)) -or
             -not (Test-Path -LiteralPath $visionExe -PathType Leaf) -or -not (Test-Path -LiteralPath $lfmExe -PathType Leaf) -or
-            -not (Test-Path -LiteralPath $gemmaExe -PathType Leaf)) {
-            throw 'Expected Qwen, LFM, Gemma or vision build outputs are missing.'
+            -not (Test-Path -LiteralPath $gemmaExe -PathType Leaf) -or -not (Test-Path -LiteralPath $inklingExe -PathType Leaf)) {
+            throw 'Expected TinyStrata language or vision build outputs are missing.'
         }
         if ($Backend -eq 'hip') { Install-TinyStrataHipRuntime -SearchDirectories @(Get-TinyStrataHipRuntimeDirectories -Directory $hipRoot) -EngineDirectory $buildRoot -SdkRoot $hipRoot }
         if (-not (Test-TinyStrataVisionBackend -ExecutablePath $visionExe -Backend $Backend)) { throw "The image encoder was not built with $Backend support." }
-        foreach ($engine in @($exe, $lfmExe, $gemmaExe)) {
+        foreach ($engine in @($exe, $lfmExe, $gemmaExe, $inklingExe)) {
             if (-not (Test-TinyStrataEngineBackend -ExecutablePath $engine -Backend $Backend)) { throw "The engine was not built with $Backend support: $engine" }
         }
         if ($Backend -eq 'hip') { $kq = $null } # HIP MMQ is linked statically, not strata_kq.dll.
@@ -1636,6 +1637,9 @@ function Get-TinyStrataModelFamily {
         { $_ -in @('tiel', 'tiel-coder') } {
             return [pscustomobject]@{ Name = 'tiel'; ConfigFile = 'config-tiel-coder.json'; StateFile = 'server-state-tiel-coder.json'; NativeFile = 'tinystrata.exe'; Port = 18084 }
         }
+        { $_ -in @('inkling2', 'inkling-2-mini') } {
+            return [pscustomobject]@{ Name = 'inkling2'; Model = 'inkling-2-mini'; Arch = 'inkling2_loop'; ConfigFile = 'config-inkling2.json'; StateFile = 'server-state-inkling2.json'; NativeFile = 'tinystrata-inkling2.exe'; Port = 18086 }
+        }
         default { throw "Unsupported TinyStrata model family: $Name" }
     }
 }
@@ -2099,7 +2103,8 @@ PROFILES={'qwen3.6-35b-a3b':('qwen36','config.json','server-state.json'),
  'gemma-4-26b-a4b-it':('gemma4','config-gemma4.json','server-state-gemma4.json'),
  'lfm2.5-24b-a2b':('lfm2','config-lfm2.json','server-state-lfm2.json'),
  'clover-35b-a3b-preview':('clover','config-clover.json','server-state-clover.json'),
- 'tiel-coder-35b-a3b':('tiel','config-tiel-coder.json','server-state-tiel-coder.json')}
+ 'tiel-coder-35b-a3b':('tiel','config-tiel-coder.json','server-state-tiel-coder.json'),
+ 'inkling-2-mini':('inkling2','config-inkling2.json','server-state-inkling2.json')}
 def norm(p):return os.path.normcase(str(Path(p).resolve()))
 def same(a,b):
     try:return os.path.samefile(a,b)
@@ -2742,7 +2747,7 @@ function Invoke-TinyStrataInstaller {
     $runningTarget = $null
     if ($sourceReady -and -not $IncludeUI -and $selectedBackend -ne 'sycl') {
         $families = @($selectedFamily.Name)
-        if (-not $familyExplicitHere) { $families = @($families + @('qwen36','gemma4','lfm2','clover','tiel') | Select-Object -Unique) }
+        if (-not $familyExplicitHere) { $families = @($families + @('qwen36','gemma4','lfm2','clover','tiel','inkling2') | Select-Object -Unique) }
         $profiles = @(Get-TinyStrataRunningApiProfiles -SourceRoot $sourceRoot -RuntimeRoot $runtimeRoot -Families $families `
             -Port $(if ($portAutomatic) { 0 } else { $ApiPort }))
         if ($profiles.Count) {
@@ -2989,7 +2994,7 @@ function Invoke-TinyStrataInstaller {
                 $arguments += @('--vision-exe', $imageExe)
             }
         }
-        else { $arguments += @('--vision-exe', (Join-Path (Split-Path -Parent $exe) 'tinystrata-vision.exe')) }
+        elseif ($selectedFamily.Name -ne 'inkling2') { $arguments += @('--vision-exe', (Join-Path (Split-Path -Parent $exe) 'tinystrata-vision.exe')) }
         if ($selectedBackend -ne 'sycl' -and $Vision) { $arguments += @('--vision', $(if ($selectedFamily.Arch -eq 'lfm2moe') { 'no' } else { $Vision })) }
         foreach ($directory in $dllDirs) { $arguments += @('--lib-dir', $directory) }
         $arguments += @('--port', [string]$ApiPort)

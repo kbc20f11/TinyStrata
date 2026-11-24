@@ -29,6 +29,8 @@ QWEN = 'qwen3.6-35b-a3b'
 GEMMA = 'gemma-4-26b-a4b-it'
 CLOVER = 'clover-35b-a3b-preview'
 TIEL = 'tiel-coder-35b-a3b'
+INKLING = 'inkling-2-mini'
+CATALOG_IDS = {QWEN, GEMMA, CLOVER, TIEL, INKLING, 'lfm2.5-24b-a2b'}
 GPT_OSS = 'gpt-oss-20b'
 
 
@@ -93,12 +95,15 @@ class LibraryTests(unittest.TestCase):
     def test_catalog_metadata_is_cheap_and_missing_models_stay_downloadable(self):
         with patch('hashlib.file_digest', side_effect=AssertionError('No artifact hashing in catalog')):
             rows = {row['id']: row for row in self.f.control.catalog()}
-        self.assertEqual(len(rows), 5)
+        self.assertEqual(set(rows), CATALOG_IDS)
         meta = rows[GEMMA]['management']
         self.assertFalse(meta['can_delete']); self.assertTrue(meta['can_download'])
         self.assertEqual(meta['delete_reason'], 'not_downloaded')
         self.assertEqual(meta['download_bytes'], D.FIXED_GEMMA4_MODEL.size + D.FIXED_GEMMA4_MMPROJ.size + D.FIXED_GEMMA4_ASSISTANT.size)
         self.assertEqual(rows[QWEN]['management']['delete_reason'], 'active')
+        self.assertEqual(rows[INKLING]['architecture']['input_modalities'], ['text', 'image'])
+        self.assertEqual(rows[INKLING]['management']['download_bytes'], D.FIXED_INKLING_MODEL.size + D.FIXED_INKLING_VISION.size)
+        self.assertEqual(rows[INKLING]['thinking']['default'], 'medium')
 
     def test_delete_bundle_partial_and_exact_tokenizer_preserves_unknown_files_and_settings(self):
         model = self.file()
@@ -380,7 +385,7 @@ class LibraryHTTPTests(unittest.TestCase):
             self.assertTrue(model.is_file())
         status, data = self.http(body={'model': GEMMA}, headers=auth)
         self.assertEqual(status, 200, data); self.assertEqual(data['model_id'], GEMMA)
-        self.assertFalse(model.exists()); self.assertEqual(len(data['catalog']), 5)
+        self.assertFalse(model.exists()); self.assertEqual({row['id'] for row in data['catalog']}, CATALOG_IDS)
 
     def test_control_route_does_not_admit_itself_and_busy_rejects_over_http(self):
         model = self.file(); self.start_http()

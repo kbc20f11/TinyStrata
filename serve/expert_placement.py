@@ -1,4 +1,4 @@
-"""Header-only routed-Expert cache geometry for the four native model families.
+"""Header-only routed-Expert cache geometry for the native model families.
 
 The byte budget follows native slot alignment and guard tails, not GGUF file
 size. Shared/dense weights, KV, vision, and Gemma's dense QAT assistant are
@@ -7,6 +7,7 @@ outside this budget. No tensor payload or executable is read or started.
 from __future__ import annotations
 
 import math
+import os
 from functools import lru_cache
 from pathlib import Path
 import re
@@ -18,6 +19,10 @@ from serve.model_setup import model_path
 _QWEN_TYPES = {2, 3, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 20, 21, 22, 23, 29, 40, 42}
 _OTHER_TYPES = {2, 6, 7, 8, 10, 11, 12, 13, 14, 16, 17, 18, 20, 21, 22, 23, 29, 39, 42}
 _FAMILIES = {"qwen35moe", "clover_moe", "gemma4", "lfm2moe"}
+_INKLING_ARCHES = {"inkling2", "inkling2_loop"}
+_INKLING_CUDA_RAW_TYPES = {0, 1, 2, 6, 8, 10, 11, 12, 13, 14, 18, 20, 23, 30, 39}
+_INKLING_HIP_RAW_TYPES = _INKLING_CUDA_RAW_TYPES - {6}
+_INKLING_SK_BLOCK_BYTES = {4: 134, 6: 198, 8: 262}
 
 
 def _positive(value, name):
@@ -63,24 +68,97 @@ def _payload(tensor, supported):
     return math.prod(tensor.shape) // block[0] * block[1], block[1]
 
 
-def _measure(files, cfg):
+def _inkling_raw_body_bytes(gate, down, count):
+    # The native loader keeps each plane's GGUF row layout (including mixed
+    # IQ3_XXS gate/up and IQ4_NL down), with a 32-byte codec header and
+    # 32-byte boundary between planes. HIP additionally aligns whole bodies.
+    gate_bytes, _ = _payload(gate, _INKLING_CUDA_RAW_TYPES)
+    down_bytes, _ = _payload(down, _INKLING_CUDA_RAW_TYPES)
+    down_offset = (32 + gate_bytes // count + 31) & ~31
+    return (down_offset + down_bytes // count + 31) & ~31
+
+
+def _inkling_sk_block_bytes(type_id, bits):
+    if not bits:
+        if type_id in {0, 1, 8, 9, 15, 30}:
+            bits = 8
+        elif type_id in {6, 7, 13, 14}:
+            bits = 6
+        else:
+            bits = 4
+    return _INKLING_SK_BLOCK_BYTES[bits]
+
+
+def _measure_inkling(metadata, tensors, arch, backend, hip_transcode):
+    """Mirror the fused GGUF loader and the backend's per-body allocation."""
+    if backend not in ("cuda", "hip"):
+        raise ValueError("Inkling Expert budgets require a CUDA or HIP runtime")
+    prefix = arch + "."
+    count = _positive(metadata.get(prefix + "expert_count"), "Inkling expert_count")
+    width = _positive(metadata.get(prefix + "embedding_length"), "Inkling embedding_length")
+    hidden = _positive(metadata.get(prefix + "expert_feed_forward_length"), "Inkling expert_feed_forward_length")
+    blocks = _positive(metadata.get(prefix + "block_count"), "Inkling block_count")
+    if arch == "inkling2" and "loop_res_query.weight" in tensors:
+        start = metadata.get(prefix + "loop.core_start", metadata.get(prefix + "loop.start", 6))
+        end = metadata.get(prefix + "loop.core_end", metadata.get(prefix + "loop.end", 18))
+        loops = _positive(metadata.get(prefix + "num_loops", metadata.get(prefix + "loop.count", 3)), "Inkling loop count")
+        if type(start) is not int or type(end) is not int or not 0 <= start < end:
+            raise ValueError("Invalid Inkling loop geometry")
+        if blocks > end + 6:
+            blocks -= (loops - 1) * (end - start)
+    if (blocks, count, width, hidden) != (24, 128, 2304, 1152):
+        raise ValueError("Unsupported Inkling 2 Mini Expert geometry")
+    total = 0
+    force_sk, sk_bits = hip_transcode
+    for layer in range(blocks):
+        layer_prefix = f"blk.{layer}.ffn_"
+        gate = tensors.get(layer_prefix + "gate_up_exps.weight")
+        down = tensors.get(layer_prefix + "down_exps.weight")
+        if gate is None or down is None or gate.shape != [width, 2 * hidden, count] or down.shape != [hidden, width, count]:
+            raise ValueError(f"Invalid fused Inkling Expert tensors in layer {layer}")
+        if gate.type_id == down.type_id == 40:
+            for plane in ("gate_up", "down"):
+                if layer_prefix + plane + "_exps.scale" not in tensors:
+                    raise ValueError(f"Missing NVFP4 Expert scales in Inkling layer {layer}")
+            # Fused NVFP4 is exactly repacked to SF4: 16-byte header, then
+            # one 4-bit code per weight and one byte of scale per 16 weights.
+            body = 16 + 2 * hidden * (width // 2 + width // 16) + width * (hidden // 2 + hidden // 16)
+        else:
+            body = _inkling_raw_body_bytes(gate, down, count)
+            if backend == "hip" and (force_sk or not {gate.type_id, down.type_id} <= _INKLING_HIP_RAW_TYPES):
+                # HIP's S_K transcode uses paired down rows, so 1152 need
+                # not divide 256 as long as their combined width does.
+                gate_block = _inkling_sk_block_bytes(gate.type_id, sk_bits)
+                down_block = _inkling_sk_block_bytes(down.type_id, sk_bits)
+                down_offset = (2 * hidden + 2 * hidden * (width // 256) * gate_block + 63) & ~63
+                body = down_offset + (width // 2) * ((2 * hidden) // 256) * down_block
+        if backend == "hip":
+            body = (body + 63) & ~63
+        total += body * count
+    return {"total_expert_bytes": total, "expert_total": blocks * count, "experts_per_layer": count}
+
+
+def _measure(files, cfg, *, hip_transcode=(False, 0)):
     metadata = files[0].metadata
     arch = metadata.get("general.architecture")
-    if arch not in _FAMILIES:
+    if arch not in _FAMILIES | _INKLING_ARCHES:
         raise ValueError(f"Unsupported Expert model architecture: {arch}")
-    if cfg.get("arch") not in (None, arch):
+    profile_arch = "inkling2_loop" if arch in _INKLING_ARCHES else arch
+    if cfg.get("arch") not in (None, profile_arch):
         raise ValueError("Configured architecture does not match the GGUF")
-    count = _positive(metadata.get(f"{arch}.expert_count"), f"{arch}.expert_count")
-    blocks = _positive(metadata.get(f"{arch}.block_count"), f"{arch}.block_count")
-    nextn = metadata.get(f"{arch}.nextn_predict_layers", 0)
-    if isinstance(nextn, bool) or not isinstance(nextn, int) or nextn not in (0, 1) or nextn >= blocks:
-        raise ValueError("Unsupported next-token Expert layer geometry")
     tensors = {}
     for header in files:
         for tensor in header.tensors:
             if tensor.name in tensors:
                 raise ValueError(f"Duplicate GGUF tensor: {tensor.name}")
             tensors[tensor.name] = tensor
+    if arch in _INKLING_ARCHES:
+        return _measure_inkling(metadata, tensors, arch, cfg.get("backend", "cuda"), hip_transcode)
+    count = _positive(metadata.get(f"{arch}.expert_count"), f"{arch}.expert_count")
+    blocks = _positive(metadata.get(f"{arch}.block_count"), f"{arch}.block_count")
+    nextn = metadata.get(f"{arch}.nextn_predict_layers", 0)
+    if isinstance(nextn, bool) or not isinstance(nextn, int) or nextn not in (0, 1) or nextn >= blocks:
+        raise ValueError("Unsupported next-token Expert layer geometry")
     qwen = arch in {"qwen35moe", "clover_moe"}
     # Qwen loads its one inline MTP block even with drafts disabled. Gemma's
     # external gemma4-assistant is dense, and never contributes routed Experts.
@@ -175,10 +253,22 @@ def _signatures(path):
     return tuple(out)
 
 
+def _hip_transcode_options(cfg):
+    # Match the two native getenv/atoi options, including config overrides.
+    def option(name):
+        value = (cfg.get("env") or {}).get(name, os.environ.get(name, ""))
+        match = re.match(r"\s*([+-]?[0-9]+)", str(value))
+        return int(match.group(1)) if match else 0
+
+    bits = option("INK_GGUF_SK_BITS")
+    return bool(option("INK_HIP_FORCE_SK_TRANSCODE")), bits if bits in _INKLING_SK_BLOCK_BYTES else 0
+
+
 @lru_cache(maxsize=16)
-def _cached_geometry(signatures, arch, mtp):
+def _cached_geometry(signatures, arch, mtp, backend, hip_transcode):
     path = Path(signatures[0][0])
-    result = _measure(_headers(path), {"arch": arch, "args": ["--mtp", mtp]})
+    result = _measure(_headers(path), {"arch": arch, "args": ["--mtp", mtp], "backend": backend},
+                      hip_transcode=hip_transcode)
     if _signatures(path) != signatures:
         raise ValueError("The GGUF changed while Expert geometry was being read; try again")
     # Do not return the cached mapping itself: endpoint callers may extend it.
@@ -204,7 +294,9 @@ def geometry(cfg):
             raise ValueError("The configured GGUF model is not available")
         args = cfg.get("args", [])
         mtp = str(args[args.index("--mtp") + 1]) if "--mtp" in args[:-1] else "0"
-        total, experts, per_layer = _cached_geometry(_signatures(path), cfg.get("arch"), mtp)
+        arch, backend = cfg.get("arch"), cfg.get("backend", "cuda")
+        transcode = _hip_transcode_options(cfg) if backend == "hip" and arch in (None, "inkling2_loop") else (False, 0)
+        total, experts, per_layer = _cached_geometry(_signatures(path), arch, mtp, backend, transcode)
         return {"total_expert_bytes": total, "expert_total": experts, "experts_per_layer": per_layer}
     except (OSError, struct.error, KeyError, TypeError, OverflowError) as error:
         raise ValueError(f"Unable to read routed-Expert geometry: {error}") from error

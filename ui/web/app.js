@@ -1211,7 +1211,7 @@ let modelSwitchTarget = null, modelSwitchDownload = null;
 let modelSelectionSerial = 0;
 const modelDownloads = new Map();
 let modelDownloadDialogTarget = null, modelDownloadsRecovered = false;
-const modelNames = {"qwen3.6-35b-a3b": "Qwen3.6", "gemma-4-26b-a4b-it": "Gemma 4", "lfm2.5-24b-a2b": "LFM2.5", "clover-35b-a3b-preview": "Clover", "tiel-coder-35b-a3b": "Tiel Coder", "gpt-oss-20b": "gpt-oss"};
+const modelNames = {"qwen3.6-35b-a3b": "Qwen3.6", "gemma-4-26b-a4b-it": "Gemma 4", "lfm2.5-24b-a2b": "LFM2.5", "clover-35b-a3b-preview": "Clover", "tiel-coder-35b-a3b": "Tiel Coder", "inkling-2-mini": "Inkling 2 Mini", "gpt-oss-20b": "gpt-oss"};
 let modelDeleteTarget = null, modelDeleting = null, modelDeleteError = "";
 function modelIsSelectable(row) {
   return row.installed === true && row.management?.complete !== false;
@@ -1428,7 +1428,7 @@ function thinkingPayload(s = settings, shared = false) {
   return StrataThinkingControls.payload(thinkingModelId(), s, thinkingMetadata(), shared);
 }
 function thinkingLabel(value) {
-  return {none: tr("drawer.off", "Off"), on: tr("thinking.on", "On"), low: tr("drawer.low", "Low"),
+  return {none: tr("drawer.off", "Off"), on: tr("thinking.on", "On"), minimal: tr("thinking.minimal", "Minimal"), low: tr("drawer.low", "Low"),
     medium: tr("drawer.medium", "Medium"), high: tr("drawer.high", "High"),
     xhigh: tr("thinking.high", "High (xhigh)")}[value] || "";
 }

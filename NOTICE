@@ -4,6 +4,27 @@ Base commit: 296b59d2f73c8f04a805df29c2fa97655adace78
 Copyright (c) 2026 Niko1221 and the Strata contributors.
 The upstream MIT license is preserved in LICENSE.
 
+The Inkling 2 Mini decoder, vision encoder, CPU quantization, and GPU backends
+in third_party/strata-inkling derive from Niko1221/Strata revision
+d46f5f268f8ed797e83a5c63a69bffbd7a581cf6 (MIT). The Python chat dialect,
+tokenizer integration and image transport draw on the same revision.
+The Strata MIT license, the Zstandard decoder's BSD license and the stb_image
+license at the end of its header are preserved in third_party/strata-inkling.
+The GGUF loader and dual-GPU Expert parallel code retain Project Maya
+attribution from Strata's import at 9c862f9822c89745193fb5d68b2b0fae99d96332.
+Copyright (c) 2026 Peasant Smith, OscarSheng, alesha-pro, cobra91 and the Project
+Maya contributors. Copyright (c) 2026 Baptiste Rajaut, merbanan, and the Strata
+contributors. The original file notices and MIT license terms are preserved.
+The optional CUDA Expert cache uses the spare-KV-row placement approach from
+Project Maya at 381301c5c87d4c5ca026bbd679191e84168e3258 (MIT), adapted to
+TinyStrata's existing KV allocation and Expert formats.
+https://github.com/mw00/project-maya
+
+The separately downloaded InterpreticAI IQ3_XXS GGUF is a quantization of
+Thinking Machines Lab's Inkling 2 Mini under Apache-2.0.
+https://huggingface.co/InterpreticAI/Inkling-2-Mini-IQ3_XXS-GGUF
+https://thinkingmachines.ai/model-card/inkling-2-mini/
+
 GPT-OSS long-context full-attention key splitting and grouped value reuse in
 src/gemma4/sink_attention.cu adapt PolyStrata's src/poly/hip_split_attend.cuh
 at 221be3e61a87d20e6c70c86907e0504ec429134b and value mapping at

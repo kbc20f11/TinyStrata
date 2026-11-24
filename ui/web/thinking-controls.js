@@ -4,15 +4,18 @@
   const definitions = {
     toggle: {mode: "toggle", default: "on", options: ["none", "on"]},
     always: {mode: "always", default: "on", options: ["on"]},
-    effort: {mode: "effort", default: "medium", options: ["none", "low", "medium", "xhigh"]}
+    effort: {mode: "effort", default: "medium", options: ["none", "low", "medium", "xhigh"]},
+    inkling: {mode: "effort", default: "medium", options: ["none", "minimal", "low", "medium", "high", "xhigh"]}
   };
   const modes = {"qwen3.6-35b-a3b": "toggle", "clover-35b-a3b-preview": "toggle",
-    "gemma-4-26b-a4b-it": "toggle", "lfm2.5-24b-a2b": "always", "tiel-coder-35b-a3b": "effort"};
+    "gemma-4-26b-a4b-it": "toggle", "lfm2.5-24b-a2b": "always", "tiel-coder-35b-a3b": "effort",
+    "inkling-2-mini": "inkling"};
   function contract(model, metadata) {
-    const candidate = definitions[metadata?.mode];
-    if (candidate && metadata.default === candidate.default && Array.isArray(metadata.options)
-        && metadata.options.length === candidate.options.length
-        && metadata.options.every((value, index) => value === candidate.options[index])) return candidate;
+    const candidate = Object.values(definitions).find((spec) => metadata?.mode === spec.mode
+      && metadata.default === spec.default && Array.isArray(metadata.options)
+      && metadata.options.length === spec.options.length
+      && metadata.options.every((value, index) => value === spec.options[index]));
+    if (candidate) return candidate;
     return definitions[modes[model] || "toggle"];
   }
   function migrate(value) {

@@ -43,7 +43,7 @@ try{
     foreach($name in @('compiler.exe','gpu-compiler.exe','cmake.exe','devcmd.bat','external.hpp','external.lib','oldnames.lib','libcmt.lib','libcpmt.lib')){Write-Fixture (Join-Path $sdk $name) ('inert '+$name)}
     Write-Fixture (Join-Path $sdk 'nvvm\libdevice\libdevice.10.bc') 'inert CUDA implicit bitcode'
     [Environment]::SetEnvironmentVariable('LIB',$sdk,'Process')
-    foreach($name in @('tinystrata.exe','tinystrata-lfm2.exe','tinystrata-gemma4.exe','tinystrata-vision.exe','strata_kq.dll','app-local-dependency.dll')){Write-Fixture (Join-Path $build $name) ('inert '+$name)}
+    foreach($name in @('tinystrata.exe','tinystrata-lfm2.exe','tinystrata-gemma4.exe','tinystrata-inkling2.exe','tinystrata-vision.exe','strata_kq.dll','app-local-dependency.dll')){Write-Fixture (Join-Path $build $name) ('inert '+$name)}
     Write-Fixture (Join-Path $build 'CMakeCache.txt') ("CMAKE_CXX_COMPILER:FILEPATH=$(Join-Path $sdk 'compiler.exe')`nCMAKE_CUDA_COMPILER:FILEPATH=$(Join-Path $sdk 'gpu-compiler.exe')`nCMAKE_HIP_COMPILER:FILEPATH=$(Join-Path $sdk 'gpu-compiler.exe')`n")
     Write-Fixture (Join-Path $build 'build.ninja') 'actual fixture graph'
     Write-Fixture (Join-Path $build 'link args.rsp') ('"'+(Join-Path $sdk 'external.lib')+'"')

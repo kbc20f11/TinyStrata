@@ -184,6 +184,9 @@ class StreamStatistics(unittest.TestCase):
         clock = Clock()
         class Service:
             rounds = 0
+            embeddings = SimpleNamespace()
+            prompt_size = api.Service.prompt_size
+
             def run(self, *args):
                 self.rounds += 1
                 count = 3 if self.rounds == 1 else 4

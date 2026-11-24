@@ -1,0 +1,17 @@
+# Adapted from Strata's Inkling 2 Mini SYCL backend (MIT).
+# Generic SPIR-V works with the same Intel devices as the native backend.
+add_library(strata_inkling_sycl STATIC ink_sycl_backend.cpp)
+target_compile_options(strata_inkling_sycl PRIVATE -fsycl -fno-fast-math)
+target_link_options(tinystrata-inkling2 PRIVATE -fsycl)
+if(TINYSTRATA_INTEL_AOT_TARGET)
+  target_compile_options(strata_inkling_sycl PRIVATE "-fsycl-targets=${TINYSTRATA_INTEL_AOT_TARGET}")
+  target_link_options(tinystrata-inkling2 PRIVATE "-fsycl-targets=${TINYSTRATA_INTEL_AOT_TARGET}")
+endif()
+if(TINYSTRATA_INTEL_MKL)
+  target_compile_definitions(strata_inkling_sycl PRIVATE INK_SYCL_USE_ONEMKL=1)
+  target_include_directories(strata_inkling_sycl PRIVATE "${TINYSTRATA_MKL_INCLUDE}")
+  target_link_libraries(strata_inkling_sycl PRIVATE "${TINYSTRATA_MKL_BLAS}")
+endif()
+target_link_libraries(strata_inkling_sycl PRIVATE strata_inkling_core)
+target_compile_definitions(tinystrata-inkling2 PRIVATE INKLING_ENABLE_SYCL=1)
+target_link_libraries(tinystrata-inkling2 PRIVATE strata_inkling_sycl)

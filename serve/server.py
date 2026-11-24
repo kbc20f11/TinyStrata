@@ -56,11 +56,12 @@ from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
-from serve.frontend import (HM_ANALYSIS, THINK_END, ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
+from serve.frontend import (HM_ANALYSIS, THINK_END, ChatTemplate, Event, InklingOutputParser, OutputParser, anthropic_to_messages,  # noqa: E402
                             effort_kwargs, forced_call, forced_call_prefill, gemma_model_turn, images_of, literal_tags, mark_think_literals, openai_to_messages,
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
 from serve import config  # noqa: E402
+from serve import inkling_vision  # noqa: E402
 from serve.tinyconfig import clover_vision_enabled  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
 from serve.winjob import start_contained  # noqa: E402
@@ -923,6 +924,7 @@ class StrataEngine:
         ready_thread.start()
         ready_deadline = None if ENGINE_READY_S is None else time.monotonic() + ENGINE_READY_S
         timed_out = False
+        protocol_error = ""
         while True:
             left = None if ready_deadline is None else ready_deadline - time.monotonic()
             if left is not None and left <= 0:
@@ -934,6 +936,8 @@ class StrataEngine:
                 continue
             if line is None:
                 break
+            if line.startswith(("ERR ", "ERROR ")):
+                protocol_error = line.partition(" ")[2].strip()[:4096]
             if line.startswith("INFO "):
                 for kv in line.split()[1:]:
                     k, _, v = kv.partition("=")
@@ -968,7 +972,7 @@ class StrataEngine:
                     pass
             if log:
                 self.log.close()
-            if not timed_out and _attempt < START_RETRIES and \
+            if not timed_out and not protocol_error and _attempt < START_RETRIES and \
                     transient_start_failure(log, log_start, time.monotonic() - spawned_at, self.proc.returncode):
                 wait_s = 2.0 * (2 ** _attempt)              # 2, 4, 8 s: the previous process's GPU queues go away
                 exit_words = engine_exit_words(self.proc.returncode)
@@ -992,9 +996,10 @@ class StrataEngine:
             note = "" if timed_out else start_exit_note(self.proc.returncode)
             tail = start_log_tail(log, log_start)
             lines = [x for x in tail.split("\n")[2:] if x.strip()]
-            if tail and lines and all(x.strip().startswith("[strata]") for x in lines):
+            if tail and lines and not protocol_error and all(x.strip().startswith("[strata]") for x in lines):
                 tail += "\n  (those are the launcher's own lines: the engine itself wrote nothing)"
-            message = why + (f" (see {log})" if log else "") + note + start_failure_hint(log, log_start) + tail
+            failure = f"\nNative startup: {protocol_error}" if protocol_error else ""
+            message = why + (f" (see {log})" if log else "") + note + failure + start_failure_hint(log, log_start) + tail
             raise EngineDied(message)
         self.known_ctx = self.max_context   # survives a failed restart: requests keep their limit and restart it
         # (from PR #41, midhatn) a locally built engine can sit next to another release's BUILD.json: engines that
@@ -1007,7 +1012,7 @@ class StrataEngine:
         # --batch: concurrent requests in the engine's batch slots (see generate_batched).  The engine says how many
         # it runs (INFO batch_slots=N: it may have fewer than asked, or none, when they do not fit)
         asked = next((int(args[args.index(k) + 1]) for k in ("--batch", "--slots") if k in args), 0)
-        self.batch = int(self.info.get("batch_slots") or 0)
+        self.batch = 0 if self.info.get("arch") == "inkling2_loop" else int(self.info.get("batch_slots") or 0)
         if asked and self.batch != asked:
             print(f"[strata] parallel requests: {asked} asked, the engine runs {self.batch or 'one at a time'} "
                   "(its log says why)", flush=True)
@@ -1250,8 +1255,12 @@ class StrataEngine:
     @staticmethod
     def sampling_keys(sampling: dict, *, arch: str | None = None) -> str:
         keys = ""
+        inkling = arch == "inkling2_loop"
+        if inkling:
+            for image in sampling.get("_tinystrata_inkling_images", ()):
+                keys += f" image={image}"
         pad = sampling.get("image_pad")
-        if isinstance(pad, int) and not isinstance(pad, bool) and pad >= 0:
+        if not inkling and isinstance(pad, int) and not isinstance(pad, bool) and pad >= 0:
             keys += f" image_pad={pad}"
         t = sampling.get("temperature")
         if isinstance(t, (int, float)) and float(t) > 0.0:
@@ -1261,11 +1270,13 @@ class StrataEngine:
             keys += f" top_p={float(tp)!r}"
         tk = sampling.get("top_k")
         if isinstance(tk, int) and not isinstance(tk, bool) and tk >= 0:
-            keys += f" top_k={tk if 1 <= tk <= 64 else 64}"
-        for key, value in config.clover_request_options(sampling).items():
-            keys += f" {key}={value!r}" if isinstance(value, float) else f" {key}={value}"
-        for key, value in config.speculation_request_options(sampling).items():
-            keys += f" {key}={value}"
+            top_k = min(tk, 2147483647) if inkling else (tk if 1 <= tk <= 64 else 64)
+            keys += f" top_k={top_k}"
+        if not inkling:
+            for key, value in config.clover_request_options(sampling).items():
+                keys += f" {key}={value!r}" if isinstance(value, float) else f" {key}={value}"
+            for key, value in config.speculation_request_options(sampling).items():
+                keys += f" {key}={value}"
         mp = sampling.get("min_p")
         if isinstance(mp, (int, float)) and 0.0 < float(mp) <= 1.0:
             keys += f" min_p={float(mp)!r}"
@@ -1293,7 +1304,7 @@ class StrataEngine:
             keys += f" seed={seed}"
         # setup's calibration (tools/calibrate.py): engine settings for this request only, measured without a restart
         tune = sampling.get("strata_tune")
-        if isinstance(tune, dict):
+        if not inkling and isinstance(tune, dict):
             for k in ("pcie_frac", "spec_min_p"):
                 v = tune.get(k)
                 if isinstance(v, (int, float)) and not isinstance(v, bool) and 0.0 <= float(v) <= 1.0:
@@ -1312,13 +1323,13 @@ class StrataEngine:
         # position. Save the history before the next assistant/thinking prefix:
         # completed-turn rendering may omit that prefix on the following turn.
         turn_at = sampling.get("_tinystrata_turn_at")
-        if sampling.get("strata_checkpoint") is not False and isinstance(turn_at, int) and \
+        if not inkling and sampling.get("strata_checkpoint") is not False and isinstance(turn_at, int) and \
                 not isinstance(turn_at, bool) and turn_at > 0:
             keys += f" turn_at={turn_at}"
         # #2228: the pictures' keys (hex, in prompt order): the engine matches a picture by them, not by its embeddings
         ik = sampling.get("strata_img_keys")
-        if isinstance(ik, list) and ik and all(isinstance(k, str) and k and all(c in "0123456789abcdef" for c in k)
-                                               for k in ik):
+        if not inkling and isinstance(ik, list) and ik and all(isinstance(k, str) and k and all(c in "0123456789abcdef" for c in k)
+                                                               for k in ik):
             keys += " img_keys=" + ",".join(ik)
         # "strata_prefix" (resolved by Service.resolve_prefix to {"tokens": N}): the first N prompt tokens are a shared
         # prefix - the engine pins the checkpoint there.  Absent or unresolved = as before.
@@ -1327,7 +1338,7 @@ class StrataEngine:
             pn = prefix.get("tokens")
             if isinstance(pn, int) and not isinstance(pn, bool) and pn > 0:
                 keys += f" pin={pn}"
-        return keys + StrataEngine.projection_key(sampling) + bias_api.engine_key(sampling.get("logit_bias"))
+        return keys if inkling else keys + StrataEngine.projection_key(sampling) + bias_api.engine_key(sampling.get("logit_bias"))
 
     @staticmethod
     def projection_key(sampling: dict) -> str:
@@ -3033,6 +3044,8 @@ def engine_args(cfg: dict) -> list[str]:
     if cfg.get("backend") == "sycl":
         from serve.intel_backend import engine_args as intel_engine_args
         return intel_engine_args(cfg)
+    if cfg.get("arch") == "inkling2_loop":
+        return inkling_engine_args(cfg)
     args = list(cfg["args"])
     if cfg.get("arch") == "lfm2moe" and "--mtp" in args:
         index = args.index("--mtp")
@@ -3064,6 +3077,29 @@ def engine_args(cfg: dict) -> list[str]:
             args += ["--vram-segment-mib", str(seg)]
     args += parallel_args(cfg, args)
     return learned_profile_args(cfg, args)
+
+
+def inkling_engine_args(cfg: dict) -> list[str]:
+    """Translate common model controls to the Inkling engine's native flags."""
+    source = cfg["args"]
+    model = source[source.index("--model") + 1]
+    context = config.value_of(cfg, "max_context")
+    kv = config.value_of(cfg, "kv_type") or "auto"
+    args = ["--native", model, "--max-context", str("auto" if context is None else context),
+            "--parallel", "1", "--kv-gpu-first", "--kv", "k8v8" if kv == "int8" else kv]
+    for flag, native in (("--chunk", "--chunk"), ("--cpu-threads", "--cpu-threads"),
+                         ("--expert-vram", "--vram-experts-gb"), ("--vram-reserve-mib", "--vram-reserve-mib")):
+        if flag in source:
+            value = source[source.index(flag) + 1]
+            if value != "auto":
+                args += [native, value]
+    if "--draft-model" in source:
+        args += ["--draft", "dspark", "--dspark", source[source.index("--draft-model") + 1]]
+    else:
+        args += ["--draft", "off"]
+    if cfg.get("inkling_vision"):
+        args += ["--vision", cfg["inkling_vision"]]
+    return args
 
 
 PARALLEL_MAX = 8      # the engine's batch window holds at most 8 rows (kVerifyMaxT); --batch-mtp waves more through it
@@ -3442,7 +3478,8 @@ def tokenizer_stop_ids(tokenizer) -> set[int]:
     if isinstance(eos, int) and not isinstance(eos, bool) and eos >= 0:
         result.add(eos)
     known = set(getattr(tokenizer, "control_tokens", ())) | set(getattr(tokenizer, "special_tokens", ()))
-    for marker in (IM_END, "<|endoftext|>", "<turn|>", "<|tool_response>", "<|return|>", "<|call|>"):   # the last two: Harmony
+    for marker in (IM_END, "<|endoftext|>", "<turn|>", "<|tool_response>", "<|return|>", "<|call|>",
+                   "<|content_model_end_sampling|>"):
         if marker in known:
             result.update(tokenizer.encode(marker, parse_special=True))
     return result
@@ -3807,7 +3844,21 @@ class Service:
         return getattr(self.vision, "startup_error", "") if self.vision is not None else ""
 
     def vision_available(self) -> bool:
-        return self.vision is not None and not self.vision_error
+        return (self.vision is not None and not self.vision_error) or self.inkling_vision_available()
+
+    def inkling_vision_available(self) -> bool:
+        return (getattr(self.engine, "_tinystrata_arch", None) == "inkling2_loop" and
+                (getattr(self.engine, "info", {}) or {}).get("images") == 1)
+
+    def prompt_size(self, ids) -> int:
+        return len(ids) + getattr(self.embeddings, "inkling_extra_tokens", 0)
+
+    @staticmethod
+    def inkling_image_rows(data: bytes) -> int:
+        dimensions = Vision.inline_dimensions(data)
+        if dimensions is None:
+            raise ValueError("the image could not be read or exceeds the image size limit")
+        return inkling_vision.tile_count(*dimensions)
 
     def vision_off_reason(self) -> str:
         return (f"images are unavailable: {self.vision_error}; retry loading the model to retry the image encoder"
@@ -4202,15 +4253,16 @@ class Service:
         reasoning = req.get("reasoning") if isinstance(req.get("reasoning"), dict) else {}
         output_config = req.get("output_config") if isinstance(req.get("output_config"), dict) else {}
         thinking = req.get("thinking") if isinstance(req.get("thinking"), dict) else {}
+        off_values = ("none", "off", "disabled", "false") + (() if self.call_format == "inkling2" else ("minimal",))
         requested_off = (any(value is False or isinstance(value, str) and
-                             value.strip().lower() in ("none", "off", "minimal", "disabled", "false")
+                             value.strip().lower() in off_values
                              for value in (req.get("reasoning_effort"), reasoning.get("effort"),
                                            output_config.get("effort"))) or thinking.get("type") == "disabled")
         # Responses and Anthropic also accept the native-template override. A
         # translator's explicit OFF keeps its precedence over an effort alias.
         if (isinstance(ctk, dict) and ctk.get("reasoning_effort") not in (None, "") and
                 not requested_off):
-            override = effort_kwargs(ctk["reasoning_effort"])
+            override = effort_kwargs(ctk["reasoning_effort"], inkling2=self.call_format == "inkling2")
             if "reasoning_effort" in override:
                 kwargs.pop("enable_thinking", None)  # e.g. Anthropic's implicit on_request OFF
             kwargs.update(override)
@@ -4401,7 +4453,7 @@ class Service:
             "concurrency": {"serving": max(1, int(getattr(self.engine, "batch", 0) or 0)),
                             "requested": max(1, int(getattr(self.engine, "batch", 0) or 0))},
             "dialects": ["/v1/chat/completions", "/v1/messages", "/v1/responses"],
-            "vision": {"enabled": images, "configured": self.vision is not None,
+            "vision": {"enabled": images, "configured": self.vision is not None or self.inkling_vision_available(),
                        "available": images, "error": self.vision_error or None},
             "activity": {"requests": totals["requests"] + int(busy), "in_flight": int(busy) + int(s.get("queued") or 0),
                          "last_request_at": int(last_at) if last_at else None},
@@ -4466,7 +4518,7 @@ class Service:
         req = self.with_shared(req, "openai")
         int(req.get("max_completion_tokens") or req.get("max_tokens") or 0)  # same type validation as chat
         bias_api.validate_request(req, self.engine, len(getattr(self.tok, "tokens", ())) or None)
-        messages, tools, kw = openai_to_messages(req)
+        messages, tools, kw = openai_to_messages(req, inkling2=self.call_format == "inkling2")
         if tool_choice_of(req.get("tool_choice"))[0] == "none":
             tools = None
         force = forced_call(req.get("tool_choice"), tools, call_format=self.call_format)
@@ -4498,7 +4550,13 @@ class Service:
         images = images_of(messages)
         count = len(ids)
         counted_images = 0
-        if images:
+        if images and self.inkling_vision_available():
+            for image in images:
+                dimensions = Vision.inline_dimensions(image)
+                rows = inkling_vision.tile_count(*dimensions) if dimensions else inkling_vision.tile_count(4096, 4096)
+                count += rows - 1
+                counted_images += int(dimensions is not None)
+        elif images:
             if not self.vision_available():
                 raise ValueError(self.vision_off_reason())
             gemma = self.call_format == "gemma"
@@ -4602,6 +4660,11 @@ class Service:
                     try:
                         if cancel is not None and cancel.is_set():
                             raise ClientGone()
+                        if self.inkling_vision_available():
+                            data = Vision.normalize(Vision.load(src))
+                            self.inkling_image_rows(data)
+                            fetched[src] = data
+                            continue
                         if src.startswith(("http://", "https://")):
                             src = fetched[item["source"]] = Vision.download(src)   # outside the FIFO, as in prepare()
                         with self._turn(cancel):  # the encoder takes its turn with the requests (see below)
@@ -4762,6 +4825,8 @@ class Service:
         prompt; with thinking, Service.run writes it once the thinking is over."""
         # `cancel` (#1999): set when the client hangs up; the downloads, the wait for the turn and the encodes stop
         # between pictures and raise ClientGone
+        self.drop_embeddings()
+        self.embeddings.inkling_extra_tokens = 0
         self.clover_request_settings(req)
         kwargs = self.template_defaults(kwargs, req)
         default_limit = max_new is None or bool((req or {}).get("_tinystrata_default_max_tokens"))
@@ -4779,12 +4844,25 @@ class Service:
         self.embeddings.pad = None
         self.embeddings.turn_at = None
         images = images_of(messages)
+        native_images = bool(images) and self.inkling_vision_available()
+        inkling_images = []
+        image_extra_tokens = 0
         turn_at = (self.prompt_turn_at(messages, tools, kwargs, ids)
-                   if (req or {}).get("strata_checkpoint") is not False else None)
+                   if self.call_format != "inkling2" and (req or {}).get("strata_checkpoint") is not False else None)
         with contextlib.ExitStack() as vision_files:
             if not images:
                 self.embeddings.turn_at = turn_at
-            if images:
+            if native_images:
+                pad = self.engine.info.get("image_pad")
+                if type(pad) is not int or ids.count(pad) != len(images):
+                    raise ValueError("the prompt and its images do not match")
+                for source in images:
+                    if cancel is not None and cancel.is_set():
+                        raise ClientGone()
+                    data = fetched[source] if source in fetched else Vision.normalize(Vision.load(source))
+                    image_extra_tokens += self.inkling_image_rows(data) - 1
+                    inkling_images.append(data)
+            elif images:
                 if not self.vision_available():
                     raise ValueError(self.vision_off_reason())
                 gemma = self.call_format == "gemma"
@@ -4855,23 +4933,27 @@ class Service:
                 ctx = 0 if self.intel_context() else getattr(self.engine, "known_ctx", 0)
                 if ctx <= 0:
                     raise EngineStarting("the engine is starting (a minute or two); try again shortly")
-            room = ctx - CTX_SLACK - len(ids)
+            prompt_tokens = len(ids) + image_extra_tokens
+            room = ctx - CTX_SLACK - prompt_tokens
             if room < 1:
                 raise ValueError("request exceeds the context window: "
-                                 f"prompt ({len(ids)} tokens) leaves no room to answer in the context "
+                                 f"prompt ({prompt_tokens} tokens) leaves no room to answer in the context "
                                  f"({ctx}); requests are never truncated")
             if max_new <= 0:
                 max_new = room
             elif max_new > room:
                 if not self.fit_max_tokens and not default_limit:
                     raise ValueError("request exceeds the context window: "
-                                     f"prompt ({len(ids)} tokens) + max tokens ({max_new}) exceeds the context "
+                                     f"prompt ({prompt_tokens} tokens) + max tokens ({max_new}) exceeds the context "
                                      f"({ctx}); requests are never truncated. Send a smaller "
                                      f"max_tokens (at most {max(0, room)} here), or add \"fit_max_tokens\": true to the "
                                      "model's strata-<model>.json to shorten it to the room left (#545)")
                 max_new = max(1, room)          # --fit-max-tokens: a shorter completion beats a 400
             max_new = self.fit_clover_preview(len(ids), max_new, ctx, allow_clamp=flexible_limit, req=req)
-            if images:
+            if native_images:
+                self.embeddings.inkling_files, self.embeddings.inkling_paths = inkling_vision.stage(inkling_images)
+                self.embeddings.inkling_extra_tokens = image_extra_tokens
+            elif images:
                 # The request's images in one file for GENI (~10 MB a picture), written once nothing above refuses the
                 # request: one refused after it (the engine starting, no room) left it in the vision directory for good,
                 # one more for every retry of a 503.  run() deletes it; drop_embeddings() if run() never starts.
@@ -4969,6 +5051,10 @@ class Service:
         path, self.embeddings.path = getattr(self.embeddings, "path", None), None
         if path is not None:
             Path(path).unlink(missing_ok=True)
+        directory = getattr(self.embeddings, "inkling_files", None)
+        self.embeddings.inkling_files = self.embeddings.inkling_paths = None
+        if directory is not None:
+            directory.cleanup()
 
     def _note(self, n, evs, st=None, rate=None):
         with self.status_lock:
@@ -5045,6 +5131,10 @@ class Service:
         think_end = "<channel|>" if self.call_format == "gemma" else THINK_END
         reasoning_close = "\n<channel|>" if self.call_format == "gemma" else REASONING_CLOSE
         reasoning_wrap = REASONING_WRAP_UP.replace(THINK_END, think_end)
+        if self.call_format == "inkling2":
+            from serve import inkling_dialect
+            think_end = reasoning_close = inkling_dialect.END_MSG
+            reasoning_wrap = inkling_dialect.REASONING_WRAP_UP
         if budget and max_new and max_new > 0:
             # #984: a budget at or near max_tokens never fires before the reply is cut off while still thinking, so
             # it has no answer.  Close the thinking early enough to leave room for one.
@@ -5053,13 +5143,20 @@ class Service:
                 print(f"[strata] thinking capped at {max_new - reserve} of max_tokens {max_new} to leave room for "
                       f"the answer (budget {budget})", flush=True)
                 budget = max(1, max_new - reserve)
-        parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True, recover=self.tool_call_recovery,
+        parser = InklingOutputParser(tools) if self.call_format == "inkling2" else OutputParser(thinking=thinking, tools=tools, stream_tools=True, recover=self.tool_call_recovery,
                               call_format=self.call_format,
                               opened=(self.call_format == "gemma" and
                                       self.tok.decode(ids[-32:]).endswith("<|channel>thought\n")) or
                                      (self.call_format == "harmony" and
                                       self.tok.decode(ids[-32:]).endswith(HM_ANALYSIS)))
         detok, n, finish = Detokenizer(self.tok), 0, "length"
+        if self.call_format == "inkling2":
+            special_ids = set(getattr(self.tok, "special_tokens", {}).values())
+
+        def parse_piece(token, piece):
+            if self.call_format == "inkling2":
+                return parser.feed_token(piece, token in special_ids)
+            return parser.feed(piece)
         run_tok, run_len, repeated = None, 0, False     # #606: the current run of one repeated token
         thinking_n = 0                                  # tokens written while thinking (Responses' reasoning_tokens)
         stop_list = stop_strings(sampling)
@@ -5094,6 +5191,11 @@ class Service:
         looped, next_loop_check = False, LOOP_CHECK_EVERY       # #728: reasoning that repeats whole passages
         raw_ids = []                                    # every generated id (STRATA_DEBUG: dump raw model text)
         emb, self.embeddings.path = getattr(self.embeddings, "path", None), None   # this run's to delete now
+        inkling_files = getattr(self.embeddings, "inkling_files", None)
+        if inkling_files is not None:
+            sampling["_tinystrata_inkling_images"] = self.embeddings.inkling_paths
+            self.embeddings.inkling_files = self.embeddings.inkling_paths = None
+        prompt_size = self.prompt_size(ids)
         img_keys, self.embeddings.keys = getattr(self.embeddings, "keys", None), None
         image_pad, self.embeddings.pad = getattr(self.embeddings, "pad", None), None
         if emb and self.call_format == "gemma" and image_pad is not None:
@@ -5162,11 +5264,11 @@ class Service:
                         # before sending any ids to the native process.
                         if getattr(self.engine, "context_auto", False):
                             ctx = self.engine.max_context
-                            room = ctx - CTX_SLACK - len(ids)
+                            room = ctx - CTX_SLACK - prompt_size
                             can_fit = self.fit_max_tokens or (self.clover_preview_block(sampling) is not None and flexible_clover_limit)
                             if room < 1 or (max_new > room and not can_fit):
                                 raise ValueError("request exceeds the context window after automatic environment "
-                                                 f"selection: prompt ({len(ids)} tokens) + max tokens ({max_new}) "
+                                                 f"selection: prompt ({prompt_size} tokens) + max tokens ({max_new}) "
                                                  f"exceeds the context ({ctx}); requests are never truncated")
                             max_new = min(max_new, room)
                             max_new = self.fit_clover_preview(len(ids), max_new, ctx, allow_clamp=can_fit, req=sampling)
@@ -5181,7 +5283,7 @@ class Service:
                     with self.status_lock:
                         if par:
                             self.status["queued"] -= 1
-                        st.update(busy=True, phase="reading the prompt", prompt_tokens=len(ids),
+                        st.update(busy=True, phase="reading the prompt", prompt_tokens=prompt_size,
                                   generated=0, started=time.time(), first_token=None, tool=None, tail="",
                                   max_tokens=max_new, reasoning_recoveries=0, thinking_budget=budget)
                         if par:
@@ -5245,7 +5347,7 @@ class Service:
                                     break
                                 piece = detok.push(t)
                                 tail = (tail + piece)[-2:]
-                                evs = cut(parser.feed(piece))
+                                evs = cut(parse_piece(t, piece))
                                 self._note(n, evs, st, rate)
                                 last_print = self._progress(last_print, st=st)
                                 for ev in evs:
@@ -5271,7 +5373,7 @@ class Service:
                                         if self.reasoning_loop_recovery == "stop":
                                             looped = True        # #728: end the reply here, as for a repeated token
                                             break
-                                        if not emb and self.call_format != "gemma":
+                                        if not emb and inkling_files is None and self.call_format != "gemma":
                                             recover_prompt = focused_recovery_prompt(self.tok, ids, raw_ids)
                                             if recover_prompt is not None:
                                                 break
@@ -5370,7 +5472,7 @@ class Service:
                                     n += 1
                                     raw_ids.append(t)
                                     thinking_n += parser.state in ("reasoning", "rcall")
-                                    evs = cut(parser.feed(detok.push(t)))
+                                    evs = cut(parse_piece(t, detok.push(t)))
                                     self._note(n, evs, st, rate)
                                     for ev in evs:
                                         yield "event", ev
@@ -5387,6 +5489,8 @@ class Service:
                         if wrap:
                             budget = st["thinking_budget"] = None
                             text = reasoning_wrap + (force or "")
+                        elif self.call_format == "inkling2":
+                            text = force
                         elif self.call_format == "harmony":
                             text = "<|start|>assistant" + force
                         else:
@@ -5402,7 +5506,7 @@ class Service:
                             n += 1
                             raw_ids.append(t)
                             thinking_n += parser.state in ("reasoning", "rcall")
-                            evs = cut(parser.feed(detok.push(t)))
+                            evs = cut(parse_piece(t, detok.push(t)))
                             self._note(n, evs, st, rate)
                             for ev in evs:
                                 yield "event", ev
@@ -5439,14 +5543,14 @@ class Service:
                             routed = (last.get("lookups") or 0) + (last.get("offloaded") or 0)
                             pcie_share = round(last["offloaded"] / routed, 3) \
                                 if last.get("offloaded") is not None and routed else None
-                            seen = prompt_tokens_seen(len(ids), last)   # #471: < len(ids) when cancelled mid-read
+                            seen = prompt_tokens_seen(prompt_size, last)   # #471: less when cancelled mid-read
                             self.history.append({
                                 "projection": (sampling or {}).get("experimental_speed_projection") is not False
                                 if loaded else None,
                                 "time": started, "duration_s": round(time.time() - started, 1), "finish": finish,
                                 "prompt_tokens": seen, "reused": last.get("reused"), "output_tokens": n,
                                 # the request's whole prompt, and the tokens read of it (None: an older engine)
-                                "prompt_total": len(ids), "prompt_read": last.get("prompt_read"),
+                                "prompt_total": prompt_size, "prompt_read": last.get("prompt_read"),
                                 "reasoning_recoveries": recovery_count,
                                 "reasoning_repeat_coverage": round(repeat_coverage, 3),
                                 "engine_generated": last.get("generated"),
@@ -5504,6 +5608,8 @@ class Service:
         finally:
             if emb:
                 Path(emb).unlink(missing_ok=True)
+            if inkling_files is not None:
+                inkling_files.cleanup()
         for ev in cut(parser.finish(finish)):
             yield "event", ev
         if parser.rescued or parser.refused:
@@ -5716,7 +5822,7 @@ def run_with_mcp(svc: Service, hub, messages, tools, kw, ids, thinking, max_new,
     if live_stats is not None:
         live_stats.observe(total)
         yield "stats", live_stats.snapshot(force=True, done=True)
-    yield "done", {**done, "completion_tokens": total, "prompt_tokens": len(ids)}
+    yield "done", {**done, "completion_tokens": total, "prompt_tokens": svc.prompt_size(ids)}
 
 
 # ------------------------------------------------------------------------------------------------ OpenAI
@@ -5814,7 +5920,7 @@ def openai_chunks(svc: Service, req: dict, ids, thinking, tools, max_new, cancel
             whole = calls and streamed.keys() <= finished
             finish = "tool_calls" if whole and x["finish"] == "stop" else {"cancel": "stop"}.get(x["finish"], x["finish"])
             last = chunk({}, finish)
-            pt = x.get("prompt_tokens", len(ids))     # after MCP rounds: the last round's prompt
+            pt = x.get("prompt_tokens", svc.prompt_size(ids))     # after MCP rounds: the last round's prompt
             last["usage"] = {"prompt_tokens": pt, "completion_tokens": x["completion_tokens"],
                              "total_tokens": pt + x["completion_tokens"],
                              # the part of the prompt the conversation cache already held (OpenAI's field)
@@ -5898,7 +6004,7 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
     mid = "msg_" + uuid.uuid4().hex[:24]
     yield "message_start", {"type": "message_start", "message": {
         "id": mid, "type": "message", "role": "assistant", "model": svc.model_for(req), "content": [],
-        "stop_reason": None, "stop_sequence": None, "usage": {"input_tokens": len(ids), "output_tokens": 0}}}
+        "stop_reason": None, "stop_sequence": None, "usage": {"input_tokens": svc.prompt_size(ids), "output_tokens": 0}}}
     index, open_kind, used_tool = -1, None, False
 
     def close():
@@ -5959,10 +6065,11 @@ def anthropic_events(svc: Service, req: dict, ids, thinking, tools, max_new, can
             # which is cache_read_input_tokens (message_start could only say the whole prompt).  At least the last
             # prompt token is always read, and Claude Code takes an input_tokens of 0 as "not given" and keeps
             # message_start's whole prompt beside cache_read_input_tokens: the prompt counted twice (#1013)
-            reused = max(0, min(x.get("reused") or 0, len(ids) - 1))
+            prompt_size = svc.prompt_size(ids)
+            reused = max(0, min(x.get("reused") or 0, prompt_size - 1))
             yield "message_delta", {"type": "message_delta", "delta": {"stop_reason": stop,
                                                                        "stop_sequence": x.get("stop_sequence")},
-                                    "usage": {"input_tokens": len(ids) - reused, "cache_read_input_tokens": reused,
+                                    "usage": {"input_tokens": prompt_size - reused, "cache_read_input_tokens": reused,
                                               "output_tokens": x["completion_tokens"]}}
             yield "message_stop", {"type": "message_stop"}
 
@@ -6773,7 +6880,7 @@ def make_handler(svc: Service):
         def _openai(self, req):
             req = svc.with_shared(req, "openai")
             bias_api.normalize(req.get("logit_bias"), len(getattr(svc.tok, "tokens", ())) or None)
-            messages, tools, kw = openai_to_messages(req)
+            messages, tools, kw = openai_to_messages(req, inkling2=svc.call_format == "inkling2")
             self._no_local_images(messages)
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # as the Responses route: no tools are offered
                 tools = None
@@ -6949,7 +7056,8 @@ def make_handler(svc: Service):
             responses_api.check_request(req)
             messages = responses_api.input_messages(req)
             tools, names, skipped = responses_api.request_tools(req)
-            kw = responses_api.template_kwargs(req, {"reasoning_effort": svc.effort_default()})
+            kw = responses_api.template_kwargs(req, {"reasoning_effort": svc.effort_default()},
+                                               inkling2=svc.call_format == "inkling2")
             try:
                 self._no_local_images(messages)              # as on the chat route: no file read for a foreign page
             except ValueError as e:
@@ -6998,7 +7106,7 @@ def make_handler(svc: Service):
                 responses_api.prompt_made(req, shown)
             _debug_req("responses", req, messages, tools, max_new, thinking, len(ids))
             include = req.get("include") if isinstance(req.get("include"), list) else []
-            asm = responses_api.Assembler(req, svc.model_for(req), len(ids), names,
+            asm = responses_api.Assembler(req, svc.model_for(req), svc.prompt_size(ids), names,
                                           "reasoning.encrypted_content" in include, validator is not None)
             # the request is also the sampling dict, as on the chat path (temperature, top_p, top_k, seed, ...)
             return ids, thinking, tools, max_new, asm, validator, req
@@ -7007,7 +7115,8 @@ def make_handler(svc: Service):
             """Anthropic's token count, which Claude Code asks for its context figures: the prompt this server would
             read for the same request, rendered and tokenized - the model does not run."""
             req = svc.with_shared(req, "anthropic")
-            messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
+            messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked,
+                                                        inkling2=svc.call_format == "inkling2")
             kw = svc.template_defaults(kw, req)
             stop_strings(req)                                 # the same 400 as the request itself would get
             check_request_sampling(req)                       # ... likewise a sampling field of the wrong type
@@ -7017,7 +7126,8 @@ def make_handler(svc: Service):
         def _anthropic(self, req):
             svc.load()
             req = svc.with_shared(req, "anthropic")
-            messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
+            messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked,
+                                                        inkling2=svc.call_format == "inkling2")
             self._no_local_images(messages)
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # Anthropic's {"type": "none"}: no tools offered
                 tools = None
@@ -7367,7 +7477,7 @@ def clean_shared_defaults(d, model: str | None = None) -> dict:
         raise ValueError("defaults must be an object")
     out = {}
     policy = thinking_api.capabilities(model) if model else None
-    minimum_top_k = 1
+    minimum_top_k = 0 if model == "inkling-2-mini" else 1
     for key, value in d.items():
         if value is None or value == "":
             continue
@@ -7456,7 +7566,8 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
     from serve.model_download import reject_retired_model
     reject_retired_model(cfg.get("arch"), cfg.get("model_name"))
     out = {}
-    from serve.tinyconfig import (DEFAULT_SAMPLING, LFM2_SAMPLING, GEMMA4_SAMPLING, CLOVER_SAMPLING, TIEL_SAMPLING)
+    from serve.tinyconfig import (DEFAULT_SAMPLING, LFM2_SAMPLING, GEMMA4_SAMPLING, CLOVER_SAMPLING, TIEL_SAMPLING,
+                                  INKLING_SAMPLING)
     from serve.model_download import is_tiel_model
     block = dict(cfg.get("sampling") or {})
     for alias, canon in SAMPLING_ALIASES.items():      # #1819: llama.cpp's names for the same two fields
@@ -7466,7 +7577,7 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
                                  f"setting, keep one")
             block[canon] = block.pop(alias)
     defaults = {"lfm2moe": LFM2_SAMPLING, "gemma4": GEMMA4_SAMPLING,
-                "clover_moe": CLOVER_SAMPLING}.get(cfg.get("arch"), DEFAULT_SAMPLING)
+                "clover_moe": CLOVER_SAMPLING, "inkling2_loop": INKLING_SAMPLING}.get(cfg.get("arch"), DEFAULT_SAMPLING)
     if is_tiel_model(cfg.get("model_name")):
         defaults = TIEL_SAMPLING
     block = {**defaults, **{key: value for key, value in block.items() if value is not None}}
@@ -7487,7 +7598,7 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
                 raise SystemExit(f"[strata] config sampling.min_p={value!r}: expected 0 <= min_p <= 1")
             out[key] = float(value)
         elif key == "top_k":
-            minimum_top_k = 1
+            minimum_top_k = 0 if cfg.get("arch") == "inkling2_loop" else 1
             if not number or value != int(value) or not minimum_top_k <= value <= 64:
                 raise SystemExit(f"[strata] config sampling.top_k={value!r}: the sampled path takes an integer {minimum_top_k}..64")
             out[key] = int(value)
@@ -7608,7 +7719,7 @@ def check_request_sampling(req) -> None:
 
 # the API's model name per model family (the GGUF architecture, "arch" in the config) when the config names none
 FAMILY_MODEL_NAMES = {"qwen35moe": "qwen3.6-35b-a3b", "lfm2moe": "lfm2.5-24b-a2b", "gemma4": "gemma-4-26b-a4b-it",
-                      "clover_moe": "clover-35b-a3b-preview"}
+                      "clover_moe": "clover-35b-a3b-preview", "inkling2_loop": "inkling-2-mini"}
 
 
 def default_model_name(cfg: dict) -> str:
@@ -7681,8 +7792,7 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
             if current is not None and current.resolve() == path.resolve():
                 if cfg.get("vision_mode") == "no" and svc.vision is None:
                     return
-                if cfg.get("vision_mode") != "no" and svc.vision is not None and \
-                        getattr(svc.engine, "info", {}).get("vision") == 1:
+                if cfg.get("vision_mode") != "no" and svc.vision_available():
                     return
             else:
                 raise ValueError(f'the downloaded model is verified; restart run.py --model "{path}" '
@@ -7710,7 +7820,7 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
             raise ValueError("the model is downloaded, but the native executable is missing; build TinyStrata "
                              "and configure it with run.py --exe PATH, then retry")
         want_vision = updated.get("arch") != "lfm2moe" and updated.get("vision_mode") != "no"
-        if want_vision and not updated.get("vision"):
+        if want_vision and not (updated.get("vision") or updated.get("inkling_vision")):
             raise ValueError("the model and projector are verified, but tinystrata-vision is missing; "
                              "reinstall or build the image encoder, then retry")
         tpath = Path(updated["tokenizer"])
@@ -7727,7 +7837,7 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
         image_candidate = (Vision(vision_config(updated, child_env(updated)),
                                   log=open(updated["log"], "a", encoding="utf-8") if updated.get("log") else None,
                                   env=vision_env(updated, child_env(updated)), lazy=True)
-                           if want_vision else None)
+                           if updated.get("vision") else None)
         if getattr(svc, "telemetry", None) is not None and hasattr(candidate, "gpu_busy"):
             candidate.gpu_busy = lambda: (svc.telemetry.snapshot()["now"].get("gpu_util") or 0) >= 10
         # In bootstrap, requests remain 503 until the native process is ready.
@@ -7803,14 +7913,14 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
                     existing_paths=(existing,) if existing is not None else (),
                     projector_paths=(Path(projector),) if projector else (),
                     assistant_paths=(Path(assistant),) if assistant else ())
-    elif cfg.get("arch") == "clover_moe" and cfg.get("vision_mode") != "no":
+    elif cfg.get("arch") in ("clover_moe", "inkling2_loop") and cfg.get("vision_mode") != "no":
         projector = (cfg.get("vision") or {}).get("mmproj") or cfg.get("vision_mmproj")
         svc.downloads = FixedModelBundleDownloader(directory, on_ready=activate,
                     existing_paths=(existing,) if existing is not None else (),
                     projector_paths=(Path(projector),) if projector else (),
-                    _manifests=(manifest_for_arch("clover_moe", cfg.get("model_name")),
-                                projector_for_arch("clover_moe", cfg.get("model_name"))))
-    elif cfg.get("arch") in ("lfm2moe", "clover_moe"):
+                    _manifests=(manifest_for_arch(cfg["arch"], cfg.get("model_name")),
+                                projector_for_arch(cfg["arch"], cfg.get("model_name"))))
+    elif cfg.get("arch") in ("lfm2moe", "clover_moe", "inkling2_loop"):
         svc.downloads = FixedModelDownloader(directory, on_ready=activate,
                                              existing_paths=(existing,) if existing is not None else (),
                                              _manifest=manifest_for_arch(cfg["arch"], cfg.get("model_name")))

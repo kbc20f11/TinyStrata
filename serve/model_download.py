@@ -74,6 +74,23 @@ FIXED_LFM2_MODEL = _Manifest(
     f"https://huggingface.co/{LFM2_MODEL_REPO}/resolve/{LFM2_MODEL_REVISION}/{LFM2_MODEL_FILENAME}?download=true",
 )
 
+INKLING_MODEL_REPO = "InterpreticAI/Inkling-2-Mini-IQ3_XXS-GGUF"
+INKLING_MODEL_REVISION = "4f7704c490494f1448b1011ba1a5104622c31e03"
+INKLING_MODEL_FILENAME = "Inkling-2-Mini-IQ3_XXS.gguf"
+FIXED_INKLING_MODEL = _Manifest(
+    INKLING_MODEL_REPO, INKLING_MODEL_REVISION, INKLING_MODEL_FILENAME, 11_747_211_584,
+    "32fcaba1b08f3d23c646d4c628441125adfe5953a99c70572214d98ae3fef8f7",
+    f"https://huggingface.co/{INKLING_MODEL_REPO}/resolve/{INKLING_MODEL_REVISION}/{INKLING_MODEL_FILENAME}?download=true",
+)
+INKLING_VISION_REPO = "strata-engine/Inkling-2-Mini-Strata"
+INKLING_VISION_REVISION = "04996a1e2c45009b6a04f2af126cb6bdb2ba3587"
+INKLING_VISION_FILENAME = "Inkling-2-Mini-Vision.strata"
+FIXED_INKLING_VISION = _Manifest(
+    INKLING_VISION_REPO, INKLING_VISION_REVISION, INKLING_VISION_FILENAME, 636_526_592,
+    "6589eff47f9c20bc3a032faa3d449f10bf4f04a84cc6b2ee8a44d51d2b6fc677",
+    f"https://huggingface.co/{INKLING_VISION_REPO}/resolve/{INKLING_VISION_REVISION}/{INKLING_VISION_FILENAME}?download=true",
+)
+
 # Mixed IQ3_XXS Clover quantization, retaining its learned bidirectional GDN
 # tensors and its own vocabulary/merges. Never reuse Qwen's tokenizer cache.
 CLOVER_MODEL_REPO = "AtomicChat/Clover-35B-A3B-Preview-GGUF"
@@ -153,6 +170,8 @@ def manifest_for_arch(arch: str = "qwen35moe", model_name: str | None = None) ->
         return FIXED_MODEL
     if arch == "lfm2moe":
         return FIXED_LFM2_MODEL
+    if arch == "inkling2_loop":
+        return FIXED_INKLING_MODEL
     if arch == "gemma4":
         return FIXED_GEMMA4_MODEL
     if arch == "clover_moe":
@@ -170,6 +189,8 @@ def projector_for_arch(arch: str = "qwen35moe", model_name: str | None = None) -
         return FIXED_GEMMA4_MMPROJ
     if arch in ("qwen35moe", "clover_moe"):
         return FIXED_MMPROJ
+    if arch == "inkling2_loop":
+        return FIXED_INKLING_VISION
     if arch == "lfm2moe":
         return None
     raise ValueError(f"Unsupported TinyStrata model architecture: {arch}")

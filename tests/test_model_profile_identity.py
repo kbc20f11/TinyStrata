@@ -19,6 +19,7 @@ from serve.server import configure_model_downloads, default_model_name, sampling
 
 QWEN = "qwen3.6-35b-a3b"
 TIEL = "tiel-coder-35b-a3b"
+INKLING = "inkling-2-mini"
 
 
 class SameArchitectureProfiles(unittest.TestCase):
@@ -131,14 +132,14 @@ class SameArchitectureProfiles(unittest.TestCase):
         profiles = self.profiles(cfg)
         self.assertEqual(profiles.get(TIEL).path, self.path)
         self.assertEqual(profiles.get(QWEN).path, self.root / "config-qwen36.json")
-        self.assertEqual(len({p.path for p in profiles._profiles.values()}), 5)
+        self.assertEqual(len({p.path for p in profiles._profiles.values()}), 6)
 
     def test_catalog_availability_checks_only_the_matching_artifact(self):
         directory = self.root / "model-files"
         directory.mkdir()
         (directory / model_download.FIXED_TIEL_MODEL.filename).write_bytes(b"fixture")
         rows = {row["id"]: row for row in self.profiles().list()}
-        self.assertEqual(len(rows), 5)
+        self.assertEqual(len(rows), 6)
         self.assertTrue(rows[TIEL]["installed"])
         self.assertFalse(rows[QWEN]["installed"])
         self.assertEqual(rows[TIEL]["context"]["model_limit"], 262144)
@@ -158,6 +159,9 @@ class SameArchitectureProfiles(unittest.TestCase):
             switcher._downloader(QWEN)
             self.assertEqual(bundle.call_args.kwargs["_manifests"],
                              (model_download.FIXED_MODEL, model_download.FIXED_MMPROJ))
+            switcher._downloader(INKLING)
+            self.assertEqual(bundle.call_args.kwargs["_manifests"],
+                             (model_download.FIXED_INKLING_MODEL, model_download.FIXED_INKLING_VISION))
 
     def test_same_architecture_request_still_requires_explicit_switch(self):
         switcher = ModelSwitcher.__new__(ModelSwitcher)

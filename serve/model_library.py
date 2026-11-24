@@ -53,7 +53,7 @@ def artifacts(profile):
     result = [manifest_for_arch(profile.arch, profile.id)]
     projector = projector_for_arch(profile.arch, profile.id)
     include_projector = (profile.config.get('vision_mode', 'no') != 'no' if profile.config.get('backend') == 'sycl' else
-                         not (profile.arch == 'clover_moe' and profile.config.get('vision_mode') == 'no'))
+                         not (profile.arch in ('clover_moe', 'inkling2_loop') and profile.config.get('vision_mode') == 'no'))
     if projector is not None and include_projector:
         result.append(projector)
     if profile.arch == 'gemma4' and profile.config.get('backend') != 'sycl':

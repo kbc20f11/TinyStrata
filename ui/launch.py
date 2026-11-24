@@ -19,9 +19,10 @@ PROFILES = {"qwen36": ("qwen3.6-35b-a3b", "config.json"),
             "gemma4": ("gemma-4-26b-a4b-it", "config-gemma4.json"),
             "lfm2": ("lfm2.5-24b-a2b", "config-lfm2.json"),
             "clover": ("clover-35b-a3b-preview", "config-clover.json"),
-            "tiel": ("tiel-coder-35b-a3b", "config-tiel-coder.json")}
+            "tiel": ("tiel-coder-35b-a3b", "config-tiel-coder.json"),
+            "inkling2": ("inkling-2-mini", "config-inkling2.json")}
 MODELS = {model: family for family, (model, _) in PROFILES.items()}
-FAMILY_ALIASES = {"tiel-coder": "tiel"}
+FAMILY_ALIASES = {"tiel-coder": "tiel", "inkling-2-mini": "inkling2"}
 INTEL_PROFILES = {"qwen36": ("b390-qwen36", "config-sycl.json", "server-state-sycl.json"),
                   "tiel": ("b390-tiel-coder", "config-tiel-coder-sycl.json", "server-state-tiel-coder-sycl.json"),
                   "gemma4": ("b390-gemma4", "config-gemma4-sycl.json", "server-state-gemma4-sycl.json"),
@@ -62,7 +63,7 @@ def profile_path(runtime, family, backend=None):
 def available_default_family(runtime):
     """Prefer an already downloaded supported model; never download during migration."""
     arches = {"qwen36": "qwen35moe", "gemma4": "gemma4", "lfm2": "lfm2moe",
-              "clover": "clover_moe", "tiel": "qwen35moe"}
+              "clover": "clover_moe", "tiel": "qwen35moe", "inkling2": "inkling2_loop"}
     for family, (model, _) in PROFILES.items():
         path = profile_path(runtime, family)
         try:
@@ -329,7 +330,8 @@ class Launcher:
                 raise ValueError("The explicit Intel profile does not match the selected model family")
             self.intel_profile = self.intel_profile or ("generic" if settings.get("intel_profile") == "generic" else expected)
         if self.family not in PROFILES:
-            raise ValueError("Unknown saved model family; specify --model-family qwen36, gemma4, lfm2, clover or tiel")
+            choices = ", ".join(PROFILES)
+            raise ValueError(f"Unknown saved model family; choose --model-family from {choices}")
         if self.family == "lfm2" and self.vision is not None:
             self.vision = "no"
         elif self.backend == "sycl" and self.vision == "cpu":
@@ -438,7 +440,7 @@ class Launcher:
     def save_api_process(self, process, config):
         name = {"qwen36": "server-state.json", "gemma4": "server-state-gemma4.json",
                 "lfm2": "server-state-lfm2.json", "clover": "server-state-clover.json",
-                "tiel": "server-state-tiel-coder.json"}[self.family]
+                "tiel": "server-state-tiel-coder.json", "inkling2": "server-state-inkling2.json"}[self.family]
         if self.backend == "sycl":
             name = INTEL_PROFILES[self.family][2]
         target = self.runtime / name

@@ -124,9 +124,10 @@ def configure_backend(cfg: dict, requested: str | None = None, *, explicit_kv: s
         result.pop("gpu", None)
         result.pop("hip_ordinal", None)
     if backend == "hip":
-        formats = ("auto", "int8", "fp8", "fp8-mma")
+        inkling = cfg.get("arch") == "inkling2_loop"
+        formats = ("auto", "fp16", "fp8") if inkling else ("auto", "int8", "fp8", "fp8-mma")
         if explicit_kv is not None and explicit_kv not in formats:
-            raise ValueError("The AMD HIP route supports --kv-type auto, int8 or native fp8")
+            raise ValueError("The AMD HIP route supports --kv-type " + ", ".join(formats))
         # Let the model engine choose FP8 or INT8 from its actual capabilities.
         # Keep deliberate HIP choices, including auto, across later starts.
         # A profile from another backend starts with hardware-aware auto unless

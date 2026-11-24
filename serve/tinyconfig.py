@@ -30,7 +30,10 @@ CLOVER_SAMPLING = {"temperature": 0.0, "top_p": 1.0, "top_k": 64, "min_p": 0.0,
 TIEL_SAMPLING = {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0,
                  "presence_penalty": 0.0, "frequency_penalty": 0.0, "repetition_penalty": 1.0}
 MODEL_NAMES = {"qwen35moe": "qwen3.6-35b-a3b", "lfm2moe": "lfm2.5-24b-a2b",
-               "gemma4": "gemma-4-26b-a4b-it", "clover_moe": "clover-35b-a3b-preview"}
+               "gemma4": "gemma-4-26b-a4b-it", "clover_moe": "clover-35b-a3b-preview",
+               "inkling2_loop": "inkling-2-mini"}
+INKLING_SAMPLING = {"temperature": 1.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0,
+                    "repetition_penalty": 1.0, "presence_penalty": 0.0, "frequency_penalty": 0.0}
 
 
 def clover_decode_defaults(cfg: dict) -> dict:
@@ -145,7 +148,7 @@ def migrate_generation_settings(cfg: dict) -> tuple[dict, bool]:
             sampling == {"temperature": 0}:
         sampling = {}
     defaults = dict({"lfm2moe": LFM2_SAMPLING, "gemma4": GEMMA4_SAMPLING,
-                     "clover_moe": CLOVER_SAMPLING}.get(cfg.get("arch"), DEFAULT_SAMPLING))
+                     "clover_moe": CLOVER_SAMPLING, "inkling2_loop": INKLING_SAMPLING}.get(cfg.get("arch"), DEFAULT_SAMPLING))
     if is_tiel_model(cfg.get("model_name")):
         defaults = dict(TIEL_SAMPLING)
     # Preserve the upstream spelling as well as the canonical spelling.
@@ -225,6 +228,8 @@ def check_vision_options(cfg: dict) -> str:
     if text_only and (mode != "no" or cfg.get("vision")):
         model = MODEL_NAMES[cfg["arch"]]
         raise ValueError(f"{model} is text-only; use --vision no")
+    if cfg.get("arch") == "inkling2_loop" and (mode == "cpu" or cfg.get("vision")):
+        raise ValueError("Inkling 2 Mini uses its native image encoder; use --vision gpu or no")
     return mode
 
 
@@ -243,6 +248,7 @@ def disable_vision(cfg: dict) -> dict:
     if isinstance(new.get("args"), list):
         new["args"] = [arg for arg in new["args"] if arg != "--vision"]
     new.pop("vision", None)
+    new.pop("inkling_vision", None)
     new.pop("vision_download_required", None)
     return new
 
@@ -316,7 +322,7 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         return
     arch = cfg.get("arch", "qwen35moe")
     if arch not in MODEL_NAMES:
-        raise ValueError("TinyStrata supports qwen35moe, lfm2moe, gemma4 and clover_moe models")
+        raise ValueError(f"Unsupported model architecture: {arch}")
     if arch == "lfm2moe" and cfg.get("enable_thinking", True) is False:
         raise ValueError("LFM2.5-24B-A2B always uses thinking")
     for key in ("images", "replicas", "layer_split", "vram_elastic", "slot_save_path",
@@ -376,7 +382,14 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
                                        "--clover-accept", "--clover-accept-ratio", "--clover-accept-delta"})
     if arch != "clover_moe" and clover_options:
         raise ValueError("Clover-only engine options: " + ", ".join(sorted(clover_options)))
-    if arch == "lfm2moe":
+    if arch == "inkling2_loop":
+        supported = {"--model", "--draft-model", "--max-context", "--kv-type", "--chunk", "--expert-vram",
+                     "--vram-reserve-mib", "--cpu-threads"}
+        if seen - supported:
+            raise ValueError("Unsupported Inkling 2 Mini engine options: " + ", ".join(sorted(seen - supported)))
+        if kv not in (None, "auto", "fp16", "fp8", "int8"):
+            raise ValueError("Inkling 2 Mini supports --kv-type auto, fp16, fp8 or int8")
+    elif arch == "lfm2moe":
         qwen_only = seen.intersection({"--hybrid-graph", "--no-hybrid-graph", "--hybrid-rows",
                                        "--expert-slots", "--no-warmup"})
         if qwen_only:
@@ -431,8 +444,8 @@ def validate(cfg: dict, *, allow_uninstalled: bool = False) -> None:
             raise ValueError("Clover does not support --kv-type fp16")
     elif kv == "fp16":
         raise ValueError("Qwen3.6 does not support --kv-type fp16")
-    if arch != "gemma4" and "--draft-model" in seen:
-        raise ValueError("--draft-model is only supported by the Gemma 4 engine")
+    if arch not in ("gemma4", "inkling2_loop") and "--draft-model" in seen:
+        raise ValueError("--draft-model is supported by Gemma 4 and Inkling 2 Mini")
     if config.value_of(cfg, "lookup_draft"):
         defaults = {"gemma4": GEMMA4_SAMPLING}.get(arch, DEFAULT_SAMPLING)
         temperature = (cfg.get("sampling") or {}).get("temperature", defaults["temperature"])
@@ -462,6 +475,11 @@ def check_files(cfg: dict, *, allow_uninstalled: bool = False) -> None:
         path = path if path.is_absolute() else base / path
         if not path.is_file():
             raise ValueError(f"TinyStrata vision {key} not found: {path}")
+    if cfg.get("arch") == "inkling2_loop":
+        args = cfg.get("args", [])
+        for key, value in (("vision", cfg.get("inkling_vision")), ("drafter", args[args.index("--draft-model") + 1] if "--draft-model" in args else None)):
+            if value and not (base / value).is_file():
+                raise ValueError(f"Inkling 2 Mini {key} file not found: {value}")
     if cfg.get("arch") == "gemma4" and config.value_of(cfg, "mtp") not in (None, 0):
         args = cfg.get("args", [])
         name = args[args.index("--draft-model") + 1] if "--draft-model" in args[:-1] else ""

@@ -273,6 +273,24 @@ class PlacementTests(unittest.TestCase):
             50, GEOMETRY, {'kv_grow': 1})
         self.assertIn('--expert-slots', new['args'])
 
+    def test_inkling_uses_native_budget_and_preserves_automatic_placement(self):
+        from serve.server import inkling_engine_args
+
+        source = deepcopy(self.profiles.get(MODEL).config)
+        source['arch'] = 'inkling2_loop'
+        sizes = {'total_expert_bytes': 14035509248, 'expert_total': 3072, 'experts_per_layer': 128}
+        for count in (None, 0, 1536, 3072):
+            with self.subTest(count=count):
+                cfg, placement = self.control._placement_configuration(source, count, sizes, {}, mode='count')
+                args = inkling_engine_args(cfg)
+                self.assertEqual(placement['gpu_experts'], count)
+                self.assertIsNone(placement['expert_slots_per_layer'])
+                if count in (None, 3072):
+                    self.assertNotIn('--vram-experts-gb', args)
+                else:
+                    budget = float(args[args.index('--vram-experts-gb') + 1])
+                    self.assertEqual(int(budget * 2 ** 30), placement['requested_expert_bytes'])
+
     def test_cold_candidate_can_adopt_verified_vmm_once_before_publication(self):
         self.candidate_native_info = {'kv_grow': 1}
         value = self.apply(50)

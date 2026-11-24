@@ -43,6 +43,7 @@ MODELS = {
 }
 TEXT_ONLY_MODELS = ('lfm', 'clover')
 TIEL_MODEL = ('config-tiel-coder.json', 'qwen35moe', 'tiel-coder-35b-a3b')
+INKLING_MODEL = ('config-inkling2.json', 'inkling2_loop', 'inkling-2-mini')
 INTEL_TEXT_CONFIGS = {'qwen': 'config-sycl.json', 'tiel': 'config-tiel-coder-sycl.json',
                       'gemma': 'config-gemma4-sycl.json', 'lfm': 'config-lfm2-sycl.json',
                       'clover': 'config-clover-sycl.json'}
@@ -76,6 +77,7 @@ ENGINE_KEYS += ('backend', 'experimental', 'intel_profile', 'memory_model', 'sin
                 'lfm_q4_fp32_blocks', 'lfm_q4_dp4a', 'lfm_prefill_q4_dp4a', 'gemma_pv_split', 'gemma_q6_head_fp32', 'gemma_q4_dp4a', 'clover_fused_t1_hint',
                 'device_vendor', 'device_id', 'device_integrated', 'device_architecture',
                 'adapter_luid', 'adapter_node_mask')
+ENGINE_KEYS += ('arch', 'layers', 'visits', 'drafting', 'drafter', 'vision_backend')
 CLOVER_INFO_FLOATS = ('clover_threshold', 'clover_last_threshold', 'clover_preview_ms',
                       'clover_replay_ms', 'clover_select_ms', 'clover_preview_cpu_ms',
                       'clover_accept_ratio', 'clover_accept_delta', 'clover_last_accept_ratio', 'clover_last_accept_delta')
@@ -158,10 +160,14 @@ def model_sampling(model, cases):
     if model == 'tiel':
         return dict(temperature=1.0, top_p=0.95, top_k=20, min_p=0.0,
                     presence_penalty=0.0, frequency_penalty=0.0, repetition_penalty=1.0)
+    if model == 'inkling':
+        return dict(tinyconfig.INKLING_SAMPLING)
     return dict(CLOVER_SAMPLING if model == 'clover' else cases['sampling'][model])
 
 
 def model_definition(model):
+    if model == 'inkling':
+        return INKLING_MODEL
     return TIEL_MODEL if model == 'tiel' else MODELS[model]
 
 
@@ -174,10 +180,12 @@ def benchmark_models(model, saved_profile=False, *, intel_text=False, v2=False):
         if not supports_model({'arch': arch, 'model_name': name}):
             raise ValueError(f'{name} is not enabled by the public Intel backend; private port checks do not admit it')
         return [model]
-    if model not in (*MODELS, 'tiel', 'all'):
+    if model not in (*MODELS, 'tiel', 'inkling', 'all'):
         raise ValueError(f'Unsupported benchmark model: {model}')
     if model == 'tiel' and not (saved_profile or v2):
         raise ValueError('Tiel benchmarking requires v2 or --saved-profile')
+    if model == 'inkling' and not (saved_profile or v2):
+        raise ValueError('Inkling benchmarking requires v2 workloads or --saved-profile')
     return [*MODELS, *(['tiel'] if saved_profile or v2 else [])] if model == 'all' else [model]
 
 
@@ -401,11 +409,14 @@ def controlled_config(original, model, folder, port, cases, *, clover_mode='caus
         if flag not in args or args.index(flag) + 1 >= len(args):
             raise ValueError(f'{file} is missing {flag}')
         return resolved(args[args.index(flag) + 1])
-    native = ['--model', value('--model'), '--max-context', 'auto', '--chunk', 'auto',
-              '--kv-type', 'int8', '--kv-grow']
+    native = ['--model', value('--model'), '--max-context', 'auto', '--chunk', 'auto']
+    if model == 'inkling':
+        native += ['--kv-type', 'auto']
+    else:
+        native += ['--kv-type', 'int8', '--kv-grow']
     if model == 'gemma':
         native += ['--draft-model', value('--draft-model')]
-    if model not in TEXT_ONLY_MODELS:
+    if model not in (*TEXT_ONLY_MODELS, 'inkling'):
         native += ['--mtp', '3', '--vision']
     elif model == 'clover':
         if clover_mode not in ('causal', 'self-spec', 'diffusion'):
@@ -458,7 +469,12 @@ def controlled_config(original, model, folder, port, cases, *, clover_mode='caus
             cfg[key] = resolved(cfg[key])
     if cfg.get('lib_dirs'):
         cfg['lib_dirs'] = [resolved(path) for path in cfg['lib_dirs']]
-    if has_vision:
+    if model == 'inkling':
+        vision = original.get('inkling_vision') or original.get('vision_mmproj')
+        if not vision:
+            raise ValueError(f'{file} needs its installed native Inkling Vision payload')
+        cfg['inkling_vision'] = resolved(vision)
+    elif has_vision:
         vision = original.get('vision')
         if not isinstance(vision, dict) or not all(vision.get(k) for k in ('exe', 'mmproj', 'model')):
             raise ValueError(f'{file} needs its installed GPU Vision model')
@@ -580,6 +596,8 @@ def cache_bytes(info, *, intel_text=False):
     value = info.get('expert_cache_bytes')
     if value is None and info.get('expert_cache_mib') is not None:
         value = info['expert_cache_mib'] * (1 << 20)
+    if value is None and info.get('arch') == INKLING_MODEL[1]:
+        return None
     if not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
         raise ValueError('This engine does not report its Expert cache size; update TinyStrata')
     return int(value)
@@ -617,10 +635,33 @@ def aggregate_model(runs, *, intel_text=False):
                            for key in ('startup_engine', 'after_16k_engine')}
     if intel_text:
         out['expert_cache'].update(applicable=False, reason='UMA: independent Expert cache is not reported')
+    elif complete and complete[0]['startup_engine'].get('arch') == INKLING_MODEL[1]:
+        for key in ('startup_engine', 'after_16k_engine'):
+            out['expert_cache'][key + '_counts'] = [
+                {'resident': r[key].get('expert_slots'), 'total': r[key].get('expert_total')} for r in complete]
     if any('after_64k_engine' in r for r in complete):
         out['expert_cache']['after_64k_engine'] = [cache_bytes(r['after_64k_engine']) for r in complete]
     out['complete_runs'] = len(complete)
     return out
+
+
+def image_encoder(cfg):
+    if cfg.get('arch') == INKLING_MODEL[1]:
+        return 'native' if cfg.get('inkling_vision') and cfg.get('vision_mode') != 'no' else None
+    return 'external' if cfg.get('vision') else None
+
+
+def validate_inkling_engine(info, cfg, output_limit, *, controlled=False):
+    if (info.get('arch') != INKLING_MODEL[1] or (info.get('layers'), info.get('visits')) != (24, 48) or
+            info.get('backend') not in ('cuda', 'hip') or info.get('backend') != cfg.get('backend', 'cuda')):
+        raise ValueError(f'Unexpected Inkling engine identity: {info}')
+    if bool(info.get('images')) != bool(image_encoder(cfg)):
+        raise ValueError('Native Inkling image capability differs from the benchmark configuration')
+    context = info.get('max_context')
+    if type(context) is not int or context < 16384 + output_limit:
+        raise ValueError(f'Inkling benchmark requires 16,384 input tokens plus {output_limit} output tokens')
+    if controlled and (info.get('drafting') != 'off' or info.get('kv') not in ('fp16', 'fp8', 'int8', 'k8v8', 'k8v4')):
+        raise ValueError(f'Inkling engine does not report the expected automatic KV and disabled drafting: {info}')
 
 
 class Service:
@@ -757,7 +798,7 @@ class Service:
                 raise RuntimeError(f'Benchmark API exited; see{self.folder / "api.stderr.log"}')
             try:
                 health = self.json('/health', timeout=1)
-                if health.get('loaded') and (not self.cfg.get('vision') or health.get('images')):
+                if health.get('loaded') and (not image_encoder(self.cfg) or health.get('images')):
                     return self.vision_identity()
             except (OSError, RuntimeError):
                 pass
@@ -845,12 +886,15 @@ def free_port():
 
 
 def assets(cfg):
+    base = Path(cfg.get('cwd') or ROOT)
     args = cfg['args']
-    paths = [Path(cfg['exe'])]
-    paths += [Path(args[args.index(flag) + 1]) for flag in ('--model', '--draft-model') if flag in args]
+    names = [cfg['exe']]
+    names += [args[args.index(flag) + 1] for flag in ('--model', '--draft-model') if flag in args]
     if cfg.get('vision'):
-        paths += [Path(cfg['vision']['exe']), Path(cfg['vision']['mmproj'])]
-    return list(dict.fromkeys(paths))
+        names += [cfg['vision']['exe'], cfg['vision']['mmproj']]
+    if image_encoder(cfg) == 'native':
+        names.append(cfg['inkling_vision'])
+    return list(dict.fromkeys(base / name for name in names))
 
 
 def render_report(report):
@@ -873,6 +917,9 @@ def render_report(report):
         lines[4:4] = [f'Intel text variant: fixed context32768, INT8 KV, {profiles}; '
                       'GPU Vision, dynamic KV growth and independent Expert cache are unsupported. '
                       'Image is N/A. Canonical v1 text inputs, sampler, seed, warmup and repetitions are retained.', '']
+    if report.get('inkling_extension'):
+        lines[4:4] = ['Inkling extension: canonical v2 workloads, backend-selected KV, drafting off and in-process Vision. '
+                      'Image timings include the in-process encoder. CPU fallback is possible.', '']
     if profile:
         details = (f'Clover profile: {profile["mode"]}, KV {profile["kv"]}, '
                    f'workers {profile["cpu_workers"]}, chunk {profile["chunk"]}, '
@@ -895,7 +942,7 @@ def render_report(report):
         def span(values):
             if data.get('intel_text'):
                 return 'N/A (UMA)'
-            values = [v / GIB for v in values]
+            values = [v / GIB for v in values if v is not None]
             if not values:
                 return '—'
             low, high = f'{min(values):.2f}', f'{max(values):.2f}'
@@ -922,7 +969,7 @@ def render_report(report):
 def main():
     local = Path(os.environ.get('LOCALAPPDATA', Path.home() / '.local/share'))
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--model', choices=(*MODELS, 'tiel', 'all'), default='all')
+    parser.add_argument('--model', choices=(*MODELS, 'tiel', 'inkling', 'all'), default='all')
     parser.add_argument('--protocol', choices=('v1', 'v2'),
                         help='Controlled benchmark defaults to v2; existing diagnostic variants default to v1')
     parser.add_argument('--saved-profile', action='store_true',
@@ -1030,7 +1077,9 @@ def main():
         commit = None
     diffusion_variant = options.clover_mode == 'diffusion'
     self_spec_variant = options.clover_mode == 'self-spec'
-    variant = options.intel_text or options.saved_profile or diffusion_variant or self_spec_variant or manual_variant or options.include_64k
+    inkling_extension = options.model == 'inkling' and not options.saved_profile
+    variant = (options.intel_text or options.saved_profile or diffusion_variant or self_spec_variant or
+               manual_variant or options.include_64k or inkling_extension)
     variant_suffix = ('-intel-text' if options.intel_text else '-saved-profile' if options.saved_profile else '-clover-diffusion' if diffusion_variant else '-clover-self-spec' if self_spec_variant
                       else '-clover-causal-variant' if manual_variant else '')
     if options.include_64k:
@@ -1038,6 +1087,8 @@ def main():
     if options.clover_vision:
         variant = True
         variant_suffix = (variant_suffix or '-clover-causal') + '-vision'
+    if inkling_extension:
+        variant_suffix = '-inkling'
     clover_vision = v2 or options.clover_vision
     clover_profile = dict(mode=options.clover_mode, kv=options.kv_type or 'int8',
                           block_size=options.clover_block_size, threshold=options.clover_threshold,
@@ -1061,6 +1112,8 @@ def main():
     if options.saved_profile:
         report.update(saved_profile=True, generation_passes=1, configuration_scope='saved native profile; eager private startup; private logs/ports/authentication/profile writes',
                       config_hashes_before={str(p): sha256(p) for p in options.config_dir.glob('config*.json')})
+    if inkling_extension:
+        report['inkling_extension'] = True
     if options.intel_text:
         report.update(intel_text=True, generation_passes=2,
                       config_hashes_before={str(p): sha256(p) for p in options.config_dir.glob('config*.json')},
@@ -1089,8 +1142,7 @@ def main():
             original = json.loads(profile_path.read_text(encoding='utf-8-sig'))
             sampling = (dict(tinyconfig.TIEL_SAMPLING) if options.intel_text and model == 'tiel' else
                         copy.deepcopy(original.get('sampling') or model_sampling(model, cases)) if options.saved_profile else model_sampling(model, cases))
-            data = dict(runs=[], sampling=sampling, assets=[],
-                        image_supported=False if options.intel_text else bool(original.get('vision')) if options.saved_profile else model not in TEXT_ONLY_MODELS or (model == 'clover' and clover_vision))
+            data = dict(runs=[], sampling=sampling, assets=[])
             if options.intel_text:
                 data.update(intel_text=True, profile_path=str(profile_path), source_config_sha256=sha256(profile_path),
                             intel_profile=original.get('intel_profile'),
@@ -1113,6 +1165,11 @@ def main():
                 controlled_config(original, model, options.output, free_port(), cases, **profile_options)
             sys.path.insert(0, str(ROOT))
             tinyconfig.validate(prepared)
+            data['image_supported'] = bool(image_encoder(prepared))
+            if model == 'inkling':
+                from serve.server import inkling_engine_args
+                data['resolved_native_arguments'] = inkling_engine_args(prepared)
+                data['vision_encoder'] = image_encoder(prepared)
             if options.intel_text:
                 data['native_build'] = intel_text_build(prepared)
                 from serve.intel_backend import engine_args as intel_args
@@ -1173,7 +1230,9 @@ def main():
                     if options.include_64k:
                         validate_64k_context(info, cases['prefill_max_tokens'])
                     expected_kv = clover_profile['kv'] if model == 'clover' else 'int8'
-                    if not options.saved_profile and not options.intel_text and (info.get('kv') != expected_kv or info.get('kv_grow') != 1 or info.get('mtp') != (0 if model in TEXT_ONLY_MODELS else 3)):
+                    if model == 'inkling':
+                        validate_inkling_engine(info, cfg, cases['prefill_max_tokens'], controlled=not options.saved_profile)
+                    elif not options.saved_profile and not options.intel_text and (info.get('kv') != expected_kv or info.get('kv_grow') != 1 or info.get('mtp') != (0 if model in TEXT_ONLY_MODELS else 3)):
                         raise ValueError(f'Engine does not match protocol settings: {info}')
                     if not options.saved_profile and not options.intel_text and model == 'clover' and not self_spec_variant and info.get('clover_draft') != 0:
                         raise ValueError(f'The causal/diffusion profiles do not use self-speculative drafts: {info}')
@@ -1240,7 +1299,7 @@ def main():
                         text, _ = exact_length_text(count, cases['long_paragraph'], cases['long_question'], 65536)
                         measure('input_64k', 'input_64k', body(text, cases['prefill_max_tokens']), 65536)
                         run['after_64k_engine'] = service.engine()
-                    if cfg.get('vision'):
+                    if image_encoder(cfg):
                         image = dict(type='image', source=dict(type='base64', media_type='image/png',
                                      data=base64.b64encode((HERE / 'image.png').read_bytes()).decode('ascii')))
                         image_body = body([image, dict(type='text', text=cases['image_prompt'])], cases['image_max_tokens'], thinking=False)

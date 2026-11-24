@@ -18,7 +18,7 @@ param(
     [string]$HipDirectory,
     # An omitted value is empty under irm | iex and selects GPU auto-detection.
     [ValidatePattern('^(gfx[0-9a-f]+(;gfx[0-9a-f]+)*)?$')][string]$HipArchitectures,
-    [ValidateSet('qwen36', 'qwen3.6', 'lfm2', 'lfm2.5', 'gemma4', 'gemma-4', 'clover', 'tiel', 'tiel-coder')][string]$ModelFamily = 'qwen36',
+    [ValidateSet('qwen36', 'qwen3.6', 'lfm2', 'lfm2.5', 'gemma4', 'gemma-4', 'clover', 'tiel', 'tiel-coder', 'inkling2', 'inkling-2-mini')][string]$ModelFamily = 'qwen36',
     [ValidateSet('', 'gpu', 'cpu', 'no')][string]$Vision,
     [ValidateRange(0, 65535)][int]$Port = 0,
     [ValidateRange(1, 65535)][int]$UiPort = 3000,
