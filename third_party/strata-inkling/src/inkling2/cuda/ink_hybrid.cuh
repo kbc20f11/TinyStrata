@@ -1632,9 +1632,10 @@ struct InkHybridEngine {
     std::vector<uint64_t> orig_host_off; // [3072] original tier-1/2 offset
     cudaStream_t promo_st = nullptr;
 
-    // Double-Buffered Prefill Streaming Arena (2 x 16..64 MiB ping-pong VRAM buffers + pinned descriptors!)
+    // Double-buffered GPU prefill staging and pinned host descriptors.
     uint8_t* d_pf_stage[2] = {};
     size_t   pf_stage_bytes = 0;
+    bool     wide_pf_stage = false;
     cudaStream_t pf_dma_st = nullptr;
     cudaEvent_t  pf_ev_dma[2] = {};
     cudaEvent_t  pf_ev_done[2] = {};
@@ -2052,22 +2053,29 @@ struct InkHybridEngine {
         active = true;
     }
 
-    // Size of each ping-pong prefill staging buffer for experts up to max_exp_bytes (32..64 MiB, at least 1 expert).
-    static size_t pf_stage_size(size_t max_exp_bytes) noexcept {
+    // Size of each ping-pong prefill staging buffer, with room for at least one Expert.
+    static size_t pf_stage_size(size_t max_exp_bytes, bool wide = false) noexcept {
         const size_t align_b = (max_exp_bytes + 255ull) & ~255ull;
+        if (wide) return std::max(align_b, (size_t)(128ull << 20));
         return std::max(align_b, std::min<size_t>(64ull << 20, std::max<size_t>(16 * align_b, 32ull << 20)));
     }
 
     // #6617: Allocate the 2 ping-pong prefill staging buffers BEFORE d_sec4 and the host pinned arena!
-    // Without them, multi-token MoE cannot stream host experts over PCIe; try full size then 16 MiB minimum.
+    // Without them, multi-token MoE cannot stream host experts over PCIe. Try the
+    // selected capacity first, then the standard size and the 16 MiB minimum.
     bool alloc_pf_stage(size_t max_exp_bytes) {
         if (d_pf_stage[0]) return true;
         const size_t align_b = (max_exp_bytes + 255ull) & ~255ull;
-        size_t tries[2] = {pf_stage_size(max_exp_bytes), std::max(align_b, (size_t)(16ull << 20))};
+        const size_t tries[] = {
+            wide_pf_stage ? pf_stage_size(max_exp_bytes, true) : 0,
+            pf_stage_size(max_exp_bytes),
+            std::max(align_b, (size_t)(16ull << 20)),
+        };
         for (size_t b : tries) {
             if (b == 0) continue;
             if (cudaMalloc(&d_pf_stage[0], b) == cudaSuccess && cudaMalloc(&d_pf_stage[1], b) == cudaSuccess) {
                 pf_stage_bytes = b;
+                std::fprintf(stderr, "[InkPrefillStage] %.0f MiB per device staging buffer\n", b / 1048576.0);
                 return true;
             }
             (void)cudaGetLastError();
@@ -2580,6 +2588,7 @@ struct InkHybridEngine {
         auto fr = [](auto*& p) { if (p) { cudaFree(p); p = nullptr; } };
         fr(d_seq); fr(d_cur_seq); fr(d_use_cnt); fr(d_want_keys); fr(d_n_want); fr(d_stat); fr(d_trace); fr(d_trace_n);
         fr(d_promo_pool); fr(d_pf_stage[0]); fr(d_pf_stage[1]);
+        wide_pf_stage = false;
         fr(d_pf_exp_tmp[0]); fr(d_pf_exp_tmp[1]);
         fr(d_v_y); fr(d_v_p);
         for (int b = 0; b < 2; ++b) {

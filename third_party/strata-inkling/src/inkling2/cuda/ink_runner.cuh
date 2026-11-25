@@ -1256,8 +1256,18 @@ struct InkCudaModel {
             : static_cast<size_t>(-1);
         size_t max_body_all = 0;
         for (int di = 0; di < n_total; ++di) max_body_all = std::max<size_t>(max_body_all, eff_bytes[di]);
-        const size_t pf_bytes = 2 * InkHybridEngine::pf_stage_size(max_body_all);
         const size_t hyb_post_res = std::max(res0, (size_t)(1664ull << 20));
+        static const bool wider_staging = [] {
+            const char* value = std::getenv("STRATA_INK_PF_WIDE_STAGE");
+            return !value || std::strcmp(value, "0") != 0;
+        }();
+        // Basalt's spilled prefill stages larger batches of Experts before launching a product.
+        // For the measured 12 GiB Ampere profile, enlarge both staging buffers only if the
+        // dedicated budget still leaves at least 3 GiB for resident Experts after the reserve.
+        hybrid.wide_pf_stage = wider_staging && sm_cc == 86 && !ls_active && !ep2_active && !ssd_experts &&
+                               vram_experts_gb < 0.0 && vt0 >= (11ull << 30) && vt0 <= (13ull << 30) &&
+                               vf0 >= hyb_post_res + (3ull << 30) + (320ull << 20);
+        const size_t pf_bytes = 2 * InkHybridEngine::pf_stage_size(max_body_all, hybrid.wide_pf_stage);
         const size_t hyb_bud0 = (vf0 > hyb_post_res + pf_bytes + (64ull << 20)) ? (vf0 - hyb_post_res - pf_bytes - (64ull << 20)) : 0;
 
         n_vram_experts = 0; n_peer_experts = 0; n_host_experts = 0;
@@ -2908,7 +2918,7 @@ struct InkCudaRunner {
         const int nMT = (M + 7) / 8;
         const int nKB = K >> 5;
         const int total_warps = nMT * 8 * nKB;
-        k_ink_quant_x_q8f<<<(total_warps + 7) / 8, 256, 0, st>>>(X, d_xq8, d_xs8, M, K, nMT);
+        k_ink_quant_x_q8f<false><<<(total_warps + 7) / 8, 256, 0, st>>>(X, d_xq8, d_xs8, M, K, nMT, nullptr, nullptr);
         const int row_tiles = mp.cumN[mp.count] / 16;
         const int gx = (row_tiles + 1) / 2;
         // token tiles per warp: as many as fit, but split the tokens over more CTAs when the matrices are short of row tiles
@@ -2922,6 +2932,40 @@ struct InkCudaRunner {
         else if (mtw == 2) k_ink_gemm_q8f<2><<<grid, 64, 0, st>>>(mp, d_xq8, d_xs8, M, K, nMT);
         else               k_ink_gemm_q8f<1><<<grid, 64, 0, st>>>(mp, d_xq8, d_xs8, M, K, nMT);
     }
+
+    // Project Maya a6df38d groups the looped Q/K/V projections by output rows
+    // even when the inputs differ. Keep this engine's original Q8_0 fragment math.
+    bool try_separate_qkv_q8f(const std::string* names, float* const* Ys,
+                             const float* Xq, const float* Xk, const float* Xv, int mode) {
+        static const bool enabled = [] {
+            const char* value = std::getenv("STRATA_INK_MAYA_QKV");
+            return !value || std::strcmp(value, "0") != 0;
+        }();
+        if (!enabled || m.ls_active || m.sm_cc != 86 || !q8f_ok(1, kInkHidden)) return false;
+        // The existing prefill workspace must hold three contiguous one-token fragments.
+        if (((max_batch + 7) / 8) * kInkQDim < 3 * kInkHidden) return false;
+        InkMultiProj mp{};
+        mp.count = 5;
+        for (int i = 0; i < mp.count; ++i) {
+            const auto& ti = m.tinfo(names[i]);
+            if (ti.fmt != FMT_Q8_0F || ti.cols() != kInkHidden || ti.rows() % 16 != 0) return false;
+            mp.W[i] = m.trunk_ptr_stage(cur_stage, names[i]);
+            mp.Y[i] = Ys[i];
+            mp.N[i] = (int)ti.rows();
+            mp.cumN[i + 1] = mp.cumN[i] + mp.N[i];
+        }
+        constexpr int K = kInkHidden;
+        k_ink_quant_x_q8f<true><<<dim3(K / 32, 3), 256, 0, st>>>(Xq, d_xq8, d_xs8, 1, K, 1, Xk, Xv);
+        const int row_tiles = mp.cumN[mp.count] / 16;
+        k_ink_gemm_q8f<1, true><<<(row_tiles + 1) / 2, 64, 0, st>>>(mp, d_xq8, d_xs8, 1, K, 1);
+        const unsigned mode_bit = 1u << mode;
+        if (!(maya_qkv_modes_reported & mode_bit)) {
+            std::fprintf(stderr, "[InkCUDA] grouped split-input Q8_0 decode projections active (mode=%d)\n", mode);
+            maya_qkv_modes_reported |= mode_bit;
+        }
+        return true;
+    }
+    unsigned maya_qkv_modes_reported = 0;
 
     // ---- Dense linear projection helper: Y[M, N] = X[M, K] @ W[N, K]^T ----
     void linear_multi(const std::string* names, float* const* Ys, int count, const float* X, int M, bool exact_fp32_x = false) {
@@ -3257,14 +3301,20 @@ struct InkCudaRunner {
             linear_multi(names, ys, 5, in_q, M, exact_x);
             linear(p + ".attn.attn_sink_proj.weight", in_q, d_sinks, M, 0, false, exact_x);
         } else if (M <= 16 || q8f_dense) {
-            const std::string names[3] = {
-                p + ".attn.wq_du.weight", p + ".attn.wr_du.weight", p + ".attn.gate_attn.weight"
+            const std::string names[5] = {
+                p + ".attn.wq_du.weight", p + ".attn.wr_du.weight", p + ".attn.gate_attn.weight",
+                p + ".attn.wk_dv.weight", p + ".attn.wv_dv.weight"
             };
-            float* ys[3] = { d_q, d_r, d_gate_attn };
-            linear_multi(names, ys, 3, in_q, M, exact_x);
+            float* ys[5] = { d_q, d_r, d_gate_attn, d_k_raw, d_v_raw };
+            // The sequential and batched paths use the same dense math at one row.
+            const bool grouped = M == 1 && !exact_x && !has_img_step && q8f_dense &&
+                                 try_separate_qkv_q8f(names, ys, in_q, in_k, in_v, mode);
+            if (!grouped) linear_multi(names, ys, 3, in_q, M, exact_x);
             linear(p + ".attn.attn_sink_proj.weight", in_q, d_sinks, M, 0, false, exact_x);
-            linear(p + ".attn.wk_dv.weight", in_k, d_k_raw, M, 0, false, exact_x);
-            linear(p + ".attn.wv_dv.weight", in_v, d_v_raw, M, 0, false, exact_x);
+            if (!grouped) {
+                linear(names[3], in_k, d_k_raw, M, 0, false, exact_x);
+                linear(names[4], in_v, d_v_raw, M, 0, false, exact_x);
+            }
         } else {
             XCacheFmt x_q = XC_NONE;
             linear_cached(p + ".attn.wq_du.weight", in_q, d_q, M, x_q);

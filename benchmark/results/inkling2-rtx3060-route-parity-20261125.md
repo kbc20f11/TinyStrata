@@ -2,6 +2,40 @@
 
 The four-start CUDA v2 tests use the pinned Unsloth UD-IQ4_XS weights, the native Vision shard, one active request, and 131,072 device KV tokens on the RTX 3060 12 GB. Hardware is the Ryzen 9 7945HX3D Windows test PC with driver 610.88 and CUDA 13.2.86. The original four-start FP16 result is available separately. [FP16 v2 benchmark](rtx-3060-12gb-20261125-v2-inkling.md)
 
+## Optimizations from reference engines
+
+Each screen ran on the RTX 3060 with the same IQ4 weights, 128K INT8 KV, 1024-token chunks, CUDA Vision and greedy sampling. Each value averages two independent starts per setting in the same experimental binary. The short and long-input response text and reasoning matched their controls in these screens.
+
+| Candidate | Measurement | Control → candidate (tok/s) | Result |
+|---|---|---:|---|
+| Larger Expert staging groups | 4K input | 496.71 → 528.22 (+6.34%) | Added to the 12 GB SM86 CUDA profile when the VRAM budget allows |
+| Grouped Q/K/V projections | Short generation | 37.47 → 37.78 (+0.82%) | Added to eligible single-row Q8_0 projections on SM86 |
+| Grouped Q/K/V projections | Generation after 4K | 36.02 → 36.23 (+0.58%) | Same Expert placement |
+| Asynchronous staging reuse | 4K / 16K input | 496.85 → 499.14 (+0.46%) / 475.59 → 476.78 (+0.25%) | Held back |
+| Batched Expert copies | 4K input | 496.71 → 500.83 (+0.83%) | Held back |
+
+The staging-size change takes the larger transfer-group idea from Basalt. Two 128 MiB buffers replaced two 64 MiB buffers in the measured profile. Resident Expert capacity fell from 894 to 864, and short generation with just this change averaged 37.35 tok/s (−0.33%). The planner keeps its existing reserve and budgets the buffers before placing Experts. If the allocation fails, the engine tries its standard and minimum sizes. [Basalt staging](https://github.com/jesdga95/basalt/commit/071018a69ca40302c1913a9928c93b0d67010fc6)
+
+The grouped projection uses Maya's separate-input Q/K/V scheduling and TinyStrata's existing Q8_0 quantization and MMA accumulation. Mixed-format layers use their existing individual calls. The separate batch-copy experiment queued 19,013 copies in 1,501 CUDA batches per start. [Project Maya](https://github.com/mw00/project-maya/commit/a6df38ddf2d43226bd7440d4b0114bd3ad2911f7) · [MoMoE-Strata](https://github.com/aflin/momoe/commit/c8a73fbf)
+
+Both changes were tested together in the final release build. The following rates average one off/on pair and one on/off pair. The 4K and 16K completion timings include 32 generated tokens and the HTTP request. `STRATA_INK_PF_WIDE_STAGE=0` and `STRATA_INK_MAYA_QKV=0` reproduce the control.
+
+| RTX 3060 12 GB | Control | Final default | Change |
+|---|---:|---:|---:|
+| Short code generation (tok/s) | 37.89 | 38.15 | +0.69% |
+| 4K input (tok/s) | 493.35 | 528.12 | +7.05% |
+| 16K input (tok/s) | 475.13 | 506.41 | +6.58% |
+| Generation after 4K (tok/s) | 39.07 | 37.81 | −3.22% |
+| Generation after 16K (tok/s) | 39.00 | 38.20 | −2.05% |
+| 4K request completion (s) | 9.13 | 8.61 | −5.68% |
+| 16K request completion (s) | 35.33 | 33.22 | −5.97% |
+
+Short code, the exact 4K and 16K probes and the canonical image response matched across both settings. Two additional prompts reached their output limit during reasoning and their captured reasoning strings differed when the staging size and Expert placement changed together. Both settings used the same model weights and quantization.
+
+The final managed profile returned all nine required facts from the 34,184-token workflow, reused that context for image input, read both predefined label values and recovered after invalid image and context overflow requests. A separate comparison at the same Expert placement matched all recorded GPU state hashes for 71 single-row forwards with the grouped projection off and on.
+
+With 4 GiB reserved separately on the 12 GB card, the profile retained the standard 64 MiB staging size. With the 64K FP16 context target, the engine retained all 65,536 KV positions on the GPU and completed the 4K and GPU Vision workflows, including both label checks. This is an 8 GB-equivalent test on RTX 3060. The final CUDA executable SHA-256 is `ac56cab40fed0ba09a4a5c02d9eec02c284c8ac376305a017e1f9075b14ac198`.
+
 ## Existing-engine fast path follow-up
 
 This follow-up screens mechanisms already used in TinyStrata. The comparisons use the same pinned IQ4 weights, GPU Vision, greedy sampling, and one slot. The 12 GB comparisons retain INT8, 128K device KV and chunk 1024.

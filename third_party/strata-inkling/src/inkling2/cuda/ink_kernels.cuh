@@ -1474,12 +1474,20 @@ __global__ void __launch_bounds__(128) k_ink_gemv_multi_bf16(
 // Each output is  sum over the K/32 blocks, in block order, of  (int32 dot of the block) * (weight scale * activation scale)  in fp32 FMA:
 // the int32 sums are exact, the order is fixed, and nothing depends on M or on the other tokens, so a token gives the same bits
 // whether it is read in a prefill chunk or decoded alone or in a batch.
+template <bool SEPARATE_QKV>
 __global__ void __launch_bounds__(256) k_ink_quant_x_q8f(const float* __restrict__ X, int8_t* __restrict__ xq, float* __restrict__ xs,
-                                                          int M, int K, int nMT) {
+                                                          int M, int K, int nMT, const float* Xk, const float* Xv) {
     const int warp = (int)((blockIdx.x * 256u + threadIdx.x) >> 5);   // one warp per (padded token, 32-wide block)
     const int lane = threadIdx.x & 31;
     const int nKB = K >> 5;
     if (warp >= nMT * 8 * nKB) return;
+    if constexpr (SEPARATE_QKV) {
+        // Each input gets the same 8-column fragment as a standalone M=1 launch.
+        X = blockIdx.y == 0 ? X : (blockIdx.y == 1 ? Xk : Xv);
+        const size_t tile = (size_t)blockIdx.y * nMT * nKB * 8;
+        xq += tile * 32;
+        xs += tile;
+    }
     const int tok = warp / nKB, kb = warp % nKB;
     const float v = (tok < M) ? X[(size_t)tok * K + (size_t)kb * 32 + lane] : 0.0f;
     const float am = warp_max(fabsf(v));
@@ -1494,7 +1502,7 @@ __global__ void __launch_bounds__(256) k_ink_quant_x_q8f(const float* __restrict
 
 // One warp = 16 weight rows x up to MTW token tiles (8 tokens each); 2 warps per CTA; the row tiles of the (up to 5) matrices of `mp`
 // are concatenated like in the other multi-projection kernels. gridDim.y walks the token tiles in groups of MTW (prefill chunks).
-template <int MTW>
+template <int MTW, bool SEPARATE_QKV = false>
 __global__ void __launch_bounds__(64) k_ink_gemm_q8f(InkMultiProj mp, const int8_t* __restrict__ xq, const float* __restrict__ xs,
                                                       int M, int K, int nMT) {
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
@@ -1506,6 +1514,13 @@ __global__ void __launch_bounds__(64) k_ink_gemm_q8f(InkMultiProj mp, const int8
     int Np = 0, lrow = 0;
     if (!ink_resolve_multi_proj(mp, grow0, Wp, Yp, Np, lrow)) return;
     const int nKB = K >> 5;
+    if constexpr (SEPARATE_QKV) {
+        // Q, relative and gate use Q's activation. K and V use their own.
+        const int input = grow0 < mp.cumN[3] ? 0 : (grow0 < mp.cumN[4] ? 1 : 2);
+        const size_t tile = (size_t)input * nMT * nKB * 8;
+        xq += tile * 32;
+        xs += tile;
+    }
     const int rt = lrow >> 4;
     const uint4* wq = reinterpret_cast<const uint4*>(Wp) + (size_t)rt * nKB * 32 + lane;
     const __half* ws = reinterpret_cast<const __half*>(Wp + (size_t)Np * K) + (size_t)rt * nKB * 16;
