@@ -2,7 +2,28 @@
 
 The CUDA tests use the pinned Unsloth UD-IQ4_XS weights, the native Vision shard, one active request, and 131,072 device KV tokens on the RTX 3060 12 GB. Hardware is the Ryzen 9 7945HX3D Windows test PC with driver 610.88 and CUDA 13.2.86. The original four-start FP16 result is available separately. [FP16 v2 benchmark](rtx-3060-12gb-20261125-v2-inkling.md)
 
-## Four-start v2 result with automatic settings
+## Four-start v2 result with GPU Vision
+
+On 2026-11-25, the [CUDA Vision revision](https://github.com/kbc20f11/TinyStrata/commit/f2ba9b56b24fd6420401689278b194a3d33f0e6c) completed four independent starts under the same v2 extension, IQ4 weights, 128K INT8 KV, chunk 1024, and seed 1234 as the CPU Vision baseline below.
+
+| RTX 3060 12 GB | CPU Vision | CUDA Vision | Change |
+|---|---:|---:|---:|
+| Image first output (s) | 24.11 | 1.87 | −92.2% |
+| Image completion (s) | 27.41 | 5.31 | −80.6% |
+| Generation (tok/s) | 38.68 | 36.84 | −4.8% |
+| 4K input (tok/s) | 503.04 | 491.07 | −2.4% |
+| 16K input (tok/s) | 483.86 | 472.28 | −2.4% |
+| GPU Experts | 1,110 | 885 | −225 |
+
+The 1024×768 image encoded on CUDA in 0.499–0.502 seconds on all four starts. Startup allocated 605.7 MiB for Vision weights and 177.4 MiB for its workspace before Expert placement and KV fitting. All 131,072 KV positions stayed on-device. The Expert cache occupied 3.73 GiB at startup and after 16K. The Vision allocation trades some text throughput for cold image latency.
+
+The dedicated comparison decoded the canonical image and two independent shipping labels using the same image preparation and projector weights. All FP32 embeddings were finite. The largest per-image relative L2 error between CPU and CUDA was `1.05e-5`. The RTX 3060 correctly read both labels, reused the cache for a follow-up on the same image, and handled replacement with a different image of the same dimensions. A 34,184-token workflow returned all nine required facts. The following image request reused 34,288 tokens and read the label correctly. Invalid images and requests exceeding the context window returned HTTP 400. A valid retry completed.
+
+The sampler, benchmark inputs and model hashes match the CPU Vision run below. The portable CUDA executable SHA-256 is `4a4319677114955789a9c03c7e7e3a95803ad4fe27ea0e098b4067cb249f1f4d`.
+
+A 1120×920 label (644 image tokens) also encoded and answered on CUDA using temporary workspace. With CUDA Vision explicitly disabled, the same label workflow used the CPU and retained 128K. The image-disabled profile allocated no Vision memory, rejected an image request, and answered a subsequent text prompt. The portable HIP build passed for gfx1100, gfx1200 and gfx1201 after the shared image preparation change.
+
+## Four-start v2 result with CPU Vision
 
 Protocol `tinystrata-bench-v2-inkling` completed all four fresh starts at [5671776](https://github.com/kbc20f11/TinyStrata/commit/56717761024511a6f342d3b5deced2fbd04e5c35). Each start used seed 1234, ran the three generation prompts twice, and processed exact 4K and 16K inputs and the canonical cold image. This Inkling extension records `standard: false` because KV is selected by the backend and Vision runs in-process. Text rates pool native token counts and timings. Image times are medians including encoding.
 
