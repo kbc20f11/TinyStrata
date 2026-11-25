@@ -1808,6 +1808,7 @@ struct InkHybridEngine {
         h_v_x   = halloc_pinned<float>(16 * kInkHidden);
         h_v_y   = halloc_pinned<float>(16 * kInkTopK * kInkHidden);
         h_v_p   = halloc_pinned<int32_t>(16 * kInkTopK);
+        pf_stage_metrics = pf_routed_stage;
         const char* routed = std::getenv("STRATA_INK_PF_ROUTED");
         if (routed) {
             pf_routed_stage = std::strcmp(routed, "1") == 0;
@@ -2737,13 +2738,15 @@ inline void launch_ink_moe_hybrid(
             // Short ordinary prefill chunks may route to only a subset of the cold Experts.
             // Preserve their order, and keep the original staging path for captures, verification,
             // pageable memory, SSD waves and long chunks.
-            if (hyb.pf_stage_metrics && !host_list.empty() && M <= InkHybridEngine::kRoutedPrefillRows &&
+            if ((hyb.pf_routed_stage || hyb.pf_stage_metrics) && !host_list.empty() && M <= InkHybridEngine::kRoutedPrefillRows &&
                 !force_exact_dec && hyb.sec4_is_pinned && !hyb.cold_store && hyb.d_pf_stage[0] && hyb.pf_stage_bytes > 0) {
                 cudaStreamCaptureStatus capture;
                 INK_CK(cudaStreamIsCapturing(st, &capture));
                 if (capture == cudaStreamCaptureStatusNone) {
-                    ++hyb.pf_stage_visits;
-                    for (int e : host_list) hyb.pf_stage_bytes_full += hyb.host_meta[ip * kInkExperts + e].body_bytes;
+                    if (hyb.pf_stage_metrics) {
+                        ++hyb.pf_stage_visits;
+                        for (int e : host_list) hyb.pf_stage_bytes_full += hyb.host_meta[ip * kInkExperts + e].body_bytes;
+                    }
                     if (hyb.pf_routed_stage) {
                         const int pairs = M * kInkTopK;
                         INK_CK(cudaMemcpyAsync(hyb.h_v_idx, ws.topk_idx, (size_t)pairs * sizeof(int32_t),
@@ -2759,10 +2762,12 @@ inline void launch_ink_moe_hybrid(
                         if (valid) {
                             host_list.erase(std::remove_if(host_list.begin(), host_list.end(),
                                                            [&](int e) { return !used[e]; }), host_list.end());
-                            ++hyb.pf_routed_visits;
+                            if (hyb.pf_stage_metrics) ++hyb.pf_routed_visits;
                         }
                     }
-                    for (int e : host_list) hyb.pf_stage_bytes_used += hyb.host_meta[ip * kInkExperts + e].body_bytes;
+                    if (hyb.pf_stage_metrics) {
+                        for (int e : host_list) hyb.pf_stage_bytes_used += hyb.host_meta[ip * kInkExperts + e].body_bytes;
+                    }
                 }
             }
         }

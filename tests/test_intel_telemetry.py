@@ -232,6 +232,7 @@ class IntelMemoryUiTests(unittest.TestCase):
     def test_uma_ignores_vram_capacity_and_does_not_invent_expert_counts(self):
         source = (ROOT / "ui/web/app.js").read_text(encoding="utf-8")
         helpers = source[source.index("function umaMemory("):source.index("let lastMetrics =")]
+        model_id = source[source.index("function runtimeModelId("):source.index("function runtimeDateContext(")]
         about = source[source.index("function renderAbout("):source.index('document.addEventListener("click"', source.index("function renderAbout("))]
         monitor = source[source.index("function renderMonitor("):source.index("function facts(")]
         placement = source[source.index("function expertPlacement("):source.index("// A committed prefix position")]
@@ -251,13 +252,14 @@ $("req-body").closest = (selector) => {
 };
 const location = {origin: "http://localhost"}, document = {querySelectorAll: () => []};
 const StrataI18n = {lang: "en"}, statusIcon = () => "";
+const health = {status: "ok", model: "qwen3.6-35b-a3b"};
 const cloverGenerationText = () => null, projectionText = () => null;
 const output = {}, facts = (el, rows) => { output[el.id] = rows.filter((r) => r[1] != null && r[1] !== ""); };
 const metrics = {}, setGpuMetric = (key, value, unit, sub) => {metrics[key] = {value, unit, sub};};
 const setMetric = () => {}, spark = () => {}, modelOp = null, busy = null;
 const modelSwitching = false, placementSampleValid = true, contextUsage = () => null, reqShowAll = false;
 const gpuMetricState = () => ({label: "Unavailable", hint: ""}), setStableHtml = (el, html) => {el.innerHTML = html;}, renderTotals = () => "";
-'''+helpers+about+monitor+placement+r'''
+'''+helpers+model_id+about+monitor+placement+r'''
 const hw = {gpu_mem_total: 64*2**30, gpu_mem_used: 9*2**30, gpu_shared_mem_used: 12*2**30, ram_total: 32*2**30, ram_used: 22*2**30};
 const eng = {memory_model: "uma", kv: "int8", expert_slots: 999, expert_cache_mib: 999999};
 const st = {gpu_name: "Selected Intel GPU", gpu_memory_model: "uma"};
@@ -270,6 +272,8 @@ renderAbout(eng, hw, st);
 assert.ok(!JSON.stringify(output).includes("VRAM"));
 assert.ok(!JSON.stringify(output).includes("999"));
 assert.ok(JSON.stringify(output).includes("shared system RAM"));
+assert.equal(output["facts-engine"].find((r) => r[0] === "Model")[1], health.model);
+assert.equal(output["facts-api"].find((r) => r[0] === "Model name")[1], health.model);
 assert.equal(output["facts-hw"].find((r) => r[0] === "GPU")[1], "Selected Intel GPU");
 const discrete = gpuMemoryReading({}, hw, {}, history);
 assert.equal(discrete.total, 64*2**30);
