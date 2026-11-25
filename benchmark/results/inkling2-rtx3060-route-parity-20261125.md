@@ -2,6 +2,33 @@
 
 The CUDA tests use the pinned Unsloth UD-IQ4_XS weights, the native Vision shard, one active request, and 131,072 device KV tokens on the RTX 3060 12 GB. Hardware is the Ryzen 9 7945HX3D Windows test PC with driver 610.88 and CUDA 13.2.86. The original four-start FP16 result is available separately. [FP16 v2 benchmark](rtx-3060-12gb-20261125-v2-inkling.md)
 
+## Existing-engine fast path follow-up
+
+This follow-up screens mechanisms already used in TinyStrata. The comparisons use the same pinned IQ4 weights, GPU Vision, greedy sampling, and one slot. The 12 GB comparisons retain INT8, 128K device KV and chunk 1024.
+
+| 12 GB configuration | Starts | Generation (tok/s) | 4K input (tok/s) | 16K input (tok/s) | Image first / complete (s) | GPU Experts |
+|---|---:|---:|---:|---:|---:|---:|
+| Separate Vision workspaces | 2 | 37.85 | 490.97 | 471.27 | 1.865 / 4.951 | 885 |
+| Shared Vision workspace | 2 | 38.34 | 491.32 | 472.42 | 1.865 / 4.923 | 894 |
+| Existing 64-token Expert tile disabled | 1 | 38.12 | 427.88 | 411.53 | 1.965 / 5.094 | 885 |
+
+The workspace comparison averages the measured rates by case before averaging across starts. It is a development screen separate from v2. Sharing temporaries whose lifetimes do not overlap reduced GPU Vision workspace from 177.4 to 141.4 MiB, a saving of 37,765,120 bytes. Complete CUDA embedding arrays for the canonical image and two labelled images were bitwise identical with sharing off and on. The additional Expert residency can change floating-point rounding in subsequent language decoding. All fixture answers were checked separately from embedding equality. The small timing changes do not establish a universal speed gain. Disabling the existing Expert tile reduced 4K and 16K prefill throughput by about 13%, with identical captured outputs at the same Expert placement.
+
+The Windows budget now applies the same minimum of CUDA and driver-reported dedicated VRAM used by other engines. Under a separate 4 GiB owned reservation on the 12 GB card, the earlier CUDA-only budget planned 873 GPU Experts and failed before model readiness. With the dedicated-memory bound, the Expert planning query used 4,204 MiB when CUDA alone reported 8,045 MiB. Both workspace configurations then retained the full 64K FP16 KV on the GPU at chunk 512, with zero resident Experts, and completed 4K input and three CUDA image requests. Both read the two label values correctly. This is a constrained-memory simulation on RTX 3060, with the 64K target set explicitly.
+
+The initial same-binary screen found no dependable gain from changing CPU Expert worker count, slowing the Expert placement update cadence, or reusing packed KV tiles. The placement cadence change also changed the captured greedy code output. The existing verifier's 2/3/4/8-row INT8 windows produced different logits from singleton decoding for two probes on RTX 3060, so suffix lookup was held back.
+
+The existing CPU Expert pool's shared intermediate was applied to Inkling's split GGUF_RAW and S_K down projections. One worker publishes the intermediate only after all producers finish. The same quantizer and per-row dot products run in both arms. A CPU fixture passed 144 quantizer-byte and synchronization cases. The actual enabled engine reused the intermediate for 4,484 Expert jobs per 12 GB start and 6,816 per 8 GB start.
+
+| Same-binary CPU Expert comparison | Starts per arm | Short code, off → on (tok/s) | Generation after 4K, off → on (tok/s) |
+|---|---:|---:|---:|
+| RTX 3060 12 GB, 128K INT8 | 2 | 37.50 → 37.54 | 35.58 → 36.20 (+1.7%) |
+| RTX 3060 with 4 GiB reserved, 64K FP16 | 2 | 22.69 → 22.79 | 22.18 → 22.62 (+2.0%) |
+
+The code and 4K answer and reasoning strings matched between the arms. Expert counts were fixed at 894 and zero for the 12 GB and 8 GB conditions respectively. Neither prefill nor short decoding showed a consistent speed gain. The executable SHA-256 for these comparisons is `18b33360c001b83c4edb1a62164d42cefe0378d9f8903609576fa3de4c4f7165`.
+
+Reference checkouts were refreshed to Strata `2af30ccaa`, Project Maya `1d0f8c5`, Basalt `48086c77`, PolyStrata `36e654b1`, and MoMoE-Strata `c8dd5a99`. This follow-up transfers mechanisms already present in TinyStrata.
+
 ## Four-start v2 result with GPU Vision
 
 On 2026-11-25, the [CUDA Vision revision](https://github.com/kbc20f11/TinyStrata/commit/f2ba9b56b24fd6420401689278b194a3d33f0e6c) completed four independent starts under the same v2 extension, IQ4 weights, 128K INT8 KV, chunk 1024, and seed 1234 as the CPU Vision baseline below.

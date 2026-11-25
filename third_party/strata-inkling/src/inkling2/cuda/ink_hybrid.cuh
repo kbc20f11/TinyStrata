@@ -20,6 +20,7 @@
 #include "../ink_cold_store.hpp"
 #include "../ink_host_avx2.h"
 #include "../ink_host_avx512.h"
+#include "../ink_host_phase.hpp"
 #include "strata/platform/commit.hpp"
 #include "strata/core/moe_wave_plan.hpp"
 #include "strata/core/ink_expert_policy.hpp"
@@ -1037,7 +1038,33 @@ inline void expert_phase1(const InkHostExpertMeta& em, const uint8_t* body, cons
     }
 }
 
-inline void expert_phase2(const InkHostExpertMeta& em, const uint8_t* body, const float* act, int r0, int r1, float* y_out) noexcept {
+struct SplitDownActivation {
+    alignas(32) uint8_t raw[2048];
+    InkQ8_1_G64 sk[kInkInter / 64];
+};
+
+inline bool split_down_uses_quant(const InkHostExpertMeta& em) noexcept {
+    return em.gu_code == FMT_GGUF_RAW || em.dn_code == FMT_GGUF_RAW ||
+           (em.dn_code != FMT_SF4 && em.dn_code != FMT_MX8 && ink_sb_bytes(em.dn_code) > 0);
+}
+
+inline void prepare_split_down(const InkHostExpertMeta& em, const uint8_t* body, const float* act,
+                               SplitDownActivation& activation) noexcept {
+    if (em.gu_code == FMT_GGUF_RAW || em.dn_code == FMT_GGUF_RAW) {
+        InkGgufExpertHeader hdr{};
+        std::memcpy(&hdr, body, sizeof(hdr));
+        const auto arith = strata::quant::default_arith();
+        const auto* ti = strata::quant::type_info(static_cast<strata::quant::Type>(hdr.dn_type));
+        // plan_row_tasks has already checked the weight/activation contract and buffer size.
+        const auto* ak = strata::quant::act_kernel(ti->act, arith);
+        ak->fn(act, activation.raw, kInkInter);
+    } else {
+        quant_q8_1_h(act, activation.sk, kInkInter);
+    }
+}
+
+inline void expert_phase2(const InkHostExpertMeta& em, const uint8_t* body, const float* act, int r0, int r1,
+                          float* y_out, const SplitDownActivation* activation = nullptr) noexcept {
     constexpr int D = kInkHidden;
     constexpr int I = kInkInter;
     if (em.gu_code == FMT_GGUF_RAW || em.dn_code == FMT_GGUF_RAW) {
@@ -1045,14 +1072,17 @@ inline void expert_phase2(const InkHostExpertMeta& em, const uint8_t* body, cons
         std::memcpy(&hdr, body, sizeof(hdr));
         const auto arith = strata::quant::default_arith();
         const auto qt = static_cast<strata::quant::Type>(hdr.dn_type);
-        const auto* ti = strata::quant::type_info(qt);
         const size_t rb = strata::quant::row_bytes((int)hdr.dn_type, I);
         const auto* dk = strata::quant::dot_kernel(qt, arith);
         const auto* dk4 = strata::quant::dot_x4_kernel(qt, arith);
-        const auto* ak = strata::quant::act_kernel(ti->act, arith);
         const uint8_t* w_base = body + em.dn_off;
-        alignas(32) uint8_t qa[2048];
-        ak->fn(act, qa, I);
+        alignas(32) uint8_t local[2048];
+        if (!activation) {
+            const auto* ti = strata::quant::type_info(qt);
+            const auto* ak = strata::quant::act_kernel(ti->act, arith);
+            ak->fn(act, local, I);
+        }
+        const uint8_t* qa = activation ? activation->raw : local;
         int r = r0;
         if (dk4) {
             for (; r + 4 <= r1; r += 4) {
@@ -1083,8 +1113,9 @@ inline void expert_phase2(const InkHostExpertMeta& em, const uint8_t* body, cons
         const uint8_t* bs = bp + (size_t)D * I;
         for (int r = r0; r < r1; ++r) y_out[r] = dot_mx8_row_h(bp + (size_t)r * I, bs + (size_t)r * (I / 32), act, I);
     } else {
-        InkQ8_1_G64 hq[I / 64];
-        quant_q8_1_h(act, hq, I);
+        InkQ8_1_G64 local[I / 64];
+        if (!activation) quant_q8_1_h(act, local, I);
+        const InkQ8_1_G64* hq = activation ? activation->sk : local;
         const int sb = ink_sb_bytes(em.dn_code);
         const size_t pair_b = 9ull * sb;
         const uint8_t* dn_base = body + em.dn_off;
@@ -1634,6 +1665,10 @@ struct InkHybridEngine {
     std::atomic<int> row_next{0};
     std::atomic<int> p1_left[kInkTopK];
     float act_sh[kInkTopK][kInkInter];
+    host_eval::SplitDownActivation split_down[kInkTopK];
+    bool reuse_split_down[kInkTopK] = {};
+    bool share_split_down = true;
+    std::atomic<uint64_t> shared_down_plans{0};
     bool split_experts = true;   // STRATA_INK_SPLIT=0 goes back to one expert per thread
     int cur_layer = 0, cur_nj = 0, cur_ng = 0;
 
@@ -1645,18 +1680,26 @@ struct InkHybridEngine {
             const int key = cur_layer * n_experts + cur_eid[tk.job];
             const auto& hm = host_meta[(size_t)key];
             float* ydst = const_cast<float*>(h_bell->y[cur_slot_k[tk.job]]);
+            const bool shared = reuse_split_down[tk.job];
             if (tk.phase == 1) {
                 host_eval::expert_phase1(hm, hm.body, cur_x, tk.begin, tk.end, act_sh[tk.job]);
-                p1_left[tk.job].fetch_sub(1, std::memory_order_release);
+                if (shared) {
+                    finish_shared_activation(p1_left[tk.job], [&] {
+                        host_eval::prepare_split_down(hm, hm.body, act_sh[tk.job], split_down[tk.job]);
+                    });
+                } else {
+                    p1_left[tk.job].fetch_sub(1, std::memory_order_release);
+                }
             } else {
-                while (p1_left[tk.job].load(std::memory_order_acquire) > 0) {
+                while (!split_activation_ready(p1_left[tk.job], shared)) {
 #if (defined(__GNUC__) || defined(__clang__)) && defined(__x86_64__)
                     __builtin_ia32_pause();
 #else
                     std::this_thread::yield();
 #endif
                 }
-                host_eval::expert_phase2(hm, hm.body, act_sh[tk.job], tk.begin, tk.end, ydst);
+                host_eval::expert_phase2(hm, hm.body, act_sh[tk.job], tk.begin, tk.end, ydst,
+                                         shared ? &split_down[tk.job] : nullptr);
             }
         }
     }
@@ -1673,7 +1716,14 @@ struct InkHybridEngine {
         auto chunk = [](int rows, int n) { int c = (rows + n - 1) / n; c = (c + 7) & ~7; return std::max(8, c); };
         const int c1 = chunk(kInkInter, nc), c2 = chunk(kInkHidden, nc);
         n_row_tasks = 0;
-        for (int j = 0; j < cur_nj; ++j) p1_left[j].store(0, std::memory_order_relaxed);
+        unsigned scheduled_shared = 0;
+        for (int j = 0; j < cur_nj; ++j) {
+            p1_left[j].store(0, std::memory_order_relaxed);
+            const auto& hm = host_meta[(size_t)(cur_layer * n_experts + cur_eid[j])];
+            reuse_split_down[j] = share_split_down && c2 < kInkHidden && host_eval::split_down_uses_quant(hm);
+            scheduled_shared += reuse_split_down[j];
+        }
+        if (scheduled_shared) shared_down_plans.fetch_add(scheduled_shared, std::memory_order_relaxed);
         for (int b = 0; b < kInkInter; b += c1)
             for (int j = 0; j < cur_nj; ++j) {
                 row_tasks[(size_t)n_row_tasks++] = {j, 1, b, std::min(kInkInter, b + c1)};
@@ -1789,6 +1839,7 @@ struct InkHybridEngine {
         n_threads = (num_threads > 0) ? num_threads : std::min(16, std::max(2, hw / 2));
         if (const char* e = std::getenv("STRATA_INK_THREADS")) n_threads = std::max(1, std::min(128, std::atoi(e)));   // the pool size, for sweeps
         if (const char* e = std::getenv("STRATA_INK_SPLIT")) split_experts = (e[0] != '0');
+        if (const char* e = std::getenv("STRATA_INK_SPLIT_QUANT")) share_split_down = (e[0] != '0');
         if (const char* e = std::getenv("STRATA_L3_PF")) l3_pf_enabled = (e[0] != '0');
         if (const char* e = std::getenv("STRATA_INK_DEC_PCIE_SHARE")) dec_pcie_share = std::max(0.0, std::min(1.0, std::atof(e)));
         dec_share_user = dec_pcie_share;
@@ -2488,6 +2539,10 @@ struct InkHybridEngine {
     }
 
     void free_all() {
+        if (const auto count = shared_down_plans.exchange(0, std::memory_order_relaxed)) {
+            std::fprintf(stderr, "[InkHybrid] shared down quantization used for %llu Expert jobs\n",
+                         (unsigned long long)count);
+        }
         if (pf_stage_metrics) {
             std::fprintf(stderr, "[InkPrefillStage] mode=%s eligible_visits=%llu routed_visits=%llu full_bytes=%llu staged_bytes=%llu\n",
                          pf_routed_stage ? "routed" : "full", (unsigned long long)pf_stage_visits,
