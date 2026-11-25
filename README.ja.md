@@ -50,7 +50,7 @@ Qwen・Gemma・Clover・LFM・Tiel Coder はいずれも、空き VRAM に合わ
 
 CUDA・HIP のディスクリート GPU では、Inkling も VRAM **8／12／16 GB 以上**に応じて **64K／128K／256K** を自動設定の目安にします。標準の起動経路では KV を GPU に配置する領域を先に確保し、残りの VRAM で Expert の配置を決めます。実際に使える容量は API に表示されます。
 
-画像入力を有効にしたCUDA・ディスクリートHIPでは、KVとExpertの配置を決める前に画像エンコーダーをGPUに載せます。画像の作業領域がVRAMに収まらない場合はCPUで処理します。CUDA版は画像パックの重みの精度を維持し、FP32で演算します。AttentionとMLPは同じ作業領域を使い回します。WindowsのNVIDIA環境では、CUDAとドライバーが報告する専用VRAMの空き容量のうち、小さい方を配置の上限に使います。
+画像入力を有効にしたCUDA・ディスクリートHIPでは、KVとExpertの配置を決める前に画像エンコーダーをGPUに載せます。画像の作業領域がVRAMに収まらない場合はCPUで処理します。CUDA版は画像パックの重みの精度を維持し、FP32で演算します。AttentionとMLPは同じ作業領域を使い回します。WindowsのNVIDIA環境では、CUDAの空き容量を使い、ドライバーから専用VRAMの空き容量を取得できる場合は、その値も上限にします。
 
 CUDAのsm_86・12 GB級・128Kの自動設定では、実測に基づいてINT8 KVを使います。VRAMに余裕があれば入力を1,024トークンずつ処理します。CUDAでは `--kv-type fp16`／`int8`／`fp8`、HIPでは `fp16`／`fp8` を明示指定できます。HIPの自動選択は独自のVRAM条件に従います。
 

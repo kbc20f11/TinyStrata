@@ -1,6 +1,6 @@
 # Inkling 2 Mini KV, prefill and route audit on RTX 3060
 
-The CUDA tests use the pinned Unsloth UD-IQ4_XS weights, the native Vision shard, one active request, and 131,072 device KV tokens on the RTX 3060 12 GB. Hardware is the Ryzen 9 7945HX3D Windows test PC with driver 610.88 and CUDA 13.2.86. The original four-start FP16 result is available separately. [FP16 v2 benchmark](rtx-3060-12gb-20261125-v2-inkling.md)
+The four-start CUDA v2 tests use the pinned Unsloth UD-IQ4_XS weights, the native Vision shard, one active request, and 131,072 device KV tokens on the RTX 3060 12 GB. Hardware is the Ryzen 9 7945HX3D Windows test PC with driver 610.88 and CUDA 13.2.86. The original four-start FP16 result is available separately. [FP16 v2 benchmark](rtx-3060-12gb-20261125-v2-inkling.md)
 
 ## Existing-engine fast path follow-up
 
@@ -18,7 +18,7 @@ The Windows budget now applies the same minimum of CUDA and driver-reported dedi
 
 The initial same-binary screen found no dependable gain from changing CPU Expert worker count, slowing the Expert placement update cadence, or reusing packed KV tiles. The placement cadence change also changed the captured greedy code output. The existing verifier's 2/3/4/8-row INT8 windows produced different logits from singleton decoding for two probes on RTX 3060, so suffix lookup was held back.
 
-The existing CPU Expert pool's shared intermediate was applied to Inkling's split GGUF_RAW and S_K down projections. One worker publishes the intermediate only after all producers finish. The same quantizer and per-row dot products run in both arms. A CPU fixture passed 144 quantizer-byte and synchronization cases. The actual enabled engine reused the intermediate for 4,484 Expert jobs per 12 GB start and 6,816 per 8 GB start.
+The existing CPU Expert pool's shared intermediate was applied to Inkling's split GGUF_RAW and S_K down projections. One worker publishes the intermediate only after all producers finish. The same quantizer and per-row dot products run in both arms. A local CPU fixture passed 144 quantizer-byte and synchronization cases. The actual enabled engine reused the intermediate for 4,484 Expert jobs per 12 GB start and 6,816 per 8 GB start.
 
 | Same-binary CPU Expert comparison | Starts per arm | Short code, off → on (tok/s) | Generation after 4K, off → on (tok/s) |
 |---|---:|---:|---:|
@@ -26,6 +26,8 @@ The existing CPU Expert pool's shared intermediate was applied to Inkling's spli
 | RTX 3060 with 4 GiB reserved, 64K FP16 | 2 | 22.69 → 22.79 | 22.18 → 22.62 (+2.0%) |
 
 The code and 4K answer and reasoning strings matched between the arms. Expert counts were fixed at 894 and zero for the 12 GB and 8 GB conditions respectively. Neither prefill nor short decoding showed a consistent speed gain. The executable SHA-256 for these comparisons is `18b33360c001b83c4edb1a62164d42cefe0378d9f8903609576fa3de4c4f7165`.
+
+With the final managed settings (128K INT8, chunk 1024 and GPU Vision), the engine completed a 16K input and read both image labels correctly. It returned all nine required facts from a 34,184-token request, then reused the cache for a follow-up image. Invalid images and context overflow returned HTTP 400, and a valid retry completed.
 
 Reference checkouts were refreshed to Strata `2af30ccaa`, Project Maya `1d0f8c5`, Basalt `48086c77`, PolyStrata `36e654b1`, and MoMoE-Strata `c8dd5a99`. This follow-up transfers mechanisms already present in TinyStrata.
 

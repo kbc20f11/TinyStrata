@@ -48,7 +48,7 @@ Gemma automatically groups long text around fresh images when its current Expert
 
 On discrete CUDA/HIP GPUs, Inkling uses automatic context targets of **64K / 128K / 256K** for **8 / 12 / 16+ GB** of VRAM. The managed route budgets device KV before Expert placement. The API reports the capacity the engine can actually use.
 
-With image input enabled, the CUDA and discrete HIP routes load the Vision encoder on the GPU before budgeting KV and Experts. The native CPU encoder remains available when the image workspace cannot fit. The CUDA encoder keeps the stored weight precision, uses FP32 arithmetic, and reuses workspace across attention and MLP. On Windows with NVIDIA, Inkling uses the smaller of the available CUDA allocation estimate and the driver's free dedicated VRAM reading.
+With image input enabled, the CUDA and discrete HIP routes load the Vision encoder on the GPU before budgeting KV and Experts. The native CPU encoder remains available when the image workspace cannot fit. The CUDA encoder keeps the stored weight precision, uses FP32 arithmetic, and reuses workspace across attention and MLP. On Windows with NVIDIA, Inkling uses the CUDA free-memory estimate and caps it at the driver's free dedicated VRAM when that reading is available.
 
 The measured CUDA policy selects INT8 KV for the 128K managed profile on 12 GB-class sm_86 GPUs. Automatic prefill can use a 1,024-token chunk when GPU headroom permits it. CUDA accepts explicit `--kv-type fp16`, `int8`, or `fp8`. HIP accepts explicit `fp16` or `fp8` and uses its own automatic selection.
 
