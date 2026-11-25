@@ -429,6 +429,106 @@ inline bool expand_image_pads(
     return true;
 }
 
+struct VisionInput {
+    std::vector<float> patches;
+    std::vector<float> position;
+    std::vector<float> rope_cos;
+    std::vector<float> rope_sin;
+};
+
+// Arrange patches in merged-cell order. Position and RoPE rows include CLS at zero.
+inline VisionInput prepare_vision_input(const ImageRec& img, const VitCfg& c, const float* class_embedding,
+                                        const float* cls_position, const float* position_embedding) {
+    const int merge = c.merge;
+    const int patch = c.patch;
+    const int cell = patch * merge;
+    const int ph = img.grid_h * merge;
+    const int pw = img.grid_w * merge;
+    const int n_patches = ph * pw;
+    const int S = n_patches + 1;
+    const int D = c.hidden;
+    const int hd = c.head_dim;
+    const int patch_in = 3 * patch * patch;
+    VisionInput input;
+    input.patches.resize(static_cast<size_t>(n_patches) * patch_in);
+    std::vector<int> pos_h(S, 0), pos_w(S, 0);
+    int pi = 0;
+    for (int gr = 0; gr < img.grid_h; ++gr) {
+        for (int gc = 0; gc < img.grid_w; ++gc) {
+            const size_t tok = static_cast<size_t>(gr) * img.grid_w + gc;
+            const float* cell_px = img.pixel_values.data() + tok * cell * cell * 3;
+            for (int mr = 0; mr < merge; ++mr) {
+                for (int mc = 0; mc < merge; ++mc) {
+                    float* dst = input.patches.data() + static_cast<size_t>(pi) * patch_in;
+                    int idx = 0;
+                    for (int py = 0; py < patch; ++py) {
+                        const int ly = mr * patch + py;
+                        for (int px = 0; px < patch; ++px) {
+                            const int lx = mc * patch + px;
+                            const float* rgb = cell_px + (static_cast<size_t>(ly) * cell + lx) * 3;
+                            dst[idx++] = rgb[0];
+                            dst[idx++] = rgb[1];
+                            dst[idx++] = rgb[2];
+                        }
+                    }
+                    pos_h[pi + 1] = gr * merge + mr + 1;
+                    pos_w[pi + 1] = gc * merge + mc + 1;
+                    ++pi;
+                }
+            }
+        }
+    }
+
+    // Bilinear interpolation (align_corners=False) from the learned grid to [ph, pw].
+    input.position.resize(static_cast<size_t>(S) * D);
+    for (int d = 0; d < D; ++d) input.position[d] = class_embedding[d] + cls_position[d];
+    const int G = c.posemb_grid;
+    for (int p = 1; p < S; ++p) {
+        float* dst = input.position.data() + static_cast<size_t>(p) * D;
+        const float y = (static_cast<float>(pos_h[p] - 1) + 0.5f) * (static_cast<float>(G) / ph) - 0.5f;
+        const float x = (static_cast<float>(pos_w[p] - 1) + 0.5f) * (static_cast<float>(G) / pw) - 0.5f;
+        const int y0 = std::max(0, std::min(G - 1, static_cast<int>(std::floor(y))));
+        const int y1 = std::min(G - 1, y0 + 1);
+        const int x0 = std::max(0, std::min(G - 1, static_cast<int>(std::floor(x))));
+        const int x1 = std::min(G - 1, x0 + 1);
+        const float wy = std::max(0.0f, std::min(1.0f, y - y0));
+        const float wx = std::max(0.0f, std::min(1.0f, x - x0));
+        const float w00 = (1.0f - wy) * (1.0f - wx);
+        const float w01 = (1.0f - wy) * wx;
+        const float w10 = wy * (1.0f - wx);
+        const float w11 = wy * wx;
+        const float* p00 = position_embedding + (static_cast<size_t>(y0) * G + x0) * D;
+        const float* p01 = position_embedding + (static_cast<size_t>(y0) * G + x1) * D;
+        const float* p10 = position_embedding + (static_cast<size_t>(y1) * G + x0) * D;
+        const float* p11 = position_embedding + (static_cast<size_t>(y1) * G + x1) * D;
+        for (int d = 0; d < D; ++d) {
+            dst[d] = w00 * p00[d] + w01 * p01[d] + w10 * p10[d] + w11 * p11[d];
+        }
+    }
+
+    const int sp_dim = hd / 2;
+    const int n_freq = sp_dim / 2;
+    std::vector<float> inv_freq(n_freq);
+    for (int i = 0; i < n_freq; ++i) {
+        inv_freq[i] = 1.0f / std::pow(c.rope_theta, static_cast<float>(2 * i) / sp_dim);
+    }
+    input.rope_cos.resize(static_cast<size_t>(S) * hd);
+    input.rope_sin.resize(static_cast<size_t>(S) * hd);
+    for (int t = 0; t < S; ++t) {
+        float* rc = input.rope_cos.data() + static_cast<size_t>(t) * hd;
+        float* rs = input.rope_sin.data() + static_cast<size_t>(t) * hd;
+        for (int i = 0; i < n_freq; ++i) {
+            const float aw = static_cast<float>(pos_w[t]) * inv_freq[i];
+            const float ah = static_cast<float>(pos_h[t]) * inv_freq[i];
+            rc[2 * i] = rc[2 * i + 1] = std::cos(aw);
+            rs[2 * i] = rs[2 * i + 1] = std::sin(aw);
+            rc[sp_dim + 2 * i] = rc[sp_dim + 2 * i + 1] = std::cos(ah);
+            rs[sp_dim + 2 * i] = rs[sp_dim + 2 * i + 1] = std::sin(ah);
+        }
+    }
+    return input;
+}
+
 // ---- Exact CPU 23-Layer Inkling2VisionModel (reference & universal fallback; GPU backends may override encode_image) ----
 class CpuVisionEncoder {
 public:
@@ -497,12 +597,8 @@ public:
         }
         const VitCfg& c = info.c;
         const int merge = c.merge;       // 2
-        const int patch = c.patch;       // 20
-        const int cell = patch * merge;  // 40
         const int n_tok = img.num_lm_tokens();
-        const int ph = img.grid_h * merge;
-        const int pw = img.grid_w * merge;
-        const int n_patches = ph * pw;
+        const int n_patches = n_tok * merge * merge;
         const int S = n_patches + 1;     // CLS at index 0, patches at 1..n_patches
         const int D = c.hidden;          // 1024
         const int H = c.heads;           // 16
@@ -518,104 +614,29 @@ public:
             return it == weights_.end() ? nullptr : it->second.data();
         };
 
-        // 1. Patchify [n_tok, merge, patch, merge, patch, 3] -> transpose(2,3) -> [n_patches, 1200]
-        // Patch order inside each merged cell (gr, gc): (mr=0,mc=0), (mr=0,mc=1), (mr=1,mc=0), (mr=1,mc=1)
-        const int patch_in = 3 * patch * patch;  // 1200
-        std::vector<float> patch_buf(static_cast<size_t>(n_patches) * patch_in);
-        std::vector<int> pos_h(S, 0), pos_w(S, 0);
-        int pi = 0;
-        for (int gr = 0; gr < img.grid_h; ++gr) {
-            for (int gc = 0; gc < img.grid_w; ++gc) {
-                const size_t tok = static_cast<size_t>(gr) * img.grid_w + gc;
-                const float* cell_px = img.pixel_values.data() + tok * cell * cell * 3;
-                for (int mr = 0; mr < merge; ++mr) {
-                    for (int mc = 0; mc < merge; ++mc) {
-                        float* dst = patch_buf.data() + static_cast<size_t>(pi) * patch_in;
-                        int idx = 0;
-                        for (int py = 0; py < patch; ++py) {
-                            const int ly = mr * patch + py;
-                            for (int px = 0; px < patch; ++px) {
-                                const int lx = mc * patch + px;
-                                const float* rgb = cell_px + (static_cast<size_t>(ly) * cell + lx) * 3;
-                                dst[idx++] = rgb[0];
-                                dst[idx++] = rgb[1];
-                                dst[idx++] = rgb[2];
-                            }
-                        }
-                        pos_h[pi + 1] = gr * merge + mr + 1;  // 1-indexed for patches, 0 for CLS
-                        pos_w[pi + 1] = gc * merge + mc + 1;
-                        ++pi;
-                    }
-                }
-            }
-        }
-
-        // 2. Patch linear embedding + bilinearly interpolated 32x32 position_embedding + CLS token
-        std::vector<float> cur(static_cast<size_t>(S) * D, 0.0f);
-        const float* w_cls = W("model.visual.backbone.embeddings.class_embedding");
-        const float* w_cls_pos = W("model.visual.backbone.embeddings.cls_position_embedding");
+        // Patch linear embedding plus the shared position and CLS rows.
+        VisionInput input = prepare_vision_input(img, c,
+            W("model.visual.backbone.embeddings.class_embedding"),
+            W("model.visual.backbone.embeddings.cls_position_embedding"),
+            W("model.visual.backbone.embeddings.position_embedding"));
+        std::vector<float> cur = std::move(input.position);
+        const int patch_in = 3 * c.patch * c.patch;
         const float* w_patch = W("model.visual.backbone.embeddings.patch_embedding.weight");
-        const float* w_pos = W("model.visual.backbone.embeddings.position_embedding");
-        for (int d = 0; d < D; ++d) cur[d] = w_cls[d] + w_cls_pos[d];
-
-        const int G = c.posemb_grid;  // 32
         rows.run(n_patches, [&](int p) {
             float* dst = cur.data() + static_cast<size_t>(p + 1) * D;
-            const float* xp = patch_buf.data() + static_cast<size_t>(p) * patch_in;
+            const float* xp = input.patches.data() + static_cast<size_t>(p) * patch_in;
             for (int d = 0; d < D; ++d) {
                 const float* wr = w_patch + static_cast<size_t>(d) * patch_in;
                 float s = 0.0f;
                 for (int k = 0; k < patch_in; ++k) s += wr[k] * xp[k];
-                dst[d] = s;
-            }
-            // Bilinear interpolation (align_corners=False) from [G, G] to [ph, pw]
-            const float y = (static_cast<float>(pos_h[p + 1] - 1) + 0.5f) * (static_cast<float>(G) / ph) - 0.5f;
-            const float x = (static_cast<float>(pos_w[p + 1] - 1) + 0.5f) * (static_cast<float>(G) / pw) - 0.5f;
-            const int y0 = std::max(0, std::min(G - 1, static_cast<int>(std::floor(y))));
-            const int y1 = std::min(G - 1, y0 + 1);
-            const int x0 = std::max(0, std::min(G - 1, static_cast<int>(std::floor(x))));
-            const int x1 = std::min(G - 1, x0 + 1);
-            const float wy = std::max(0.0f, std::min(1.0f, y - y0));
-            const float wx = std::max(0.0f, std::min(1.0f, x - x0));
-            const float w00 = (1.0f - wy) * (1.0f - wx);
-            const float w01 = (1.0f - wy) * wx;
-            const float w10 = wy * (1.0f - wx);
-            const float w11 = wy * wx;
-            const float* p00 = w_pos + (static_cast<size_t>(y0) * G + x0) * D;
-            const float* p01 = w_pos + (static_cast<size_t>(y0) * G + x1) * D;
-            const float* p10 = w_pos + (static_cast<size_t>(y1) * G + x0) * D;
-            const float* p11 = w_pos + (static_cast<size_t>(y1) * G + x1) * D;
-            for (int d = 0; d < D; ++d) {
-                dst[d] += w00 * p00[d] + w01 * p01[d] + w10 * p10[d] + w11 * p11[d];
+                dst[d] = s + dst[d];
             }
         });
 
-        // 3. Pre-LayerNorm
+        // Pre-LayerNorm
         layer_norm_rows(rows, cur.data(), W("model.visual.backbone.ln_pre.weight"), W("model.visual.backbone.ln_pre.bias"), S, D, c.ln_eps);
 
-        // 4. Axial 2D RoPE cos/sin table [S, hd]: [w_freqs, h_freqs] interleaved pairwise
-        const int sp_dim = hd / 2;  // 32
-        const int n_freq = sp_dim / 2;  // 16
-        std::vector<float> inv_freq(n_freq);
-        for (int i = 0; i < n_freq; ++i) {
-            inv_freq[i] = 1.0f / std::pow(c.rope_theta, static_cast<float>(2 * i) / sp_dim);
-        }
-        std::vector<float> rope_cos(static_cast<size_t>(S) * hd);
-        std::vector<float> rope_sin(static_cast<size_t>(S) * hd);
-        for (int t = 0; t < S; ++t) {
-            float* rc = rope_cos.data() + static_cast<size_t>(t) * hd;
-            float* rs = rope_sin.data() + static_cast<size_t>(t) * hd;
-            for (int i = 0; i < n_freq; ++i) {
-                float aw = static_cast<float>(pos_w[t]) * inv_freq[i];
-                float ah = static_cast<float>(pos_h[t]) * inv_freq[i];
-                rc[2 * i] = rc[2 * i + 1] = std::cos(aw);
-                rs[2 * i] = rs[2 * i + 1] = std::sin(aw);
-                rc[sp_dim + 2 * i] = rc[sp_dim + 2 * i + 1] = std::cos(ah);
-                rs[sp_dim + 2 * i] = rs[sp_dim + 2 * i + 1] = std::sin(ah);
-            }
-        }
-
-        // 5. 23 ViT Layers (Pre-LN + Self-Attn w/ Axial 2D RoPE + LayerScale ls_1 + Pre-LN + GELU MLP + ls_2)
+        // 23 ViT layers: pre-LN, self-attention with axial RoPE, LayerScale, and GELU MLP.
         std::vector<float> norm(static_cast<size_t>(S) * D);
         std::vector<float> q(static_cast<size_t>(S) * D), k(static_cast<size_t>(S) * D), v(static_cast<size_t>(S) * D);
         std::vector<float> attn_out(static_cast<size_t>(S) * D), proj(static_cast<size_t>(S) * D);
@@ -633,8 +654,8 @@ public:
 
             // Apply pairwise axial 2D RoPE to Q and K
             rows.run(S, [&](int t) {
-                const float* rc = rope_cos.data() + static_cast<size_t>(t) * hd;
-                const float* rs = rope_sin.data() + static_cast<size_t>(t) * hd;
+                const float* rc = input.rope_cos.data() + static_cast<size_t>(t) * hd;
+                const float* rs = input.rope_sin.data() + static_cast<size_t>(t) * hd;
                 for (int h = 0; h < H; ++h) {
                     float* qh = q.data() + (static_cast<size_t>(t) * H + h) * hd;
                     float* kh = k.data() + (static_cast<size_t>(t) * H + h) * hd;
@@ -697,7 +718,7 @@ public:
             }
         }
 
-        // 6. Drop CLS (index 0), merge 2x2 patches [n_tok, 4096] -> proj_in [4096,4096] -> GELU -> proj_out [2304,4096]
+        // Drop CLS (index 0), then merge and project the 2x2 patch groups.
         const int merged_dim = merge * merge * D;  // 4096
         const float* patch_states = cur.data() + D;  // already in [n_tok, merge*merge, D] raster order!
         std::vector<float> mid(static_cast<size_t>(n_tok) * c.proj_hidden);

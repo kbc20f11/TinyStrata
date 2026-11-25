@@ -7,6 +7,7 @@
 #include "ink_manifest.h"
 
 #include "ink_cuda.cuh"
+#include "ink_cuda_vision.cuh"
 #include "ink_dspark.cuh"
 #include "ink_runner.cuh"
 #include "ink_spec.cuh"
@@ -264,6 +265,19 @@ public:
         }
         if (opts.vram_reserve_mib >= 0) {
             min_reserve_bytes = std::max(min_reserve_bytes, (size_t)opts.vram_reserve_mib << 20);
+        }
+
+        const char* vision_gpu = std::getenv("STRATA_INK_VISION_CUDA");
+        if (!opts.vision_path.empty() && !(vision_gpu && std::strcmp(vision_gpu, "0") == 0)) {
+            auto vision = std::make_unique<CudaVision>();
+            std::string vision_error;
+            if (vision->load(opts.vision_path, gpu_id_, vision_error)) {
+                std::fprintf(stderr, "[inkling2-vision] CUDA resident weights %.1f MiB, workspace %.1f MiB on GPU %d\n",
+                             vision->weight_bytes() / 1048576.0, vision->workspace_bytes() / 1048576.0, gpu_id_);
+                vision_ = std::move(vision);
+            } else {
+                std::fprintf(stderr, "[inkling2-vision] CUDA startup fell back to CPU: %s\n", vision_error.c_str());
+            }
         }
 
         model_.hybrid.pf_routed_stage = managed_ampere_128k && kv_dtype_ == KvDtype::K8V8 && !build_screen;
@@ -1223,6 +1237,18 @@ public:
         return true;
     }
 
+    bool encode_image(const ImageRec& img, std::vector<float>& out, std::string& err) override {
+        if (!vision_) return false;
+        const auto start = std::chrono::steady_clock::now();
+        if (!vision_->encode(img, out, err)) {
+            std::fprintf(stderr, "[inkling2-vision] CUDA encode fell back to CPU: %s\n", err.c_str());
+            return false;
+        }
+        const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        std::fprintf(stderr, "[inkling2-vision] CUDA encoded %d image tokens in %.3fs\n", img.num_lm_tokens(), elapsed);
+        return true;
+    }
+
 private:
     void ensure_pinned_logits(int nw, int V) {
         if (nw <= h_logits_cap_ && h_logits_pin_) return;
@@ -1241,6 +1267,7 @@ private:
         if (h_logits_pin_) { cudaFreeHost(h_logits_pin_); h_logits_pin_ = nullptr; h_logits_cap_ = 0; }
         topk_.free_all();
         model_.free_all();
+        vision_.reset();
         prompt_ckpts_.clear();
         shared_ckpts_.clear();
         initialized_ = false;
@@ -1273,6 +1300,7 @@ private:
     strata::ink::InkCudaModel model_;
     std::unique_ptr<strata::ink::InkCudaRunner> runner_;
     std::unique_ptr<strata::ink::InkDSpark> dspark_;
+    std::unique_ptr<CudaVision> vision_;
     float* d_sconv_snap_ = nullptr;
     void* d_test_steal_ = nullptr;   // STRATA_INK_TEST_STEAL_MIB test hook
     float* d_h_sel_ = nullptr;
