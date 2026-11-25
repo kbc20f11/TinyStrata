@@ -207,6 +207,18 @@ class InklingBenchmarkExtension(unittest.TestCase):
         cfg['args'][kv_index] = 'fp8'
         tinyconfig.validate(cfg)
 
+    def test_inkling_maps_the_saved_cpu_thread_count_to_the_expert_pool(self):
+        from serve.server import inkling_engine_args
+
+        for backend in ('cuda', 'hip'):
+            with self.subTest(backend=backend):
+                cfg = {**self.original(), 'backend': backend}
+                self.assertNotIn('--threads', inkling_engine_args(cfg))
+                cfg['args'] += ['--cpu-threads', '7']
+                args = inkling_engine_args(cfg)
+                self.assertEqual(args[args.index('--threads') + 1], '7')
+                self.assertNotIn('--cpu-threads', args)
+
     def test_controlled_config_keeps_native_vision_and_rejects_a_missing_payload(self):
         source = self.original()
         with tempfile.TemporaryDirectory() as work:

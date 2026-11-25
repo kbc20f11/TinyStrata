@@ -3087,7 +3087,7 @@ def inkling_engine_args(cfg: dict) -> list[str]:
     kv = config.value_of(cfg, "kv_type") or "auto"
     args = ["--native", model, "--max-context", str("auto" if context is None else context),
             "--parallel", "1", "--kv-gpu-first", "--kv", "k8v8" if kv == "int8" else kv]
-    for flag, native in (("--chunk", "--chunk"), ("--cpu-threads", "--cpu-threads"),
+    for flag, native in (("--chunk", "--chunk"), ("--cpu-threads", "--threads"),
                          ("--expert-vram", "--vram-experts-gb"), ("--vram-reserve-mib", "--vram-reserve-mib")):
         if flag in source:
             value = source[source.index(flag) + 1]
