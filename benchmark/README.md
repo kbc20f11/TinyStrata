@@ -27,7 +27,7 @@ The v2 Tiel weights are `Tiel-Coder-35B-A3B-MTP-UD-IQ3_XXS.gguf`, with the insta
 
 Run Inkling 2 Mini on its own with `--model inkling` and an installed `config-inkling2.json`. The **`tinystrata-bench-v2-inkling`** extension uses the v2 workload and timing rules, including four fresh starts, two passes over the three generation texts, the exact 4K/16K inputs, and the canonical image. It disables drafting and uses automatic KV selection and the model's in-process Vision encoder, which can use the CPU. Results are marked `standard: false`. Use `--prepare-only` to inspect the plan or `--saved-profile --model inkling` to measure saved settings. The default `all` roster stays the same.
 
-[RTX 3060 branch results for Inkling 2 Mini](results/rtx-3060-12gb-20261125-v2-inkling.md)
+[RTX 3060 branch results for Inkling 2 Mini](results/inkling2-rtx3060-route-parity-20261125.md)
 
 Download the models to be measured using the normal installer/API first, then stop the regular TinyStrata API. In 64-bit PowerShell:
 
@@ -229,7 +229,7 @@ Tielのモデルファイルは `Tiel-Coder-35B-A3B-MTP-UD-IQ3_XXS.gguf` で、�
 
 Inkling 2 Miniは、導入済みの `config-inkling2.json` を使って `--model inkling` で個別に測定できます。**`tinystrata-bench-v2-inkling`** はv2と同じ計時方法で、4起動、短文3件を各2回、正確な4K／16K入力、規定画像を測ります。投機生成を無効にし、KVは自動選択、画像にはCPUも使用可能な内蔵エンコーダーを使います。結果には `standard: false` を記録します。計画の確認は `--prepare-only`、保存済み設定での計測は `--saved-profile --model inkling` を使います。既定の `all` の対象は従来どおりです。
 
-[RTX 3060でのInkling 2 Miniブランチ版の測定結果](results/rtx-3060-12gb-20261125-v2-inkling.md)
+[RTX 3060でのInkling 2 Miniブランチ版の測定結果](results/inkling2-rtx3060-route-parity-20261125.md)
 
 通常のインストーラー／API で測定するモデルを先にダウンロードし、普段の TinyStrata API を終了します。64 ビット PowerShell で実行してください。
 

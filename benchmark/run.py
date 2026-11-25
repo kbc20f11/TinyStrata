@@ -67,7 +67,8 @@ ENGINE_KEYS = ('model', 'family', 'version', 'kv', 'kv_grow', 'mtp', 'clover_dra
                'cpu_workers', 'cpu_threads', 'vision', 'images',
                'max_context', 'context_auto', 'chunk', 'chunk_auto', 'expert_auto',
                'expert_slots', 'expert_total', 'expert_cache_bytes', 'expert_cache_mib',
-               'kv_logical_bytes', 'kv_mapped_bytes', 'kv_committed_rows', 'gpu_cc',
+               'expert_cache_full_bytes', 'expert_cache_full_mib',
+               'kv_logical_bytes', 'kv_mapped_bytes', 'kv_host_bytes', 'kv_committed_rows', 'gpu_cc',
                'q36_mmvq_il', 'q36_mmvq_il_auto', 'q36_int8_fdec',
                'q36_main_mmq', 'q36_main_mmq_auto', 'q36_mtp_mmq',
                'q36_mmq_min_rows', 'q36_mmq_auto_workspace_bytes',
@@ -662,6 +663,26 @@ def validate_inkling_engine(info, cfg, output_limit, *, controlled=False):
         raise ValueError(f'Inkling benchmark requires 16,384 input tokens plus {output_limit} output tokens')
     if controlled and (info.get('drafting') != 'off' or info.get('kv') not in ('fp16', 'fp8', 'int8', 'k8v8', 'k8v4')):
         raise ValueError(f'Inkling engine does not report the expected automatic KV and disabled drafting: {info}')
+    if 'expert_cache_full_bytes' not in info and 'kv_host_bytes' not in info:
+        return  # Older Inkling binaries report counts and a context limit only.
+    for key in ('expert_slots', 'expert_total', 'expert_cache_bytes', 'expert_cache_mib',
+                'expert_cache_full_bytes', 'expert_cache_full_mib', 'kv_grow',
+                'kv_logical_bytes', 'kv_mapped_bytes', 'kv_host_bytes', 'kv_committed_rows'):
+        value = info.get(key)
+        if type(value) is not int or value < 0:
+            raise ValueError(f'Invalid native Inkling memory field: {key}={value!r}')
+    if not 0 <= info['expert_slots'] <= info['expert_total'] or not info['expert_total']:
+        raise ValueError('Native Inkling Expert counts are inconsistent')
+    if not 0 <= info['expert_cache_bytes'] <= info['expert_cache_full_bytes'] or not info['expert_cache_full_bytes']:
+        raise ValueError('Native Inkling Expert cache bytes are inconsistent')
+    if (info['expert_cache_mib'] != info['expert_cache_bytes'] >> 20 or
+            info['expert_cache_full_mib'] != info['expert_cache_full_bytes'] >> 20):
+        raise ValueError('Native Inkling Expert cache MiB differ from reported bytes')
+    if (info['kv_grow'] not in (0, 1) or not info['kv_logical_bytes'] or not info['kv_mapped_bytes'] or
+            info['kv_committed_rows'] > context or (not info['kv_grow'] and info['kv_committed_rows'] != context)):
+        raise ValueError('Native Inkling KV capacity and backing are inconsistent')
+    if controlled and info['kv_host_bytes']:
+        raise ValueError('Controlled Inkling profiles require device KV without host backing')
 
 
 class Service:
@@ -1295,6 +1316,9 @@ def main():
                         text, _ = exact_length_text(count, cases['long_paragraph'], cases['long_question'], length)
                         measure(category, category, body(text, cases['prefill_max_tokens']), length)
                     run['after_16k_engine'] = service.engine()
+                    if model == 'inkling':
+                        validate_inkling_engine(run['after_16k_engine'], cfg, cases['prefill_max_tokens'],
+                                               controlled=not options.saved_profile)
                     if options.include_64k:
                         text, _ = exact_length_text(count, cases['long_paragraph'], cases['long_question'], 65536)
                         measure('input_64k', 'input_64k', body(text, cases['prefill_max_tokens']), 65536)

@@ -817,7 +817,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   $("ctx-fill").style.opacity = 235.6 * frac >= 3 ? "1" : "0";         // a near-zero arc would draw just its round cap
   $("ctx-pct").textContent = context ? `${Math.round(frac * 100)}%` : "–";
   $("ctx-sub").textContent = context ? `${kfmt(context.used)} / ${ctxfmt(context.total)}` : "–";
-  const cacheBytes = (eng.expert_cache_mib || 0) * 1048576;
+  const cacheBytes = eng.expert_cache_bytes ?? (eng.expert_cache_mib || 0) * 1048576;
   const slotsLabel = $("slots-text").previousElementSibling;
   slotsLabel.removeAttribute("data-i18n");
   slotsLabel.textContent = memory.uma ? tr("placement.label", "Expert placement") : tr("monitor.expertsVram", "Experts in VRAM");
@@ -923,15 +923,17 @@ function cloverGenerationText(eng) {
     : tr("about.causalGeneration", "Causal decoding");
 }
 function renderAbout(eng, hw, st) {
-  const kv = {int8: "INT8", q4_0: "Q4_0", fp16: "FP16", fp8: "FP8"}[eng.kv] || eng.kv;
+  const kv = {int8: "INT8", k8v8: "INT8", q4_0: "Q4_0", fp16: "FP16", fp8: "FP8"}[eng.kv] || eng.kv;
+  const cacheBytes = eng.expert_cache_bytes ?? (eng.expert_cache_mib || 0) * 1048576;
+  const model = runtimeModelId() || eng.model;
   const uma = umaMemory(eng, st);
   facts($("facts-engine"), [
-    [tr("about.model", "Model"), eng.model],
+    [tr("about.model", "Model"), model],
     [tr("about.engine", "Engine"), eng.version ? `v${eng.version}` : tr("about.fromSource", "built from source")],
     [tr("about.context", "Context"), eng.max_context ? tr("common.tokenCount", "{n} tokens", {n: fmt(eng.max_context)}) : null],
     [tr("about.generationMode", "Generation mode"), cloverGenerationText(eng)],
     [tr("about.kvCache", "KV cache"), kv ? `${kv} · ${uma ? tr("about.umaKv", "shared system RAM") : eng.kv_resident ? tr("about.streamedKv", "{n} positions per layer in VRAM; the rest in RAM", {n: fmt(eng.kv_resident)}) : tr("about.residentKv", "all in VRAM")}` : null],
-    [tr("monitor.expertsVram", "Experts in VRAM"), !uma && eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)` : null],
+    [tr("monitor.expertsVram", "Experts in VRAM"), !uma && eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb(cacheBytes)} GB)` : null],
     [tr("about.speculation", "Speculation"), eng.clover_draft ? tr("about.selfDraft", "Self-speculative drafts up to {n} tokens", {n: fmt(eng.clover_draft)})
       : eng.spec ? tr("about.mtp", "MTP drafts up to {n} tokens", {n: fmt(Math.max(0, (eng.mtp_max || eng.spec) - 1))}) + (eng.lookup ? tr("about.lookupOn", " · prompt lookup on") : "") : null],
     [tr("about.imageInput", "Image input"), eng.images ? tr("common.on", "on") : tr("common.off", "off")],
@@ -944,7 +946,7 @@ function renderAbout(eng, hw, st) {
     ["RAM", hw.ram_total ? `${gb(hw.ram_total, 0)} GB` : null],
   ]);
   const base = location.origin;
-  facts($("facts-api"), [[tr("about.openaiUrl", "OpenAI base URL"), `${base}/v1`, true], [tr("about.anthropicUrl", "Anthropic base URL"), base, true], [tr("about.modelName", "Model name"), eng.model, true]]);
+  facts($("facts-api"), [[tr("about.openaiUrl", "OpenAI base URL"), `${base}/v1`, true], [tr("about.anthropicUrl", "Anthropic base URL"), base, true], [tr("about.modelName", "Model name"), model, true]]);
 }
 
 document.addEventListener("click", (e) => {

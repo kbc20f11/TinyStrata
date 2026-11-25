@@ -246,6 +246,7 @@ struct InkCudaModel {
     uint8_t* d_sec4_peer = nullptr;
     uint8_t* h_sec4_pinned = nullptr;  // optional pinned overflow for 8/12/16 GB GPUs
     size_t trunk_bytes = 0, sec4_bytes = 0, sec4_peer_bytes = 0;
+    size_t static_expert_bytes = 0, full_expert_bytes = 0;
     size_t n_vram_experts = 0, n_peer_experts = 0, n_host_experts = 0;
 
     // Preprocessed per-layer F32 buffers (tiny: < 40 MB total)
@@ -359,6 +360,8 @@ struct InkCudaModel {
         INK_CK(ink_cuda_mem_info(&vfree, &vtot));
         const auto& dir = rd.expert_directory();
         const int n_total = (int)dir.size();  // 24 * 128 = 3072
+        full_expert_bytes = 0;
+        for (const auto& e : dir) full_expert_bytes += e.body_bytes;
         std::vector<InkExpertDev> h_exp(n_total);
         for (int il = 0; il < man.c.n_phys; ++il) {
             moe_info[il] = {};
@@ -421,6 +424,7 @@ struct InkCudaModel {
             INK_CK(cudaFreeHost(hbuf));
             n_vram_experts = n_total;
             n_host_experts = 0;
+            static_expert_bytes = full_expert_bytes;
         } else {
             // 3x Loop-Weighted Tiered Residency + Strata Predictive CPU/RAM Hybrid Engine (Doorbell + Ping-Pong DMA) + Auto-SSD!
             const auto& vorder = rd.vram_load_order();
@@ -522,6 +526,7 @@ struct InkCudaModel {
                 }
             }
             INK_CK(cudaMalloc(&d_sec4, std::max<size_t>(256, vram_used)));
+            static_expert_bytes = vram_used;
             uint8_t* h_arena_base = nullptr;
             if (n_host_experts > 0) {
                 if (host_used > 0) {
@@ -1037,6 +1042,7 @@ struct InkCudaModel {
         // Estimate expert bytes & check which GGUF_RAW experts need SF4 repack (exotic 1-2 bit quants)
         std::vector<uint8_t> need_sf4_repack(n_total, 0);
         std::vector<size_t> eff_bytes(n_total, 0);
+        full_expert_bytes = 0;
         for (int di = 0; di < n_total; ++di) {
             const auto& e = dir[di];
             if (e.gu_code_id == FMT_GGUF_RAW) {
@@ -1052,6 +1058,7 @@ struct InkCudaModel {
                 }
             }
             eff_bytes[di] = need_sf4_repack[di] ? sf4_body_const : (size_t)e.body_bytes;
+            full_expert_bytes += eff_bytes[di];
         }
 
         // If Layer-Split is active, partition 24 physical layers across stages & upload compact per-stage trunks!
@@ -1401,6 +1408,7 @@ struct InkCudaModel {
             }
         }
         sec4_bytes = u0;
+        static_expert_bytes = u0;
         INK_CK(cudaMalloc(&d_sec4, std::max<size_t>(256, sec4_bytes)));
         stage_d_sec4[0] = d_sec4;
         stage_sec4_bytes[0] = sec4_bytes;
@@ -1409,12 +1417,14 @@ struct InkCudaModel {
                 INK_CK(cudaSetDevice(stage_gpu[s]));
                 stage_sec4_bytes[s] = stage_u[s];
                 INK_CK(cudaMalloc(&stage_d_sec4[s], std::max<size_t>(256, stage_sec4_bytes[s])));
+                static_expert_bytes += stage_sec4_bytes[s];
             }
             INK_CK(cudaSetDevice(primary_gpu));
         } else if (ep2_active && u1 > 0) {
             INK_CK(cudaSetDevice(peer_gpu));
             sec4_peer_bytes = u1;
             INK_CK(cudaMalloc(&d_sec4_peer, std::max<size_t>(256, sec4_peer_bytes)));
+            static_expert_bytes += sec4_peer_bytes;
             INK_CK(cudaSetDevice(primary_gpu));
         }
         uint8_t* h_arena_base = nullptr;

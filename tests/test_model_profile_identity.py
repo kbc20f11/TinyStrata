@@ -1,6 +1,7 @@
 """Same-architecture models retain distinct state and pinned download bundles."""
 from copy import deepcopy
 import contextlib
+import hashlib
 import io
 from pathlib import Path
 from types import SimpleNamespace
@@ -162,6 +163,58 @@ class SameArchitectureProfiles(unittest.TestCase):
             switcher._downloader(INKLING)
             self.assertEqual(bundle.call_args.kwargs["_manifests"],
                              (model_download.FIXED_INKLING_MODEL, model_download.FIXED_INKLING_VISION))
+
+    def test_managed_inkling_iq3_advances_to_iq4_without_removing_files(self):
+        path = self.root / "config-inkling2.json"
+        directory = self.root / "model-files"
+        directory.mkdir()
+        old = directory / model_setup._LEGACY_INKLING_IQ3[0]
+        new = directory / model_download.FIXED_INKLING_MODEL.filename
+        data = b"old pinned Inkling fixture"
+        old.write_bytes(data)
+        cfg = {"arch": "inkling2_loop", "model_name": INKLING, "backend": "cuda",
+               "cwd": str(self.root), "args": ["--model", str(old)], "tokenizer": "old-tokenizer"}
+        pin = old.name, len(data), hashlib.sha256(data).hexdigest()
+        with patch.object(model_setup, "_LEGACY_INKLING_IQ3", pin):
+            path.write_text(json.dumps(cfg), encoding="utf-8")
+            pending = self.profiles().get(INKLING).config
+            self.assertEqual(model_setup.model_path(pending), new)
+            self.assertEqual(pending["model_source"], "managed")
+            self.assertNotIn("tokenizer", pending)
+            self.assertTrue(pending["model_bootstrap"])
+            self.assertEqual(old.read_bytes(), data)
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), cfg)
+
+            new.write_bytes(b"new model")
+            ready = self.profiles().get(INKLING).config
+            self.assertEqual(model_setup.model_path(ready), new)
+            self.assertNotIn("model_bootstrap", ready)
+
+            old.write_bytes(b"!" * len(data))
+            unproven = self.profiles().get(INKLING).config
+            self.assertEqual(model_setup.model_path(unproven), old)
+            old.write_bytes(data)
+
+            path.write_text(json.dumps({**cfg, "model_source": "local"}), encoding="utf-8")
+            self.assertEqual(model_setup.model_path(self.profiles().get(INKLING).config), old)
+            old.unlink()
+            self.assertEqual(model_setup.model_path(self.profiles().get(INKLING).config), old)
+
+    def test_explicit_inkling_model_at_the_legacy_path_is_local(self):
+        path = self.root / "config-inkling2.json"
+        directory = self.root / "model-files"
+        directory.mkdir()
+        old = directory / model_setup._LEGACY_INKLING_IQ3[0]
+        old.write_bytes(b"explicit Inkling model")
+        pin = old.name, old.stat().st_size, hashlib.sha256(old.read_bytes()).hexdigest()
+        args = SimpleNamespace(model=old, model_family="inkling2", config=path, backend="cuda",
+                               exe=None, kv_type=None, lib_dir=None, port=None, host=None, api_key=None, gpu=None)
+        with patch.object(model_setup, "_LEGACY_INKLING_IQ3", pin), \
+             patch.object(model_setup, "model_architecture", return_value="inkling2_loop"), \
+             patch.object(model_setup, "prepare_installed_model", side_effect=lambda cfg, *a, **kw: cfg):
+            cfg, _ = launcher.prepare(args)
+        self.assertEqual(model_setup.model_path(cfg), old)
+        self.assertEqual(cfg["model_source"], "local")
 
     def test_same_architecture_request_still_requires_explicit_switch(self):
         switcher = ModelSwitcher.__new__(ModelSwitcher)

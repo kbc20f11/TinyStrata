@@ -196,6 +196,17 @@ class InklingBenchmarkExtension(unittest.TestCase):
         self.assertEqual((request['temperature'], request['top_p'], request['top_k']), (1.0, 1.0, 0))
         self.assertEqual((request['seed'], request['max_tokens'], request['strata_checkpoint']), (1234, 128, False))
 
+    def test_inkling_int8_kv_is_cuda_only(self):
+        cfg = self.original()
+        kv_index = cfg['args'].index('--kv-type') + 1
+        cfg['args'][kv_index] = 'int8'
+        tinyconfig.validate(cfg)
+        cfg['backend'] = 'hip'
+        with self.assertRaisesRegex(ValueError, 'HIP route supports auto, fp16 or fp8'):
+            tinyconfig.validate(cfg)
+        cfg['args'][kv_index] = 'fp8'
+        tinyconfig.validate(cfg)
+
     def test_controlled_config_keeps_native_vision_and_rejects_a_missing_payload(self):
         source = self.original()
         with tempfile.TemporaryDirectory() as work:
@@ -233,6 +244,28 @@ class InklingBenchmarkExtension(unittest.TestCase):
         cache = bench.aggregate_model(runs)['expert_cache']
         self.assertEqual(cache['startup_engine'], [None])
         self.assertEqual(cache['after_16k_engine_counts'], [{'resident': 700, 'total': 3072}])
+
+    def test_native_memory_is_recorded_and_validated_at_both_measurements(self):
+        source = self.original()
+        info = dict(arch='inkling2_loop', layers=24, visits=48, backend='cuda', images=True,
+                    max_context=131072, drafting='off', kv='k8v8', expert_slots=624, expert_total=3072,
+                    expert_cache_bytes=2_822_926_912, expert_cache_mib=2692,
+                    expert_cache_full_bytes=14_035_509_248, expert_cache_full_mib=13385,
+                    kv_logical_bytes=2_344_353_792, kv_mapped_bytes=2_344_353_792,
+                    kv_grow=0, kv_host_bytes=0, kv_committed_rows=131072)
+        after = {**info, 'expert_slots': 625, 'expert_cache_bytes': 2_827_405_904, 'expert_cache_mib': 2696}
+        for measured in (info, after):
+            bench.validate_inkling_engine(bench.engine_snapshot(measured), source, 32, controlled=True)
+        runs = [dict(complete=True, records=[], startup_engine=info, after_16k_engine=after)]
+        cache = bench.aggregate_model(runs)['expert_cache']
+        self.assertEqual(cache['startup_engine'], [info['expert_cache_bytes']])
+        self.assertEqual(cache['after_16k_engine'], [after['expert_cache_bytes']])
+        self.assertEqual(cache['after_16k_engine_counts'], [{'resident': 625, 'total': 3072}])
+        for change in ({'expert_slots': True}, {'expert_cache_full_bytes': 1}, {'expert_cache_mib': 0},
+                       {'kv_mapped_bytes': 0}, {'kv_committed_rows': 32768}, {'kv_host_bytes': 4096}):
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, 'Inkling'):
+                bench.validate_inkling_engine(bench.engine_snapshot({**after, **change}), source, 32,
+                                               controlled=True)
 
 
 class IntelTextBenchmarkVariant(unittest.TestCase):

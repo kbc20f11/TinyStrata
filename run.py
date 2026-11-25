@@ -187,7 +187,7 @@ def prepare(a) -> tuple[dict, Path]:
                    {"lfm2moe": 18081, "gemma4": 18082, "clover_moe": 18083, "inkling2_loop": 18086}.get(cfg.get("arch"), 18080))
     if a.model:
         set_arg(cfg, "--model", a.model.expanduser().resolve())
-        if cfg.get("arch") == "clover_moe":
+        if cfg.get("arch") in ("clover_moe", "inkling2_loop"):
             cfg["model_source"] = "local"
         # An explicit local selection keeps the existing eager-launch behavior.
         cfg.pop("model_bootstrap", None)

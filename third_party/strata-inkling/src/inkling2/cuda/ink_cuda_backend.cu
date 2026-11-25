@@ -116,6 +116,30 @@ public:
         return st;
     }
 
+    std::optional<BackendMemoryStats> memory_stats() const override {
+        if (!initialized_ || !runner_) return std::nullopt;
+        BackendMemoryStats st;
+        st.expert_cache_bytes = model_.static_expert_bytes;
+        st.expert_cache_full_bytes = model_.full_expert_bytes;
+        // The adaptive tier and spare-KV loans use host-backed weights and
+        // share a live residency table. Streaming and staging bytes are separate.
+        if (model_.hybrid.tier_on) {
+            const auto& hybrid = model_.hybrid;
+            for (size_t key = 0; key < hybrid.key_to_slot.size(); ++key)
+                if (hybrid.key_to_slot[key] >= 0) st.expert_cache_bytes += hybrid.host_meta[key].body_bytes;
+        }
+        const size_t stride = static_cast<size_t>(runner_->max_slots) *
+                              strata::ink::InkCudaRunner::kv_bytes_per_visit_pos(runner_->kv_dtype);
+        for (const auto& kv : runner_->kv_desc) {
+            st.kv_mapped_bytes += stride * kv.dev_cap;
+            st.kv_host_bytes += stride * kv.host_cap;
+            st.kv_logical_bytes += stride * (kv.is_swa ? kv.dev_cap : runner_->max_ctx);
+        }
+        st.kv_committed_rows = runner_->kv_alloc_ctx;
+        st.kv_grow = runner_->kv_alloc_ctx < runner_->max_ctx;
+        return st;
+    }
+
     bool init(const InkModelFile& mf, const BackendOpts& opts, std::string& err) override {
         if (const char* e = std::getenv("STRATA_INK_SPEC_BEAM")) spec_cfg_.beam = std::atoi(e);
         if (const char* e = std::getenv("STRATA_INK_SPEC_COST")) spec_cfg_.cost = (float)std::atof(e);
@@ -182,9 +206,17 @@ public:
         // Keep lossless FP16 KV as default when Host KV Offload handles capacity (#552)!
         max_slots_ = std::max(1, std::min(kMaxParallelSlots, opts.parallel));
         const int kv_offload_mode = (opts.kv_offload == "on") ? 1 : ((opts.kv_offload == "off") ? -1 : 0);
+        const bool managed_ampere_128k = opts.kv_gpu_first && max_slots_ == 1 && sm_cc == 86
+            && opts.max_ctx == 131072 && prop.totalGlobalMem >= (11ull << 30)
+            && prop.totalGlobalMem <= (13ull << 30);
         kv_dtype_ = opts.kv_dtype;
         if (opts.kv_dtype_auto) {
-            if (max_slots_ >= 16) {
+            // A 128K device cache on the RTX 3060 12 GB leaves more room for experts in INT8.
+            // Limit the measured choice to the same CUDA architecture, memory tier and context.
+            if (managed_ampere_128k) {
+                kv_dtype_ = KvDtype::K8V8;
+                std::fprintf(stderr, "[InkCUDA] auto KV: INT8 for the managed 128K cache on 12 GiB Ampere\n");
+            } else if (max_slots_ >= 16) {
                 kv_dtype_ = KvDtype::FP8_E4M3;
             } else if (kv_offload_mode < 0) {
                 if (prop.totalGlobalMem <= (13ull << 30)) {
@@ -234,6 +266,7 @@ public:
             min_reserve_bytes = std::max(min_reserve_bytes, (size_t)opts.vram_reserve_mib << 20);
         }
 
+        model_.hybrid.pf_routed_stage = managed_ampere_128k && kv_dtype_ == KvDtype::K8V8 && !build_screen;
         // Load .strata v1.1 / .gguf (Unsloth + ggml-org) / HF safetensors trunk + experts (Single-GPU, EP2, Layer-Split, or 4-tier GPU+RAM+SSD!)
         if (!model_.load_from_model_file(mf, gpu_id_, peer_gpu_id, (float)opts.ep_split, build_screen, err,
                                          min_reserve_bytes, gguf_detail::gguf_dequant_row_f32, gguf_detail::gguf_row_bytes,
@@ -307,6 +340,11 @@ public:
                     : (kv_offload_mode == 1 ? 0 : std::max(0, requested_ctx - init_glob));
                 const double kv_pending_mib = (double)8 * max_slots_ * remaining_kv_rows * (double)per_visit_pos / 1048576.0;
                 chunk_try = std::max(chunk_try, strata::core::ink_auto_chunk(led_loaded, max_slots_, kv_pending_mib));
+                // On the measured INT8 route, chunk 1024 used about 3,585 MiB including KV.
+                // Keep at least 400 MiB of headroom at startup and retain allocation retries.
+                if (managed_ampere_128k && kv_dtype_ == KvDtype::K8V8 && !build_screen && led_loaded >= 4000.0) {
+                    chunk_try = std::max(chunk_try, 1024);
+                }
                 std::fprintf(stderr, "[InkCUDA] prefill chunk %d (auto: %.0f MiB free after the experts, %.0f MiB additional K/V to budget, %d slot(s); --chunk N sets it)\n",
                              chunk_try, led_loaded, kv_pending_mib, max_slots_);
             }

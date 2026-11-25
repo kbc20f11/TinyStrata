@@ -16,6 +16,7 @@
 #include "ink_batch.h"
 #include "ink_json.h"
 #include "ink_safetensors_loader.h"
+#include "ink_vision_rows.h"
 #include "strata/artifact/strata_reader.hpp"
 
 #ifdef INKLING_DEFINE_STBI
@@ -431,6 +432,8 @@ inline bool expand_image_pads(
 // ---- Exact CPU 23-Layer Inkling2VisionModel (reference & universal fallback; GPU backends may override encode_image) ----
 class CpuVisionEncoder {
 public:
+    explicit CpuVisionEncoder(bool windows_device_fallback = false) : windows_device_fallback_(windows_device_fallback) {}
+
     bool loaded = false;
     VisionShardInfo info;
 
@@ -504,6 +507,11 @@ public:
         const int D = c.hidden;          // 1024
         const int H = c.heads;           // 16
         const int hd = c.head_dim;       // 64
+        const int threads = vision_threads(n_patches);
+        VisionRows rows(threads);
+        if (threads > 0) {
+            std::fprintf(stderr, "[inkling2-vision] CPU encoder using %d thread(s)\n", rows.thread_count());
+        }
 
         auto W = [&](const std::string& name) -> const float* {
             auto it = weights_.find(name);
@@ -551,8 +559,7 @@ public:
         for (int d = 0; d < D; ++d) cur[d] = w_cls[d] + w_cls_pos[d];
 
         const int G = c.posemb_grid;  // 32
-        #pragma omp parallel for schedule(static)
-        for (int p = 0; p < n_patches; ++p) {
+        rows.run(n_patches, [&](int p) {
             float* dst = cur.data() + static_cast<size_t>(p + 1) * D;
             const float* xp = patch_buf.data() + static_cast<size_t>(p) * patch_in;
             for (int d = 0; d < D; ++d) {
@@ -581,10 +588,10 @@ public:
             for (int d = 0; d < D; ++d) {
                 dst[d] += w00 * p00[d] + w01 * p01[d] + w10 * p10[d] + w11 * p11[d];
             }
-        }
+        });
 
         // 3. Pre-LayerNorm
-        layer_norm_rows(cur.data(), W("model.visual.backbone.ln_pre.weight"), W("model.visual.backbone.ln_pre.bias"), S, D, c.ln_eps);
+        layer_norm_rows(rows, cur.data(), W("model.visual.backbone.ln_pre.weight"), W("model.visual.backbone.ln_pre.bias"), S, D, c.ln_eps);
 
         // 4. Axial 2D RoPE cos/sin table [S, hd]: [w_freqs, h_freqs] interleaved pairwise
         const int sp_dim = hd / 2;  // 32
@@ -618,15 +625,14 @@ public:
         for (int il = 0; il < c.layers; ++il) {
             const std::string p = "model.visual.backbone.layers." + std::to_string(il);
             std::memcpy(norm.data(), cur.data(), cur.size() * sizeof(float));
-            layer_norm_rows(norm.data(), W(p + ".ln_1.weight"), W(p + ".ln_1.bias"), S, D, c.ln_eps);
+            layer_norm_rows(rows, norm.data(), W(p + ".ln_1.weight"), W(p + ".ln_1.bias"), S, D, c.ln_eps);
 
-            linear_bias(norm.data(), W(p + ".self_attn.q_proj.weight"), W(p + ".self_attn.q_proj.bias"), q.data(), S, D, D);
-            linear_bias(norm.data(), W(p + ".self_attn.k_proj.weight"), W(p + ".self_attn.k_proj.bias"), k.data(), S, D, D);
-            linear_bias(norm.data(), W(p + ".self_attn.v_proj.weight"), W(p + ".self_attn.v_proj.bias"), v.data(), S, D, D);
+            linear_bias(rows, norm.data(), W(p + ".self_attn.q_proj.weight"), W(p + ".self_attn.q_proj.bias"), q.data(), S, D, D);
+            linear_bias(rows, norm.data(), W(p + ".self_attn.k_proj.weight"), W(p + ".self_attn.k_proj.bias"), k.data(), S, D, D);
+            linear_bias(rows, norm.data(), W(p + ".self_attn.v_proj.weight"), W(p + ".self_attn.v_proj.bias"), v.data(), S, D, D);
 
             // Apply pairwise axial 2D RoPE to Q and K
-            #pragma omp parallel for schedule(static)
-            for (int t = 0; t < S; ++t) {
+            rows.run(S, [&](int t) {
                 const float* rc = rope_cos.data() + static_cast<size_t>(t) * hd;
                 const float* rs = rope_sin.data() + static_cast<size_t>(t) * hd;
                 for (int h = 0; h < H; ++h) {
@@ -641,11 +647,10 @@ public:
                         kh[j + 1] = k1 * rc[j + 1] + k0 * rs[j + 1];
                     }
                 }
-            }
+            });
 
             // Full non-causal self-attention across all S tokens
-            #pragma omp parallel for schedule(static)
-            for (int qi = 0; qi < S; ++qi) {
+            rows.run(S, [&](int qi) {
                 std::vector<float> sc(S);
                 for (int h = 0; h < H; ++h) {
                     const float* qv = q.data() + (static_cast<size_t>(qi) * H + h) * hd;
@@ -668,9 +673,9 @@ public:
                         for (int j = 0; j < hd; ++j) ov[j] += prob * vv[j];
                     }
                 }
-            }
+            });
 
-            linear_bias(attn_out.data(), W(p + ".self_attn.out_proj.weight"), W(p + ".self_attn.out_proj.bias"), proj.data(), S, D, D);
+            linear_bias(rows, attn_out.data(), W(p + ".self_attn.out_proj.weight"), W(p + ".self_attn.out_proj.bias"), proj.data(), S, D, D);
             const float* ls1 = W(p + ".ls_1.gamma");
             for (int t = 0; t < S; ++t) {
                 float* ct = cur.data() + static_cast<size_t>(t) * D;
@@ -680,10 +685,10 @@ public:
 
             // MLP sublayer
             std::memcpy(norm.data(), cur.data(), cur.size() * sizeof(float));
-            layer_norm_rows(norm.data(), W(p + ".ln_2.weight"), W(p + ".ln_2.bias"), S, D, c.ln_eps);
-            linear_bias(norm.data(), W(p + ".mlp.c_fc.weight"), W(p + ".mlp.c_fc.bias"), mlp_h.data(), S, c.inter, D);
+            layer_norm_rows(rows, norm.data(), W(p + ".ln_2.weight"), W(p + ".ln_2.bias"), S, D, c.ln_eps);
+            linear_bias(rows, norm.data(), W(p + ".mlp.c_fc.weight"), W(p + ".mlp.c_fc.bias"), mlp_h.data(), S, c.inter, D);
             for (float& x : mlp_h) x = gelu_exact(x);
-            linear_bias(mlp_h.data(), W(p + ".mlp.c_proj.weight"), W(p + ".mlp.c_proj.bias"), proj.data(), S, D, c.inter);
+            linear_bias(rows, mlp_h.data(), W(p + ".mlp.c_proj.weight"), W(p + ".mlp.c_proj.bias"), proj.data(), S, D, c.inter);
             const float* ls2 = W(p + ".ls_2.gamma");
             for (int t = 0; t < S; ++t) {
                 float* ct = cur.data() + static_cast<size_t>(t) * D;
@@ -696,23 +701,45 @@ public:
         const int merged_dim = merge * merge * D;  // 4096
         const float* patch_states = cur.data() + D;  // already in [n_tok, merge*merge, D] raster order!
         std::vector<float> mid(static_cast<size_t>(n_tok) * c.proj_hidden);
-        linear_bias(patch_states, W("model.visual.proj_in.weight"), nullptr, mid.data(), n_tok, c.proj_hidden, merged_dim);
+        linear_bias(rows, patch_states, W("model.visual.proj_in.weight"), nullptr, mid.data(), n_tok, c.proj_hidden, merged_dim);
         for (float& x : mid) x = gelu_exact(x);
         out.resize(static_cast<size_t>(n_tok) * c.out_hidden);
-        linear_bias(mid.data(), W("model.visual.proj_out.weight"), nullptr, out.data(), n_tok, c.out_hidden, c.proj_hidden);
+        linear_bias(rows, mid.data(), W("model.visual.proj_out.weight"), nullptr, out.data(), n_tok, c.out_hidden, c.proj_hidden);
         return true;
     }
 
 private:
+    bool windows_device_fallback_;
     std::unordered_map<std::string, std::vector<float>> weights_;
+
+    int vision_threads(int n_patches) const noexcept {
+#ifdef _WIN32
+        if (windows_device_fallback_) {
+            const char* override_threads = std::getenv("STRATA_INK_VISION_THREADS");
+#ifdef _OPENMP
+            if (!override_threads) return 0;
+#endif
+            const long logical_threads = static_cast<long>(std::thread::hardware_concurrency());
+            long threads = std::clamp(logical_threads, 1L, 32L);
+            if (override_threads) {
+                char* end = nullptr;
+                const long requested = std::strtol(override_threads, &end, 10);
+                if (end != override_threads && *end == '\0' && requested > 0) threads = std::min(requested, 32L);
+            }
+            return std::min(static_cast<int>(threads), std::max(1, n_patches));
+        }
+#else
+        (void)n_patches;
+#endif
+        return 0;
+    }
 
     static inline float gelu_exact(float x) noexcept {
         return 0.5f * x * (1.0f + std::erff(x * 0.7071067811865475f));
     }
 
-    static void layer_norm_rows(float* x, const float* w, const float* b, int rows, int D, float eps) {
-        #pragma omp parallel for schedule(static)
-        for (int r = 0; r < rows; ++r) {
+    static void layer_norm_rows(VisionRows& work, float* x, const float* w, const float* b, int rows, int D, float eps) {
+        work.run(rows, [&](int r) {
             float* xr = x + static_cast<size_t>(r) * D;
             float mean = 0.0f;
             for (int d = 0; d < D; ++d) mean += xr[d];
@@ -721,12 +748,11 @@ private:
             for (int d = 0; d < D; ++d) { float t = xr[d] - mean; var += t * t; }
             const float inv = 1.0f / std::sqrt(var / static_cast<float>(D) + eps);
             for (int d = 0; d < D; ++d) xr[d] = (xr[d] - mean) * inv * w[d] + b[d];
-        }
+        });
     }
 
-    static void linear_bias(const float* x, const float* w, const float* b, float* y, int M, int N, int K) {
-        #pragma omp parallel for schedule(static)
-        for (int m = 0; m < M; ++m) {
+    static void linear_bias(VisionRows& work, const float* x, const float* w, const float* b, float* y, int M, int N, int K) {
+        work.run(M, [&](int m) {
             const float* xm = x + static_cast<size_t>(m) * K;
             float* ym = y + static_cast<size_t>(m) * N;
             for (int n = 0; n < N; ++n) {
@@ -735,7 +761,7 @@ private:
                 for (int k = 0; k < K; ++k) s += xm[k] * wn[k];
                 ym[n] = s;
             }
-        }
+        });
     }
 };
 

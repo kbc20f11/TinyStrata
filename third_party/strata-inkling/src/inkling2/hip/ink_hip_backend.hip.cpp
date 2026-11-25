@@ -443,6 +443,13 @@ struct VisitKvPool {
     size_t allocated_bytes() const noexcept {
         return d_pt.bytes + k_pool.bytes + v_pool.bytes + k_scales.bytes + v_scales.bytes;
     }
+
+    size_t mapped_host_bytes() const noexcept {
+        size_t bytes = 0;
+        for (const auto* buf : {&d_pt, &k_pool, &v_pool, &k_scales, &v_scales})
+            if (buf->host_mapped) bytes += buf->bytes;
+        return bytes;
+    }
 };
 
 struct GpuSlotMeta {
@@ -573,6 +580,28 @@ public:
         st.max_slots = max_slots_;
         for (const auto& s : slots_) if (s.allocated) ++st.active_slots;
         st.kv_dtype = default_kv_dtype_;
+        return st;
+    }
+
+    std::optional<BackendMemoryStats> memory_stats() const override {
+        if (glob_pools_.empty()) return std::nullopt;
+        BackendMemoryStats st;
+        st.expert_cache_bytes = static_expert_bytes_;
+        st.expert_cache_full_bytes = full_expert_bytes_;
+        const auto add_pool = [&](const VisitKvPool& pool) {
+            const size_t host = pool.is_uma ? 0 : pool.mapped_host_bytes();
+            st.kv_mapped_bytes += pool.allocated_bytes() - host;
+            st.kv_host_bytes += host;
+            st.kv_logical_bytes += VisitKvPool::device_bytes(
+                static_cast<size_t>(pool.max_slots) * pool.max_pages_per_slot, pool.kv_dim, pool.is_fp8);
+        };
+        for (const auto& pool : swa_pools_) add_pool(pool);
+        st.kv_committed_rows = max_ctx_;
+        for (const auto& pool : glob_pools_) {
+            add_pool(pool);
+            st.kv_committed_rows = std::min(st.kv_committed_rows, (pool.cap_pages / pool.max_slots) * kKvPageTokens);
+            st.kv_grow = st.kv_grow || !pool.device_only;
+        }
         return st;
     }
 
@@ -1093,6 +1122,8 @@ public:
             total_all_exp_bytes += aligned;
             max_exp_bytes = std::max(max_exp_bytes, aligned);
         }
+        full_expert_bytes_ = 0;
+        for (const auto& entry : dir) full_expert_bytes_ += (entry.body_bytes + 63u) & ~size_t(63u);
         const int kv_dim = c_.n_kv * c_.head_dim;
         const int max_swa_pages = (swa_ring_ + kKvPageTokens - 1) / kKvPageTokens;
         const int max_glob_pages = (max_ctx_ + kKvPageTokens - 1) / kKvPageTokens;
@@ -1438,6 +1469,7 @@ public:
             if (!hip_ok(hipSetDevice(gpu0_id_), "hipSetDevice restore0 after peer arena", err)) return false;
         }
         vram_experts_loaded_ = gpu_plan.size() + peer_gpu_plan.size();
+        static_expert_bytes_ = arena_bytes + peer_arena_bytes;
         if (!ram_plan.empty()) {
             if (model.kind == ModelSourceKind::Strata) {
                 for (uint16_t idx : ram_plan) {
@@ -5992,6 +6024,7 @@ private:
     std::vector<uint8_t> layer_dn_class_;
     size_t vram_experts_loaded_ = 0;
     size_t ram_experts_loaded_ = 0;
+    size_t static_expert_bytes_ = 0, full_expert_bytes_ = 0;
 
     std::vector<VisitKvPool> swa_pools_;
     std::vector<VisitKvPool> glob_pools_;

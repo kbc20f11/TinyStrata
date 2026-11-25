@@ -13,6 +13,8 @@ ROOT = Path(__file__).resolve().parent.parent
 TOKENIZER_FILES = ("vocab.json", "merges.txt", "token_type.json", "tokenizer.json", "chat_template.jinja")
 NATIVE_ENGINE_NAMES = {"lfm2moe": "tinystrata-lfm2", "gemma4": "tinystrata-gemma4",
                        "inkling2_loop": "tinystrata-inkling2"}
+_LEGACY_INKLING_IQ3 = ("Inkling-2-Mini-UD-IQ3_XXS.gguf", 11_663_309_504,
+                       "bd7ef0865adf119b5183e45e741c629bafa649769b33b5ebf689bb4bcc4690d6")
 
 
 def model_architecture(path: str | Path) -> str:
@@ -197,6 +199,23 @@ def _artifact_digest(path: str, size: int, modified_ns: int, changed_ns: int) ->
 
 
 def migrate_managed_clover_model(cfg: dict, config_path: str | Path) -> dict:
+    if cfg.get("arch") != "clover_moe":
+        return cfg
+    from serve.model_download import FIXED_CLOVER_MODEL, _LEGACY_CLOVER_MODEL
+
+    legacy = _LEGACY_CLOVER_MODEL
+    return _migrate_managed_artifact(cfg, config_path, (legacy.filename, legacy.size, legacy.sha256),
+                                     FIXED_CLOVER_MODEL.filename)
+
+
+def migrate_managed_model(cfg: dict, config_path: str | Path) -> dict:
+    if cfg.get("arch") == "inkling2_loop":
+        from serve.model_download import FIXED_INKLING_MODEL
+        return _migrate_managed_artifact(cfg, config_path, _LEGACY_INKLING_IQ3, FIXED_INKLING_MODEL.filename)
+    return migrate_managed_clover_model(cfg, config_path)
+
+
+def _migrate_managed_artifact(cfg: dict, config_path: str | Path, legacy: tuple[str, int, str], filename: str) -> dict:
     """Advance only the former, verified managed default; retain every local selection.
 
     Older configs have no provenance. Infer it only from the exact managed path,
@@ -204,22 +223,21 @@ def migrate_managed_clover_model(cfg: dict, config_path: str | Path) -> dict:
     can also advance; its incomplete download is left untouched. Explicit
     ``run.py --model`` selections carry model_source=local, even at that path.
     """
-    if cfg.get("arch") != "clover_moe" or cfg.get("model_source") == "local":
+    if cfg.get("model_source") == "local":
         return cfg
-    from serve.model_download import FIXED_CLOVER_MODEL, _LEGACY_CLOVER_MODEL
 
     current = model_path(cfg)
     directory = Path(config_path).expanduser().resolve().parent / "model-files"
-    legacy = directory / _LEGACY_CLOVER_MODEL.filename
-    if current is None or current.resolve() != legacy.resolve():
+    old_name, old_size, old_sha = legacy
+    if current is None or current != (directory / old_name).resolve():
         return cfg
     if current.exists():
         if not current.is_file():
             return cfg
         try:
             stat = current.stat()
-            if stat.st_size != _LEGACY_CLOVER_MODEL.size or _artifact_digest(
-                    str(current.resolve()), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns) != _LEGACY_CLOVER_MODEL.sha256:
+            if stat.st_size != old_size or _artifact_digest(
+                    str(current), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns) != old_sha:
                 return cfg
             # Do not adopt a file modified during verification.
             after = current.stat()
@@ -228,7 +246,7 @@ def migrate_managed_clover_model(cfg: dict, config_path: str | Path) -> dict:
         except OSError:
             return cfg
     new = {**cfg, "args": list(cfg["args"]), "model_source": "managed"}
-    target = directory / FIXED_CLOVER_MODEL.filename
+    target = directory / filename
     new["args"][new["args"].index("--model") + 1] = str(target)
     new.pop("tokenizer", None)
     if not target.is_file():
@@ -244,7 +262,7 @@ def configure_download(cfg: dict, config_path: str | Path) -> dict:
     args = cfg.get("args", [])
     if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
         raise ValueError("args must be a list of engine argument strings")
-    cfg = migrate_managed_clover_model(cfg, config_path)
+    cfg = migrate_managed_model(cfg, config_path)
     args = cfg["args"] if "args" in cfg else []
     new = {**cfg, "args": list(args)}
     directory = Path(config_path).expanduser().resolve().parent / "model-files"
@@ -252,7 +270,7 @@ def configure_download(cfg: dict, config_path: str | Path) -> dict:
     if "--model" not in new["args"]:
         artifact = manifest_for_arch(cfg.get("arch", "qwen35moe"), cfg.get("model_name"))
         new["args"].extend(("--model", str(directory / artifact.filename)))
-        if cfg.get("arch") == "clover_moe":
+        if cfg.get("arch") in ("clover_moe", "inkling2_loop"):
             new["model_source"] = "managed"
     return new
 

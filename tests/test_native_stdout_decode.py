@@ -32,12 +32,19 @@ if mode.startswith("vision"):
 else:
     emit(b"diagnostic before READY: \xff\n")
     emit(b"INFO label=" + "日本語".encode() + (b" batch_slots=2" if mode == "slots" else b"") + b"\n")
-    emit(b"READY 8192 stop\n")
+    if mode == "inkling-memory":
+        emit(b"INFO expert_slots=624 expert_total=3072 kv=k8v8\n")
+        emit(b"INFO expert_cache_bytes=2822926912 expert_cache_mib=2692 "
+             b"expert_cache_full_bytes=14035509248 expert_cache_full_mib=13385 kv_logical_bytes=2344353792 "
+             b"kv_mapped_bytes=2344353792 kv_host_bytes=0 kv_committed_rows=131072 kv_grow=0\n")
+    emit(b"READY 131072 stop\n" if mode == "inkling-memory" else b"READY 8192 stop\n")
     for line in sys.stdin:
         if line.startswith("QUIT"):
             break
         emit(b"T 101\n")
         emit(b"diagnostic between tokens: \xfe " + "日本語".encode() + b"\n")
+        if mode == "inkling-memory":
+            emit(b"INFO expert_slots=625 expert_cache_bytes=2827405904 expert_cache_mib=2696 kv_used_tokens=5\n")
         if mode != "eof":
             emit(b"T 202\nDONE 2 3 1.0 2.0 stop 0 0 0 0 0 0 0 0.0 3 0\n")
         break
@@ -88,6 +95,22 @@ class NativeStdoutDecode(unittest.TestCase):
         engine.pump.join(timeout=3)
         self.assertFalse(engine.pump.is_alive())
         self.assertIsNone(engine.lines.get(timeout=1))
+
+    def test_inkling_memory_info_is_numeric_and_updates_before_done(self):
+        engine = self.native("inkling-memory")
+        self.assertEqual(engine.info["kv"], "k8v8")
+        self.assertEqual(engine.info["expert_slots"], 624)
+        self.assertEqual(engine.info["expert_cache_bytes"], 2822926912)
+        self.assertEqual(engine.info["expert_cache_mib"], 2692)
+        self.assertEqual(engine.info["expert_cache_full_bytes"], 14035509248)
+        self.assertEqual(engine.info["kv_logical_bytes"], engine.info["kv_mapped_bytes"])
+        self.assertEqual(engine.info["kv_host_bytes"], 0)
+        self.assertEqual(engine.info["kv_committed_rows"], 131072)
+        self.assertEqual(engine.info["kv_grow"], 0)
+        self.assertEqual(list(engine.generate([1, 2, 3], 2, {}, threading.Event())), [101, 202])
+        self.assertEqual(engine.info["expert_slots"], 625)
+        self.assertEqual(engine.info["expert_cache_bytes"], 2827405904)
+        self.assertEqual(engine.info["kv_used_tokens"], 5)
 
     def test_stdout_startup_error_survives_child_exit(self):
         with self.spawn("startup-error"), patch.object(server, "ENGINE_READY_S", 3):

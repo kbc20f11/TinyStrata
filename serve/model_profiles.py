@@ -320,16 +320,15 @@ class ModelProfiles:
             pass
         else:
             source["model_name"] = profile.id
-        # Resolve verified legacy managed provenance before decode-policy
-        # migration; explicit local model selections are never inferred as stock.
-        source = model_setup.migrate_managed_clover_model(source, profile.path)
+        # Resolve verified managed artifacts before searching existing files.
+        source = model_setup.migrate_managed_model(source, profile.path)
         result, _ = tinyconfig.migrate_settings(source)
         selected = model_setup.model_path(result)
         artifact = manifest_for_arch(profile.arch, profile.id)
         managed = profile.path.parent / "model-files" / artifact.filename
-        local_clover = (profile.arch == "clover_moe" and selected is not None and
-                        (result.get("model_source") == "local" or
-                         (result.get("model_source") != "managed" and selected != managed.resolve())))
+        local_model = (profile.arch in ("clover_moe", "inkling2_loop") and selected is not None and
+                       (result.get("model_source") == "local" or
+                        (result.get("model_source") != "managed" and selected != managed.resolve())))
         # Retain an explicitly configured download directory as a lookup source
         # before configure_download normalizes the managed destination.
         candidates = [model_setup.model_path(result)]
@@ -341,7 +340,7 @@ class ModelProfiles:
         result = model_setup.shared_library_dirs(model_setup.configure_download(result, profile.path))
         candidates += [model_setup.model_path(result)]
         candidates += [directory / artifact.filename for directory in self._directories]
-        if local_clover:
+        if local_model:
             # A missing custom model must not silently become the fixed model.
             candidates = [selected]
         existing = next((path for path in candidates if path is not None and path.is_file()), None)

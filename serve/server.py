@@ -3632,6 +3632,7 @@ class Service:
         # Keep the configured family on the engine bundle so live model switches
         # cannot leave request validation using the previous model's family.
         engine._tinystrata_arch = (generation_defaults or {}).get("arch")
+        engine._tinystrata_inkling_vision = bool((generation_defaults or {}).get("inkling_vision"))
         self.template_tokens = dict(getattr(tokenizer, "template_tokens", {}))
         self.call_format = getattr(template, "call_format", "function")
         self.literals = literal_tags(getattr(tokenizer, "control_tokens", ()))   # texts that stay text inside a message
@@ -3846,9 +3847,18 @@ class Service:
     def vision_available(self) -> bool:
         return (self.vision is not None and not self.vision_error) or self.inkling_vision_available()
 
-    def inkling_vision_available(self) -> bool:
+    def inkling_vision_configured(self) -> bool:
         return (getattr(self.engine, "_tinystrata_arch", None) == "inkling2_loop" and
+                getattr(self.engine, "_tinystrata_inkling_vision", False))
+
+    def inkling_vision_available(self) -> bool:
+        return (self.inkling_vision_configured() and self.loaded() and
                 (getattr(self.engine, "info", {}) or {}).get("images") == 1)
+
+    def inkling_vision_error(self) -> str:
+        if self.inkling_vision_configured() and self.loaded() and not self.inkling_vision_available():
+            return "the native Inkling image encoder is unavailable; see the engine log"
+        return ""
 
     def prompt_size(self, ids) -> int:
         return len(ids) + getattr(self.embeddings, "inkling_extra_tokens", 0)
@@ -3861,6 +3871,8 @@ class Service:
         return inkling_vision.tile_count(*dimensions)
 
     def vision_off_reason(self) -> str:
+        if error := self.inkling_vision_error():
+            return error
         return (f"images are unavailable: {self.vision_error}; retry loading the model to retry the image encoder"
                 if self.vision_error else "this server was started without the vision encoder, so it cannot read images")
 
@@ -4453,8 +4465,8 @@ class Service:
             "concurrency": {"serving": max(1, int(getattr(self.engine, "batch", 0) or 0)),
                             "requested": max(1, int(getattr(self.engine, "batch", 0) or 0))},
             "dialects": ["/v1/chat/completions", "/v1/messages", "/v1/responses"],
-            "vision": {"enabled": images, "configured": self.vision is not None or self.inkling_vision_available(),
-                       "available": images, "error": self.vision_error or None},
+            "vision": {"enabled": images, "configured": self.vision is not None or self.inkling_vision_configured(),
+                       "available": images, "error": self.vision_error or self.inkling_vision_error() or None},
             "activity": {"requests": totals["requests"] + int(busy), "in_flight": int(busy) + int(s.get("queued") or 0),
                          "last_request_at": int(last_at) if last_at else None},
             "last_timings": last_t,
@@ -4550,7 +4562,7 @@ class Service:
         images = images_of(messages)
         count = len(ids)
         counted_images = 0
-        if images and self.inkling_vision_available():
+        if images and (self.inkling_vision_available() or (self.inkling_vision_configured() and not self.loaded())):
             for image in images:
                 dimensions = Vision.inline_dimensions(image)
                 rows = inkling_vision.tile_count(*dimensions) if dimensions else inkling_vision.tile_count(4096, 4096)
@@ -7833,6 +7845,7 @@ def configure_model_downloads(svc: Service, cfg: dict, config_path: str | Path):
         candidate = StrataEngine(str(exe), engine_args(updated) + (effort or []), cwd=updated.get("cwd"),
                                  log=updated.get("log"), env=child_env(updated), lazy=True)
         candidate._tinystrata_arch = updated.get("arch")
+        candidate._tinystrata_inkling_vision = bool(updated.get("inkling_vision"))
         candidate.silence_s = engine_silence_s(updated)
         image_candidate = (Vision(vision_config(updated, child_env(updated)),
                                   log=open(updated["log"], "a", encoding="utf-8") if updated.get("log") else None,

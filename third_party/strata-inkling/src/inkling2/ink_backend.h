@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -56,6 +57,20 @@ struct BackendStats {
     uint64_t expert_misses = 0;       // of those, the ones not in the card
 };
 
+struct BackendMemoryStats {
+    // Resident routed weights and their full-fit size in the backend's
+    // current layout. Prefill DMA buffers are not part of the Expert cache.
+    size_t expert_cache_bytes = 0;
+    size_t expert_cache_full_bytes = 0;
+    // Full context backing and current allocation, including format metadata.
+    // On UMA the device and host share the same mapped physical allocation.
+    size_t kv_logical_bytes = 0;
+    size_t kv_mapped_bytes = 0;
+    size_t kv_host_bytes = 0;
+    int kv_committed_rows = 0;
+    bool kv_grow = false;
+};
+
 // Candidate rows of forward_batch_cand: row r (in the order of the wanted-logits rows) holds `k` = min(kInkCandidates, vocab)
 // ids and logits in val / idx [r * kInkCandidates + 0 .. k), and finite[r] (1 = every 67th logit of the row is finite).
 struct CandRows {
@@ -73,6 +88,7 @@ public:
     virtual const char* backend_name() const noexcept = 0;
     virtual std::string device_info() const = 0;
     virtual BackendStats stats() const = 0;
+    virtual std::optional<BackendMemoryStats> memory_stats() const { return std::nullopt; }
     virtual bool uses_kv_loans() const { return false; }
     virtual int effective_max_ctx() const { return 0; }
     virtual int effective_chunk() const { return 0; }     // the prefill chunk the backend really runs with (0: opts.chunk)

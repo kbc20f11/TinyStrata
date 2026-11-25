@@ -3,6 +3,7 @@
 The READY tests run pipe-driven Python children, never a listener or model.
 Run: python -m unittest discover -s tests -p test_vision_startup_resilience.py -v
 """
+import base64
 from contextlib import redirect_stdout
 from io import StringIO
 import os
@@ -146,14 +147,51 @@ class RecoveringEngine(api.MockEngine):
         self.running = False
 
 
-def service(vision=None, *, loaded=False, events=None):
+def service(vision=None, *, loaded=False, events=None, generation_defaults=None):
     events = [] if events is None else events
     tok = api.ByteTokenizer()
     engine = RecoveringEngine(tok, events, loaded)
-    return api.Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"), vision=vision)
+    return api.Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"), vision=vision,
+                       generation_defaults=generation_defaults)
 
 
 class ServiceResilience(unittest.TestCase):
+    def test_native_inkling_vision_status_follows_loaded_capability(self):
+        with tempfile.TemporaryDirectory() as directory:
+            projector = Path(directory) / "Inkling-2-Mini-Vision.strata"
+            projector.write_bytes(b"configured native image fixture")
+            cfg = {"arch": "inkling2_loop", "inkling_vision": str(projector)}
+            svc = service(generation_defaults=cfg)
+            svc.engine.info["images"] = 1  # retained INFO from a prior load
+            pending = svc.v1_status()["vision"]
+            self.assertEqual(pending, {"enabled": False, "configured": True, "available": False, "error": None})
+            self.assertFalse(svc.metrics()["engine"]["images"])
+            image = base64.b64encode((ROOT / "benchmark/image.png").read_bytes()).decode("ascii")
+            request = {"messages": [{"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + image}},
+                {"type": "text", "text": "Describe the image."}]}]}
+            self.assertEqual(svc.chat_token_count(request)["images_counted"], 1)
+            self.assertFalse(svc.loaded())
+
+            svc.engine.running = True
+            self.assertTrue(svc.v1_status()["vision"]["available"])
+            self.assertTrue(svc.metrics()["engine"]["images"])
+
+            svc.engine.info["images"] = 0
+            failed = svc.v1_status()["vision"]
+            self.assertTrue(failed["configured"])
+            self.assertFalse(failed["available"])
+            self.assertIn("native Inkling image encoder", failed["error"])
+            self.assertEqual(svc.vision_off_reason(), failed["error"])
+            with self.assertRaisesRegex(ValueError, "native Inkling image encoder"):
+                svc.chat_token_count(request)
+            svc.load(retry_vision=True)  # Native failures don't use the separate sidecar retry path.
+            self.assertTrue(svc.loaded())
+
+            disabled = service(loaded=True, generation_defaults={"arch": "inkling2_loop"})
+            self.assertFalse(disabled.v1_status()["vision"]["configured"])
+            self.assertFalse(disabled.v1_status()["vision"]["available"])
+
     def test_eager_child_oserror_keeps_a_retryable_encoder_instance(self):
         with tempfile.TemporaryDirectory() as directory, \
                 mock.patch.object(api.Vision, "work_dir", return_value=Path(directory)), \

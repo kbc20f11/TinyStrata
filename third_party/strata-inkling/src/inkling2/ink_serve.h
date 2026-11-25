@@ -20,6 +20,7 @@
 #include <numeric>
 #include <random>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -597,7 +598,8 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
     // Probe Vision shard lazily (zero VRAM/RAM until first image request)
     bool images_ok = false;
     VisionShardInfo vprobe;
-    CpuVisionEncoder cpu_vit;
+    const std::string_view backend_name = backend.backend_name();
+    CpuVisionEncoder cpu_vit(backend_name.starts_with("cuda") || backend_name.starts_with("hip"));
     std::deque<std::shared_ptr<const ImageEmbedding>> image_embeddings;
     size_t image_cache_bytes = 0;
     constexpr size_t image_cache_limit = 32ull << 20;
@@ -622,6 +624,16 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
 
     const int eff_max_ctx = (backend.effective_max_ctx() > 0) ? backend.effective_max_ctx() : cfg.bopts.max_ctx;
     const BackendStats st = backend.stats();
+    const auto report_memory = [&]() {
+        const auto memory = backend.memory_stats();
+        if (!memory) return;
+        proto("INFO expert_cache_bytes=%zu expert_cache_mib=%zu expert_cache_full_bytes=%zu expert_cache_full_mib=%zu "
+              "kv_grow=%d kv_logical_bytes=%zu kv_mapped_bytes=%zu kv_host_bytes=%zu kv_committed_rows=%d",
+              memory->expert_cache_bytes, memory->expert_cache_bytes >> 20,
+              memory->expert_cache_full_bytes, memory->expert_cache_full_bytes >> 20,
+              static_cast<int>(memory->kv_grow), memory->kv_logical_bytes, memory->kv_mapped_bytes,
+              memory->kv_host_bytes, memory->kv_committed_rows);
+    };
     const char* kv_str = kv_dtype_name(st.kv_dtype);
     proto("INFO engine=strata-inkling-%s arch=inkling2_loop backend=%s model=%s layers=%d visits=%d vocab=%d chunk=%d batch_slots=%d slot_read=1 shared_prefix=%d kv_dtype=%s kv=%s kv_used_tokens=0 drafter=%s drafting=%s images=%d image_pad=%d parallel=%d ckpt_key=1 top_k_unrestricted=1 expert_slots=%zu expert_total=%zu",
           cfg.version.c_str(), backend.backend_name(), base.c_str(), c.n_phys, c.n_visits, V, chunk_sz,
@@ -629,6 +641,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
           mf.m.dspark.present ? "dspark" : "none",
           use_dspark ? "dspark" : "off",
           images_ok ? 1 : 0, c.image_token_id, kMaxParallelSlots, st.vram_experts_loaded, st.total_experts);
+    report_memory();
     proto("READY %d stop hold holdb", eff_max_ctx);
 
     std::vector<ActiveReq> reqs(P);
@@ -650,6 +663,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             } else {
                 proto("INFO kv_used_tokens=%zu", rq.cached_prefix.size());
             }
+            report_memory();
             // The five reserved fields precede prompt_read in the shared DONE protocol.
             proto("DONE %d %d %.1f %.1f %s %d %d %d 0 0 0 0 0 %d",
                   rq.generated, rq.prompt_len, rq.prompt_ms, dec_ms, reason,
@@ -861,7 +875,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
             auto st = backend.stats();
             proto("STATS active_slots=%d max_slots=%d vram_experts=%zu ram_experts=%zu total_experts=%zu kv=%s expert_selections=%llu expert_misses=%llu",
                   st.active_slots, st.max_slots, st.vram_experts_loaded, st.ram_experts_loaded, st.total_experts,
-                  st.kv_dtype == KvDtype::FP8_E4M3 ? "fp8" : "fp16",
+                  kv_dtype_name(st.kv_dtype),
                   (unsigned long long)st.expert_selections, (unsigned long long)st.expert_misses);
             return true;
         }
