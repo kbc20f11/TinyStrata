@@ -31,6 +31,8 @@ public:
 
     bool load(const std::string& path, int device, std::string& err) {
         device_ = device;
+        const char* reuse_workspace = std::getenv("STRATA_INK_VISION_WORKSPACE_REUSE");
+        reuse_attention_workspace_ = !reuse_workspace || std::strcmp(reuse_workspace, "0") != 0;
         VisionShardInfo shard;
         if (!vision_probe(path, shard, err)) return false;
         cfg_ = shard.c;
@@ -304,7 +306,10 @@ private:
         w.v = take(s * d);
         w.attended = take(s * d);
         w.projected = take(std::max(s * d, n * cfg_.out_hidden));
-        w.mlp = take(std::max(s * cfg_.inter, n * cfg_.proj_hidden));
+        // As in the existing Clover image workspace, share the memory of
+        // phases that finish on the same stream before the next one starts.
+        // Q, K, V, and the attention result are dead before the MLP begins.
+        w.mlp = reuse_attention_workspace_ ? w.q : take(std::max(s * cfg_.inter, n * cfg_.proj_hidden));
         // Patch pixels and absolute position embeddings are consumed before
         // the first transformer layer uses the MLP and normalisation buffers.
         w.patch = w.mlp;
@@ -370,6 +375,7 @@ private:
     int device_ = -1;
     cudaStream_t stream_ = nullptr;
     cublasHandle_t blas_ = nullptr;
+    bool reuse_attention_workspace_ = false;
     VitCfg cfg_;
     std::vector<float> cls_, cls_position_, position_;
     Linear patch_, projector_in_, projector_out_;

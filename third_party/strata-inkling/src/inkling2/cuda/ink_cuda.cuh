@@ -119,13 +119,39 @@ inline strata::inkling2::ArchProfile current_arch_profile(int dev = 0) {
     return strata::inkling2::select_arch_profile(major, minor);
 }
 
-// Unified-Memory-safe VRAM query: on Linux integrated GPUs (e.g. DGX Spark GB10 sm_121 128 GB UMA),
+#if defined(_WIN32)
+bool query_resident_vram(size_t& bytes);
+#endif
+
+// Use dedicated resident VRAM on Windows. On Linux integrated GPUs (e.g. DGX Spark GB10 sm_121 128 GB UMA),
 // cudaMemGetInfo subtracts reclaimable OS page cache (like the 19 GB .strata file just read!),
 // so take max(cuda_free, /proc/meminfo MemAvailable) to prevent false hybrid spill!
 inline cudaError_t ink_cuda_mem_info(size_t* vfree, size_t* vtot, int dev = -1) {
     cudaError_t ce = cudaMemGetInfo(vfree, vtot);
     if (ce != cudaSuccess) return ce;
-#if defined(__linux__)
+#if defined(_WIN32)
+    (void)dev;  // Both CUDA and the shared NVML query refer to the current device.
+    static const bool clamp = [] {
+        const char* setting = std::getenv("STRATA_INK_WDDM_VRAM");
+        return !setting || std::strcmp(setting, "0") != 0;
+    }();
+    static const bool debug = std::getenv("STRATA_INK_PLACE_DEBUG") != nullptr;
+    if ((clamp || debug) && vfree && vtot) {
+        size_t physical = 0;
+        const size_t raw = *vfree;
+        const bool known = query_resident_vram(physical);
+        if (clamp && known) *vfree = std::min(raw, physical);
+        if (debug) {
+            const char* source = clamp && known ? "cuda+nvml" : "cuda";
+            if (known) {
+                std::fprintf(stderr, "[InkCUDA] VRAM budget: CUDA %.1f MiB, dedicated %.1f MiB, using %.1f MiB (%s)\n",
+                             raw / 1048576.0, physical / 1048576.0, *vfree / 1048576.0, source);
+            } else {
+                std::fprintf(stderr, "[InkCUDA] VRAM budget: NVML unavailable, using CUDA %.1f MiB\n", raw / 1048576.0);
+            }
+        }
+    }
+#elif defined(__linux__)
     int cur = dev;
     if (cur < 0) cudaGetDevice(&cur);
     cudaDeviceProp p{};

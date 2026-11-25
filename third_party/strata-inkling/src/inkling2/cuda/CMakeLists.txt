@@ -69,6 +69,7 @@ target_compile_options(strata_inkling_cuda PRIVATE
   $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
 )
 if(WIN32)
+  target_sources(strata_inkling_cuda PRIVATE ink_windows_vram.cpp)
   target_compile_definitions(strata_inkling_cuda PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
   target_compile_definitions(strata_inkling_cuda_sm120 PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
   if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND STRATA_ISA_FLOOR STREQUAL "avx")
