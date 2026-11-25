@@ -508,6 +508,31 @@ int serve(Engine& e, const Options& o, strata::conversation::Options cache_optio
         }
     }
 }
+bool ampere_12_gib_chunk_headroom(size_t free_bytes, size_t total_bytes) {
+#if defined(_WIN32) && !defined(STRATA_USE_HIP) && !defined(__HIPCC__) && !defined(STRATA_HIP_GFX906)
+    constexpr size_t gib = size_t(1) << 30;
+    if (total_bytes < 11 * gib + gib / 2 || total_bytes >= 12 * gib + gib / 2 || free_bytes < 10 * gib)
+        return false;
+
+    int count = 0, device = 0;
+    cudaDeviceProp properties{};
+    if (cudaGetDeviceCount(&count) != cudaSuccess || cudaGetDevice(&device) != cudaSuccess ||
+        cudaGetDeviceProperties(&properties, device) != cudaSuccess) {
+        (void) cudaGetLastError();
+        return false;
+    }
+    if (count != 1 || properties.major != 8 || properties.minor != 6) return false;
+
+    // cudaMemGetInfo can include pageable allocations under WDDM. Require
+    // a known driver reading so a busy card keeps the smaller allocation.
+    size_t dedicated_free = 0;
+    return strata::lfm2::resident_vram().query(dedicated_free) && dedicated_free >= 10 * gib;
+#else
+    (void) free_bytes;
+    (void) total_bytes;
+    return false;
+#endif
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -518,6 +543,7 @@ int main(int argc, char** argv) {
         strata::conversation::Options cache_options;
         cache_options.slots = 2;
         bool cache_budget_explicit = false;
+        bool auto_chunk_requested = false, stage_explicit = false;
         std::string ids_text, force_text, dump, ctx = "auto", chunk = "auto", kv = "auto";
         int n_gen = 64;
         bool server = false;
@@ -550,7 +576,7 @@ int main(int argc, char** argv) {
                           "  --model GGUF --serve\n"
                           "  --model GGUF --tokens IDS --n N [--dump-full-logits FILE] [--force IDS]\n"
                           "  --max-context auto|N   Context capacity; auto by total VRAM: 8 GB 64K, 12+ GB 128K (model limit)\n"
-                          "  --chunk auto|N         Prompt chunk size (auto: 256)\n"
+                          "  --chunk auto|N         Prompt chunk size. Explicit auto may select 512 on eligible Windows SM86 12 GiB profiles.\n"
                           "  --expert-vram auto|GiB Expert GPU cache budget; overflow runs on CPU\n"
                           "  --vram-reserve-mib N   Leave VRAM headroom (default 768 MiB)\n"
                           "  --conversation-cache-mib N  Serve cache cap (CUDA: 512 MiB, HIP: 0; 0 disables)\n"
@@ -576,7 +602,10 @@ int main(int argc, char** argv) {
             else if (arg == "--dump-full-logits") dump = next();
             else if (arg == "--n" || arg == "--max-new") n_gen = bounded_integer(next(), "n", 1, 131072);
             else if (arg == "--max-context") ctx = next();
-            else if (arg == "--chunk") chunk = next();
+            else if (arg == "--chunk") {
+                chunk = next();
+                auto_chunk_requested = chunk == "auto";
+            }
             else if (arg == "--expert-vram") {
                 const auto s = next();
                 if (s == "auto") opt.expert_vram_gib = -1;
@@ -587,7 +616,10 @@ int main(int argc, char** argv) {
                         throw std::invalid_argument("invalid --expert-vram");
                 }
             } else if (arg == "--vram-reserve-mib") opt.vram_reserve_mib = bounded_integer(next(), "reserve", 0, 1048576);
-            else if (arg == "--stage-mib") opt.stage_mib = bounded_integer(next(), "stage", 1, 65536);
+            else if (arg == "--stage-mib") {
+                opt.stage_mib = bounded_integer(next(), "stage", 1, 65536);
+                stage_explicit = true;
+            }
             else if (arg == "--conversation-cache-mib") { cache_options.bytes = size_t(bounded_integer(next(), "conversation cache MiB", 0, 65536)) << 20; cache_budget_explicit = true; }
             else if (arg == "--conversation-cache-disk-mib") cache_options.disk_bytes = size_t(bounded_integer(next(), "conversation disk MiB", 0, 65536)) << 20;
             else if (arg == "--conversation-cache-slots") cache_options.slots = bounded_integer(next(), "conversation slots", 1, 16);
@@ -621,6 +653,13 @@ int main(int argc, char** argv) {
             opt.max_context = strata::context_policy::for_total_vram(total, 131072);
             std::fprintf(stderr, "tinystrata-lfm2: automatic context: %.2f GiB total GPU VRAM -> %d tokens (%.2f GiB free)\n",
                          total / 1073741824.0, opt.max_context, free / 1073741824.0);
+            if (server && auto_chunk_requested && !stage_explicit && opt.stage_read_mib > 0 &&
+                opt.gpu_experts && opt.expert_vram_gib < 0 && opt.vram_reserve_mib == 768 && opt.threads == 0 &&
+                opt.graphs && opt.kv_grow && opt.layer_split.empty() && !std::getenv("STRATA_FREEZE_EXPERTS") &&
+                (kv == "auto" || kv == "int8" || kv == "q8_0") && ampere_12_gib_chunk_headroom(free, total)) {
+                opt.prompt_batch = 512;
+                std::fprintf(stderr, "tinystrata-lfm2: automatic prompt chunk 512 (12 GiB SM86, at least 10 GiB free)\n");
+            }
         } else opt.max_context = bounded_integer(ctx, "context", 16, 131072);
         if (opt.max_context < 16 || opt.max_context > 131072) throw std::invalid_argument("context must be 16..131072");
         if (chunk != "auto") opt.prompt_batch = bounded_integer(chunk, "chunk", 1, 4096);

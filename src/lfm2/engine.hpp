@@ -447,7 +447,7 @@ protected:
     void load_shape();
     void load_moe(int il, bool shared = true);
     void alloc();
-    void shared_scratch();
+    void shared_scratch(bool share_ffn_profile);
     float* draft_input(const int32_t* tokens, int64_t row, const float* h, int n);
     void draft_rows(const int32_t* tokens, int first, int n);
     const Image* image_at(int64_t row) const;
@@ -685,6 +685,10 @@ protected:
     void *mq_ = nullptr, *mq2_ = nullptr;                   ///< the rows quantized for the two products
     void* mqx_ = nullptr;                                   ///< lin()'s tokens quantized for a product
     int32_t *tab_ = nullptr, *h_tab_ = nullptr;   ///< a layer's row tables, in VRAM and pinned
+#if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
+    const int32_t* mapped_tab_ = nullptr;
+    uint64_t mapped_tab_uploads_ = 0;
+#endif
     int32_t* iota_ = nullptr;                     ///< 0, 1, 2, ...
     int32_t* d_ids_ = nullptr;                    ///< a batch's experts and weights when it routes on the card
     float* d_wts_ = nullptr;
