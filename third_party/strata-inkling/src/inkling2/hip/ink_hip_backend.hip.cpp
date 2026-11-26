@@ -32,9 +32,11 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -527,11 +529,21 @@ struct GpuVisionState {
     std::vector<float> h_cls_pos;
     std::vector<float> h_pos_emb;
 
+    size_t device_bytes() const noexcept {
+        size_t bytes = 0;
+        for (const auto& kv : w_bf16) if (!kv.second.host_mapped) bytes += kv.second.bytes;
+        for (const auto& kv : w_f32) if (!kv.second.host_mapped) bytes += kv.second.bytes;
+        return bytes;
+    }
+
     void release() {
         for (auto& kv : w_bf16) free_gpu_buffer(kv.second);
         for (auto& kv : w_f32) free_gpu_buffer(kv.second);
         w_bf16.clear();
         w_f32.clear();
+        h_cls.clear();
+        h_cls_pos.clear();
+        h_pos_emb.clear();
         loaded = false;
     }
 };
@@ -614,6 +626,11 @@ public:
 #endif
         model_ = &model;
         opts_ = opts;
+        const char* vision_gpu = std::getenv("STRATA_INK_VISION_HIP");
+        vision_gpu_enabled_ = !opts.vision_path.empty() && !(vision_gpu && std::strcmp(vision_gpu, "0") == 0);
+        if (!opts.vision_path.empty() && !vision_gpu_enabled_) {
+            std::fprintf(stderr, "[inkling2-vision] HIP disabled by STRATA_INK_VISION_HIP; using CPU\n");
+        }
         c_ = model.m.c;
         dspark_cfg_ = model.m.dspark;
         // Debug only (--spec-check): STRATA_INK_TAP_VISITS=a,b,c,d takes the four host taps after those visits instead of the
@@ -1066,12 +1083,11 @@ public:
         expert_ram_bodies_.resize(n_dir);
         expert_sf4_outer_.assign(n_dir, {1.0f, 1.0f});
 
-        if (gpu_first_kv && !opts.vision_path.empty()) {
+        if (gpu_first_kv && vision_gpu_enabled_) {
             // Account for resident vision weights before fitting KV and Experts to the device.
             std::string vision_error;
             if (!load_vision_gpu(opts.vision_path, vision_error)) {
-                vision_.release();
-                std::fprintf(stderr, "[ink-hip] GPU vision warmup failed: %s\n", vision_error.c_str());
+                std::fprintf(stderr, "[inkling2-vision] HIP startup fell back to CPU: %s\n", vision_error.c_str());
             }
         }
 
@@ -1138,14 +1154,7 @@ public:
         if (gpu_first_kv) {
             size_t gpu_free = 0, gpu_total = 0;
             if (!hip_ok(hipMemGetInfo(&gpu_free, &gpu_total), "GPU KV memory budget", err)) return false;
-#if defined(_WIN32)
-            hipDeviceProp_t device{};
-            strata::hip_compat::DedicatedVramInfo physical{};
-            if (hipGetDeviceProperties(&device, gpu0_id_) == hipSuccess &&
-                strata::hip_compat::query_dedicated_vram(device.luid, sizeof device.luid, physical, gpu_total)) {
-                gpu_free = std::min(gpu_free, static_cast<size_t>(physical.free_bytes));
-            }
-#endif
+            gpu_free = bound_dedicated_vram(gpu_free, gpu_total);
             const auto device_kv_bytes = [&](bool fp8) {
                 const size_t swa_pages = static_cast<size_t>(max_slots_) * max_swa_pages;
                 const size_t global_pages = static_cast<size_t>(max_slots_) * max_glob_pages;
@@ -2741,126 +2750,90 @@ public:
     }
 
     bool encode_image(const ImageRec& img, std::vector<float>& out_embeds, std::string& err) override {
-        if (opts_.vision_path.empty()) return false;
-        if (!vision_.loaded) {
-            if (!load_vision_gpu(opts_.vision_path, err)) return false;
+        if (!vision_gpu_enabled_) return false;
+        const auto started = std::chrono::steady_clock::now();
+        if (!encode_image_gpu(img, out_embeds, err)) {
+            std::fprintf(stderr, "[inkling2-vision] HIP encode fell back to CPU: %s\n", err.c_str());
+            return false;
         }
+        const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+        std::fprintf(stderr, "[inkling2-vision] HIP encoded %d image tokens in %.3fs\n", img.num_lm_tokens(), elapsed);
+        return true;
+    }
+
+    bool encode_image_gpu(const ImageRec& img, std::vector<float>& out_embeds, std::string& err) {
+        if (!hip_ok(hipSetDevice(gpu0_id_), "select HIP Vision device", err)) return false;
+        if (!vision_.loaded && !load_vision_gpu(opts_.vision_path, err)) return false;
         const VitCfg& vc = vision_.info.c;
-        const int merge = vc.merge;
-        const int patch = vc.patch;
-        const int cell = patch * merge;
-        const int n_tok = img.num_lm_tokens();
-        const int ph = img.grid_h * merge;
-        const int pw = img.grid_w * merge;
-        const int n_patches = ph * pw;
-        const int S = n_patches + 1;
-        const int D = vc.hidden;
-        const int H = vc.heads;
-        const int hd = vc.head_dim;
+        const int merge = vc.merge, patch = vc.patch;
+        const int n_tok = img.num_lm_tokens(), n_patches = n_tok * merge * merge;
+        const int S = n_patches + 1, D = vc.hidden, H = vc.heads, hd = vc.head_dim;
         const int patch_in = 3 * patch * patch;
+        const int merged_dim = merge * merge * D;
+        const size_t rows_bytes = static_cast<size_t>(S) * D * sizeof(float);
+        const size_t rope_bytes = static_cast<size_t>(S) * hd * sizeof(float);
 
-        // 1. Patchify + 2D pos coords on host (< 1 ms)
-        std::vector<float> patch_buf(static_cast<size_t>(n_patches) * patch_in);
-        std::vector<int> pos_h(S, 0), pos_w(S, 0);
-        int pi = 0;
-        for (int gr = 0; gr < img.grid_h; ++gr) {
-            for (int gc = 0; gc < img.grid_w; ++gc) {
-                const size_t tok = static_cast<size_t>(gr) * img.grid_w + gc;
-                const float* cell_px = img.pixel_values.data() + tok * cell * cell * 3;
-                for (int mr = 0; mr < merge; ++mr) {
-                    for (int mc = 0; mc < merge; ++mc) {
-                        float* dst = patch_buf.data() + static_cast<size_t>(pi) * patch_in;
-                        int idx = 0;
-                        for (int py = 0; py < patch; ++py) {
-                            const int ly = mr * patch + py;
-                            for (int px = 0; px < patch; ++px) {
-                                const int lx = mc * patch + px;
-                                const float* rgb = cell_px + (static_cast<size_t>(ly) * cell + lx) * 3;
-                                dst[idx++] = rgb[0]; dst[idx++] = rgb[1]; dst[idx++] = rgb[2];
-                            }
-                        }
-                        pos_h[pi + 1] = gr * merge + mr + 1;
-                        pos_w[pi + 1] = gc * merge + mc + 1;
-                        ++pi;
-                    }
-                }
-            }
-        }
-
-        // Precompute bilinearly interpolated pos_embed [S, D] + axial 2D RoPE cos/sin [S, hd] on host
-        std::vector<float> h_pos_add(static_cast<size_t>(S) * D, 0.0f);
-        for (int d = 0; d < D; ++d) h_pos_add[d] = vision_.h_cls[d] + vision_.h_cls_pos[d];
-        const int G = vc.posemb_grid;
-        for (int p = 0; p < n_patches; ++p) {
-            const float y = (static_cast<float>(pos_h[p + 1] - 1) + 0.5f) * (static_cast<float>(G) / ph) - 0.5f;
-            const float x = (static_cast<float>(pos_w[p + 1] - 1) + 0.5f) * (static_cast<float>(G) / pw) - 0.5f;
-            const int y0 = std::max(0, std::min(G - 1, static_cast<int>(std::floor(y))));
-            const int y1 = std::min(G - 1, y0 + 1);
-            const int x0 = std::max(0, std::min(G - 1, static_cast<int>(std::floor(x))));
-            const int x1 = std::min(G - 1, x0 + 1);
-            const float wy = std::max(0.0f, std::min(1.0f, y - y0));
-            const float wx = std::max(0.0f, std::min(1.0f, x - x0));
-            const float w00 = (1.0f - wy) * (1.0f - wx), w01 = (1.0f - wy) * wx;
-            const float w10 = wy * (1.0f - wx), w11 = wy * wx;
-            const float* p00 = vision_.h_pos_emb.data() + (static_cast<size_t>(y0) * G + x0) * D;
-            const float* p01 = vision_.h_pos_emb.data() + (static_cast<size_t>(y0) * G + x1) * D;
-            const float* p10 = vision_.h_pos_emb.data() + (static_cast<size_t>(y1) * G + x0) * D;
-            const float* p11 = vision_.h_pos_emb.data() + (static_cast<size_t>(y1) * G + x1) * D;
-            float* dst = h_pos_add.data() + static_cast<size_t>(p + 1) * D;
-            for (int d = 0; d < D; ++d) dst[d] = w00 * p00[d] + w01 * p01[d] + w10 * p10[d] + w11 * p11[d];
-        }
-
-        const int sp_dim = hd / 2;
-        const int n_freq = sp_dim / 2;
-        std::vector<float> inv_freq(n_freq);
-        for (int i = 0; i < n_freq; ++i) inv_freq[i] = 1.0f / std::pow(vc.rope_theta, static_cast<float>(2 * i) / sp_dim);
-        std::vector<float> h_rc(static_cast<size_t>(S) * hd), h_rs(static_cast<size_t>(S) * hd);
-        for (int t = 0; t < S; ++t) {
-            for (int i = 0; i < n_freq; ++i) {
-                const float aw = static_cast<float>(pos_w[t]) * inv_freq[i];
-                const float ah = static_cast<float>(pos_h[t]) * inv_freq[i];
-                h_rc[t * hd + 2 * i] = h_rc[t * hd + 2 * i + 1] = std::cos(aw);
-                h_rs[t * hd + 2 * i] = h_rs[t * hd + 2 * i + 1] = std::sin(aw);
-                h_rc[t * hd + sp_dim + 2 * i] = h_rc[t * hd + sp_dim + 2 * i + 1] = std::cos(ah);
-                h_rs[t * hd + sp_dim + 2 * i] = h_rs[t * hd + sp_dim + 2 * i + 1] = std::sin(ah);
-            }
-        }
-
-        // 2. Allocate temporary GPU buffers for this image & execute 23 ViT layers on GPU!
-        GpuBuffer d_patch, d_cur, d_pos, d_norm, d_q, d_k, d_v, d_ao, d_proj, d_mlp, d_rc, d_rs, d_mid, d_out;
-        auto cleanup_img = [&]() {
-            free_gpu_buffer(d_patch); free_gpu_buffer(d_cur); free_gpu_buffer(d_pos);
-            free_gpu_buffer(d_norm); free_gpu_buffer(d_q); free_gpu_buffer(d_k); free_gpu_buffer(d_v);
-            free_gpu_buffer(d_ao); free_gpu_buffer(d_proj); free_gpu_buffer(d_mlp);
-            free_gpu_buffer(d_rc); free_gpu_buffer(d_rs); free_gpu_buffer(d_mid); free_gpu_buffer(d_out);
+        const auto input = prepare_vision_input(img, vc, vision_.h_cls.data(), vision_.h_cls_pos.data(), vision_.h_pos_emb.data());
+        GpuBuffer d_patch, d_cur, d_pos, d_norm, d_q, d_k, d_v, d_ao, d_proj, d_mlp, d_rc, d_rs, d_mid, d_out, bf16_input;
+        struct WorkspaceBuffer {
+            GpuBuffer& buffer;
+            size_t bytes;
+            const float* upload = nullptr;
         };
-        if (!upload_raw(d_patch, patch_buf.data(), patch_buf.size() * 4, err) ||
-            !upload_raw(d_pos, h_pos_add.data(), h_pos_add.size() * 4, err) ||
-            !upload_raw(d_rc, h_rc.data(), h_rc.size() * 4, err) ||
-            !upload_raw(d_rs, h_rs.data(), h_rs.size() * 4, err) ||
-            !hip_ok(alloc_gpu_buffer(d_cur, static_cast<size_t>(S) * D * 4, mem_info_.is_uma), "vit cur", err) ||
-            !hip_ok(alloc_gpu_buffer(d_norm, static_cast<size_t>(S) * D * 4, mem_info_.is_uma), "vit norm", err) ||
-            !hip_ok(alloc_gpu_buffer(d_q, static_cast<size_t>(S) * D * 4, mem_info_.is_uma), "vit q", err) ||
-            !hip_ok(alloc_gpu_buffer(d_k, static_cast<size_t>(S) * D * 4, mem_info_.is_uma), "vit k", err) ||
-            !hip_ok(alloc_gpu_buffer(d_v, static_cast<size_t>(S) * D * 4, mem_info_.is_uma), "vit v", err) ||
-            !hip_ok(alloc_gpu_buffer(d_ao, static_cast<size_t>(S) * D * 4, mem_info_.is_uma), "vit ao", err) ||
-            !hip_ok(alloc_gpu_buffer(d_proj, static_cast<size_t>(S) * D * 4, mem_info_.is_uma), "vit proj", err) ||
-            !hip_ok(alloc_gpu_buffer(d_mlp, static_cast<size_t>(S) * vc.inter * 4, mem_info_.is_uma), "vit mlp", err) ||
-            !hip_ok(alloc_gpu_buffer(d_mid, static_cast<size_t>(n_tok) * vc.proj_hidden * 4, mem_info_.is_uma), "vit mid", err) ||
-            !hip_ok(alloc_gpu_buffer(d_out, static_cast<size_t>(n_tok) * vc.out_hidden * 4, mem_info_.is_uma), "vit out", err)) {
+        const WorkspaceBuffer workspace[] = {
+            {d_patch, input.patches.size() * sizeof(float), input.patches.data()},
+            {d_pos, rows_bytes, input.position.data()},
+            {d_rc, rope_bytes, input.rope_cos.data()},
+            {d_rs, rope_bytes, input.rope_sin.data()},
+            {d_cur, rows_bytes}, {d_norm, rows_bytes}, {d_q, rows_bytes}, {d_k, rows_bytes},
+            {d_v, rows_bytes}, {d_ao, rows_bytes}, {d_proj, rows_bytes},
+            {d_mlp, static_cast<size_t>(S) * vc.inter * sizeof(float)},
+            {d_mid, static_cast<size_t>(n_tok) * vc.proj_hidden * sizeof(float)},
+            {d_out, static_cast<size_t>(n_tok) * vc.out_hidden * sizeof(float)},
+        };
+        const auto cleanup_img = [&]() {
+            for (const auto& buffer : workspace) free_gpu_buffer(buffer.buffer);
+            free_gpu_buffer(bf16_input);
+        };
+        size_t workspace_bytes = 0;
+        for (const auto& buffer : workspace) workspace_bytes += (buffer.bytes + 4095ull) & ~4095ull;
+        // hipBLASLt's handle workspace is already resident in the engine.
+        // Count only the incremental BF16 input needed by this image.
+        const size_t bf16_bytes = static_cast<size_t>(S) * std::max({D, vc.inter, merged_dim, vc.proj_hidden}) * sizeof(uint16_t);
+        bool need_bf16_input = blaslt_.ready() && sc_x_bf16_.bytes < bf16_bytes;
+        if (!mem_info_.is_uma) {
+            size_t free = 0, total = 0;
+            if (!hip_ok(hipMemGetInfo(&free, &total), "query HIP Vision workspace budget", err)) return false;
+            free = bound_dedicated_vram(free, total);
+            constexpr size_t headroom = 64ull << 20;
+            if (free < headroom || workspace_bytes > free - headroom) {
+                err = "image workspace exceeds free device memory";
+                return false;
+            }
+            need_bf16_input = need_bf16_input && ((bf16_bytes + 4095ull) & ~4095ull) <= free - headroom - workspace_bytes;
+        }
+        for (const auto& buffer : workspace) {
+            const bool ok = buffer.upload
+                ? upload_raw(buffer.buffer, buffer.upload, buffer.bytes, err)
+                : hip_ok(alloc_gpu_buffer(buffer.buffer, buffer.bytes, mem_info_.is_uma), "allocate HIP Vision workspace", err);
+            if (!ok) {
+                cleanup_img();
+                return false;
+            }
+        }
+        if (need_bf16_input) {
+            // Losing this optional buffer keeps the usual lower-workspace GPU GEMM path available.
+            (void)alloc_gpu_buffer(bf16_input, bf16_bytes, mem_info_.is_uma);
+        }
+        const auto multiply = [&](const uint16_t* weight, const float* x, const float* bias, float* y, int m, int n, int k) {
+            launch_bf16_opt(weight, x, bias, y, m, n, k, bf16_input.valid() ? &bf16_input : nullptr);
+        };
+        float* cur = reinterpret_cast<float*>(d_cur.dev_ptr);
+        if (!hip_ok(hipMemsetAsync(cur, 0, static_cast<size_t>(D) * sizeof(float), stream_), "vit clear CLS", err)) {
             cleanup_img();
             return false;
         }
-
-        float* cur = reinterpret_cast<float*>(d_cur.dev_ptr);
-        const int merged_dim = merge * merge * D;
-        const size_t vit_xbf_need = static_cast<size_t>(std::max(S, n_tok)) * std::max({D, vc.inter, merged_dim, vc.proj_hidden}) * sizeof(uint16_t);
-        if (blaslt_.ready() && sc_x_bf16_.bytes < vit_xbf_need) {
-            free_gpu_buffer(sc_x_bf16_);
-            (void)alloc_gpu_buffer(sc_x_bf16_, vit_xbf_need, mem_info_.is_uma);
-        }
-        (void)hipMemsetAsync(cur, 0, static_cast<size_t>(D) * 4, stream_);
-        launch_bf16_opt(vit_bf16("model.visual.backbone.embeddings.patch_embedding.weight"),
+        multiply(vit_bf16("model.visual.backbone.embeddings.patch_embedding.weight"),
                         reinterpret_cast<const float*>(d_patch.dev_ptr), nullptr, cur + D,
                         n_patches, D, patch_in);
         k_vec_add<<<(S * D + 255) / 256, 256, 0, stream_>>>(cur, reinterpret_cast<const float*>(d_pos.dev_ptr), cur, S * D);
@@ -2871,11 +2844,11 @@ public:
             const std::string p = "model.visual.backbone.layers." + std::to_string(il);
             k_vit_layernorm_f32<<<S, 256, 0, stream_>>>(cur, vit_f32(p + ".ln_1.weight"), vit_f32(p + ".ln_1.bias"),
                                                         reinterpret_cast<float*>(d_norm.dev_ptr), S, D, vc.ln_eps);
-            launch_bf16_opt(vit_bf16(p + ".self_attn.q_proj.weight"), reinterpret_cast<const float*>(d_norm.dev_ptr),
+            multiply(vit_bf16(p + ".self_attn.q_proj.weight"), reinterpret_cast<const float*>(d_norm.dev_ptr),
                             vit_f32(p + ".self_attn.q_proj.bias"), reinterpret_cast<float*>(d_q.dev_ptr), S, D, D);
-            launch_bf16_opt(vit_bf16(p + ".self_attn.k_proj.weight"), reinterpret_cast<const float*>(d_norm.dev_ptr),
+            multiply(vit_bf16(p + ".self_attn.k_proj.weight"), reinterpret_cast<const float*>(d_norm.dev_ptr),
                             vit_f32(p + ".self_attn.k_proj.bias"), reinterpret_cast<float*>(d_k.dev_ptr), S, D, D);
-            launch_bf16_opt(vit_bf16(p + ".self_attn.v_proj.weight"), reinterpret_cast<const float*>(d_norm.dev_ptr),
+            multiply(vit_bf16(p + ".self_attn.v_proj.weight"), reinterpret_cast<const float*>(d_norm.dev_ptr),
                             vit_f32(p + ".self_attn.v_proj.bias"), reinterpret_cast<float*>(d_v.dev_ptr), S, D, D);
             k_vit_rope_2d<<<dim3(H, S), hd / 2, 0, stream_>>>(
                 reinterpret_cast<float*>(d_q.dev_ptr), reinterpret_cast<float*>(d_k.dev_ptr),
@@ -2883,35 +2856,40 @@ public:
             k_vit_full_attn<<<dim3(H, S), 64, 0, stream_>>>(
                 reinterpret_cast<const float*>(d_q.dev_ptr), reinterpret_cast<const float*>(d_k.dev_ptr),
                 reinterpret_cast<const float*>(d_v.dev_ptr), reinterpret_cast<float*>(d_ao.dev_ptr), S, H, hd);
-            launch_bf16_opt(vit_bf16(p + ".self_attn.out_proj.weight"), reinterpret_cast<const float*>(d_ao.dev_ptr),
+            multiply(vit_bf16(p + ".self_attn.out_proj.weight"), reinterpret_cast<const float*>(d_ao.dev_ptr),
                             vit_f32(p + ".self_attn.out_proj.bias"), reinterpret_cast<float*>(d_proj.dev_ptr), S, D, D);
             k_vit_layerscale_res<<<(S * D + 255) / 256, 256, 0, stream_>>>(cur, reinterpret_cast<const float*>(d_proj.dev_ptr),
                                                                            vit_f32(p + ".ls_1.gamma"), S, D);
 
             k_vit_layernorm_f32<<<S, 256, 0, stream_>>>(cur, vit_f32(p + ".ln_2.weight"), vit_f32(p + ".ln_2.bias"),
                                                         reinterpret_cast<float*>(d_norm.dev_ptr), S, D, vc.ln_eps);
-            launch_bf16_opt(vit_bf16(p + ".mlp.c_fc.weight"), reinterpret_cast<const float*>(d_norm.dev_ptr),
+            multiply(vit_bf16(p + ".mlp.c_fc.weight"), reinterpret_cast<const float*>(d_norm.dev_ptr),
                             vit_f32(p + ".mlp.c_fc.bias"), reinterpret_cast<float*>(d_mlp.dev_ptr), S, vc.inter, D);
             k_vit_gelu_exact<<<(S * vc.inter + 255) / 256, 256, 0, stream_>>>(reinterpret_cast<float*>(d_mlp.dev_ptr), S * vc.inter);
-            launch_bf16_opt(vit_bf16(p + ".mlp.c_proj.weight"), reinterpret_cast<const float*>(d_mlp.dev_ptr),
+            multiply(vit_bf16(p + ".mlp.c_proj.weight"), reinterpret_cast<const float*>(d_mlp.dev_ptr),
                             vit_f32(p + ".mlp.c_proj.bias"), reinterpret_cast<float*>(d_proj.dev_ptr), S, D, vc.inter);
             k_vit_layerscale_res<<<(S * D + 255) / 256, 256, 0, stream_>>>(cur, reinterpret_cast<const float*>(d_proj.dev_ptr),
                                                                            vit_f32(p + ".ls_2.gamma"), S, D);
-            if (guard_.visit_flush_stride > 0 && ((il + 1) % guard_.visit_flush_stride == 0)) {
-                (void)hipStreamSynchronize(stream_);
+            if (guard_.visit_flush_stride > 0 && ((il + 1) % guard_.visit_flush_stride == 0) &&
+                !hip_ok(hipStreamSynchronize(stream_), "vit sync layer group", err)) {
+                cleanup_img();
+                return false;
             }
         }
 
         // 2x2 merge projector (drop CLS at index 0)
-        launch_bf16_opt(vit_bf16("model.visual.proj_in.weight"), cur + D, nullptr,
+        multiply(vit_bf16("model.visual.proj_in.weight"), cur + D, nullptr,
                         reinterpret_cast<float*>(d_mid.dev_ptr), n_tok, vc.proj_hidden, merged_dim);
         k_vit_gelu_exact<<<(n_tok * vc.proj_hidden + 255) / 256, 256, 0, stream_>>>(reinterpret_cast<float*>(d_mid.dev_ptr), n_tok * vc.proj_hidden);
-        launch_bf16_opt(vit_bf16("model.visual.proj_out.weight"), reinterpret_cast<const float*>(d_mid.dev_ptr), nullptr,
+        multiply(vit_bf16("model.visual.proj_out.weight"), reinterpret_cast<const float*>(d_mid.dev_ptr), nullptr,
                         reinterpret_cast<float*>(d_out.dev_ptr), n_tok, vc.out_hidden, vc.proj_hidden);
 
         out_embeds.resize(static_cast<size_t>(n_tok) * vc.out_hidden);
-        const bool ok = hip_ok(hipMemcpyAsync(out_embeds.data(), d_out.dev_ptr, out_embeds.size() * 4, hipMemcpyDeviceToHost, stream_), "vit D2H", err)
-                     && hip_ok(hipStreamSynchronize(stream_), "vit sync", err);
+        const bool copied = hip_ok(hipGetLastError(), "launch HIP Vision kernels", err) &&
+            hip_ok(hipMemcpyAsync(out_embeds.data(), d_out.dev_ptr, out_embeds.size() * sizeof(float),
+                                  hipMemcpyDeviceToHost, stream_), "vit D2H", err);
+        const auto sync = hipStreamSynchronize(stream_);
+        const bool ok = copied && hip_ok(sync, "vit sync", err);
         cleanup_img();
         return ok;
     }
@@ -3023,15 +3001,17 @@ private:
         }
     }
 
-    void launch_bf16_opt(const uint16_t* W, const float* X, const float* bias, float* Y, int M, int N, int K) {
+    void launch_bf16_opt(const uint16_t* W, const float* X, const float* bias, float* Y, int M, int N, int K,
+                         const GpuBuffer* vision_input = nullptr) {
         if (exact_rows_ && M >= 2 && M <= 16) {
             launch_bf16_rows_exact(W, X, bias, Y, M, N, K, mem_info_.gen, stream_);
             return;
         }
+        const GpuBuffer& input_buffer = vision_input ? *vision_input : sc_x_bf16_;
         if (blaslt_.ready() && M >= blaslt_min_m_ && N >= 64 && K >= 64) {
             const size_t need = static_cast<size_t>(M) * K * sizeof(uint16_t);
-            if (sc_x_bf16_.bytes >= need) {
-                uint16_t* x_bf = reinterpret_cast<uint16_t*>(sc_x_bf16_.dev_ptr);
+            if (input_buffer.bytes >= need) {
+                uint16_t* x_bf = reinterpret_cast<uint16_t*>(input_buffer.dev_ptr);
                 convert_x_to_bf16(X, x_bf, M * K);
                 if (blaslt_.gemm_bf16_f32(W, x_bf, Y, M, N, K, stream_, 1.0f)) {
                     if (bias) {
@@ -3045,8 +3025,8 @@ private:
         if (M >= 64 && N >= 128 && K >= 64 && (K & 31) == 0 &&
             mem_info_.gen != AmdGen::Rdna2 && mem_info_.gen != AmdGen::Unknown) {
             const size_t need = static_cast<size_t>(M) * K * sizeof(uint16_t);
-            if (sc_x_bf16_.bytes >= need) {
-                uint16_t* x_bf = reinterpret_cast<uint16_t*>(sc_x_bf16_.dev_ptr);
+            if (input_buffer.bytes >= need) {
+                uint16_t* x_bf = reinterpret_cast<uint16_t*>(input_buffer.dev_ptr);
                 convert_x_to_bf16(X, x_bf, M * K);
                 const int tiles = ((M + 127) / 128) * ((N + 127) / 128);
                 k_bf16_wmma_bf16_128x128_swiz<<<tiles, 256, 0, stream_>>>(W, x_bf, bias, Y, M, N, K);
@@ -3185,6 +3165,20 @@ private:
         return true;
     }
 
+    size_t bound_dedicated_vram(size_t free, size_t total) const {
+#if defined(_WIN32)
+        hipDeviceProp_t device{};
+        strata::hip_compat::DedicatedVramInfo physical{};
+        if (hipGetDeviceProperties(&device, gpu0_id_) == hipSuccess &&
+            strata::hip_compat::query_dedicated_vram(device.luid, sizeof device.luid, physical, total)) {
+            return std::min(free, static_cast<size_t>(physical.free_bytes));
+        }
+#else
+        (void)total;
+#endif
+        return free;
+    }
+
     size_t vram_used_bytes() const noexcept {
         size_t tot = expert_gpu_arena_.bytes + d_exp_stage_.bytes + d_exp_w13_f16_.bytes + d_exp_w2_f16_.bytes;
         tot += hybrid_.allocated_bytes();
@@ -3199,6 +3193,7 @@ private:
         for (const auto& p : swa_pools_) tot += p.allocated_bytes();
         for (const auto& p : glob_pools_) tot += p.allocated_bytes();
         tot += d_sconv_k_all_.bytes + d_sconv_v_all_.bytes + d_sconv_attn_all_.bytes + d_sconv_mlp_all_.bytes;
+        tot += vision_.device_bytes();
         return tot;
     }
 
@@ -3498,43 +3493,118 @@ private:
     bool load_vision_gpu(const std::string& path, std::string& err) {
         vision_.release();
         if (!vision_probe(path, vision_.info, err)) return false;
+        const auto& vc = vision_.info.c;
+        if (vc.hidden != 1024 || vc.heads != 16 || vc.head_dim != 64 || vc.inter != 4096 ||
+            vc.patch != 20 || vc.merge != 2 || vc.layers != 23 || vc.posemb_grid != 32 ||
+            vc.proj_hidden != 4096 || vc.out_hidden != 2304) {
+            err = "unsupported HIP Vision tensor geometry";
+            return false;
+        }
+        if (vision_.info.is_safetensors) {
+            err = "HIP Vision requires a .strata Vision shard";
+            return false;
+        }
         strata::artifact::StrataFileReader rd;
         if (!rd.open(path, err)) return false;
-        std::vector<uint8_t> s1;
-        if (!rd.read_section(1, s1, err)) return false;
-
-        for (const auto& kv : vision_.info.T) {
-            const auto& vt = kv.second;
-            size_t n = 1;
-            for (int64_t d : vt.shape) n *= static_cast<size_t>(d);
-            std::vector<float> f32(n);
-            const uint8_t* src = s1.data() + vt.off;
-            if (vt.fmt == F_BF16) {
-                const uint16_t* p = reinterpret_cast<const uint16_t*>(src);
-                for (size_t i = 0; i < n; ++i) f32[i] = ink2::bf16_to_f32(p[i]);
-            } else if (vt.fmt == F_F16) {
-                const uint16_t* p = reinterpret_cast<const uint16_t*>(src);
-                for (size_t i = 0; i < n; ++i) f32[i] = ink2::fp16_to_f32(p[i]);
-            } else {
-                std::memcpy(f32.data(), src, n * 4);
+        size_t free = 0, total = 0;
+        if (!mem_info_.is_uma) {
+            if (!hip_ok(hipMemGetInfo(&free, &total), "query HIP Vision weights budget", err)) return false;
+            free = bound_dedicated_vram(free, total);
+        }
+        std::vector<uint8_t> slice;
+        const auto tensor = [&](const std::string& name, std::initializer_list<int64_t> shape,
+                                bool matrix, std::vector<float>* host = nullptr) {
+            const auto* t = vision_.info.find(name);
+            if (!t || t->shape.size() != shape.size() || !std::equal(shape.begin(), shape.end(), t->shape.begin()) ||
+                (t->fmt != F_BF16 && t->fmt != F_F16 && t->fmt != F_F32)) {
+                err = "missing or incompatible Vision tensor " + name;
+                return false;
             }
-
-            if (kv.first == "model.visual.backbone.embeddings.class_embedding") vision_.h_cls = f32;
-            else if (kv.first == "model.visual.backbone.embeddings.cls_position_embedding") vision_.h_cls_pos = f32;
-            else if (kv.first == "model.visual.backbone.embeddings.position_embedding") vision_.h_pos_emb = f32;
-            else if (kv.first == "model.visual.backbone.embeddings.patch_embedding.weight" ||
-                     (vt.shape.size() >= 2 && vt.shape[0] >= 64 && (n / static_cast<size_t>(vt.shape[0])) >= 64)) {
-                auto bf = f32_vec_to_bf16(f32);
-                GpuBuffer b;
-                if (!upload_raw(b, bf.data(), bf.size() * 2, err)) return false;
-                vision_.w_bf16[kv.first] = b;
-            } else {
-                GpuBuffer b;
-                if (!upload_raw(b, f32.data(), f32.size() * 4, err)) return false;
-                vision_.w_f32[kv.first] = b;
+            size_t count = 1;
+            for (int64_t extent : shape) count *= static_cast<size_t>(extent);
+            const size_t bytes = count * (t->fmt == F_F32 ? sizeof(float) : sizeof(uint16_t));
+            if (t->bytes != bytes || t->off > vision_.info.sec1_len || t->bytes > vision_.info.sec1_len - t->off) {
+                err = "Vision tensor exceeds its declared data extent: " + name;
+                return false;
             }
+            if (!host && !mem_info_.is_uma) {
+                const size_t gpu_bytes = count * (matrix ? sizeof(uint16_t) : sizeof(float));
+                const size_t aligned = (gpu_bytes + 4095ull) & ~4095ull;
+                if (aligned > free) {
+                    err = "Vision weights exceed free device memory";
+                    return false;
+                }
+                free -= aligned;
+            }
+            slice.resize(bytes);
+            if (!rd.read_at(vision_.info.sec1_off + t->off, slice.data(), bytes, err)) return false;
+            if (matrix && t->fmt == F_BF16) {
+                return upload_raw(vision_.w_bf16[name], slice.data(), bytes, err);
+            }
+            std::vector<float> temporary;
+            auto& values = host ? *host : temporary;
+            values.resize(count);
+            if (t->fmt == F_F32) {
+                std::memcpy(values.data(), slice.data(), bytes);
+            } else {
+                for (size_t i = 0; i < count; ++i) {
+                    uint16_t bits;
+                    std::memcpy(&bits, slice.data() + i * sizeof(bits), sizeof(bits));
+                    values[i] = t->fmt == F_BF16 ? bf16_to_f32(bits) : fp16_to_f32(bits);
+                }
+            }
+            if (host) return true;
+            if (matrix) {
+                const auto bf16 = f32_vec_to_bf16(values);
+                return upload_raw(vision_.w_bf16[name], bf16.data(), bf16.size() * sizeof(uint16_t), err);
+            }
+            return upload_raw(vision_.w_f32[name], values.data(), count * sizeof(float), err);
+        };
+        const int d = vc.hidden, grid = vc.posemb_grid;
+        const auto norm = [&](const std::string& name) {
+            return tensor(name + ".weight", {d}, false) && tensor(name + ".bias", {d}, false);
+        };
+        const auto linear = [&](const std::string& name, int input, int output, bool bias) {
+            return tensor(name + ".weight", {output, input}, true) &&
+                   (!bias || tensor(name + ".bias", {output}, false));
+        };
+        const auto load = [&]() {
+            const std::string embeddings = "model.visual.backbone.embeddings.";
+            const auto* positions = vision_.info.find(embeddings + "position_embedding");
+            if (!positions) {
+                err = "missing Vision position embedding";
+                return false;
+            }
+            const bool positions_ok = positions->shape.size() == 3
+                ? tensor(embeddings + "position_embedding", {grid, grid, d}, false, &vision_.h_pos_emb)
+                : tensor(embeddings + "position_embedding", {grid * grid, d}, false, &vision_.h_pos_emb);
+            if (!positions_ok ||
+                !tensor(embeddings + "class_embedding", {d}, false, &vision_.h_cls) ||
+                !tensor(embeddings + "cls_position_embedding", {d}, false, &vision_.h_cls_pos) ||
+                !linear(embeddings + "patch_embedding", 3 * vc.patch * vc.patch, d, false) ||
+                !norm("model.visual.backbone.ln_pre")) return false;
+            for (int i = 0; i < vc.layers; ++i) {
+                const std::string layer = "model.visual.backbone.layers." + std::to_string(i);
+                if (!norm(layer + ".ln_1") || !norm(layer + ".ln_2") ||
+                    !linear(layer + ".self_attn.q_proj", d, d, true) ||
+                    !linear(layer + ".self_attn.k_proj", d, d, true) ||
+                    !linear(layer + ".self_attn.v_proj", d, d, true) ||
+                    !linear(layer + ".self_attn.out_proj", d, d, true) ||
+                    !linear(layer + ".mlp.c_fc", d, vc.inter, true) ||
+                    !linear(layer + ".mlp.c_proj", vc.inter, d, true) ||
+                    !tensor(layer + ".ls_1.gamma", {d}, false) ||
+                    !tensor(layer + ".ls_2.gamma", {d}, false)) return false;
+            }
+            return linear("model.visual.proj_in", d * vc.merge * vc.merge, vc.proj_hidden, false) &&
+                   linear("model.visual.proj_out", vc.proj_hidden, vc.out_hidden, false);
+        };
+        if (!load()) {
+            vision_.release();
+            return false;
         }
         vision_.loaded = true;
+        std::fprintf(stderr, "[inkling2-vision] HIP resident weights %.1f MiB on GPU %d\n",
+                     vision_.device_bytes() / 1048576.0, gpu0_id_);
         return true;
     }
 
@@ -6031,6 +6101,7 @@ private:
     GpuBuffer d_sconv_k_all_, d_sconv_v_all_, d_sconv_attn_all_, d_sconv_mlp_all_;
     std::vector<GpuSlotMeta> slots_;
     GpuVisionState vision_;
+    bool vision_gpu_enabled_ = false;
 
     // Prompt checkpoint per slot (see save_prompt_checkpoint)
     struct PromptCkpt {
