@@ -667,11 +667,16 @@ public:
         if (!hip_ok(hipStreamCreateWithFlags(&stream_, hipStreamNonBlocking), "hipStreamCreate", err)) return false;
 
         mem_info_ = query_device_memory(gpu0_id_);
+        const char* arch = mem_info_.arch_name;
+        const bool gfx1200 = strata::hip_uma::arch_is_exact(arch, "gfx1200");
+        bool tuned_discrete_profile = false;
+#if defined(_WIN32)
+        tuned_discrete_profile = gfx1200 && dev_count == 1 && !mem_info_.is_uma;
+#endif
         const char* vision_attention = std::getenv("STRATA_INK_VISION_HIP_WAVE32");
         const bool compare_vision_attention = vision_attention && std::strcmp(vision_attention, "compare") == 0;
-        const bool wave32_requested = compare_vision_attention || (vision_attention && std::strcmp(vision_attention, "1") == 0);
-        const char* arch = mem_info_.arch_name;
-        const bool gfx1200 = std::strncmp(arch, "gfx1200", 7) == 0 && (arch[7] == '\0' || arch[7] == ':');
+        const bool wave32_requested = vision_attention
+            ? compare_vision_attention || std::strcmp(vision_attention, "1") == 0 : tuned_discrete_profile;
         vision_wave32_ = vision_gpu_enabled_ && wave32_requested && gfx1200;
         vision_wave32_compare_ = vision_wave32_ && compare_vision_attention;
         if (vision_gpu_enabled_ && wave32_requested) {
@@ -1211,7 +1216,16 @@ public:
         if (total_all_exp_bytes > vram_budget && max_exp_bytes > 0) {
             const size_t stage2_b = 2u * max_exp_bytes;
             if (static_vram_budget > stage2_b + 16u * max_exp_bytes) {
-                hybrid_cache_budget = std::min<size_t>(256ULL << 20, std::max<size_t>(16u * max_exp_bytes, static_vram_budget / 10));
+                // On the tested Windows RX 9060 XT, promotional copies of
+                // pageable weights consumed more time than computing the misses
+                // on the CPU. Use the same budget for static resident Experts.
+                const char* promotion = std::getenv("STRATA_INK_HIP_PROMOTION");
+                const bool keep_predictive_cache = promotion ? promotion[0] != '0' : !tuned_discrete_profile;
+                if (keep_predictive_cache) {
+                    hybrid_cache_budget = std::min<size_t>(256ULL << 20, std::max<size_t>(16u * max_exp_bytes, static_vram_budget / 10));
+                } else {
+                    std::fprintf(stderr, "[ink-hip] using static GPU Expert allocation without decode promotion\n");
+                }
                 static_vram_budget -= (hybrid_cache_budget + stage2_b);
             } else if (static_vram_budget > stage2_b) {
                 static_vram_budget -= stage2_b;
@@ -1545,7 +1559,9 @@ public:
             if (!hip_ok(alloc_gpu_buffer(d_exp_stage_, max_exp_bytes, mem_info_.is_uma), "expert stage alloc", err)) {
                 return false;
             }
-            if (!hybrid_.init(n_dir, max_exp_bytes, hybrid_cache_budget, mem_info_.is_uma, opts.threads, err)) {
+            const char* pin_stage = std::getenv("STRATA_INK_HIP_PIN_STAGE");
+            const bool pinned_staging = !mem_info_.is_uma && (pin_stage ? pin_stage[0] == '1' : tuned_discrete_profile);
+            if (!hybrid_.init(n_dir, max_exp_bytes, hybrid_cache_budget, mem_info_.is_uma, pinned_staging, opts.threads, err)) {
                 return false;
             }
         }
@@ -4795,8 +4811,16 @@ private:
                 if (!cpu_jobs.empty()) {
                     hybrid_.pool().launch_async(&cpu_jobs, hybrid_.h_x(), hybrid_.h_y(), B, D, c_.inter);
                 }
+                auto stream_error = [&] {
+                    if (!cpu_jobs.empty()) hybrid_.pool().wait_and_reduce();
+                    (void)hipStreamSynchronize(hybrid_.dma_stream());
+                    (void)hipStreamSynchronize(stream_);
+                    err = "HIP MX8 Expert staging failed";
+                    return false;
+                };
                 for (int p_i = 0; p_i < 2 && p_i < static_cast<int>(mx8_stream_jobs.size()); ++p_i) {
-                    (void)hybrid_.stage_prefill_async(p_i, mx8_stream_jobs[p_i].body, dir[mx8_stream_jobs[p_i].dir_idx].body_bytes, false);
+                    const auto& job = mx8_stream_jobs[p_i];
+                    if (!hybrid_.stage_prefill_async(p_i, job.body, dir[job.dir_idx].body_bytes, false)) return stream_error();
                 }
                 if (any_gpu_exp) {
                     const GpuExpertDesc* d_exps = reinterpret_cast<const GpuExpertDesc*>(d_layer_exps_[ip].dev_ptr);
@@ -4819,6 +4843,7 @@ private:
                     const auto& mj = mx8_stream_jobs[mi];
                     const int m = static_cast<int>(mj.tok_idx.size());
                     const uint8_t* body_dev = hybrid_.wait_prefill_stage(mi, stream_);
+                    if (!body_dev) return stream_error();
                     const int chunk_cap = std::max(1, sc_moe_gu_cap_);
                     float* gu_buf = reinterpret_cast<float*>(sc_moe_gu_.dev_ptr);
                     half_t* act_buf = reinterpret_cast<half_t*>(sc_moe_act_.dev_ptr);
@@ -4836,9 +4861,11 @@ private:
                             ye_buf, reinterpret_cast<const int32_t*>(sc_exp_tok_idx_.dev_ptr),
                             reinterpret_cast<const float*>(sc_exp_tok_w_.dev_ptr), moeout, cur_m, D);
                     }
-                    hybrid_.mark_prefill_compute_done(mi, stream_);
+                    if (!hybrid_.mark_prefill_compute_done(mi, stream_)) return stream_error();
                     if (mi + 2 < static_cast<int>(mx8_stream_jobs.size())) {
-                        (void)hybrid_.stage_prefill_async(mi + 2, mx8_stream_jobs[mi + 2].body, dir[mx8_stream_jobs[mi + 2].dir_idx].body_bytes, true);
+                        const auto& next_job = mx8_stream_jobs[mi + 2];
+                        if (!hybrid_.stage_prefill_async(mi + 2, next_job.body, dir[next_job.dir_idx].body_bytes, true))
+                            return stream_error();
                     }
                 }
                 const double hp_t2 = hyb_prof_.on ? HybProf::now() : 0.0;
@@ -4985,9 +5012,17 @@ private:
                 };
 
                 // Kick off initial 2 RAM expert DMAs BEFORE running GPU-resident experts -> full PCIe overlap!
+                auto stage_error = [&] {
+                    (void)hipStreamSynchronize(hybrid_.dma_stream());
+                    (void)hipStreamSynchronize(stream_);
+                    err = "HIP prompt Expert staging failed";
+                    return false;
+                };
                 if (hybrid_.active()) {
                     for (int p_i = 0; p_i < 2 && p_i < static_cast<int>(ram_exps.size()); ++p_i) {
-                        (void)hybrid_.stage_prefill_async(p_i, ram_exps[p_i].host_ptr, dir[ram_exps[p_i].dir_idx].body_bytes, false);
+                        const auto& expert = ram_exps[p_i];
+                        if (!hybrid_.stage_prefill_async(p_i, expert.host_ptr, dir[expert.dir_idx].body_bytes, false))
+                            return stage_error();
                     }
                 }
                 if (ep2_active_) {
@@ -5002,11 +5037,13 @@ private:
                     const uint8_t* body_dev = nullptr;
                     if (hybrid_.active()) {
                         body_dev = hybrid_.wait_prefill_stage(ri, stream_);
+                        if (!body_dev) return stage_error();
                         if (!exec_one(re, body_dev)) return false;
-                        hybrid_.mark_prefill_compute_done(ri, stream_);
+                        if (!hybrid_.mark_prefill_compute_done(ri, stream_)) return stage_error();
                         if (ri + 2 < static_cast<int>(ram_exps.size())) {
                             const auto& nxt = ram_exps[ri + 2];
-                            (void)hybrid_.stage_prefill_async(ri + 2, nxt.host_ptr, dir[nxt.dir_idx].body_bytes, true);
+                            if (!hybrid_.stage_prefill_async(ri + 2, nxt.host_ptr, dir[nxt.dir_idx].body_bytes, true))
+                                return stage_error();
                         }
                     } else {
                         if (!hip_ok(hipMemcpyAsync(d_exp_stage_.dev_ptr, re.host_ptr, dir[re.dir_idx].body_bytes, hipMemcpyHostToDevice, stream_),

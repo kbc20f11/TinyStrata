@@ -356,7 +356,7 @@ public:
     ~HipHybridController() { release(); }
 
     bool init(size_t n_dir, size_t max_exp_bytes, size_t cache_budget_bytes, bool is_uma,
-              int cpu_threads, std::string& err) {
+              bool pinned_staging, int cpu_threads, std::string& err) {
         release();
         if (max_exp_bytes == 0) return true;
         is_uma_ = is_uma;
@@ -374,6 +374,19 @@ public:
                 err = "hybrid: failed to allocate double-buffered prefill staging";
                 release();
                 return false;
+            }
+        }
+        if (pinned_staging) {
+            // Two bounded host buffers match the two existing device slots.
+            // Allocation failure keeps the pageable transfer path available.
+            for (auto& host : h_stage_) {
+                if (hipHostMalloc(&host, slot_stride_) == hipSuccess) continue;
+                (void)hipGetLastError();
+                for (auto& allocated : h_stage_) {
+                    if (allocated) (void)hipHostFree(allocated);
+                    allocated = nullptr;
+                }
+                break;
             }
         }
 
@@ -500,23 +513,39 @@ public:
     // Waits for prior compute on slot (buf_idx & 1) before overwriting it -> 100% race-free double buffering!
     bool stage_prefill_async(int buf_idx, const uint8_t* host_body, size_t body_bytes, bool wait_prior_compute) noexcept {
         const int bi = buf_idx & 1;
-        if (wait_prior_compute) {
-            (void)hipStreamWaitEvent(dma_stream_, compute_ev_[bi], 0);
+        if (!host_body || body_bytes > slot_stride_) return false;
+        const bool pinned = h_stage_[bi] != nullptr;
+        const void* source = host_body;
+        if (pinned) {
+            if (h_stage_busy_[bi] && hipEventSynchronize(stage_ev_[bi]) != hipSuccess) return false;
+            std::memcpy(h_stage_[bi], host_body, body_bytes);
+            h_stage_busy_[bi] = false;
+            source = h_stage_[bi];
         }
-        if (hipMemcpyAsync(d_stage_[bi].dev_ptr, host_body, body_bytes, hipMemcpyHostToDevice, dma_stream_) != hipSuccess) {
+        if (wait_prior_compute && hipStreamWaitEvent(dma_stream_, compute_ev_[bi], 0) != hipSuccess) return false;
+        if (hipMemcpyAsync(d_stage_[bi].dev_ptr, source, body_bytes, hipMemcpyHostToDevice, dma_stream_) != hipSuccess) {
             return false;
         }
-        return hipEventRecord(stage_ev_[bi], dma_stream_) == hipSuccess;
+        if (hipEventRecord(stage_ev_[bi], dma_stream_) != hipSuccess) {
+            // No event protects the host buffer following an enqueue failure.
+            (void)hipStreamSynchronize(dma_stream_);
+            return false;
+        }
+        if (pinned) {
+            h_stage_busy_[bi] = true;
+            ++pinned_stage_copies_;
+        }
+        return true;
     }
 
     const uint8_t* wait_prefill_stage(int buf_idx, hipStream_t compute_stream) noexcept {
         const int bi = buf_idx & 1;
-        (void)hipStreamWaitEvent(compute_stream, stage_ev_[bi], 0);
+        if (hipStreamWaitEvent(compute_stream, stage_ev_[bi], 0) != hipSuccess) return nullptr;
         return d_stage_[bi].dev_ptr;
     }
 
-    void mark_prefill_compute_done(int buf_idx, hipStream_t compute_stream) noexcept {
-        (void)hipEventRecord(compute_ev_[buf_idx & 1], compute_stream);
+    bool mark_prefill_compute_done(int buf_idx, hipStream_t compute_stream) noexcept {
+        return hipEventRecord(compute_ev_[buf_idx & 1], compute_stream) == hipSuccess;
     }
 
     bool active() const noexcept { return active_; }
@@ -544,6 +573,8 @@ public:
             dma_stream_ = nullptr;
         }
         for (int i = 0; i < 2; ++i) {
+            if (h_stage_[i]) { (void)hipHostFree(h_stage_[i]); h_stage_[i] = nullptr; }
+            h_stage_busy_[i] = false;
             if (stage_ev_[i]) { (void)hipEventDestroy(stage_ev_[i]); stage_ev_[i] = nullptr; }
             if (compute_ev_[i]) { (void)hipEventDestroy(compute_ev_[i]); compute_ev_[i] = nullptr; }
             strata::hip_uma::free_gpu_buffer(d_stage_[i]);
@@ -556,6 +587,11 @@ public:
         dir_to_slot_.clear();
         decayed_freq_.clear();
         free_doorbell();
+        if (pinned_stage_copies_ > 0) {
+            std::fprintf(stderr, "[ink-hip] pinned Expert staging copies=%llu\n",
+                         (unsigned long long)pinned_stage_copies_);
+            pinned_stage_copies_ = 0;
+        }
         active_ = false;
     }
 
@@ -575,6 +611,9 @@ private:
     size_t slot_stride_ = 0;
     hipStream_t dma_stream_ = nullptr;
     strata::hip_uma::GpuBuffer d_stage_[2];
+    void* h_stage_[2]{};
+    bool h_stage_busy_[2]{};
+    uint64_t pinned_stage_copies_ = 0;
     hipEvent_t stage_ev_[2]{};
     hipEvent_t compute_ev_[2]{};
     strata::hip_uma::GpuBuffer d_cache_ring_;
