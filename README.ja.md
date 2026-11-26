@@ -48,7 +48,9 @@ Qwen・Gemma・Clover・LFM・Tiel Coder はいずれも、空き VRAM に合わ
 
 [InklingのRTX 3060ベンチと経路比較](benchmark/results/inkling2-rtx3060-route-parity-20261125.md)
 
-CUDA・HIP のディスクリート GPU では、Inkling も VRAM **8／12／16 GB 以上**に応じて **64K／128K／256K** を自動設定の目安にします。標準の起動経路では KV を GPU に配置する領域を先に確保し、残りの VRAM で Expert の配置を決めます。実際に使える容量は API に表示されます。
+CUDA・HIP のディスクリート GPU では、Inkling も VRAM **8／12／16 GB 以上**に応じて **64K／128K／256K** を自動設定の目安にします。標準の起動経路では KV に必要な GPU メモリを見積もってから Expert を配置します。Windows の RX 9060 XT 16 GB で自動配置を使うと、会話が伸びるにつれて KV の実領域を GPU に確保し、空き領域を Expert に使います。コンテキスト上限、確保済みの KV 行数、現在の Expert 配置は API で確認できます。
+
+[RX 9060 XT の Inkling ベンチマーク](benchmark/results/inkling2-rx9060-xt-20261127.md)
 
 画像入力を有効にしたCUDA・ディスクリートHIPでは、KVとExpertの配置を決める前に画像エンコーダーをGPUに載せます。画像の作業領域がVRAMに収まらない場合はCPUで処理します。CUDA版は画像パックの重みの精度を維持し、FP32で演算します。AttentionとMLPは同じ作業領域を使い回します。WindowsのNVIDIA環境では、CUDAの空き容量を使い、ドライバーから専用VRAMの空き容量を取得できる場合は、その値も上限にします。
 

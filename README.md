@@ -46,7 +46,9 @@ Gemma automatically groups long text around fresh images when its current Expert
 
 **Inkling 2 Mini** uses its own looped MoE engine and native image encoder. The managed download contains the [pinned Unsloth UD-IQ4_XS weights](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF/tree/800c946d7b9c830c86290df49afbbe91db8455f5) and the [Strata Vision shard](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata/tree/04996a1e2c45009b6a04f2af126cb6bdb2ba3587), about **16.37 GB** combined. Install it in Model Management or select its standalone API profile with `run-api.bat --model-family inkling2` (port **18086**). Thinking defaults to **medium**. DSpark is opt-in with `--draft-model` and a compatible checkpoint. Managed Inkling builds support CUDA and HIP.
 
-On discrete CUDA/HIP GPUs, Inkling uses automatic context targets of **64K / 128K / 256K** for **8 / 12 / 16+ GB** of VRAM. The managed route budgets device KV before Expert placement. The API reports the capacity the engine can actually use.
+On discrete CUDA/HIP GPUs, Inkling uses automatic context targets of **64K / 128K / 256K** for **8 / 12 / 16+ GB** of VRAM. The managed route budgets device KV before Expert placement. On Windows with an RX 9060 XT 16 GB, automatic placement commits KV in GPU memory as the conversation grows and lends the remaining space to Experts. The API reports the context limit, committed KV rows and current Expert placement.
+
+[RX 9060 XT Inkling benchmark](benchmark/results/inkling2-rx9060-xt-20261127.md)
 
 With image input enabled, the CUDA and discrete HIP routes load the Vision encoder on the GPU before budgeting KV and Experts. The native CPU encoder remains available when the image workspace cannot fit. The CUDA encoder keeps the stored weight precision, uses FP32 arithmetic, and reuses workspace across attention and MLP. On Windows with NVIDIA, Inkling uses the CUDA free-memory estimate and caps it at the driver's free dedicated VRAM when that reading is available.
 

@@ -136,8 +136,10 @@ __device__ __forceinline__ float ld_fp16_as_f32(const uint8_t* p) {
     return static_cast<float>(__builtin_bit_cast(half_t, bits));
 }
 
-// Decode 8 consecutive weights starting at 8-aligned `col` from a single GGUF row into uint4 (8 x FP16 for fdot2/WMMA)
-__device__ __forceinline__ uint4 hip_gguf_decode_8_f16(uint32_t t, const uint8_t* __restrict__ row, int col, float ext_scale) {
+// Decode eight consecutive weights at an eight-aligned column. The compact output head
+// keeps the same BF16 rounding as the expanded weights; the Expert kernels use FP16.
+template <bool ToBf16 = false>
+__device__ __forceinline__ uint4 hip_gguf_decode_8(uint32_t t, const uint8_t* __restrict__ row, int col, float ext_scale) {
     float w[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     if (t == 12u) {  // Q4_K: 256 elems = 144 B
         const int b = col >> 8, idx = col & 255;
@@ -314,7 +316,31 @@ __device__ __forceinline__ uint4 hip_gguf_decode_8_f16(uint32_t t, const uint8_t
 #pragma unroll
         for (int k = 0; k < 8; ++k) w[k] = wp[k] * ext_scale;
     }
-    return make_uint4(h2_pack(w[0], w[1]), h2_pack(w[2], w[3]), h2_pack(w[4], w[5]), h2_pack(w[6], w[7]));
+    if constexpr (ToBf16) {
+        const auto pack = [](float lo, float hi) {
+            return static_cast<uint32_t>(f32_to_bf16(lo)) | (static_cast<uint32_t>(f32_to_bf16(hi)) << 16);
+        };
+        return make_uint4(pack(w[0], w[1]), pack(w[2], w[3]), pack(w[4], w[5]), pack(w[6], w[7]));
+    } else {
+        return make_uint4(h2_pack(w[0], w[1]), h2_pack(w[2], w[3]), h2_pack(w[4], w[5]), h2_pack(w[6], w[7]));
+    }
+}
+
+__device__ __forceinline__ uint4 hip_gguf_decode_8_f16(uint32_t t, const uint8_t* __restrict__ row, int col, float ext_scale) {
+    return hip_gguf_decode_8(t, row, col, ext_scale);
+}
+
+// The batched projection keeps the existing BF16 GEMM and expands only the current
+// layer into a shared workspace, with the same rounding as the old model load.
+__global__ void __launch_bounds__(256) k_ink_unpack_q8_bf16(
+    const uint8_t* __restrict__ packed, uint16_t* __restrict__ weights, int N, int K) {
+    const int packs_per_row = K >> 3;
+    const int pack = blockIdx.x * 256 + threadIdx.x;
+    if (pack >= N * packs_per_row) return;
+    const int row = pack / packs_per_row;
+    const int column = (pack - row * packs_per_row) * 8;
+    const uint8_t* src = packed + static_cast<size_t>(row) * hip_gguf_row_bytes(8, K);
+    reinterpret_cast<uint4*>(weights)[pack] = hip_gguf_decode_8<true>(8, src, column, 1.0f);
 }
 
 // Fast GGUF_RAW -> FP16 unpack kernel (for hipBLASLt L3-resident expert GEMM)
@@ -1846,8 +1872,9 @@ __global__ void __launch_bounds__(256) k_bf16_gemv1_qkvrg(
 // Wave-6F Fused M=1 wo_ud BF16 GEMV + Post-Attn ShortConv4 + Residual Add / Block-Boundary Snapshot!
 // Deletes 48 sconv launches + 24 boundary D2D copies + 48 oproj/asc DRAM round-trips per token!
 // Grid: ((D + 7) / 8), Block: 256
+template <bool CompactQ8>
 __global__ void __launch_bounds__(256) k_bf16_gemv1_wo_sconv(
-    const uint16_t* __restrict__ W,        // [D, K] BF16 (wo_ud)
+    const uint8_t* __restrict__ W,         // [D, K] BF16 or original Q8_0 (wo_ud)
     const float* __restrict__ X,           // [K] FP32 (attn_out)
     const float* __restrict__ static_w,    // [D, 4] FP32
     const int32_t* __restrict__ slot_ids,  // [1]
@@ -1871,12 +1898,17 @@ __global__ void __launch_bounds__(256) k_bf16_gemv1_wo_sconv(
     __syncthreads();
 
     if (row >= D) return;
-    const uint16_t* wr = W + static_cast<size_t>(row) * K;
+    const size_t row_bytes = CompactQ8 ? hip_gguf_row_bytes(8, K) : static_cast<size_t>(K) * sizeof(uint16_t);
+    const uint8_t* wr = W + static_cast<size_t>(row) * row_bytes;
+    const auto load_weights = [&](int column) {
+        if constexpr (CompactQ8) return hip_gguf_decode_8<true>(8, wr, column, 1.0f);
+        else return *reinterpret_cast<const uint4*>(wr + static_cast<size_t>(column) * sizeof(uint16_t));
+    };
     float acc0 = 0.0f, acc1 = 0.0f;
     int k = lane * 8;
     for (; k + 256 < K; k += 512) {
-        const uint4 wa = *reinterpret_cast<const uint4*>(wr + k);
-        const uint4 wb = *reinterpret_cast<const uint4*>(wr + k + 256);
+        const uint4 wa = load_weights(k);
+        const uint4 wb = load_weights(k + 256);
         const float4 xa0 = *reinterpret_cast<const float4*>(sX + k);
         const float4 xa1 = *reinterpret_cast<const float4*>(sX + k + 4);
         const float4 xb0 = *reinterpret_cast<const float4*>(sX + k + 256);
@@ -1891,7 +1923,7 @@ __global__ void __launch_bounds__(256) k_bf16_gemv1_wo_sconv(
                fmaf(bf16_to_f32(wb.w & 0xFFFFu), xb1.z, fmaf(bf16_to_f32(wb.w >> 16), xb1.w, acc1))));
     }
     if (k < K) {
-        const uint4 wa = *reinterpret_cast<const uint4*>(wr + k);
+        const uint4 wa = load_weights(k);
         const float4 xa0 = *reinterpret_cast<const float4*>(sX + k);
         const float4 xa1 = *reinterpret_cast<const float4*>(sX + k + 4);
         acc0 = fmaf(bf16_to_f32(wa.x & 0xFFFFu), xa0.x, fmaf(bf16_to_f32(wa.x >> 16), xa0.y,

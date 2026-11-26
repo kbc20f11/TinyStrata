@@ -26,6 +26,7 @@
 #include "strata/inkling2/inkling2_loop.hpp"
 #include "strata/platform/cgroup_mem.hpp"
 #include "strata/platform/commit.hpp"
+#include "strata/qwen35/kv_grow.hpp"
 #include "strata/quant/sk_codecs.hpp"
 #if defined(__linux__)
 #include "strata/platform/numa_balancing.hpp"
@@ -50,6 +51,7 @@ using namespace strata::inkling2;
 using namespace strata::inkling2::hip;
 using namespace strata::hip_uma;
 using namespace strata::quant::sk;
+namespace InkHipVmm = strata::qwen35::kv_grow;
 
 struct DeviceMemoryInfo {
     char device_name[256]{};
@@ -249,11 +251,20 @@ struct VisitKvPool {
     GpuBuffer v_pool;
     GpuBuffer k_scales;
     GpuBuffer v_scales;
+    std::unique_ptr<InkHipVmm::Range> k_range;
+    std::unique_ptr<InkHipVmm::Range> v_range;
 
     void release() {
         free_gpu_buffer(d_pt);
-        free_gpu_buffer(k_pool);
-        free_gpu_buffer(v_pool);
+        if (demand_backed()) {
+            k_range.reset();
+            v_range.reset();
+            k_pool = {};
+            v_pool = {};
+        } else {
+            free_gpu_buffer(k_pool);
+            free_gpu_buffer(v_pool);
+        }
         free_gpu_buffer(k_scales);
         free_gpu_buffer(v_scales);
         free_pages.clear();
@@ -263,7 +274,7 @@ struct VisitKvPool {
     }
 
     bool init(bool swa, bool fp8, bool uma, bool fixed_device_pool, int n_slots, int max_pages, int kvd,
-              std::string& err) {
+              std::string& err, InkHipVmm::PagePool* backing = nullptr) {
         release();
         is_swa = swa;
         is_fp8 = fp8;
@@ -277,11 +288,111 @@ struct VisitKvPool {
         if (!hip_ok(alloc_gpu_buffer(d_pt, h_pt.size() * sizeof(int32_t), is_uma), "kv d_pt alloc", err)) return false;
         if (!device_only) return true;
         const int pages = max_slots * max_pages_per_slot;
+        if (backing && !is_swa && !is_uma) return reserve_device_pool(pages, *backing, err);
         if (!try_alloc_pool_buffers(pages, false, k_pool, v_pool, k_scales, v_scales)) {
             err = is_swa ? "SWA KV allocation in VRAM failed" : "global KV allocation in VRAM failed";
             return false;
         }
         cap_pages = pages;
+        return true;
+    }
+
+    bool demand_backed() const noexcept { return k_range != nullptr; }
+
+    size_t bytes_per_kv_page() const noexcept {
+        return static_cast<size_t>(kKvPageTokens) * kv_dim * (is_fp8 ? 1u : 2u);
+    }
+
+    bool reserve_device_pool(int pages, InkHipVmm::PagePool& backing, std::string& err) {
+        auto keys = std::make_unique<InkHipVmm::Range>(&backing);
+        auto values = std::make_unique<InkHipVmm::Range>(&backing);
+        const size_t reserve_bytes = static_cast<size_t>(pages) * bytes_per_kv_page();
+        if (!keys->reserve(reserve_bytes) || !values->reserve(reserve_bytes)) {
+            err = "global KV virtual address reservation failed";
+            return false;
+        }
+        if (is_fp8) {
+            // Scales are small even at full context. Fixed allocations avoid two VMM
+            // quanta per visit just to hold the scales for the first few rows.
+            const size_t scale_bytes = static_cast<size_t>(pages) * kKvPageTokens * sizeof(float);
+            if (!hip_ok(alloc_gpu_buffer(k_scales, scale_bytes, false), "global KV key scales", err) ||
+                !hip_ok(alloc_gpu_buffer(v_scales, scale_bytes, false), "global KV value scales", err)) return false;
+        }
+        k_pool.dev_ptr = static_cast<uint8_t*>(keys->base());
+        v_pool.dev_ptr = static_cast<uint8_t*>(values->base());
+        k_range = std::move(keys);
+        v_range = std::move(values);
+        return true;
+    }
+
+    // FP8 scales and the page table are fully committed at initialization.
+    size_t additional_device_bytes(int min_pages) const noexcept {
+        if (!demand_backed() || min_pages <= cap_pages) return 0;
+        const size_t wanted = static_cast<size_t>(std::min(min_pages, max_slots * max_pages_per_slot)) * bytes_per_kv_page();
+        const size_t quantum = InkHipVmm::api().gran;
+        const size_t rounded = (wanted + quantum - 1) / quantum * quantum;
+        return (rounded > k_pool.bytes ? rounded - k_pool.bytes : 0) +
+               (rounded > v_pool.bytes ? rounded - v_pool.bytes : 0);
+    }
+
+    void update_device_capacity() noexcept {
+        k_pool.bytes = k_range->mapped();
+        v_pool.bytes = v_range->mapped();
+        cap_pages = std::min(max_slots * max_pages_per_slot,
+                             static_cast<int>(std::min(k_pool.bytes, v_pool.bytes) / bytes_per_kv_page()));
+    }
+
+    bool ensure_device_capacity(int min_pages, hipStream_t st, std::string& err) {
+        if (min_pages < 0 || min_pages > max_slots * max_pages_per_slot) {
+            err = "global KV capacity exceeds its logical reservation";
+            return false;
+        }
+        if (min_pages <= cap_pages) return true;
+        if (!demand_backed()) {
+            err = "global demand-backed GPU KV is unavailable";
+            return false;
+        }
+        const size_t bytes = static_cast<size_t>(min_pages) * bytes_per_kv_page();
+        const bool mapped = k_range->map(k_range->prefix(bytes), st) &&
+                            v_range->map(v_range->prefix(bytes), st);
+        // A failed map may still have committed a prefix. Its bytes belong to
+        // this pool and are available to the next retry or an explicit trim.
+        update_device_capacity();
+        if (!mapped) {
+            (void)hipGetLastError();
+            err = "global KV could not commit GPU backing for " +
+                  std::to_string(static_cast<int64_t>(min_pages) * kKvPageTokens) + " physical rows";
+            return false;
+        }
+        return true;
+    }
+
+    bool trim_device_capacity(int min_pages, hipStream_t st, std::string& err) {
+        if (!demand_backed()) return true;
+        if (min_pages < 0 || min_pages > max_slots * max_pages_per_slot) {
+            err = "global KV trim exceeds its logical reservation";
+            return false;
+        }
+        // Physical pages are shared by slots. Keep every live page, even if
+        // its index is larger than the caller's preferred retained capacity.
+        const int live_pages = 1 + *std::max_element(h_pt.begin(), h_pt.end());
+        const size_t keep = static_cast<size_t>(std::max(min_pages, live_pages)) * bytes_per_kv_page();
+        const size_t quantum = InkHipVmm::api().gran;
+        const size_t rounded = (keep + quantum - 1) / quantum * quantum;
+        if (k_pool.bytes <= rounded && v_pool.bytes <= rounded) return true;
+        if (!hip_ok(hipStreamSynchronize(st), "drain global KV before unmapping", err)) return false;
+        const bool trimmed = k_range->trim(k_range->prefix(keep)) &&
+                             v_range->trim(v_range->prefix(keep));
+        update_device_capacity();
+        used_pages = std::min(used_pages, cap_pages);
+        free_pages.erase(std::remove_if(free_pages.begin(), free_pages.end(), [&](int32_t page) {
+            return page >= used_pages;
+        }), free_pages.end());
+        if (!trimmed) {
+            (void)hipGetLastError();
+            err = "global KV could not return its unused GPU backing";
+            return false;
+        }
         return true;
     }
 
@@ -327,6 +438,7 @@ struct VisitKvPool {
     }
 
     bool grow_pool(int min_pages, hipStream_t st, std::string& err) {
+        if (demand_backed()) return ensure_device_capacity(min_pages, st, err);
         if (device_only) {
             err = "fixed GPU KV pool exhausted";
             return false;
@@ -612,9 +724,18 @@ public:
         for (const auto& pool : glob_pools_) {
             add_pool(pool);
             st.kv_committed_rows = std::min(st.kv_committed_rows, (pool.cap_pages / pool.max_slots) * kKvPageTokens);
-            st.kv_grow = st.kv_grow || !pool.device_only;
+            st.kv_grow = st.kv_grow || !pool.device_only || pool.demand_backed();
         }
         return st;
+    }
+
+    bool uses_kv_loans() const override { return adaptive_kv_; }
+    bool last_failure_is_kv_growth() const override { return kv_growth_failed_; }
+
+    int kv_capacity_tokens() const override {
+        int capacity = max_ctx_;
+        for (const auto& pool : glob_pools_) capacity = std::min(capacity, (pool.cap_pages / max_slots_) * kKvPageTokens);
+        return capacity;
     }
 
     bool init(const InkModelFile& model, const BackendOpts& opts, std::string& err) override {
@@ -863,15 +984,44 @@ public:
 
         const std::string embed_k = "model.llm.embed.weight";
         const std::string unemb_k = "model.llm.unembed.weight";
+        const bool adaptive_placement = gpu_first_kv && !ep2_active_ && !(opts.enable_dspark && dspark_cfg_.present) &&
+                                        max_slots_ == 1 && model.kind == ModelSourceKind::Gguf && !opts.ssd_experts &&
+                                        opts.vram_experts_gb < 0.0 && opts.ram_experts_gb < 0.0;
+        const bool tuned_placement = tuned_discrete_profile && adaptive_placement;
+        const char* compact_dense = std::getenv("STRATA_INK_HIP_COMPACT_DENSE");
+        // Draft graphs still use the expanded embedding and output layouts.
+        const bool compact_allowed = !mem_info_.is_uma && !(opts.enable_dspark && dspark_cfg_.present);
+        const bool compact_both = compact_allowed && (compact_dense ? std::strcmp(compact_dense, "1") == 0 : tuned_placement);
+        const bool compact_embedding = compact_both || (compact_allowed && compact_dense && std::strcmp(compact_dense, "embed") == 0);
+        const bool compact_output = compact_both || (compact_allowed && compact_dense && std::strcmp(compact_dense, "head") == 0);
+        const char* compact_wo = std::getenv("STRATA_INK_HIP_COMPACT_WO");
+        const bool use_compact_wo = compact_wo ? std::strcmp(compact_wo, "1") == 0 : tuned_placement;
+        if (use_compact_wo && !mem_info_.is_uma && !init_compact_wo(model, err)) return false;
 
         for (const auto& kv : model.m.trunk) {
             const std::string& name = kv.first;
             const TInfo& ti = kv.second;
+            if (trunk_wo_q8_.count(name) > 0) continue;
             if (name == embed_k || name == unemb_k) {
                 GpuPackedTensor pt;
                 pt.info = ti;
-                if (!upload_raw(pt.buf, sec1.data() + ti.off, ti.bytes, err)) return false;
+                if (name == embed_k && compact_embedding && init_compact_embedding(ti)) continue;
+                const uint8_t* data = sec1.data() + ti.off;
+                size_t bytes = ti.bytes;
+                if (name == unemb_k && compact_output) {
+                    const size_t row_bytes = c_.hidden % 256 == 0 ? gguf_detail::gguf_row_bytes(14, c_.hidden) : 0;
+                    if (const uint8_t* packed = dense_gguf_tensor("output.weight", ti, 14, row_bytes)) {
+                        pt.info.fmt = kHipUnembedQ6K;
+                        data = packed;
+                        bytes = row_bytes * static_cast<size_t>(ti.rows());
+                    }
+                }
+                if (!upload_raw(pt.buf, data, bytes, err)) return false;
                 packed_trunk_[name] = pt;
+                if (pt.info.fmt == kHipUnembedQ6K) {
+                    std::fprintf(stderr, "[ink-hip] Q6_K output head: %.1f MiB in VRAM (was %.1f MiB BF16)\n",
+                                 bytes / 1048576.0, ti.bytes / 1048576.0);
+                }
             } else if (is_large_2d_matmul(name, ti)) {
                 auto f32 = decode_sec1_f32(sec1.data(), ti);
                 auto bf16 = f32_vec_to_bf16(f32);
@@ -1163,6 +1313,9 @@ public:
         const int max_glob_pages = (max_ctx_ + kKvPageTokens - 1) / kKvPageTokens;
         const size_t kv_all_b = static_cast<size_t>(c_.n_visits) * max_slots_ * 3 * kv_dim * sizeof(uint16_t);
         const size_t h_all_b = static_cast<size_t>(c_.n_visits) * max_slots_ * 3 * c_.hidden * sizeof(uint16_t);
+        const char* adaptive = std::getenv("STRATA_INK_HIP_ADAPTIVE_KV");
+        const bool use_adaptive = adaptive ? adaptive_placement && std::strcmp(adaptive, "1") == 0 : tuned_placement;
+        adaptive_kv_ = use_adaptive && InkHipVmm::api().ok;
 #if defined(_WIN32)
         // Keep WDDM off the PCIe paging cliff when dedicated memory is nearly full.
         const size_t kv_headroom = 1536ULL << 20;
@@ -1183,12 +1336,15 @@ public:
             const size_t requested_reserve = static_cast<size_t>(std::max(0, opts.vram_reserve_mib)) << 20;
             const size_t desktop_reserve = std::max<size_t>(mem_info_.reserve_bytes, requested_reserve) + (768ULL << 20);
             // The Expert stage and both prefill buffers require space even when no Expert can stay resident.
-            size_t keep = std::max(kv_headroom, desktop_reserve) + shortconv + scratch_est + 3u * max_exp_bytes;
+            size_t workspace = shortconv + scratch_est + 3u * max_exp_bytes;
             if (has_dspark_) {
                 const size_t draft_row_bytes = (2u * dspark_cfg_.n_layers * dspark_cfg_.n_kv * dspark_cfg_.head_dim +
                                                 dspark_cfg_.hidden) * sizeof(uint16_t);
-                keep += static_cast<size_t>(max_slots_) * (max_ctx_ + 16u) * draft_row_bytes;
+                workspace += static_cast<size_t>(max_slots_) * (max_ctx_ + 16u) * draft_row_bytes;
             }
+            const size_t fixed_keep = std::max(kv_headroom, desktop_reserve) + workspace;
+            const size_t growing_keep = std::max<size_t>(896ULL << 20, requested_reserve + (512ULL << 20)) + workspace;
+            size_t keep = adaptive_kv_ ? growing_keep : fixed_keep;
             // Preserve the legacy automatic precision decision based on the free VRAM expected after Experts.
             const size_t expert_need = std::min(vram_budget, total_all_exp_bytes);
             const size_t legacy_free = gpu_free - std::min(gpu_free, expert_need);
@@ -1205,13 +1361,37 @@ public:
                       std::to_string(gpu_free >> 20) + " MiB available)";
                 return false;
             }
-            if (!init_kv_pools(true, max_swa_pages, max_glob_pages, kv_dim, err)) {
+            if (adaptive_kv_) {
+                vmm_pages_ = std::make_unique<InkHipVmm::PagePool>();
+                if (!init_kv_pools(true, max_swa_pages, max_glob_pages, kv_dim, err, vmm_pages_.get()) ||
+                    !commit_global_kv(1, err)) {
+                    std::fprintf(stderr, "[ink-hip] growing GPU KV unavailable (%s); using fixed GPU KV\n", err.c_str());
+                    for (auto& pool : swa_pools_) pool.release();
+                    for (auto& pool : glob_pools_) pool.release();
+                    vmm_pages_.reset();
+                    adaptive_kv_ = false;
+                    keep = fixed_keep;
+                    (void)hipGetLastError();
+                    err.clear();
+                    if (gpu_free < kv_bytes + keep) {
+                        err = "fixed GPU KV and workspace do not fit at " + std::to_string(max_ctx_) + " tokens";
+                        return false;
+                    }
+                }
+            }
+            if (!adaptive_kv_ && !init_kv_pools(true, max_swa_pages, max_glob_pages, kv_dim, err)) {
                 err += " at " + std::to_string(max_ctx_) + " tokens";
                 return false;
             }
-            vram_budget = std::min(vram_budget, gpu_free - kv_bytes - keep);
-            std::fprintf(stderr, "[ink-hip] GPU-only KV: %d tokens, %.1f MiB in VRAM, %.1f MiB Expert budget\n",
-                         max_ctx_, kv_bytes / 1048576.0, vram_budget / 1048576.0);
+            size_t committed_bytes = 0;
+            for (const auto& pool : swa_pools_) committed_bytes += pool.allocated_bytes();
+            for (const auto& pool : glob_pools_) committed_bytes += pool.allocated_bytes();
+            const size_t reserved_bytes = adaptive_kv_ ? committed_bytes : kv_bytes;
+            const size_t room = gpu_free > reserved_bytes + keep ? gpu_free - reserved_bytes - keep : 0;
+            vram_budget = std::min(vram_budget, room);
+            std::fprintf(stderr, "[ink-hip] GPU-only KV: %d token limit, %.1f MiB in VRAM, %.1f MiB Expert budget (%s)\n",
+                         max_ctx_, reserved_bytes / 1048576.0, vram_budget / 1048576.0,
+                         adaptive_kv_ ? "growing" : "fixed");
         }
         size_t hybrid_cache_budget = 0;
         size_t static_vram_budget = vram_budget;
@@ -1222,7 +1402,7 @@ public:
                 // pageable weights consumed more time than computing the misses
                 // on the CPU. Use the same budget for static resident Experts.
                 const char* promotion = std::getenv("STRATA_INK_HIP_PROMOTION");
-                const bool keep_predictive_cache = promotion ? promotion[0] != '0' : !tuned_discrete_profile;
+                const bool keep_predictive_cache = !adaptive_kv_ && (promotion ? promotion[0] != '0' : !tuned_discrete_profile);
                 if (keep_predictive_cache) {
                     hybrid_cache_budget = std::min<size_t>(256ULL << 20, std::max<size_t>(16u * max_exp_bytes, static_vram_budget / 10));
                 } else {
@@ -1381,7 +1561,7 @@ public:
         if (arena_bytes > 0) {
             // #6711: one contiguous arena can still fail on a discrete card whose free VRAM is fragmented or capped by the driver (Windows WDDM). Give up the
             // coldest GPU-planned experts in 5% steps (they go to the RAM tier, or the SSD tier when RAM is short) and try again, instead of failing the start.
-            hipError_t arena_err = alloc_gpu_buffer(expert_gpu_arena_, arena_bytes, mem_info_.is_uma);
+            hipError_t arena_err = allocate_expert_arena(arena_bytes);
             while (arena_err == hipErrorOutOfMemory && !mem_info_.is_uma && !gpu_plan.empty() && arena_bytes > (1ULL << 30)) {
                 (void)hipGetLastError();
                 const size_t target = arena_bytes - std::max<size_t>(arena_bytes / 20, 256ULL << 20);
@@ -1402,11 +1582,12 @@ public:
                 std::fprintf(stderr, "[ink-hip] expert GPU arena did not fit: %zu experts move to the RAM/SSD tier, arena now %.2f GiB\n",
                              dropped, static_cast<double>(arena_bytes) / 1073741824.0);
                 if (arena_bytes == 0) { arena_err = hipSuccess; break; }
-                arena_err = alloc_gpu_buffer(expert_gpu_arena_, arena_bytes, mem_info_.is_uma);
+                arena_err = allocate_expert_arena(arena_bytes);
             }
             if (!hip_ok(arena_err, "expert GPU arena alloc", err)) {
                 return false;
             }
+            if (adaptive_kv_) vmm_pages_->release_unused();
             if (model.kind == ModelSourceKind::Strata) {
                 std::vector<uint8_t> tmp;
                 for (uint16_t idx : gpu_plan) {
@@ -1416,7 +1597,7 @@ public:
                         std::memcpy(hdr, tmp.data(), 16);
                         expert_sf4_outer_[idx] = {hdr[0] / hdr[1], hdr[2] / hdr[3]};
                     }
-                    if (!hip_ok(hipMemcpy(expert_gpu_arena_.dev_ptr + expert_gpu_offset_[idx], tmp.data(),
+                    if (!hip_ok(hipMemcpy(expert_arena_data() + expert_gpu_offset_[idx], tmp.data(),
                                           tmp.size(), hipMemcpyHostToDevice),
                                 "expert H2D", err)) {
                         return false;
@@ -1441,7 +1622,7 @@ public:
                             std::memcpy(hdr, bufs[j].data(), 16);
                             expert_sf4_outer_[idx] = {hdr[0] / hdr[1], hdr[2] / hdr[3]};
                         }
-                        if (!hip_ok(hipMemcpy(expert_gpu_arena_.dev_ptr + expert_gpu_offset_[idx], bufs[j].data(),
+                        if (!hip_ok(hipMemcpy(expert_arena_data() + expert_gpu_offset_[idx], bufs[j].data(),
                                               bufs[j].size(), hipMemcpyHostToDevice),
                                     "expert H2D", err)) {
                             return false;
@@ -1506,6 +1687,12 @@ public:
         }
         vram_experts_loaded_ = gpu_plan.size() + peer_gpu_plan.size();
         static_expert_bytes_ = arena_bytes + peer_arena_bytes;
+        if (adaptive_kv_) {
+            adaptive_experts_ = gpu_plan;
+            adaptive_offsets_.reserve(gpu_plan.size());
+            for (const auto idx : gpu_plan) adaptive_offsets_.push_back(expert_gpu_offset_[idx]);
+            adaptive_ram_room_ = ram_cap > ram_bytes ? ram_cap - ram_bytes : 0;
+        }
         if (!ram_plan.empty()) {
             if (model.kind == ModelSourceKind::Strata) {
                 for (uint16_t idx : ram_plan) {
@@ -1557,7 +1744,7 @@ public:
             }
         }
 
-        if (max_exp_bytes > 0 && vram_experts_loaded_ < n_dir) {
+        if (max_exp_bytes > 0 && (adaptive_kv_ || vram_experts_loaded_ < n_dir)) {
             if (!hip_ok(alloc_gpu_buffer(d_exp_stage_, max_exp_bytes, mem_info_.is_uma), "expert stage alloc", err)) {
                 return false;
             }
@@ -1586,7 +1773,7 @@ public:
                 GpuExpertDesc d{};
                 GpuExpertDesc pd{};
                 if (dir_idx >= 0 && expert_gpu_offset_[dir_idx] != static_cast<size_t>(-1)) {
-                    d.body = expert_gpu_arena_.dev_ptr + expert_gpu_offset_[dir_idx];
+                    d.body = expert_arena_data() + expert_gpu_offset_[dir_idx];
                     d.dn_offset = dir[dir_idx].dn_offset;
                     d.gu_code = dir[dir_idx].gu_code_id;
                     d.dn_code = dir[dir_idx].dn_code_id;
@@ -1701,6 +1888,7 @@ public:
         if (slot < 0 || slot >= max_slots_) return;
         for (auto& p : swa_pools_) p.free_slot_pages(slot);
         for (auto& p : glob_pools_) p.free_slot_pages(slot);
+        if (adaptive_kv_) restore_experts_ = true;
         slots_[slot].release();
         if (slot < static_cast<int>(ckpts_.size())) ckpts_[slot].valid = false;  // its SWA pages are unmapped
     }
@@ -1720,6 +1908,10 @@ public:
         sl.tree_cool_rem = 0;
         clear_slot_sconv(slot);
         if (slot < static_cast<int>(ckpts_.size())) ckpts_[slot].valid = false;  // as in the CPU and CUDA backends
+        if (adaptive_kv_) {
+            for (auto& p : glob_pools_) p.free_slot_pages(slot);
+            restore_experts_ = true;
+        }
     }
 
     void snapshot_slot(int slot) override {
@@ -1982,6 +2174,7 @@ public:
     }
 
     bool forward_batch(const StepBatch& batch, float* logits_out, TapCapture* taps_out, std::string& err) override {
+        kv_growth_failed_ = false;
         const int B_tot = batch.n_tokens;
         if (B_tot <= 0) return true;
         // A prompt checkpoint is only valid while nothing below its seq_len is written again.
@@ -3020,6 +3213,114 @@ public:
     }
 
 private:
+    const uint8_t* dense_gguf_tensor(const char* name, const TInfo& canonical, uint32_t type, size_t row_bytes) const {
+        if (row_bytes == 0 || !model_->gguf_adapter || canonical.fmt != 102) return nullptr;
+        const auto& gguf = *model_->gguf_adapter;
+        const strata::TensorInfo* info = nullptr;
+        const uint8_t* data = gguf.tensor_ptr(*gguf.model, name, info);
+        if (!data || info->type != type || info->shape.size() != 2 ||
+            info->shape[0] != static_cast<uint64_t>(canonical.cols()) ||
+            info->shape[1] != static_cast<uint64_t>(canonical.rows())) return nullptr;
+        return data;
+    }
+
+    bool init_compact_wo(const InkModelFile& model, std::string& err) {
+        const int columns = c_.n_head * c_.head_dim;
+        if (columns <= 0 || columns % 32 != 0) return true;
+        const size_t row_bytes = gguf_detail::gguf_row_bytes(8, columns);
+        const size_t workspace_bytes = static_cast<size_t>(columns) * c_.hidden * sizeof(uint16_t);
+        size_t retained_bytes = 0, expanded_bytes = 0;
+        for (int layer = 0; layer < c_.n_phys; ++layer) {
+            const std::string stem = "model.llm.layers." + std::to_string(layer);
+            const std::string name = stem + ".attn.wo_ud.weight";
+            const auto it = model.m.trunk.find(name);
+            if (it == model.m.trunk.end() || it->second.rows() != c_.hidden || it->second.cols() != columns) continue;
+            const std::string raw_name = "blk." + std::to_string(layer) + ".attn_output.weight";
+            const uint8_t* raw = dense_gguf_tensor(raw_name.c_str(), it->second, 8, row_bytes);
+            if (!raw) continue;
+            if (!wo_q8_workspace_.dev_ptr &&
+                !hip_ok(alloc_gpu_buffer(wo_q8_workspace_, workspace_bytes, false), "Q8_0 attention output workspace", err)) {
+                return false;
+            }
+            const size_t bytes = row_bytes * static_cast<size_t>(c_.hidden);
+            GpuBuffer& buffer = trunk_wo_q8_[name];
+            if (!upload_raw(buffer, raw, bytes, err)) return false;
+            retained_bytes += bytes;
+            expanded_bytes += it->second.bytes;
+        }
+        if (!trunk_wo_q8_.empty()) {
+            std::fprintf(stderr, "[ink-hip] Q8_0 attention output: %zu layers, %.1f MiB in VRAM plus %.1f MiB workspace (was %.1f MiB BF16)\n",
+                         trunk_wo_q8_.size(), retained_bytes / 1048576.0, workspace_bytes / 1048576.0, expanded_bytes / 1048576.0);
+        }
+        return true;
+    }
+
+    bool allocate_embedding_stage(int rows, std::string& err) {
+        if (rows <= embed_rows_capacity_) return true;
+        if (embed_rows_capacity_ > 0 && !hip_ok(hipStreamSynchronize(stream_), "embedding stage resize", err)) return false;
+        const size_t bytes = static_cast<size_t>(rows) * embed_row_bytes_;
+        GpuBuffer device;
+        uint8_t* host = nullptr;
+        if (!hip_ok(hipHostMalloc(&host, bytes, hipHostMallocDefault), "embedding host stage", err)) return false;
+        if (!hip_ok(alloc_gpu_buffer(device, bytes, false), "embedding device stage", err)) {
+            (void)hipHostFree(host);
+            return false;
+        }
+        if (embed_rows_capacity_ > 0) invalidate_graph();
+        free_gpu_buffer(d_embed_rows_);
+        if (h_embed_rows_) (void)hipHostFree(h_embed_rows_);
+        d_embed_rows_ = device;
+        h_embed_rows_ = host;
+        embed_rows_capacity_ = rows;
+        embed_copy_pending_ = false;
+        return true;
+    }
+
+    bool init_compact_embedding(const TInfo& canonical) {
+        const size_t row_bytes = c_.hidden % 32 == 0 ? gguf_detail::gguf_row_bytes(8, c_.hidden) : 0;
+        const uint8_t* original = dense_gguf_tensor("token_embd.weight", canonical, 8, row_bytes);
+        if (!original) return false;
+        embed_row_bytes_ = row_bytes;
+        std::string err;
+        if (!hip_ok(hipEventCreateWithFlags(&embed_copy_done_, hipEventDisableTiming), "embedding copy marker", err) ||
+            !allocate_embedding_stage(std::max(kMaxParallelSlots, std::min(opts_.chunk, guard_.max_prefill_chunk)), err)) {
+            if (embed_copy_done_) (void)hipEventDestroy(embed_copy_done_);
+            embed_copy_done_ = nullptr;
+            std::fprintf(stderr, "[ink-hip] Original embedding rows unavailable; using BF16 table: %s\n", err.c_str());
+            return false;
+        }
+        embed_gguf_ = original;
+        embed_vocab_ = static_cast<int>(canonical.rows());
+        std::fprintf(stderr, "[ink-hip] Q8_0 embedding table mapped in host memory; %.1f MiB GPU staging (was %.1f MiB BF16)\n",
+                     d_embed_rows_.bytes / 1048576.0, canonical.bytes / 1048576.0);
+        return true;
+    }
+
+    bool stage_embedding_rows(const StepBatch& batch, bool has_image, std::string& err) {
+        if (!allocate_embedding_stage(batch.n_tokens, err)) return false;
+        if (embed_copy_pending_ && !hip_ok(hipEventSynchronize(embed_copy_done_), "embedding copy complete", err)) return false;
+        embed_copy_pending_ = false;
+        for (int row = 0; row < batch.n_tokens; ++row) {
+            if (has_image && batch.img_embed_idx[row] >= 0) continue;
+            const int token = batch.token_ids[row];
+            if (token < 0 || token >= embed_vocab_) {
+                err = "embedding token is outside the model vocabulary";
+                return false;
+            }
+            std::memcpy(h_embed_rows_ + static_cast<size_t>(row) * embed_row_bytes_,
+                        embed_gguf_ + static_cast<size_t>(token) * embed_row_bytes_, embed_row_bytes_);
+        }
+        const size_t bytes = static_cast<size_t>(batch.n_tokens) * embed_row_bytes_;
+        if (!hip_ok(hipMemcpyAsync(d_embed_rows_.dev_ptr, h_embed_rows_, bytes, hipMemcpyHostToDevice, stream_),
+                    "embedding rows H2D", err)) return false;
+        if (!hip_ok(hipEventRecord(embed_copy_done_, stream_), "embedding copy marker", err)) {
+            (void)hipStreamSynchronize(stream_);
+            return false;
+        }
+        embed_copy_pending_ = true;
+        return true;
+    }
+
     static bool is_large_2d_matmul(const std::string& name, const TInfo& ti) {
         if (ti.shape.size() != 2) return false;
         if (name.find("attn_res") != std::string::npos ||
@@ -3206,6 +3507,10 @@ private:
         auto it_bf = trunk_bf16_.find(key);
         if (it_bf != trunk_bf16_.end()) {
             launch_bf16_opt(reinterpret_cast<const uint16_t*>(it_bf->second.dev_ptr), X, nullptr, Y, M, N, K);
+        } else if (auto it_q8 = trunk_wo_q8_.find(key); it_q8 != trunk_wo_q8_.end()) {
+            auto* weights = reinterpret_cast<uint16_t*>(wo_q8_workspace_.dev_ptr);
+            k_ink_unpack_q8_bf16<<<((N * (K >> 3)) + 255) / 256, 256, 0, stream_>>>(it_q8->second.dev_ptr, weights, N, K);
+            launch_bf16_opt(weights, X, nullptr, Y, M, N, K);
         } else {
             launch_f32_linear(reinterpret_cast<const float*>(trunk_f32_.at(key).dev_ptr), X, nullptr, Y, M, N, K, stream_, mem_info_.gen);
         }
@@ -3223,7 +3528,8 @@ private:
             slot, max_slots_, c_.n_visits, c_.hidden);
     }
 
-    bool init_kv_pools(bool fixed_device_pool, int max_swa_pages, int max_glob_pages, int kv_dim, std::string& err) {
+    bool init_kv_pools(bool fixed_device_pool, int max_swa_pages, int max_glob_pages, int kv_dim, std::string& err,
+                       InkHipVmm::PagePool* backing = nullptr) {
         const bool is_fp8 = default_kv_dtype_ == KvDtype::FP8_E4M3;
         swa_pools_.resize(c_.n_swa_visits);
         for (auto& pool : swa_pools_) {
@@ -3231,7 +3537,150 @@ private:
         }
         glob_pools_.resize(c_.n_global_visits);
         for (auto& pool : glob_pools_) {
-            if (!pool.init(false, is_fp8, mem_info_.is_uma, fixed_device_pool, max_slots_, max_glob_pages, kv_dim, err)) return false;
+            if (!pool.init(false, is_fp8, mem_info_.is_uma, fixed_device_pool, max_slots_, max_glob_pages, kv_dim, err, backing)) return false;
+        }
+        return true;
+    }
+
+    uint8_t* expert_arena_data() const {
+        return expert_range_ ? static_cast<uint8_t*>(expert_range_->base()) : expert_gpu_arena_.dev_ptr;
+    }
+
+    hipError_t allocate_expert_arena(size_t bytes) {
+        if (!adaptive_kv_) return alloc_gpu_buffer(expert_gpu_arena_, bytes, mem_info_.is_uma);
+        if (!expert_range_) {
+            auto range = std::make_unique<InkHipVmm::Range>(vmm_pages_.get());
+            if (!range->reserve(bytes)) return hipErrorOutOfMemory;
+            expert_range_ = std::move(range);
+        }
+        if (expert_range_->map(expert_range_->prefix(bytes), stream_)) return hipStreamSynchronize(stream_);
+        if (auto status = hipStreamSynchronize(stream_); status != hipSuccess) return status;
+        if (!expert_range_->trim(expert_range_->prefix(0))) return hipErrorUnknown;
+        return hipErrorOutOfMemory;
+    }
+
+    size_t adaptive_expert_bytes(size_t count) const {
+        if (count == 0) return 0;
+        return adaptive_offsets_[count - 1] + ((adj_dir_[adaptive_experts_[count - 1]].body_bytes + 63u) & ~size_t(63));
+    }
+
+    bool resize_adaptive_experts(size_t count, std::string& err) {
+        const size_t previous = vram_experts_loaded_;
+        if (count == previous) return true;
+        const size_t bytes = adaptive_expert_bytes(count);
+        auto* const arena = expert_arena_data();
+        const bool restore = count > previous;
+        if (restore && !expert_range_->map(expert_range_->prefix(bytes), stream_)) {
+            // Capacity can contract while the app is open. Keep the current placement on a failed refill.
+            if (!hip_ok(hipStreamSynchronize(stream_), "drain failed Expert refill", err)) return false;
+            if (!expert_range_->trim(expert_range_->prefix(adaptive_expert_bytes(previous)))) {
+                err = "could not return unused Expert pages";
+                return false;
+            }
+            (void)hipGetLastError();
+            return true;
+        }
+        if (restore && !hip_ok(hipStreamSynchronize(stream_), "wait for Expert maps", err)) return false;
+        std::vector<bool> changed(c_.n_phys, false);
+        std::vector<uint8_t> body;
+        for (size_t i = std::min(previous, count); i < std::max(previous, count); ++i) {
+            const uint16_t idx = adaptive_experts_[i];
+            const auto& entry = adj_dir_[idx];
+            const int layer = idx / c_.n_experts;
+            uint8_t* const device_body = arena + adaptive_offsets_[i];
+            auto& host_body = expert_ram_bodies_[idx];
+            auto& desc = h_layer_exps_[layer][entry.expert_id];
+            if (restore) {
+                const uint8_t* data = host_body.data();
+                if (host_body.empty()) {
+                    uint32_t dn = 0;
+                    uint8_t gu_code = 0, dn_code = 0;
+                    if (!read_expert_for_hip(idx, body, dn, gu_code, dn_code, err)) return false;
+                    if (body.size() != entry.body_bytes) {
+                        err = "Expert size changed during GPU restore";
+                        return false;
+                    }
+                    data = body.data();
+                }
+                if (!hip_ok(hipMemcpy(device_body, data, entry.body_bytes, hipMemcpyHostToDevice), "restore Expert", err)) return false;
+                expert_gpu_offset_[idx] = adaptive_offsets_[i];
+                desc = {device_body, entry.dn_offset, entry.gu_code_id, entry.dn_code_id, 0};
+                if (!host_body.empty()) {
+                    adaptive_ram_room_ += host_body.size();
+                    --ram_experts_loaded_;
+                    std::vector<uint8_t>().swap(host_body);
+                }
+            } else {
+                if (host_body.empty() && entry.body_bytes <= adaptive_ram_room_) {
+                    try { host_body.resize(entry.body_bytes); }
+                    catch (const std::bad_alloc&) { adaptive_ram_room_ = 0; }
+                    if (!host_body.empty()) {
+                        if (!hip_ok(hipMemcpy(host_body.data(), device_body, entry.body_bytes, hipMemcpyDeviceToHost), "evict Expert", err)) return false;
+                        adaptive_ram_room_ -= host_body.size();
+                        ++ram_experts_loaded_;
+                    }
+                }
+                expert_gpu_offset_[idx] = static_cast<size_t>(-1);
+                desc = {};
+            }
+            changed[layer] = true;
+        }
+        invalidate_graph();
+        for (int layer = 0; layer < c_.n_phys; ++layer) {
+            if (!changed[layer]) continue;
+            const auto& descs = h_layer_exps_[layer];
+            layer_all_gpu_[layer] = std::all_of(descs.begin(), descs.end(), [](const auto& desc) { return desc.body; });
+            if (!hip_ok(hipMemcpy(d_layer_exps_[layer].dev_ptr, descs.data(), descs.size() * sizeof(GpuExpertDesc),
+                                  hipMemcpyHostToDevice), "update GPU Expert descriptors", err)) return false;
+        }
+        if (!restore && !expert_range_->trim(expert_range_->prefix(bytes))) {
+            err = "could not return Expert pages for GPU KV";
+            return false;
+        }
+        static_expert_bytes_ = bytes;
+        vram_experts_loaded_ = count;
+        std::fprintf(stderr, "[ink-hip] GPU Experts %zu -> %zu for GPU KV (%.1f MiB)\n", previous, count, bytes / 1048576.0);
+        return true;
+    }
+
+    bool commit_global_kv(int pages, std::string& err) {
+        for (auto& pool : glob_pools_) {
+            if (!pool.ensure_device_capacity(pages, stream_, err)) return false;
+        }
+        return true;
+    }
+
+    bool prepare_adaptive_kv(const StepBatch& batch, std::string& err) {
+        const int max_pos = *std::max_element(batch.pos.begin(), batch.pos.begin() + batch.n_tokens);
+        const int pages = max_pos / kKvPageTokens + 1;
+        size_t extra = 0;
+        for (const auto& pool : glob_pools_) extra += pool.additional_device_bytes(pages);
+        if (!extra && !restore_experts_) return true;
+        if (!hip_ok(hipStreamSynchronize(stream_), "wait before resizing GPU KV and Experts", err)) return false;
+        if (restore_experts_) {
+            restore_experts_ = false;
+            for (auto& pool : glob_pools_) {
+                if (!pool.trim_device_capacity(pages, stream_, err)) return false;
+            }
+        }
+        size_t needed = 0;
+        for (const auto& pool : glob_pools_) needed += pool.additional_device_bytes(pages);
+        const size_t quantum = InkHipVmm::api().gran;
+        const auto align = [quantum](size_t bytes) { return (bytes + quantum - 1) / quantum * quantum; };
+        const size_t current = align(static_expert_bytes_);
+        const size_t fresh = vmm_pages_->fresh_bytes(needed);
+        size_t count = vram_experts_loaded_;
+        while (count > 0 && fresh > current - align(adaptive_expert_bytes(count))) --count;
+        if (!resize_adaptive_experts(count, err)) return false;
+        if (needed && !commit_global_kv(pages, err)) {
+            kv_growth_failed_ = true;
+            (void)hipGetLastError();
+            return false;
+        }
+        if (!fresh && vmm_pages_->bytes() >= quantum && count < adaptive_experts_.size()) {
+            const size_t room = current + vmm_pages_->bytes();
+            while (count < adaptive_experts_.size() && align(adaptive_expert_bytes(count + 1)) <= room) ++count;
+            if (!resize_adaptive_experts(count, err)) return false;
         }
         return true;
     }
@@ -3251,10 +3700,13 @@ private:
     }
 
     size_t vram_used_bytes() const noexcept {
-        size_t tot = expert_gpu_arena_.bytes + d_exp_stage_.bytes + d_exp_w13_f16_.bytes + d_exp_w2_f16_.bytes;
+        size_t tot = (expert_range_ ? expert_range_->mapped() + vmm_pages_->bytes() : expert_gpu_arena_.bytes)
+                   + d_exp_stage_.bytes + d_exp_w13_f16_.bytes + d_exp_w2_f16_.bytes;
         tot += hybrid_.allocated_bytes();
         for (const auto& b : trunk_qkvrg_) tot += b.bytes;
         for (const auto& kv : trunk_bf16_) tot += kv.second.bytes;
+        for (const auto& kv : trunk_wo_q8_) tot += kv.second.bytes;
+        tot += wo_q8_workspace_.bytes;
         for (const auto& kv : trunk_f32_) tot += kv.second.bytes;
         for (const auto& kv : packed_trunk_) tot += kv.second.buf.bytes;
         for (const auto& kv : static_sconv_) tot += kv.second.bytes;
@@ -3694,6 +4146,7 @@ private:
             }
         }
         if (!ensure_batch_scratch(B, err)) return false;
+        if (adaptive_kv_ && !prepare_adaptive_kv(batch, err)) return false;
 
         // Detect whether all B tokens belong to distinct slots (fast parallel ShortConv) or grouped sequential per slot
         bool all_distinct_slots = true;
@@ -3747,6 +4200,10 @@ private:
         GpuBuffer d_img_emb;
         if (max_img_row >= 0 && batch.img_embeds != nullptr) {
             if (!upload_raw(d_img_emb, batch.img_embeds, static_cast<size_t>(max_img_row + 1) * D * 4, err)) return false;
+        }
+        if (embed_gguf_ && !stage_embedding_rows(batch, d_img_emb.dev_ptr != nullptr, err)) {
+            free_gpu_buffer(d_img_emb);
+            return false;
         }
 
         // Detect single-slot speculative verify batch (recording <= 8 ShortConv inputs for exact partial rollback!)
@@ -3890,9 +4347,11 @@ private:
 
         // 1. Embeddings
         float* cur = reinterpret_cast<float*>(sc_cur_.dev_ptr);
-        const auto& emb_pk = packed_trunk_.at("model.llm.embed.weight");
+        const GpuPackedTensor* emb_pk = embed_gguf_ ? nullptr : &packed_trunk_.at("model.llm.embed.weight");
         k_embed_lookup<<<B, 256, 0, stream_>>>(
-            emb_pk.buf.dev_ptr, emb_pk.info.fmt, static_cast<int>(emb_pk.info.rows()),
+            emb_pk ? emb_pk->buf.dev_ptr : d_embed_rows_.dev_ptr,
+            emb_pk ? emb_pk->info.fmt : kHipEmbeddingQ8Rows,
+            emb_pk ? static_cast<int>(emb_pk->info.rows()) : embed_vocab_,
             f32_ptr("model.llm.embed_norm.weight"),
             reinterpret_cast<const int32_t*>(sc_tok_ids_.dev_ptr),
             reinterpret_cast<const int32_t*>(sc_img_idx_.dev_ptr),
@@ -4356,7 +4815,10 @@ private:
             if (visit == 0) { dbg_hash(196, aout, B, q_dim); dbg_hash(193, q, B, q_dim); dbg_hash(194, k_cv, B, kv_dim); dbg_hash(195, v_cv, B, kv_dim); dbg_hash(197, k_raw, B, kv_dim); dbg_hash(198, sinks, B, c_.n_head); dbg_hash(199, gatea, B, q_dim); dbg_hash(200, rbias, B, c_.n_head * c_.rel_extent); dbg_hash(201, r_raw, B, c_.n_head * c_.d_rel); }
             pmark(4);
             const std::string wo_key = p + ".attn.wo_ud.weight";
-            if (B == 1 && all_distinct_slots && rec_slot < 0 && q_dim <= 4096 && (q_dim & 7) == 0 && trunk_bf16_.count(wo_key) > 0) {
+            const auto it_wo_q8 = trunk_wo_q8_.find(wo_key);
+            const bool wo_q8 = it_wo_q8 != trunk_wo_q8_.end();
+            if (B == 1 && all_distinct_slots && rec_slot < 0 && q_dim <= 4096 && (q_dim & 7) == 0 &&
+                (wo_q8 || trunk_bf16_.count(wo_key) > 0)) {
                 const size_t vstride = static_cast<size_t>(max_slots_) * 3u * static_cast<size_t>(D) * sizeof(uint16_t);
                 float* bsave = nullptr;
                 if (ip % c_.block_size == 0) {
@@ -4364,12 +4826,16 @@ private:
                     blk_ptrs.push_back(bsave);
                     ++n_blocks;
                 }
-                k_bf16_gemv1_wo_sconv<<<(D + 7) / 8, 256, 0, stream_>>>(
-                    bf16_ptr(wo_key), aout,
-                    reinterpret_cast<const float*>(static_sconv_.at(p + ".attn_sconv").dev_ptr),
-                    reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr),
-                    reinterpret_cast<uint16_t*>(d_sconv_attn_all_.dev_ptr + visit * vstride),
-                    cur, bsave, D, q_dim);
+                const auto* sw = reinterpret_cast<const float*>(static_sconv_.at(p + ".attn_sconv").dev_ptr);
+                const auto* ids = reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr);
+                auto* history = reinterpret_cast<uint16_t*>(d_sconv_attn_all_.dev_ptr + visit * vstride);
+                if (wo_q8) {
+                    k_bf16_gemv1_wo_sconv<true><<<(D + 7) / 8, 256, 0, stream_>>>(
+                        it_wo_q8->second.dev_ptr, aout, sw, ids, history, cur, bsave, D, q_dim);
+                } else {
+                    k_bf16_gemv1_wo_sconv<false><<<(D + 7) / 8, 256, 0, stream_>>>(
+                        reinterpret_cast<const uint8_t*>(bf16_ptr(wo_key)), aout, sw, ids, history, cur, bsave, D, q_dim);
+                }
             } else {
                 launch_trunk_linear(wo_key, aout, oproj, B, D, q_dim);
                 if (ip % c_.block_size == 0) {
@@ -4551,7 +5017,7 @@ private:
                     const int dir_idx = model_->dir_index_of[ip * c_.n_experts + eid];
                     if (dir_idx < 0) continue;
                     const auto& ent = dir[dir_idx];
-                    const uint8_t* body_dev = expert_gpu_arena_.dev_ptr + expert_gpu_offset_[dir_idx];
+                    const uint8_t* body_dev = expert_arena_data() + expert_gpu_offset_[dir_idx];
                     run_single_expert_blaslt(
                         body_dev, ent.gu_code_id, ent.dn_code_id, ent.dn_offset,
                         expert_sf4_outer_[dir_idx].first, expert_sf4_outer_[dir_idx].second,
@@ -4931,7 +5397,7 @@ private:
                     if (ep2_active_ && peer_expert_gpu_offset_[dir_idx] != static_cast<size_t>(-1)) continue;  // handled by GPU 1!
                     const uint8_t* dev_p = nullptr;
                     if (expert_gpu_offset_[dir_idx] != static_cast<size_t>(-1)) {
-                        dev_p = expert_gpu_arena_.dev_ptr + expert_gpu_offset_[dir_idx];
+                        dev_p = expert_arena_data() + expert_gpu_offset_[dir_idx];
                     } else if (hybrid_.active()) {
                         dev_p = hybrid_.probe_ready(dir_idx);
                     }
@@ -6001,6 +6467,14 @@ private:
             (void)hipStreamDestroy(stream_);
             stream_ = nullptr;
         }
+        if (embed_copy_done_) (void)hipEventDestroy(embed_copy_done_);
+        if (h_embed_rows_) (void)hipHostFree(h_embed_rows_);
+        free_gpu_buffer(d_embed_rows_);
+        embed_copy_done_ = nullptr;
+        h_embed_rows_ = nullptr;
+        embed_gguf_ = nullptr;
+        embed_rows_capacity_ = 0;
+        embed_copy_pending_ = false;
         for (auto& sl : slots_) sl.release();
         slots_.clear();
         for (auto& ck : ckpts_) ck.release();
@@ -6008,11 +6482,22 @@ private:
         for (auto& p : swa_pools_) p.release();
         for (auto& p : glob_pools_) p.release();
         swa_pools_.clear(); glob_pools_.clear();
+        expert_range_.reset();
+        vmm_pages_.reset();
+        adaptive_experts_.clear();
+        adaptive_offsets_.clear();
+        adaptive_ram_room_ = 0;
+        adaptive_kv_ = false;
+        restore_experts_ = false;
+        kv_growth_failed_ = false;
         free_gpu_buffer(d_sconv_k_all_); free_gpu_buffer(d_sconv_v_all_);
         free_gpu_buffer(d_sconv_attn_all_); free_gpu_buffer(d_sconv_mlp_all_);
         for (auto& b : trunk_qkvrg_) free_gpu_buffer(b);
         trunk_qkvrg_.clear();
         for (auto& kv : trunk_bf16_) free_gpu_buffer(kv.second);
+        for (auto& kv : trunk_wo_q8_) free_gpu_buffer(kv.second);
+        trunk_wo_q8_.clear();
+        free_gpu_buffer(wo_q8_workspace_);
         for (auto& kv : trunk_f32_) free_gpu_buffer(kv.second);
         for (auto& kv : packed_trunk_) free_gpu_buffer(kv.second.buf);
         for (auto& kv : static_sconv_) free_gpu_buffer(kv.second);
@@ -6152,9 +6637,19 @@ private:
     int swa_span_cap_ = 0;  // max tokens per forward_batch_chunk so the ring margin holds (0 = no extra cap)
 
     std::vector<GpuBuffer> trunk_qkvrg_;
+    std::unordered_map<std::string, GpuBuffer> trunk_wo_q8_;
+    GpuBuffer wo_q8_workspace_;
     std::unordered_map<std::string, GpuBuffer> trunk_bf16_;
     std::unordered_map<std::string, GpuBuffer> trunk_f32_;
     std::unordered_map<std::string, GpuPackedTensor> packed_trunk_;
+    const uint8_t* embed_gguf_ = nullptr;
+    size_t embed_row_bytes_ = 0;
+    int embed_vocab_ = 0;
+    int embed_rows_capacity_ = 0;
+    uint8_t* h_embed_rows_ = nullptr;
+    GpuBuffer d_embed_rows_;
+    hipEvent_t embed_copy_done_ = nullptr;
+    bool embed_copy_pending_ = false;
     std::unordered_map<std::string, GpuBuffer> static_sconv_;
     std::unordered_map<std::string, std::vector<float>> host_tmp_;
     std::vector<GpuBuffer> d_msg_queries_;
@@ -6171,6 +6666,14 @@ private:
     uint64_t dspark_ptr_gen_ = 0;
 
     GpuBuffer expert_gpu_arena_;
+    std::unique_ptr<InkHipVmm::PagePool> vmm_pages_;
+    std::unique_ptr<InkHipVmm::Range> expert_range_;
+    std::vector<uint16_t> adaptive_experts_;
+    std::vector<size_t> adaptive_offsets_;
+    size_t adaptive_ram_room_ = 0;
+    bool adaptive_kv_ = false;
+    bool restore_experts_ = false;
+    bool kv_growth_failed_ = false;
     GpuBuffer d_exp_stage_;
     GpuBuffer d_exp_w13_f16_, d_exp_w2_f16_;
     std::vector<size_t> expert_gpu_offset_;

@@ -68,7 +68,13 @@ struct Api {
         ok = cuMemGetAllocationGranularity(&gran, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM) == CUDA_SUCCESS && gran != 0;
 #if defined(_WIN32)
         if (ok) {
+#if defined(INKLING_ENABLE_HIP)
+            // Inkling maps an entire Expert arena with this allocator, not
+            // just the KV backing. Limit the number of per-page WDDM handles.
+            gran = strata::hip_vmm::quantum(gran, "inkling2", true);
+#else
             gran = strata::hip_vmm::quantum(gran, "qwen35");
+#endif
         }
 #endif
         if (!ok) (void) hipGetLastError();
@@ -125,6 +131,12 @@ public:
         const size_t reusable = bytes();
         return mapped_need > reusable ? mapped_need - reusable : 0;
     }
+    void release_unused() {
+        while (!spare_.empty()) {
+            if (api().release(spare_.back()) != CUDA_SUCCESS) failed("releasing unused startup pages");
+            spare_.pop_back();
+        }
+    }
     // Reserve before unmapping anything, so a host allocation failure cannot
     // strand a live physical handle between its Range and the pool.
     bool prepare_return(size_t count) {
@@ -174,8 +186,14 @@ public:
         const auto& a = api();
         if (!a.ok || base_) return false;
         const size_t n = (bytes + a.gran - 1) / a.gran;
-        if (!n || a.reserve(&base_, n * a.gran, 0, 0, 0) != CUDA_SUCCESS) return false;
-        pages_.resize(n, 0);
+        if (!n) return false;
+        // Allocate ownership metadata first, so a host allocation failure cannot
+        // strand a reservation whose size its destructor no longer knows.
+        try { pages_.resize(n, 0); }
+        catch (...) { return false; }
+        CUdeviceptr base = 0;
+        if (a.reserve(&base, n * a.gran, 0, 0, 0) != CUDA_SUCCESS) return false;
+        base_ = base;
         return true;
     }
     void* base() const { return reinterpret_cast<void*>(base_); }
@@ -251,10 +269,12 @@ public:
             for (size_t i = 0; i < pages_.size(); ++i) count += !want[i] && pages_[i];
             if (!pool_->prepare_return(count)) return false;
         }
-        for (size_t i = 0; i < pages_.size(); ++i) if (!want[i] && pages_[i]) {
+        // A consumer that maps a contiguous prefix can still use that prefix
+        // if a driver error interrupts its tail trim.
+        for (size_t i = pages_.size(); i-- > 0;) if (!want[i] && pages_[i]) {
             if (a.unmap(base_ + i * a.gran, a.gran) != CUDA_SUCCESS) return false;
             if (pool_) pool_->give(pages_[i]);
-            else a.release(pages_[i]);
+            else (void)a.release(pages_[i]);
             pages_[i] = 0;
         }
         return true;

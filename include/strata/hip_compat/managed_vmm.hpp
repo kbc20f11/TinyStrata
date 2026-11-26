@@ -286,17 +286,18 @@ inline Verification inspect_runtime() {
 } // namespace detail
 
 #if defined(STRATA_USE_HIP) || defined(__HIPCC__)
-inline size_t quantum(size_t driver_minimum, const char* family) {
+inline size_t quantum(size_t driver_minimum, const char* family, bool arena_coarse = false) {
     static const detail::Verification checked = detail::inspect_runtime();
     wchar_t escape[16]{};
     const DWORD n = GetEnvironmentVariableW(L"TINYSTRATA_HIP_VMM_COARSE", escape, (DWORD) (sizeof(escape) / sizeof(escape[0])));
     // Only coarse recovery is expressible. Unknown values also stay coarse.
     const bool coarse = n != 0;
-    const size_t actual = select_quantum(driver_minimum, checked.evidence, coarse);
+    const size_t actual = select_quantum(driver_minimum, checked.evidence, coarse || arena_coarse);
     std::printf("INFO hip_vmm_family=%s hip_vmm_verified=%d hip_vmm_driver_min_kib=%zu hip_vmm_quantum_kib=%zu "
                 "hip_runtime_version=%d hip_compiled_version=%d hip_vmm_reason=%s\n",
         family, eligible(checked.evidence) ? 1 : 0, driver_minimum >> 10, actual >> 10,
-        checked.evidence.runtime_version, checked.evidence.compiled_version, coarse ? "coarse_recovery" : checked.reason);
+        checked.evidence.runtime_version, checked.evidence.compiled_version,
+        coarse ? "coarse_recovery" : arena_coarse ? "coarse_expert_arena" : checked.reason);
     std::fflush(stdout);
     return actual;
 }

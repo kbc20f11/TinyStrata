@@ -3118,6 +3118,9 @@ __global__ void __launch_bounds__(256) k_relpos_bias_proj(
     }
 }
 
+constexpr int kHipEmbeddingQ8Rows = 110;
+constexpr int kHipUnembedQ6K = 111;
+
 // Multi-format embedding lookup + embed_norm (with image embedding bypass!)
 // fmt: 102=BF16, 101=F32, 100=Q8_ROW, 0..8=S_K
 // Grid: (B,), Block: 256
@@ -3148,7 +3151,18 @@ __global__ void __launch_bounds__(256) k_embed_lookup(
     __shared__ float s_inv;
     float ss = 0.0f;
 
-    if (fmt == 102) {
+    if (fmt == kHipEmbeddingQ8Rows) {
+        // Only the selected rows were uploaded. Reproduce the BF16 conversion done
+        // when loading the full table before applying the same RMS normalization.
+        const uint8_t* row = emb_raw + static_cast<size_t>(b) * hip_gguf_row_bytes(8, D);
+        for (int d = tid; d < D; d += 256) {
+            const uint8_t* blk = row + static_cast<size_t>(d >> 5) * 34u;
+            const float raw = ld_fp16_as_f32(blk) * static_cast<float>(reinterpret_cast<const int8_t*>(blk + 2)[d & 31]);
+            const float v = bf16_to_f32(f32_to_bf16(raw));
+            dst[d] = v;
+            ss = fmaf(v, v, ss);
+        }
+    } else if (fmt == 102) {
         const uint16_t* row = reinterpret_cast<const uint16_t*>(emb_raw) + static_cast<size_t>(tok) * D;
         for (int d = tid; d < D; d += 256) {
             const float v = bf16_to_f32(row[d]);
@@ -3223,11 +3237,14 @@ __global__ void __launch_bounds__(256) k_unembed_softcap(
 
     float acc[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
-    if (fmt == 102) {
+    if (fmt == 102 || fmt == kHipUnembedQ6K) {
         if (v < V) {
-            const uint16_t* wr = reinterpret_cast<const uint16_t*>(unemb_raw) + static_cast<size_t>(v) * D;
+            const size_t row_bytes = fmt == kHipUnembedQ6K ? hip_gguf_row_bytes(14, D) : static_cast<size_t>(D) * 2;
+            const uint8_t* row = unemb_raw + static_cast<size_t>(v) * row_bytes;
             for (int k = lane * 8; k < D; k += 256) {
-                const uint4 w8 = *reinterpret_cast<const uint4*>(wr + k);
+                const uint4 w8 = fmt == kHipUnembedQ6K
+                    ? hip_gguf_decode_8<true>(14, row, k, 1.0f)
+                    : *reinterpret_cast<const uint4*>(row + static_cast<size_t>(k) * 2);
                 const float f0 = bf16_to_f32(w8.x & 0xFFFFu), f1 = bf16_to_f32(w8.x >> 16);
                 const float f2 = bf16_to_f32(w8.y & 0xFFFFu), f3 = bf16_to_f32(w8.y >> 16);
                 const float f4 = bf16_to_f32(w8.z & 0xFFFFu), f5 = bf16_to_f32(w8.z >> 16);
