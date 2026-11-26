@@ -390,6 +390,11 @@ struct Engine::Swap {
 Engine::Engine() = default;
 
 Engine::~Engine() {
+#if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
+    if (mapped_tab_uploads_)
+        std::fprintf(stderr, "tinystrata-lfm2: SM86 mapped MMQ row table uploads=%llu\n",
+                     (unsigned long long) mapped_tab_uploads_);
+#endif
     next_.reset();
     OnCard here(device_, split_);
     map_quit_.store(true);
@@ -1905,7 +1910,7 @@ void Engine::load_drafter() {
 }
 
 // Per-token buffers hold rows_ tokens, row after row.
-void Engine::shared_scratch() {
+void Engine::shared_scratch(bool share_ffn_profile) {
     const size_t n = (size_t) rows_, e = n * n_embd_;
     const size_t ff = n * std::max({n_ff_, n_ff_shexp_, 2 * n_ff_exp_});
     // the draft block works in it too (draft_input()); read() keeps two calls' rows in it
@@ -1914,18 +1919,41 @@ void Engine::shared_scratch() {
     xn_ = fbuf(e);
     ao_ = fbuf(e);
     fo_ = fbuf(e);
-    g_ = fbuf(ff);   // a routed expert's gate and up rows come out of one launch, back to back
-    u_ = fbuf(ff);
-    h_ = fbuf(ff);
+    const size_t rr = n * n_used_;
+    const size_t routed_gate_up = rr * 2 * n_ff_exp_;
+    const size_t routed_hidden = rr * n_ff_exp_;
+    const size_t routed_down = rr * n_embd_;
+    // Keep the 64-float alignment of the separate fbuf allocations.
+    const bool share_ffn = share_ffn_profile && ((ff | routed_gate_up | routed_hidden | routed_down) & 63) == 0;
+    if (share_ffn) {
+        // Dense/short-row FFN and batched MoE use disjoint views in their own
+        // launches. Engine::layer selects one phase, and all its products run
+        // on st_. The upload and residual streams never access these buffers.
+        const size_t dense_span = 3 * ff;
+        const size_t routed_span = routed_gate_up + routed_hidden + routed_down;
+        g_ = gu_ = fbuf(std::max(dense_span, routed_span));
+        u_ = h_ = hx_ = dx_ = nullptr;
+        if (g_) {
+            u_ = g_ + ff;
+            h_ = u_ + ff;
+            hx_ = gu_ + routed_gate_up;
+            dx_ = hx_ + routed_hidden;
+            std::fprintf(stderr, "tinystrata-lfm2: shared FFN workspace saves %zu bytes\n",
+                         std::min(dense_span, routed_span) * sizeof(float));
+        }
+    } else {
+        g_ = fbuf(ff);   // a routed expert's gate and up rows come out of one launch, back to back
+        u_ = fbuf(ff);
+        h_ = fbuf(ff);
+    }
     d_ = fbuf((size_t) kSumRows * n_embd_);   // the routed experts of a few tokens, until they are added up
     rl_ = fbuf(n * n_expert_);
     logits_ = fbuf((size_t) n_vocab_);
     if (rows_ >= kStageRows && bf16_max_ > 0) wf_ = fbuf(bf16_max_);   // a BF16 matrix as floats, for lin()
-    if (mmq_) {
-        const size_t rr = n * n_used_;
-        gu_ = fbuf(rr * 2 * n_ff_exp_);
-        hx_ = fbuf(rr * n_ff_exp_);
-        dx_ = fbuf(rr * n_embd_);
+    if (mmq_ && !share_ffn) {
+        gu_ = fbuf(routed_gate_up);
+        hx_ = fbuf(routed_hidden);
+        dx_ = fbuf(routed_down);
     }
 }
 
@@ -1985,11 +2013,28 @@ void Engine::alloc() {
     }
     if (tiles) mmq_ = std::make_unique<Mmq>();
 
-    shared_scratch();   // the first pass only counts
+    bool share_ffn_profile = false;
+#if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
+    bool cuda_sm86 = false;
+    if (mmq_ && !split_) {
+        int major = 0, minor = 0;
+        if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, device_) == cudaSuccess &&
+            cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, device_) == cudaSuccess)
+            cuda_sm86 = major == 8 && minor == 6;
+        else
+            (void) cudaGetLastError();
+    }
+#if defined(_WIN32)
+    const char* shared_ffn = std::getenv("TINYSTRATA_LFM_SHARED_FFN_SCRATCH");
+    share_ffn_profile = cuda_sm86 && (!shared_ffn || std::strcmp(shared_ffn, "0") != 0) &&
+                        rows_ == 512 && !next_ && !draft_ && opt_.window == 1 && opt_.batch == 0;
+#endif
+#endif
+    shared_scratch(share_ffn_profile);   // the first pass only counts
     assign_scratch();
     scratch_ = (float*) dmalloc(scratch_at_ * sizeof(float), "scratch");
     scratch_at_ = 0;
-    shared_scratch();
+    shared_scratch(share_ffn_profile);
     assign_scratch();
 
     const int q_max = std::max({n_embd_, n_ff_, n_ff_exp_, n_ff_shexp_, widest(), 256});
@@ -2024,6 +2069,18 @@ void Engine::alloc() {
         // separate from the bounds/weight tables, including for a staged group's d_place + row0 subspan.
         ck(cudaMemset(tab_, 0, tab), "scratch");
         std::memset(h_tab_, 0, tab);
+#if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
+        const char* mapped_tables = std::getenv("TINYSTRATA_AMPERE_MMQ_TABLE_COPY");
+        if (cuda_sm86 && (!mapped_tables || std::strcmp(mapped_tables, "0") != 0)) {
+            int unified = 0;
+            void* alias = nullptr;
+            if (cudaDeviceGetAttribute(&unified, cudaDevAttrUnifiedAddressing, device_) == cudaSuccess && unified &&
+                cudaHostGetDevicePointer(&alias, h_tab_, 0) == cudaSuccess)
+                mapped_tab_ = static_cast<const int32_t*>(alias);
+            else
+                (void) cudaGetLastError();
+        }
+#endif
         iota_ = (int32_t*) dmalloc(tables.ids.storage_bytes, "scratch");
         std::vector<int32_t> ramp(tables.ids.storage_rows);
         std::iota(ramp.begin(), ramp.end(), 0);
@@ -2635,9 +2692,22 @@ void Engine::moe_rows(Layer& L, int il, int n) {
         }
         b[n_chan] = at;
     }
-    ck(cudaMemcpyAsync(tab_, h_tab_, tables.bytes,
-                       cudaMemcpyHostToDevice, cs(st_)),
-       "expert rows");
+#if !defined(STRATA_USE_HIP) && !defined(__HIPCC__)
+    // PolyStrata f0ab63a90: submit the table on the compute stream so it
+    // can arrive while the copy engine is still uploading Expert weights.
+    // The next router event still orders the host's reuse of this buffer.
+    cudaStreamCaptureStatus capture = cudaStreamCaptureStatusNone;
+    if (early && mapped_tab_ && !recording_ && tables.words <= (size_t) INT32_MAX &&
+        cudaStreamIsCapturing(cs(st_), &capture) == cudaSuccess && capture == cudaStreamCaptureStatusNone) {
+        copy2(mapped_tab_, tab_, (int) tables.words, nullptr, nullptr, 0, st_);
+        ++mapped_tab_uploads_;
+    } else
+#endif
+    {
+        ck(cudaMemcpyAsync(tab_, h_tab_, tables.bytes,
+                           cudaMemcpyHostToDevice, cs(st_)),
+           "expert rows");
+    }
 
     const int rc = bounds[n_cached];   // the rows of the cached experts
     stats_.batch_cached += rc;

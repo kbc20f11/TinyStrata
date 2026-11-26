@@ -1342,6 +1342,9 @@ struct Engine {
     int clover_gqa_heads = 0; // HIP INT8: tested automatic T1 policy or explicit diagnostic width.
     bool clover_gqa_auto = false;
     int clover_gqa_min_prefix = 8192;
+    int clover_sm86_gqa_heads = 0;
+    static constexpr int kCloverSm86GqaMinPrefix = 8192;
+    bool clover_sm86_gqa_reported = false;
     long long clover_gqa_head_calls = 0;
     long long clover_gqa_effective_calls = 0, clover_gqa_graph_launches = 0, clover_gqa_graph_invalidations = 0;
     int clover_gqa_graph_variant = -1; // unknown / short / eligible long prefix
@@ -1479,6 +1482,7 @@ struct Engine {
     cudaEvent_t ev_copy[2] = {}, ev_used[2] = {};
     std::unique_ptr<strata::qwen35::kv_grow::Range> loan_stage_ranges[2];
     size_t stage_buffer_bytes = 0, stage_loan_budget = 0;
+    bool stage_loan_preflight = false;
     struct StageLoanLayer {
         int slots;
         std::vector<int> slot_of, exp_in_slot;
@@ -2601,7 +2605,7 @@ struct Engine {
     /// `li` indexes the layer's state; positions *dpos .. + T - 1 (device), p0 the same on the host (eager grids);
     /// `verify`: a verify window - the GDN state is read, not written (commit() writes it for the kept rows).
     void layer(const Layer& L, size_t li, int T, int64_t p0, const int32_t* dpos, bool graph_mode, bool verify,
-               const float* wn, float* hout) {
+               const float* wn, float* hout, bool clover_causal_decode = false) {
         cpu_compact_pending = false;
         const auto& g = m->g;
         const int N = (int) g.n_embd, Kp = (int) m->top_k, FF = (int) g.n_ff, FS = (int) g.n_ff_shexp;
@@ -2704,6 +2708,24 @@ struct Engine {
                             CK(strata::qwen35::clover_attention::launch(q, kv[li], dpos, t0, nt, H, HKV, ctx,
                                 1.f / sqrtf((float) HD), n_chunk, nc, pacc, pm, pl, st, visible_end, tile));
                             ++clover_query_shared_calls;
+                            return;
+                        }
+                    }
+#else
+                    if constexpr (Format == 2) {
+                        // Only live one-row causal decoding uses this host prefix
+                        // switch. Graph captures, verification and prompts keep
+                        // the existing dispatch and do not depend on it.
+                        if (clover_sm86_gqa_heads && clover_causal_decode && !graph_mode && !verify &&
+                            !clover_preview && T == 1 && nt == 1 && visible_end == 0 &&
+                            HD == 256 && H == 8 * HKV && p0 >= kCloverSm86GqaMinPrefix) {
+                            CK(strata::qwen35::clover_attention::launch_gqa(q, kv[li], dpos, t0, nt, H, HKV, ctx,
+                                1.f / sqrtf((float) HD), n_chunk, nc, pacc, pm, pl, st, clover_sm86_gqa_heads));
+                            if (!clover_sm86_gqa_reported) {
+                                std::fprintf(stderr, "tinystrata: SM86 Clover INT8 GQA head sharing active (heads=%d, prefix=%lld)\n",
+                                             clover_sm86_gqa_heads, (long long) p0);
+                                clover_sm86_gqa_reported = true;
+                            }
                             return;
                         }
                     }
@@ -2928,7 +2950,7 @@ struct Engine {
     /// The main model over T rows (device `tok`, positions p0 .. p0 + T - 1, also at *pos0): hmain gets every row's
     /// final normed hidden; `heads` rows from the end get logits (rows [T - heads, T): logits row r - (T - heads)) and
     /// their greedy picks (`pick`).  `verify`: a verify window (the GDN state left for commit()).
-    void forward(int T, int64_t p0, int heads, bool graph_mode, bool verify) {
+    void forward(int T, int64_t p0, int heads, bool graph_mode, bool verify, bool clover_causal_decode = false) {
         xq_ready = false;
         const auto& g = m->g;
         const int N = (int) g.n_embd;
@@ -2944,7 +2966,7 @@ struct Engine {
         for (size_t l = 0; l < m->layers.size(); ++l) {
             const bool last = l + 1 == m->layers.size();
             layer(m->layers[l], l, T, p0, pos0, graph_mode, verify, last ? m->out_norm : m->layers[l + 1].attn_norm,
-                  last ? hmain : h);
+                  last ? hmain : h, clover_causal_decode);
         }
         if (heads > 0) head_rows(hmain + (size_t) (T - heads) * N, heads, logits, pick);
     }
@@ -3529,6 +3551,15 @@ struct Engine {
         if (stage_buffers == 1) ++stage_loan_single_attempts;
         else ++stage_loan_pair_attempts;
         CK(cudaDeviceSynchronize());
+        size_t free = 0, total = 0;
+        if (stage_loan_preflight) {
+            CK(resident_mem_info(&free, &total));
+            if (free < vram_reserve) {
+                std::fprintf(stderr, "tinystrata: stage loan preflight skipped (free_bytes=%zu reserve_bytes=%zu)\n",
+                             free, vram_reserve);
+                return false;
+            }
+        }
         std::vector<StageLoanLayer> snapshot;
         snapshot.reserve(hy.size());
         for (size_t li = 0; li < hy.size(); ++li)
@@ -3538,8 +3569,7 @@ struct Engine {
         stage_loan_fingerprint_before = expert_slot_fingerprint();
         const int slots_before = expert_slot_count();
         const size_t pair = loan_stage_bytes();
-        size_t free = 0, total = 0;
-        CK(resident_mem_info(&free, &total));
+        if (!stage_loan_preflight) CK(resident_mem_info(&free, &total));
         const size_t for_free = pair + vram_reserve > free ? pair + vram_reserve - free : 0;
         const size_t for_budget = stage_loan_mapped_before + pair > stage_loan_budget
                                      ? stage_loan_mapped_before + pair - stage_loan_budget : 0;
@@ -3896,7 +3926,8 @@ struct Engine {
     /// token's logits stay in `logits` (its greedy pick in `pick`), hlast its normed hidden.  With the MTP block the
     /// prompt also runs through it (its K / V for every position: row q reads h_{q-1} and token q).
     template <class F> int64_t process(const int32_t* toks, int64_t n, F on_chunk, bool sync_mtp = false,
-                                       bool need_head = true, const std::atomic<bool>* cancel = nullptr) {
+                                       bool need_head = true, const std::atomic<bool>* cancel = nullptr,
+                                       bool clover_causal_decode = false) {
         if (n <= 0 || (cancel && cancel->load())) return 0;
         ensure_kv(std::min<int64_t>(ctx, pos + n + 64));
         const int N = (int) m->g.n_embd;
@@ -3939,7 +3970,7 @@ struct Engine {
             rows_deferred = true;
             // Do not reuse the ordinary decode graph for a no-head prefill:
             // the following causal request may need its vocabulary logits.
-            if (need_head) graph_run(g1, [&] { forward(1, pos, 1, use_graph, false); });
+            if (need_head) graph_run(g1, [&] { forward(1, pos, 1, use_graph, false, clover_causal_decode); });
             else forward(1, pos, 0, false, false);
             rows_deferred = false;
             if (sync_mtp && m->has_mtp && mtp_d > 0) {
@@ -5918,7 +5949,8 @@ int serve(Engine& E) {
             const bool measured = request_mtp_auto || request_lookup_draft > 0;
             const bool recorded = measured && E.use_graph && !E.g1;
             const auto began = measured ? Clock::now() : Clock::time_point{};
-            E.process(&one, 1, [](int64_t) {}, measured);
+            const bool causal_decode = E.clover_sm86_gqa_heads && request_clover_mode == "causal" && !lookup;
+            E.process(&one, 1, [](int64_t) {}, measured, true, nullptr, causal_decode);
             if (measured) {
                 CK(cudaStreamSynchronize(E.st));
                 qwen_lookup_gate.observe(false, 1, 0, 0, ms_since(began), recorded);
@@ -6364,6 +6396,23 @@ int strata::qwen35::run(int argc, char** argv) {
     // Measured CUDA Blackwell path; explicit0 keeps the legacy merge.
     const char* compact = std::getenv("TINYSTRATA_Q36_CPU_COMPACT");
     E.cpu_compact_enabled = prop.major == 12 && (!compact || std::strcmp(compact, "1") == 0);
+#if defined(_WIN32)
+    // Avoid shrinking the Expert cache for an optional staging loan if the
+    // dedicated-memory query already shows less than the restoration reserve.
+    const char* preflight = std::getenv("TINYSTRATA_Q36_STAGE_LOAN_PREFLIGHT");
+    E.stage_loan_preflight = E.gpu_cc == 86 && (!preflight || std::strcmp(preflight, "0") != 0);
+#endif
+    if (E.gpu_cc == 86 && m.clover) {
+        int heads = 4;
+        if (const char* setting = std::getenv("TINYSTRATA_CLOVER_SM86_INT8_GQA_HEADS")) {
+            if (std::strcmp(setting, "0") == 0) heads = 0;
+            else if (std::strcmp(setting, "2") == 0) heads = 2;
+            else if (std::strcmp(setting, "4") != 0)
+                throw std::invalid_argument("TINYSTRATA_CLOVER_SM86_INT8_GQA_HEADS must be 0, 2 or 4");
+        }
+        if (prop.maxThreadsPerBlock >= 256 && prop.sharedMemPerBlock >= (size_t) heads * 3 * 256 * sizeof(float))
+            E.clover_sm86_gqa_heads = heads;
+    }
     if (std::getenv("TINYSTRATA_Q36_Q8_PAIR") == nullptr)
         E.q8_pair_enabled = m.clover && prop.major == 12;
 #endif
