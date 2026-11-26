@@ -671,7 +671,9 @@ public:
         const bool gfx1200 = strata::hip_uma::arch_is_exact(arch, "gfx1200");
         bool tuned_discrete_profile = false;
 #if defined(_WIN32)
-        tuned_discrete_profile = gfx1200 && dev_count == 1 && !mem_info_.is_uma;
+        constexpr uint64_t gib = 1ULL << 30;
+        tuned_discrete_profile = gfx1200 && dev_count == 1 && !mem_info_.is_uma &&
+                                 mem_info_.carveout_total_bytes >= 15 * gib && mem_info_.carveout_total_bytes < 17 * gib;
 #endif
         const char* vision_attention = std::getenv("STRATA_INK_VISION_HIP_WAVE32");
         const bool compare_vision_attention = vision_attention && std::strcmp(vision_attention, "compare") == 0;
@@ -5013,9 +5015,10 @@ private:
 
                 // Kick off initial 2 RAM expert DMAs BEFORE running GPU-resident experts -> full PCIe overlap!
                 auto stage_error = [&] {
-                    (void)hipStreamSynchronize(hybrid_.dma_stream());
+                    // Local disk buffers can still back queued asynchronous copies.
+                    if (hybrid_.active()) (void)hipStreamSynchronize(hybrid_.dma_stream());
                     (void)hipStreamSynchronize(stream_);
-                    err = "HIP prompt Expert staging failed";
+                    if (err.empty()) err = "HIP prompt Expert staging failed";
                     return false;
                 };
                 if (hybrid_.active()) {
@@ -5029,7 +5032,7 @@ private:
                     (void)hipMemsetAsync(d_by, 0, static_cast<size_t>(B) * c_.top_k * D * sizeof(float), stream_);
                 }
                 for (const auto& ge : gpu_exps) {
-                    if (!exec_one(ge, ge.dev_ptr)) return false;
+                    if (!exec_one(ge, ge.dev_ptr)) return stage_error();
                 }
 
                 for (int ri = 0; ri < static_cast<int>(ram_exps.size()); ++ri) {
@@ -5038,7 +5041,7 @@ private:
                     if (hybrid_.active()) {
                         body_dev = hybrid_.wait_prefill_stage(ri, stream_);
                         if (!body_dev) return stage_error();
-                        if (!exec_one(re, body_dev)) return false;
+                        if (!exec_one(re, body_dev)) return stage_error();
                         if (!hybrid_.mark_prefill_compute_done(ri, stream_)) return stage_error();
                         if (ri + 2 < static_cast<int>(ram_exps.size())) {
                             const auto& nxt = ram_exps[ri + 2];
@@ -5047,8 +5050,8 @@ private:
                         }
                     } else {
                         if (!hip_ok(hipMemcpyAsync(d_exp_stage_.dev_ptr, re.host_ptr, dir[re.dir_idx].body_bytes, hipMemcpyHostToDevice, stream_),
-                                    "exp stage H2D", err)) return false;
-                        if (!exec_one(re, d_exp_stage_.dev_ptr)) return false;
+                                    "exp stage H2D", err)) return stage_error();
+                        if (!exec_one(re, d_exp_stage_.dev_ptr)) return stage_error();
                     }
                 }
 
