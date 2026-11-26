@@ -667,6 +667,17 @@ public:
         if (!hip_ok(hipStreamCreateWithFlags(&stream_, hipStreamNonBlocking), "hipStreamCreate", err)) return false;
 
         mem_info_ = query_device_memory(gpu0_id_);
+        const char* vision_attention = std::getenv("STRATA_INK_VISION_HIP_WAVE32");
+        const bool compare_vision_attention = vision_attention && std::strcmp(vision_attention, "compare") == 0;
+        const bool wave32_requested = compare_vision_attention || (vision_attention && std::strcmp(vision_attention, "1") == 0);
+        const char* arch = mem_info_.arch_name;
+        const bool gfx1200 = std::strncmp(arch, "gfx1200", 7) == 0 && (arch[7] == '\0' || arch[7] == ':');
+        vision_wave32_ = vision_gpu_enabled_ && wave32_requested && gfx1200;
+        vision_wave32_compare_ = vision_wave32_ && compare_vision_attention;
+        if (vision_gpu_enabled_ && wave32_requested) {
+            const char* active = vision_wave32_compare_ ? "comparison" : vision_wave32_ ? "enabled" : "unavailable";
+            std::fprintf(stderr, "[inkling2-vision] HIP Wave32 attention %s (%s)\n", active, arch);
+        }
         const bool gpu_first_kv = opts.kv_gpu_first && !mem_info_.is_uma;
 #if defined(__linux__)
         if (mem_info_.is_uma) {
@@ -2828,6 +2839,14 @@ public:
         const auto multiply = [&](const uint16_t* weight, const float* x, const float* bias, float* y, int m, int n, int k) {
             launch_bf16_opt(weight, x, bias, y, m, n, k, bf16_input.valid() ? &bf16_input : nullptr);
         };
+        // In comparison mode the final output buffer holds the layer mismatch
+        // mask until the projector needs it, with no extra device allocation.
+        auto* mismatch_mask = reinterpret_cast<unsigned int*>(d_out.dev_ptr);
+        if (vision_wave32_compare_ &&
+            !hip_ok(hipMemsetAsync(mismatch_mask, 0, sizeof(*mismatch_mask), stream_), "clear Vision attention comparison", err)) {
+            cleanup_img();
+            return false;
+        }
         float* cur = reinterpret_cast<float*>(d_cur.dev_ptr);
         if (!hip_ok(hipMemsetAsync(cur, 0, static_cast<size_t>(D) * sizeof(float), stream_), "vit clear CLS", err)) {
             cleanup_img();
@@ -2853,9 +2872,24 @@ public:
             k_vit_rope_2d<<<dim3(H, S), hd / 2, 0, stream_>>>(
                 reinterpret_cast<float*>(d_q.dev_ptr), reinterpret_cast<float*>(d_k.dev_ptr),
                 reinterpret_cast<const float*>(d_rc.dev_ptr), reinterpret_cast<const float*>(d_rs.dev_ptr), S, H, hd);
-            k_vit_full_attn<<<dim3(H, S), 64, 0, stream_>>>(
-                reinterpret_cast<const float*>(d_q.dev_ptr), reinterpret_cast<const float*>(d_k.dev_ptr),
-                reinterpret_cast<const float*>(d_v.dev_ptr), reinterpret_cast<float*>(d_ao.dev_ptr), S, H, hd);
+            const auto* q = reinterpret_cast<const float*>(d_q.dev_ptr);
+            const auto* k = reinterpret_cast<const float*>(d_k.dev_ptr);
+            const auto* v = reinterpret_cast<const float*>(d_v.dev_ptr);
+            auto* attention = reinterpret_cast<float*>(d_ao.dev_ptr);
+            if (!vision_wave32_ || vision_wave32_compare_) {
+                // This projection buffer is idle until the attention outputs
+                // have been compared on the same stream.
+                auto* legacy = vision_wave32_compare_ ? reinterpret_cast<float*>(d_proj.dev_ptr) : attention;
+                k_vit_full_attn<<<dim3(H, S), 64, 0, stream_>>>(q, k, v, legacy, S, H, hd);
+            }
+            if (vision_wave32_) {
+                k_vit_full_attn_wave32<<<dim3(H, S), 32, 0, stream_>>>(q, k, v, attention, S, H);
+            }
+            if (vision_wave32_compare_) {
+                const int elements = S * D;
+                k_vit_compare_attention<<<(elements + 255) / 256, 256, 0, stream_>>>(
+                    reinterpret_cast<const float*>(d_proj.dev_ptr), attention, elements, 1u << il, mismatch_mask);
+            }
             multiply(vit_bf16(p + ".self_attn.out_proj.weight"), reinterpret_cast<const float*>(d_ao.dev_ptr),
                             vit_f32(p + ".self_attn.out_proj.bias"), reinterpret_cast<float*>(d_proj.dev_ptr), S, D, D);
             k_vit_layerscale_res<<<(S * D + 255) / 256, 256, 0, stream_>>>(cur, reinterpret_cast<const float*>(d_proj.dev_ptr),
@@ -2873,6 +2907,25 @@ public:
             if (guard_.visit_flush_stride > 0 && ((il + 1) % guard_.visit_flush_stride == 0) &&
                 !hip_ok(hipStreamSynchronize(stream_), "vit sync layer group", err)) {
                 cleanup_img();
+                return false;
+            }
+        }
+
+        if (vision_wave32_compare_) {
+            unsigned int mismatches = 0;
+            const bool checked = hip_ok(hipGetLastError(), "launch Vision attention comparison", err) &&
+                hip_ok(hipMemcpyAsync(&mismatches, mismatch_mask, sizeof(mismatches), hipMemcpyDeviceToHost, stream_),
+                       "read Vision attention comparison", err);
+            const auto sync = hipStreamSynchronize(stream_);
+            if (!checked || !hip_ok(sync, "finish Vision attention comparison", err)) {
+                cleanup_img();
+                return false;
+            }
+            std::fprintf(stderr, "[inkling2-vision] HIP Wave32 attention compared %d layers; mismatch mask=0x%x\n",
+                         vc.layers, mismatches);
+            if (mismatches) {
+                cleanup_img();
+                err = "HIP Wave32 and legacy Vision attention outputs differ";
                 return false;
             }
         }
@@ -6102,6 +6155,8 @@ private:
     std::vector<GpuSlotMeta> slots_;
     GpuVisionState vision_;
     bool vision_gpu_enabled_ = false;
+    bool vision_wave32_ = false;
+    bool vision_wave32_compare_ = false;
 
     // Prompt checkpoint per slot (see save_prompt_checkpoint)
     struct PromptCkpt {

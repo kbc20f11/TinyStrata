@@ -4069,6 +4069,49 @@ __global__ void __launch_bounds__(64) k_vit_full_attn(
     O[(static_cast<size_t>(qi) * H + h) * hd + d] = o_acc / fmaxf(sum_e, 1e-30f);
 }
 
+// gfx1200 Vision, one Wave32 per query. Keep the original two width-32
+// reductions and their lane-zero addition. Combining each lane's two
+// products before the reduction would change the floating-point sum order.
+__global__ void __launch_bounds__(32) k_vit_full_attn_wave32(
+    const float* __restrict__ Q, const float* __restrict__ K,
+    const float* __restrict__ V, float* __restrict__ O, int S, int H) {
+    constexpr int hd = 64;
+    const int h = blockIdx.x;
+    const int qi = blockIdx.y;
+    const int lane = threadIdx.x;
+    const size_t qidx = (static_cast<size_t>(qi) * H + h) * hd + lane;
+    const float scale = rsqrtf(static_cast<float>(hd));
+    const float q_low = Q[qidx] * scale;
+    const float q_high = Q[qidx + 32] * scale;
+    float max_l = -1e30f;
+    float sum_e = 0.0f;
+    float acc_low = 0.0f;
+    float acc_high = 0.0f;
+
+    for (int ki = 0; ki < S; ++ki) {
+        const size_t idx = (static_cast<size_t>(ki) * H + h) * hd + lane;
+        const float dot_low = wave32_sum(q_low * K[idx]);
+        const float dot_high = wave32_sum(q_high * K[idx + 32]);
+        const float sc = __shfl(dot_low + dot_high, 0, 32);
+        const float nm = fmaxf(max_l, sc);
+        const float a = __expf(max_l - nm);
+        const float b = __expf(sc - nm);
+        acc_low = fmaf(acc_low, a, b * V[idx]);
+        acc_high = fmaf(acc_high, a, b * V[idx + 32]);
+        sum_e = fmaf(sum_e, a, b);
+        max_l = nm;
+    }
+    O[qidx] = acc_low / fmaxf(sum_e, 1e-30f);
+    O[qidx + 32] = acc_high / fmaxf(sum_e, 1e-30f);
+}
+
+__global__ void k_vit_compare_attention(const float* legacy, const float* wave32, int elements,
+                                        unsigned int layer_bit, unsigned int* mismatches) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    const bool differs = i < elements && __float_as_uint(legacy[i]) != __float_as_uint(wave32[i]);
+    if (__any(differs) && (threadIdx.x & 31) == 0) atomicOr(mismatches, layer_bit);
+}
+
 // #6671 diagnostics (STRATA_INK_HASH=1): an order independent 64-bit hash of every FP32 bit of one row, so a verify window
 // can be compared stage by stage with the one-token steps.  Block per row, 256 threads.
 __global__ void __launch_bounds__(256) k_dbg_hash_rows(const float* __restrict__ x, int D, unsigned long long* __restrict__ out,
