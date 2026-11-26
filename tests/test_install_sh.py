@@ -35,16 +35,24 @@ echo "cmake $*" >> "$FAKE_STATE/cmake.log"
 case "$1" in
   --build)
     dir="$2"
-    for exe in tinystrata tinystrata-lfm2 tinystrata-gemma4 tinystrata-inkling2 tinystrata-vision; do
+    for exe in tinystrata tinystrata-lfm2 tinystrata-gemma4 tinystrata-vision; do
       : > "$dir/$exe"
       chmod +x "$dir/$exe"
     done
+    if grep -q '^TINYSTRATA_INKLING2:BOOL=ON$' "$dir/CMakeCache.txt"; then
+      : > "$dir/tinystrata-inkling2"
+      chmod +x "$dir/tinystrata-inkling2"
+    fi
     exit 0 ;;
 esac
 # configure: -S src -B dir -G generator ...
-dir=""; gen=""
+dir=""; gen=""; inkling=""
 while [ $# -gt 0 ]; do
-  case "$1" in -B) dir="$2"; shift ;; -G) gen="$2"; shift ;; esac
+  case "$1" in
+    -B) dir="$2"; shift ;;
+    -G) gen="$2"; shift ;;
+    -DTINYSTRATA_INKLING2=*) inkling="${1#*=}" ;;
+  esac
   shift
 done
 mkdir -p "$dir"
@@ -54,8 +62,11 @@ if [ -f "$dir/CMakeCache.txt" ]; then
     echo "CMake Error: Error: generator : $gen Does not match the generator used previously: $old" >&2
     exit 1
   fi
+  if [ -z "$inkling" ]; then
+    inkling="$(sed -n 's/^TINYSTRATA_INKLING2:BOOL=//p' "$dir/CMakeCache.txt")"
+  fi
 fi
-echo "CMAKE_GENERATOR:INTERNAL=$gen" > "$dir/CMakeCache.txt"
+printf 'CMAKE_GENERATOR:INTERNAL=%s\nTINYSTRATA_INKLING2:BOOL=%s\n' "$gen" "${inkling:-ON}" > "$dir/CMakeCache.txt"
 exit 0
 """
 
@@ -214,6 +225,15 @@ class InstallScript(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.configured_generator(), "Unix Makefiles")
         self.assertNotIn("Does not match the generator", result.stderr)
+
+    def test_existing_build_with_inkling_disabled_enables_managed_engine(self):
+        self.build.mkdir()
+        cache = self.build / "CMakeCache.txt"
+        cache.write_text("CMAKE_GENERATOR:INTERNAL=Unix Makefiles\nTINYSTRATA_INKLING2:BOOL=OFF\n")
+        result = self.run_script("--no-venv")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("TINYSTRATA_INKLING2:BOOL=ON", cache.read_text())
+        self.assertTrue((self.build / "tinystrata-inkling2").is_file())
 
     def test_existing_ninja_directory_without_ninja_fails_before_the_build(self):
         self.no_ninja()

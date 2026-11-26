@@ -45,7 +45,8 @@ def _references(profile):
     cfg = profile.config
     vision = cfg.get('vision') if isinstance(cfg.get('vision'), dict) else {}
     values = (_argument(cfg, '--model'), _argument(cfg, '--draft-model'), cfg.get('draft_model'),
-              cfg.get('vision_mmproj'), vision.get('mmproj'), vision.get('model'), cfg.get('tokenizer'))
+              cfg.get('vision_mmproj'), cfg.get('inkling_vision'), vision.get('mmproj'),
+              vision.get('model'), cfg.get('tokenizer'))
     return {_key(path) for value in values if (path := _configured(cfg, value)) is not None}
 
 
@@ -146,6 +147,10 @@ def inventory(profile, peers):
         metadata['delete_reason'] = 'custom'
         return Inventory(metadata, ())
     references = set().union(*(_references(peer) for peer in peers if peer.id != profile.id))
+    owned_artifacts = manifests
+    if profile.arch == 'inkling2_loop' and profile.config.get('vision_mode') == 'no':
+        # The optional Inkling Vision shard remains an owned file after image input is disabled.
+        owned_artifacts += (projector_for_arch(profile.arch, profile.id),)
     files = {}
     def add(path, root, shared=False):
         info = _checked(path, root)
@@ -154,7 +159,7 @@ def inventory(profile, peers):
         return info
     try:
         primary_shared = False
-        for artifact in manifests:
+        for artifact in owned_artifacts:
             path = directory / artifact.filename
             shared = _key(path) in references
             primary_shared |= path == primary and shared

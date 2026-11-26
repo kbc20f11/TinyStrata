@@ -207,7 +207,7 @@ fi
 
 # --- plan ----------------------------------------------------------------------------------------
 say ""
-say "Plan: configure with $GENERATOR$GENERATOR_NOTE, TINYSTRATA_BACKEND=CUDA, CMAKE_CUDA_ARCHITECTURES='${ARCH:-<unset>}'$( [ "$PORTABLE" -eq 1 ] && printf ', STRATA_PORTABLE=ON' )"
+say "Plan: configure with $GENERATOR$GENERATOR_NOTE, TINYSTRATA_BACKEND=CUDA, CMAKE_CUDA_ARCHITECTURES='${ARCH:-<unset>}', TINYSTRATA_INKLING2=ON$( [ "$PORTABLE" -eq 1 ] && printf ', STRATA_PORTABLE=ON' )"
 say "      build directory: $BUILD_DIR"
 [ "$NO_VENV" -eq 1 ] || say "      Python virtual environment: $SRC/.venv (requirements.txt)"
 [ -z "$GENERATOR_ERROR" ] || say "      problem: $GENERATOR_ERROR"
@@ -223,7 +223,8 @@ if [ "$DRY_RUN" -eq 1 ]; then say "Dry run: nothing was changed."; exit 0; fi
 # --- build ---------------------------------------------------------------------------------------
 JOBS="${JOBS:-$(nproc 2>/dev/null || echo 4)}"
 cmake_args=(-S "$SRC" -B "$BUILD_DIR" -G "$GENERATOR" -DCMAKE_BUILD_TYPE=Release
-  -DTINYSTRATA_BACKEND=CUDA "-DCMAKE_CUDA_ARCHITECTURES=$ARCH" "-DCMAKE_CUDA_COMPILER=$NVCC")
+  -DTINYSTRATA_BACKEND=CUDA -DTINYSTRATA_INKLING2=ON
+  "-DCMAKE_CUDA_ARCHITECTURES=$ARCH" "-DCMAKE_CUDA_COMPILER=$NVCC")
 [ "$PORTABLE" -eq 1 ] && cmake_args+=(-DSTRATA_PORTABLE=ON)
 cmake "${cmake_args[@]}"
 cmake --build "$BUILD_DIR" --parallel "$JOBS"

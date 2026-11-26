@@ -414,5 +414,27 @@ class LibraryHTTPTests(unittest.TestCase):
         self.assertEqual(alias.stat().st_nlink, 1)
         self.assertFalse(next(row for row in result['catalog'] if row['id'] == CLOVER)['installed'])
 
+    def test_inkling_deletion_removes_managed_vision_even_when_disabled(self):
+        weights = self.file(D.FIXED_INKLING_MODEL, b'weights')
+        vision = self.file(D.FIXED_INKLING_VISION, b'vision')
+        partial = vision.with_name(vision.name + '.part')
+        partial.write_bytes(b'partial')
+        profile = self.f.profiles.get(INKLING)
+        self.f.profiles.update(INKLING, {**profile.config, 'vision_mode': 'no'})
+        self.start_http()
+        status, catalog = self.http(method='GET', path='/v1/models')
+        self.assertEqual(status, 200, catalog)
+        row = next(row for row in catalog['data'] if row['id'] == INKLING)
+        self.assertEqual(row['architecture']['input_modalities'], ['text'])
+        self.assertEqual(row['management']['download_bytes'], D.FIXED_INKLING_MODEL.size)
+        self.assertTrue(row['management']['complete'])
+        self.assertEqual(row['management']['deletable_bytes'], len(b'weightsvisionpartial'))
+        status, result = self.http(body={'model': INKLING})
+        self.assertEqual(status, 200, result)
+        self.assertEqual(result['deleted_bytes'], len(b'weightsvisionpartial'))
+        self.assertFalse(any(path.exists() for path in (weights, vision, partial)))
+        row = next(row for row in result['catalog'] if row['id'] == INKLING)
+        self.assertTrue(row['management']['can_download'])
+
 
 if __name__ == '__main__': unittest.main()
