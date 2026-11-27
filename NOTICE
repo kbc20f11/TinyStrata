@@ -386,3 +386,7 @@ jesdga95/basalt commit febc72de27efb5884c3c339bba39153f3082de74 (MIT;
 Copyright (c) 2026 Jesús Gulfo). TinyStrata retains its claim protocol,
 sleep/wake handshake, optional UMWAIT path and existing Expert arithmetic;
 the host completion/stall-wait sampling intervals are unchanged.
+
+Gemma's orphaned output control markers follow simplexai-labs/PolyStrata commit
+ac64e1b5460925e8f778cf2e2ba247feff65a4d9 (MIT; Copyright (c) 2026 VecSzn
+and the PolyStrata contributors), adapted to TinyStrata's separate Gemma parser.

@@ -69,6 +69,38 @@ class GemmaParserProgress(unittest.TestCase):
             with self.subTest(size=size):
                 self.assertEqual(streamed_call(body, size), [("save", expected)])
 
+    def test_orphaned_channels_and_tool_closers_stay_out_of_answer(self):
+        for text, answer, reasoning in (
+            ("<|channel>thought<tool_call|>", "", ""),
+            ("<|channel>thought<channel|>Answer", "Answer", ""),
+            ("<|channel>thoughtPlan<channel|>Answer", "Answer", "Plan"),
+            ("<|channel>thought\nPlan<channel|>Answer", "Answer", "Plan"),
+            ("Answer<channel|> continues<tool_call|>", "Answer continues", ""),
+            ("<|channel>thought", "", ""),
+        ):
+            for size in (1, 3, len(text)):
+                with self.subTest(text=text, size=size):
+                    parser = OutputParser(thinking=False, call_format="gemma")
+                    events = []
+                    for at in range(0, len(text), size):
+                        events.extend(parser.feed(text[at:at + size]))
+                    events.extend(parser.finish())
+                    self.assertEqual("".join(e.text for e in events if e.kind == "content"), answer)
+                    self.assertEqual("".join(e.text for e in events if e.kind == "reasoning"), reasoning)
+
+    def test_orphaned_opener_does_not_change_a_valid_tool_argument(self):
+        text = (f"<|channel>thought{GEMMA_CALL}"
+                f"call:save{{label:{GEMMA_QUOTE}literal <channel|>{GEMMA_QUOTE}}}{GEMMA_CALL_END}")
+        for size in (1, 4, len(text)):
+            with self.subTest(size=size):
+                parser = OutputParser(thinking=False, tools=TOOLS, call_format="gemma", stream_tools=True)
+                events = []
+                for at in range(0, len(text), size):
+                    events.extend(parser.feed(text[at:at + size]))
+                events.extend(parser.finish())
+                self.assertEqual([e.kind for e in events], ["tool_start", "tool_args", "tool_call"])
+                self.assertEqual(events[-1].call.arguments, {"label": "literal <channel|>"})
+
 
 if __name__ == "__main__":
     # Direct execution needs the repository root for the child's serve import.

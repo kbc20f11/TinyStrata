@@ -1229,6 +1229,12 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
 # Gemma tool notation and prompt continuation adapted from PolyStrata (MIT; see NOTICE).
 
 GEMMA_CALL, GEMMA_CALL_END, GEMMA_QUOTE = "<|tool_call>", "<tool_call|>", '<|"|>'
+GEMMA_THOUGHT, GEMMA_THOUGHT_END = "<|channel>thought", "<channel|>"
+GEMMA_ORPHAN_MARKERS = ("<|channel>", GEMMA_THOUGHT_END, GEMMA_CALL_END, "<|turn>", "<turn|>",
+                        "<|tool_response>", "<tool_response|>", "<|think|>", "<|tool>", "<tool|>")
+GEMMA_CONTENT_MARKERS = (GEMMA_CALL, *GEMMA_ORPHAN_MARKERS)
+GEMMA_CONTENT_RE = re.compile("|".join(map(re.escape, GEMMA_CONTENT_MARKERS)))
+GEMMA_ORPHAN_RE = re.compile("|".join(map(re.escape, GEMMA_ORPHAN_MARKERS)))
 
 def gemma_call_name(text: str) -> str | None:
     """A Gemma call's name, or None while it is still arriving."""
@@ -1810,25 +1816,34 @@ class OutputParser:
     def _feed_gemma(self, delta: str) -> list[Event]:
         self.buf += delta
         out = []
-        thought, end_thought = "<|channel>thought\n", "<channel|>"
+        markers, pattern = ((GEMMA_CONTENT_MARKERS, GEMMA_CONTENT_RE) if self.schemas
+                            else (GEMMA_ORPHAN_MARKERS, GEMMA_ORPHAN_RE))
         while True:
             if self.gemma_opening:
-                if self.buf.startswith(thought):
-                    self.buf, self.state = self.buf[len(thought):], "reasoning"
-                elif thought.startswith(self.buf):
+                if GEMMA_THOUGHT.startswith(self.buf):
                     return out
+                if self.buf.startswith(GEMMA_THOUGHT):
+                    body = self.buf[len(GEMMA_THOUGHT):]
+                    if GEMMA_CONTENT_RE.match(body):
+                        # A second control token directly after the opener closes an empty channel.
+                        self.buf, self.lead = body, True
+                    elif body == "\r" or any(tag.startswith(body) for tag in GEMMA_CONTENT_MARKERS):
+                        return out
+                    else:
+                        self.buf = body.removeprefix("\r\n") if body.startswith("\r\n") else body.removeprefix("\n")
+                        self.state = "reasoning"
                 self.gemma_opening = False
             if self.state == "reasoning":
-                end = self.buf.find(end_thought)
+                end = self.buf.find(GEMMA_THOUGHT_END)
                 if end < 0:
-                    keep = self._hold(self.buf, (end_thought,))
+                    keep = self._hold(self.buf, (GEMMA_THOUGHT_END,))
                     text, self.buf = self.buf[:len(self.buf) - keep], self.buf[len(self.buf) - keep:]
                     if text:
                         out.append(Event("reasoning", text))
                     return out
                 if end:
                     out.append(Event("reasoning", self.buf[:end]))
-                self.buf = self.buf[end + len(end_thought):]
+                self.buf = self.buf[end + len(GEMMA_THOUGHT_END):]
                 self.state, self.lead = "content", True
             elif self.state == "content":
                 if self.lead:
@@ -1836,18 +1851,24 @@ class OutputParser:
                     if not self.buf:
                         return out
                     self.lead = False
-                start = self.buf.find(GEMMA_CALL) if self.schemas else -1
-                if start < 0:
-                    keep = self._hold(self.buf, (GEMMA_CALL,)) if self.schemas else 0
+                if "<" not in self.buf:
+                    if self.buf:
+                        out.append(Event("content", self.buf))
+                    self.buf = ""
+                    return out
+                marker = pattern.search(self.buf)
+                if marker is None:
+                    keep = self._hold(self.buf, markers)
                     text, self.buf = self.buf[:len(self.buf) - keep], self.buf[len(self.buf) - keep:]
                     if text:
                         out.append(Event("content", text))
                     return out
-                if start:
-                    out.append(Event("content", self.buf[:start]))
-                self.buf = self.buf[start + len(GEMMA_CALL):]
-                self.state = "gemma_call"
-                self.gemma_scan, self.gemma_quoted = 0, False
+                if marker.start():
+                    out.append(Event("content", self.buf[:marker.start()]))
+                self.buf = self.buf[marker.end():]
+                if marker.group() == GEMMA_CALL:
+                    self.state = "gemma_call"
+                    self.gemma_scan, self.gemma_quoted = 0, False
             elif self.state == "gemma_call":
                 if self.stream_tools and self.scall is None:
                     name = gemma_call_name(self.buf)
@@ -2193,6 +2214,8 @@ class OutputParser:
                 self.buf = ""
                 return []
             text = call_mark + self.buf if self.state == call_state else self.buf
+            if self.call_format == "gemma" and self.gemma_opening and text == GEMMA_THOUGHT:
+                text = ""
             kind = "reasoning" if self.state == "reasoning" else "content"
             self.buf = ""
             return [Event(kind, text)] if text else []
