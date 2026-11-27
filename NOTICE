@@ -18,6 +18,8 @@ contributors. The original file notices and MIT license terms are preserved.
 The optional CUDA Expert cache uses the spare-KV-row placement approach from
 Project Maya at 381301c5c87d4c5ca026bbd679191e84168e3258 (MIT), adapted to
 TinyStrata's existing KV allocation and Expert formats.
+The Windows CUDA 13.3 host-toolset workaround follows Project Maya issue #992
+and commit 482ea7d2bc9ded214ebaef4402f4b9e77ef26163 (MIT).
 https://github.com/mw00/project-maya
 
 CUDA IQ3_XXS packed sign expansion adapts jesdga95/basalt commit

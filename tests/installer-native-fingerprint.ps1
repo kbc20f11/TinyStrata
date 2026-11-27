@@ -6,7 +6,7 @@ $repository=Split-Path -Parent $PSScriptRoot
 $tokens=$null;$errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $repository 'install.ps1'),[ref]$tokens,[ref]$errors)
 if($errors.Count){throw 'Installer parse failed'}
-foreach($name in @('Get-TinyStrataSourceFingerprint','Get-TinyStrataNativeFlagFingerprint','Get-TinyStrataNativeBuildInputs','Write-TinyStrataNativeBuildStamp','Test-TinyStrataNativeBuildStamp')){
+foreach($name in @('Get-TinyStrataSourceFingerprint','Get-TinyStrataNativeFlagFingerprint','Get-TinyStrataNativeBuildInputs','Write-TinyStrataNativeBuildStamp','Test-TinyStrataNativeBuildStamp','Get-TinyStrataCudaHostToolset')){
     $node=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name},$true)
     Invoke-Expression $node.Extent.Text
 }
@@ -17,6 +17,8 @@ $root=Join-Path ([IO.Path]::GetTempPath()) ('tinystrata-fingerprint-v2-'+[Guid]:
 $originalLocation=Get-Location
 $originalCxxFlags=[Environment]::GetEnvironmentVariable('CXXFLAGS','Process')
 $originalLib=[Environment]::GetEnvironmentVariable('LIB','Process')
+$originalVcTools=[Environment]::GetEnvironmentVariable('VCToolsVersion','Process')
+$originalVcUser=[Environment]::GetEnvironmentVariable('VCVARS_USER_VERSION','Process')
 try{
     $source=Join-Path $root 'source';$build=Join-Path $root 'build';$sdk=Join-Path $root 'sdk'
     foreach($relative in @('CMakeLists.txt','src\intel\qwen_ops.cpp','src\qwen35\engine.cu','src\unrecognized\future.cpp','include\strata\intel\quant.hpp','include\strata\common\gguf.hpp','third_party\ggml\quants.h','cmake\sycl_backend.cmake','cmake\future-policy.cmake','ui\web\app.js')){Write-Fixture (Join-Path $source $relative) $relative}
@@ -102,6 +104,55 @@ try{
         Assert-Fingerprint (-not(Test-TinyStrataNativeBuildStamp -Directory $build -Fingerprint $base.cuda -Backend cuda)) "missing dependency proof ($kind) rejects"
         Write-TinyStrataNativeBuildStamp -Directory $build -SourceRoot $source -Backend cuda -BuildInputs $cross
     }
+
+    $vs=Join-Path $root 'Microsoft Visual Studio\BuildTools'
+    $msvc=Join-Path $vs 'VC\Tools\MSVC'
+    $policy=Join-Path $vs 'VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt'
+    $cl44=Join-Path $msvc '14.44.35207\bin\Hostx64\x64\cl.exe'
+    $cl50=Join-Path $msvc '14.50.35717\bin\Hostx64\x64\cl.exe'
+    $cl52=Join-Path $msvc '14.52.37025\bin\Hostx64\x64\cl.exe'
+    Write-Fixture $policy '14.52.37025'
+    Write-Fixture $cl52 'inert default compiler'
+    Write-Fixture $cl44 'inert fallback compiler'
+    Write-Fixture $cl50 'inert preferred compiler'
+    Write-Fixture (Join-Path $msvc '14.50.49999\README') 'incomplete toolset'
+    $cudaTools=[pscustomobject]@{VisualStudio=$vs;Version='18.12.0';Ninja=$tools.Ninja;CMake=$tools.CMake;DevCmd=$tools.DevCmd}
+    [Environment]::SetEnvironmentVariable('VCToolsVersion',$null,'Process')
+    [Environment]::SetEnvironmentVariable('VCVARS_USER_VERSION',$null,'Process')
+    $selected=Get-TinyStrataCudaHostToolset -Tools $cudaTools -CompilerVersion '13.3.1'
+    Assert-Fingerprint ($selected.Version -eq '14.50.35717' -and $selected.Compiler -eq $cl50) 'CUDA 13.3 with 14.52 selects an installed, complete 14.50 x64 toolset'
+    foreach($release in '13.2.86','13.4.0'){
+        Assert-Fingerprint ($null -eq (Get-TinyStrataCudaHostToolset -Tools $cudaTools -CompilerVersion $release)) "the known pair does not change CUDA $release"
+    }
+    [Environment]::SetEnvironmentVariable('VCVARS_USER_VERSION','14.51.36231','Process')
+    Assert-Fingerprint ($null -eq (Get-TinyStrataCudaHostToolset -Tools $cudaTools -CompilerVersion '13.3.1')) 'the inherited developer-shell selection takes precedence over its default'
+    [Environment]::SetEnvironmentVariable('VCVARS_USER_VERSION',$null,'Process')
+
+    $cache = Join-Path $build 'CMakeCache.txt'
+    $originalCache = [IO.File]::ReadAllText($cache)
+    $pairedCache = $originalCache.Replace((Join-Path $sdk 'compiler.exe'), $cl50)
+    # Use a dedicated CMake host-compiler record instead of a bare developer-shell claim.
+    Write-Fixture $cache ($pairedCache + "CMAKE_CUDA_HOST_COMPILER:FILEPATH=$cl50`n")
+    $paired=Get-TinyStrataNativeBuildInputs -Directory $build -SourceRoot $source -Tools $cudaTools -Backend cuda -ToolkitRoot $sdk -Architectures '86;89' -CudaHost $selected
+    Assert-Fingerprint ($paired.complete -and $paired.tools.cuda_host_toolset -eq $selected.Version) 'the fallback becomes part of the native receipt'
+    Assert-Fingerprint (@($paired.inputs | Where-Object path -eq $cl50).Count -eq 1) 'the selected host compiler is bound by its hash'
+    Write-TinyStrataNativeBuildStamp -Directory $build -SourceRoot $source -Backend cuda -BuildInputs $paired
+    Assert-Fingerprint (Test-TinyStrataNativeBuildStamp -Directory $build -Fingerprint $base.cuda -Backend cuda -Tools $cudaTools -CudaHost $selected -RequireSelectedTools) 'the matching fallback can reuse a build'
+    Assert-Fingerprint (-not(Test-TinyStrataNativeBuildStamp -Directory $build -Fingerprint $base.cuda -Backend cuda -Tools $cudaTools -RequireSelectedTools)) 'a cached fallback is not accepted as an ordinary default build'
+    Write-Fixture $cache ($pairedCache + "CMAKE_CUDA_HOST_COMPILER:FILEPATH=$cl52`n")
+    $unexpected=Get-TinyStrataNativeBuildInputs -Directory $build -SourceRoot $source -Tools $cudaTools -Backend cuda -ToolkitRoot $sdk -Architectures '86;89' -CudaHost $selected
+    Assert-Fingerprint (-not $unexpected.complete) 'the failed-pair compiler cannot certify a fallback build'
+    Write-Fixture $cache $originalCache
+
+    Remove-Item -LiteralPath $cl50
+    $fallback=Get-TinyStrataCudaHostToolset -Tools $cudaTools -CompilerVersion '13.3.1'
+    Assert-Fingerprint ($fallback.Version -eq '14.44.35207') '14.44 is selected when 14.50 is unavailable'
+    Remove-Item -LiteralPath $cl44
+    $failure = ''
+    try { $null = Get-TinyStrataCudaHostToolset -Tools $cudaTools -CompilerVersion '13.3.1' }
+    catch { $failure = $_.Exception.Message }
+    Assert-Fingerprint ($failure -match '0xC0000005' -and $failure -match '14\.44') 'a confirmed incompatible pair without a fallback has an actionable error'
+
     $script:fixtureDeps=@()
     $unknown=Get-TinyStrataNativeBuildInputs -Directory $build -SourceRoot $source -Tools $tools -Backend cuda -ToolkitRoot $sdk -Architectures '86;89'
     Assert-Fingerprint ($unknown.complete -eq $false) 'unknown dependency coverage is conservative'
@@ -115,6 +166,8 @@ try{
     Set-Location $originalLocation
     [Environment]::SetEnvironmentVariable('CXXFLAGS',$originalCxxFlags,'Process')
     [Environment]::SetEnvironmentVariable('LIB',$originalLib,'Process')
+    [Environment]::SetEnvironmentVariable('VCToolsVersion',$originalVcTools,'Process')
+    [Environment]::SetEnvironmentVariable('VCVARS_USER_VERSION',$originalVcUser,'Process')
     $resolved=[IO.Path]::GetFullPath($root)
     $tempRoot=[IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')+'\'
     if($resolved.StartsWith($tempRoot,[StringComparison]::OrdinalIgnoreCase) -and (Split-Path -Leaf $resolved) -like 'tinystrata-fingerprint-v2-*' -and (Test-Path -LiteralPath $resolved)){Remove-Item -LiteralPath $resolved -Recurse -Force}

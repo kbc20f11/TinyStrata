@@ -193,7 +193,7 @@ function Get-TinyStrataNativeFlagFingerprint {
 }
 
 function Get-TinyStrataNativeBuildInputs {
-    param([string]$Directory, [string]$SourceRoot, $Tools, [string]$Backend, [string]$ToolkitRoot, [string]$Architectures)
+    param([string]$Directory, [string]$SourceRoot, $Tools, [string]$Backend, [string]$ToolkitRoot, [string]$Architectures, $CudaHost)
     # Capture the actual Ninja dependency graph after a successful build, not
     # an optimistic hand-maintained SDK/header list. Unknown/missing evidence
     # produces a non-reusable generation, never a trusted legacy stamp.
@@ -207,13 +207,18 @@ function Get-TinyStrataNativeBuildInputs {
         $cache = Get-Content -LiteralPath (Join-Path $root 'CMakeCache.txt')
         $compilers = @{}
         foreach ($line in $cache) {
-            if ($line -match '^CMAKE_(C|CXX|CUDA|HIP)_COMPILER:[^=]*=(.+)$') {
+            if ($line -match '^CMAKE_(C|CXX|CUDA|CUDA_HOST|HIP)_COMPILER:[^=]*=(.+)$') {
                 $compilers[$Matches[1]] = $Matches[2]; $null = $paths.Add([IO.Path]::GetFullPath($Matches[2]))
             } elseif ($line -match '^CMAKE_(LINKER|RC_COMPILER|MT|AR):[^=]*=(.+)$' -and (Test-Path -LiteralPath $Matches[2] -PathType Leaf)) {
                 $null = $paths.Add([IO.Path]::GetFullPath($Matches[2]))
             }
         }
         if (-not $compilers.CXX -or -not $compilers[$Backend.ToUpperInvariant()]) { throw 'Unresolved native compiler identity.' }
+        if ($CudaHost -and (-not $compilers.CUDA_HOST -or
+            -not [string]::Equals([IO.Path]::GetFullPath($compilers.CUDA_HOST), $CudaHost.Compiler, [StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals([IO.Path]::GetFullPath($compilers.CXX), $CudaHost.Compiler, [StringComparison]::OrdinalIgnoreCase))) {
+            throw 'The configured CUDA and C++ host compilers do not match the selected MSVC toolset.'
+        }
         foreach ($relative in @('version.json','version.txt','bin\ptxas.exe','bin\nvlink.exe','nvvm\bin\cicc.exe')) {
             $path = Join-Path $ToolkitRoot $relative
             if (Test-Path -LiteralPath $path -PathType Leaf) { $null = $paths.Add([IO.Path]::GetFullPath($path)) }
@@ -303,6 +308,7 @@ function Get-TinyStrataNativeBuildInputs {
         foreach ($path in $paths) { $sorted.Add($path) }; $sorted.Sort([StringComparer]::Ordinal)
         $inputs = @($sorted | ForEach-Object { [ordered]@{path=$_;sha256=(Get-FileHash -LiteralPath $_ -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()} })
         $selectedTools = [ordered]@{version=[string]$Tools.Version;cmake=(Resolve-Path -LiteralPath $Tools.CMake).Path;ninja=(Resolve-Path -LiteralPath $Tools.Ninja).Path;developer_shell=(Resolve-Path -LiteralPath $Tools.DevCmd).Path}
+        if ($CudaHost) { $selectedTools.cuda_host_toolset = $CudaHost.Version }
         return [ordered]@{schema=1;complete=$true;backend=$Backend;toolkit_root=[IO.Path]::GetFullPath($ToolkitRoot);architectures=$Architectures;flag_environment=(Get-TinyStrataNativeFlagFingerprint);tools=$selectedTools;inputs=$inputs}
     } catch {
         Write-Host 'Native dependency evidence is incomplete; this generation will rebuild on a future update.'
@@ -325,7 +331,7 @@ function Write-TinyStrataNativeBuildStamp {
 }
 
 function Test-TinyStrataNativeBuildStamp {
-    param([string]$Directory, [string]$Fingerprint, [ValidateSet('cuda', 'hip')][string]$Backend, [string]$Architectures, [string]$ToolkitRoot, $Tools, [switch]$RequireSelectedTools)
+    param([string]$Directory, [string]$Fingerprint, [ValidateSet('cuda', 'hip')][string]$Backend, [string]$Architectures, [string]$ToolkitRoot, $Tools, $CudaHost, [switch]$RequireSelectedTools)
     try {
         $stamp = Get-Content -LiteralPath (Join-Path $Directory '.tinystrata-native-build.json') -Raw -ErrorAction Stop | ConvertFrom-Json
         if ($stamp.schema -ne 2 -or $stamp.backend -ne $Backend -or $stamp.source_fingerprint -ne $Fingerprint) { return $false }
@@ -335,6 +341,7 @@ function Test-TinyStrataNativeBuildStamp {
             ($Architectures -and $inputs.architectures -ne $Architectures) -or
             ($ToolkitRoot -and -not [string]::Equals([IO.Path]::GetFullPath($ToolkitRoot),$inputs.toolkit_root,[StringComparison]::OrdinalIgnoreCase))) { return $false }
         if ($RequireSelectedTools -and -not $Tools) { return $false }
+        if ($Backend -eq 'cuda' -and [string]$inputs.tools.cuda_host_toolset -ne [string]$CudaHost.Version) { return $false }
         if ($Tools -and (-not $inputs.tools -or [string]$inputs.tools.version -ne [string]$Tools.Version -or
             -not [string]::Equals($inputs.tools.cmake,(Resolve-Path -LiteralPath $Tools.CMake).Path,[StringComparison]::OrdinalIgnoreCase) -or
             -not [string]::Equals($inputs.tools.ninja,(Resolve-Path -LiteralPath $Tools.Ninja).Path,[StringComparison]::OrdinalIgnoreCase) -or
@@ -490,6 +497,32 @@ function Test-TinyStrataCudaCompilerVersion {
     # on Blackwell. Check nvcc's patch version, not just "release 13.2".
     # https://github.com/ggml-org/llama.cpp/issues/28581
     return $null -ne $Version -and $Version -ge [version]'13.2.86'
+}
+
+function Get-TinyStrataCudaHostToolset {
+    param($Tools, [version]$CompilerVersion)
+    if (-not $Tools.VisualStudio -or -not $CompilerVersion -or $CompilerVersion.Major -ne 13 -or $CompilerVersion.Minor -ne 3) { return $null }
+
+    # Match VsDevCmd's inherited version preferences before its installation
+    # default. Maya #992 reproduces cudafe++ failing on 14.52.
+    $default = $env:VCVARS_USER_VERSION
+    if (-not $default) { $default = $env:VCToolsVersion }
+    if (-not $default) {
+        $defaultPath = Join-Path $Tools.VisualStudio 'VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt'
+        if (-not (Test-Path -LiteralPath $defaultPath -PathType Leaf)) { return $null }
+        $default = [IO.File]::ReadAllText($defaultPath).Trim()
+    }
+    if ($default -notmatch '^14\.52(?:\.|$)') { return $null }
+
+    $root = Join-Path $Tools.VisualStudio 'VC\Tools\MSVC'
+    $candidate = Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^14\.(50|44)\.\d+$' -and
+            (Test-Path -LiteralPath (Join-Path $_.FullName 'bin\Hostx64\x64\cl.exe') -PathType Leaf) } |
+        Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+    if (-not $candidate) {
+        throw 'CUDA 13.3 with MSVC 14.52 can fail in cudafe++ (0xC0000005). In Visual Studio Installer, add MSVC 14.50 or MSVC v143 (14.44) x64/x86 build tools to the selected installation, then run TinyStrata setup again.'
+    }
+    return [pscustomobject]@{ Version = $candidate.Name; Compiler = (Join-Path $candidate.FullName 'bin\Hostx64\x64\cl.exe') }
 }
 
 function Test-TinyStrataCudaToolkit {
@@ -875,6 +908,7 @@ function Invoke-TinyStrataPortableBuild {
         [switch]$Clean
     )
     $tools = Find-TinyStrataBuildTools
+    $cudaHost = $null
     $sourceRoot = (Resolve-Path -LiteralPath $SourceDirectory).Path
     $buildRoot = [System.IO.Path]::GetFullPath($BuildDirectory)
     if ($Backend -eq 'hip') {
@@ -892,6 +926,7 @@ function Invoke-TinyStrataPortableBuild {
         if (-not (Test-TinyStrataCudaCompilerVersion -Version $compilerVersion)) {
             throw 'This portable build helper requires CUDA 13.2.2 (nvcc 13.2.86) or newer. CUDA 13.2.0/13.2.1 miscompile IQ model kernels on Blackwell.'
         }
+        $cudaHost = Get-TinyStrataCudaHostToolset -Tools $tools -CompilerVersion $compilerVersion
     }
     if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot 'CMakeLists.txt') -PathType Leaf)) { throw 'Source directory is not a TinyStrata checkout.' }
 
@@ -904,7 +939,8 @@ function Invoke-TinyStrataPortableBuild {
         # nested quotes around a Visual Studio path containing spaces.
         $setupInfo = New-Object Diagnostics.ProcessStartInfo
         $setupInfo.FileName = $env:ComSpec
-        $setupInfo.Arguments = '/d /s /c ""{0}" -no_logo -arch=amd64 -host_arch=amd64 && set"' -f $tools.DevCmd
+        $vcvars = if ($cudaHost) { " -vcvars_ver=$($cudaHost.Version)" } else { '' }
+        $setupInfo.Arguments = '/d /s /c ""{0}" -no_logo -arch=amd64 -host_arch=amd64{1} && set"' -f $tools.DevCmd,$vcvars
         $setupInfo.UseShellExecute = $false
         $setupInfo.CreateNoWindow = $true
         $setupInfo.RedirectStandardOutput = $true
@@ -919,6 +955,9 @@ function Invoke-TinyStrataPortableBuild {
             if ($line -match '^([^=]+)=(.*)$') {
                 [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
             }
+        }
+        if ($cudaHost -and $env:VCToolsVersion -ne $cudaHost.Version) {
+            throw "Visual Studio did not initialize the selected MSVC $($cudaHost.Version) toolset."
         }
         $env:VSLANG = '1033'
         $configure = @('-S', $sourceRoot, '-B', $buildRoot, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', "-DTINYSTRATA_BACKEND=$($Backend.ToUpperInvariant())", '-DTINYSTRATA_LFM2=ON', '-DTINYSTRATA_GEMMA4=ON', '-DTINYSTRATA_INKLING2=ON', '-DSTRATA_PORTABLE=ON', "-DCMAKE_MAKE_PROGRAM=$($tools.Ninja)")
@@ -944,6 +983,10 @@ function Invoke-TinyStrataPortableBuild {
             $env:CUDA_PATH = $cudaRoot
             $env:PATH = (Join-Path $cudaRoot 'bin') + ';' + (Join-Path $cudaRoot 'bin\x64') + ';' + $env:PATH
             $configure += @("-DCMAKE_CUDA_ARCHITECTURES=$Architectures", "-DCMAKE_CUDA_COMPILER=$nvcc", "-DCUDAToolkit_ROOT=$cudaRoot")
+            if ($cudaHost) {
+                $configure += @("-DCMAKE_CUDA_HOST_COMPILER=$($cudaHost.Compiler)", "-DCMAKE_C_COMPILER=$($cudaHost.Compiler)", "-DCMAKE_CXX_COMPILER=$($cudaHost.Compiler)")
+                Write-Host "Using MSVC $($cudaHost.Version) for CUDA 13.3 to avoid the MSVC 14.52 compiler failure."
+            }
             Write-Host "Building TinyStrata for CUDA architecture(s) $Architectures. This can take several minutes."
         }
         & $tools.CMake @configure | Out-Host
@@ -972,7 +1015,7 @@ function Invoke-TinyStrataPortableBuild {
         }
         if ($Backend -eq 'hip') { $kq = $null } # HIP MMQ is linked statically, not strata_kq.dll.
         $inputProof = Get-TinyStrataNativeBuildInputs -Directory $buildRoot -SourceRoot $sourceRoot -Tools $tools -Backend $Backend `
-            -ToolkitRoot $(if ($Backend -eq 'hip') { $hipRoot } else { $cudaRoot }) -Architectures $(if ($Backend -eq 'hip') { $hipArchs } else { $Architectures })
+            -ToolkitRoot $(if ($Backend -eq 'hip') { $hipRoot } else { $cudaRoot }) -Architectures $(if ($Backend -eq 'hip') { $hipArchs } else { $Architectures }) -CudaHost $cudaHost
         return [pscustomobject]@{ Exe = $exe; LfmExe = $lfmExe; GemmaExe = $gemmaExe; VisionExe = $visionExe; QuantizedKernels = $kq; CudaDirectory = $cudaRoot; HipDirectory = $hipRoot; Backend = $Backend; Architectures = $(if ($Backend -eq 'hip') { $hipArchs } else { $Architectures }); BuildInputs=$inputProof }
     }
     finally {
@@ -2918,10 +2961,22 @@ function Invoke-TinyStrataInstaller {
         $requestedArchitectures = if ($selectedBackend -eq 'hip') { $hipArchs } else { Get-TinyStrataBuildArchitectures }
         $reuseTools = $null
         try { $reuseTools = Find-TinyStrataBuildTools } catch { } # unknown selected toolchain cannot certify reuse
+        $reuseCudaHost = $null
         $requestedToolkit = if ($selectedBackend -eq 'hip') { $hipRoot } else { '' }
         if ($selectedBackend -eq 'cuda') {
             foreach ($root in $cudaRoots) {
                 if (Test-TinyStrataCudaToolkit -Directory $root) { $requestedToolkit = [IO.Path]::GetFullPath($root); break }
+            }
+            if ($reuseTools -and $requestedToolkit) {
+                try {
+                    $text = (& (Join-Path $requestedToolkit 'bin\nvcc.exe') --version 2>$null) -join [Environment]::NewLine
+                    if ($LASTEXITCODE -ne 0) { throw 'Cannot verify the selected CUDA compiler for cache reuse.' }
+                    $reuseVersion = Get-TinyStrataCudaCompilerVersion -Text $text
+                    if (-not $reuseVersion) { throw 'Cannot verify the selected CUDA compiler version for cache reuse.' }
+                    $reuseCudaHost = Get-TinyStrataCudaHostToolset -Tools $reuseTools -CompilerVersion $reuseVersion
+                } catch {
+                    $reuseTools = $null
+                }
             }
         }
         if (-not $BuildAgain) {
@@ -2935,7 +2990,7 @@ function Invoke-TinyStrataInstaller {
             foreach ($folder in @('bin', 'build', 'build\Release')) { $candidates += Join-Path $sourceRoot ($folder + '\tinystrata.exe') }
             foreach ($candidate in $candidates) {
                 if ((Test-Path -LiteralPath $candidate -PathType Leaf) -and
-                    (Test-TinyStrataNativeBuildStamp -Directory (Split-Path -Parent $candidate) -Fingerprint $nativeFingerprint -Backend $selectedBackend -Architectures $requestedArchitectures -ToolkitRoot $requestedToolkit -Tools $reuseTools -RequireSelectedTools) -and
+                    (Test-TinyStrataNativeBuildStamp -Directory (Split-Path -Parent $candidate) -Fingerprint $nativeFingerprint -Backend $selectedBackend -Architectures $requestedArchitectures -ToolkitRoot $requestedToolkit -Tools $reuseTools -CudaHost $reuseCudaHost -RequireSelectedTools) -and
                     ($selectedBackend -eq 'hip' -or (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $candidate) 'strata_kq.dll') -PathType Leaf)) -and
                     (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $candidate) 'tinystrata-lfm2.exe') -PathType Leaf) -and
                     (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $candidate) 'tinystrata-gemma4.exe') -PathType Leaf) -and
