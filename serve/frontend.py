@@ -1853,7 +1853,7 @@ class OutputParser:
                     self.lead = False
                 if "<" not in self.buf:
                     if self.buf:
-                        out.append(Event("content", self.buf))
+                        out.append(Event("content", self._track(self.buf)))
                     self.buf = ""
                     return out
                 marker = pattern.search(self.buf)
@@ -1861,14 +1861,16 @@ class OutputParser:
                     keep = self._hold(self.buf, markers)
                     text, self.buf = self.buf[:len(self.buf) - keep], self.buf[len(self.buf) - keep:]
                     if text:
-                        out.append(Event("content", text))
+                        out.append(Event("content", self._track(text)))
                     return out
                 if marker.start():
-                    out.append(Event("content", self.buf[:marker.start()]))
+                    out.append(Event("content", self._track(self.buf[:marker.start()])))
                 self.buf = self.buf[marker.end():]
                 if marker.group() == GEMMA_CALL:
                     self.state = "gemma_call"
                     self.gemma_scan, self.gemma_quoted = 0, False
+                elif self._in_code():
+                    out.append(Event("content", self._track(marker.group())))
             elif self.state == "gemma_call":
                 if self.stream_tools and self.scall is None:
                     name = gemma_call_name(self.buf)

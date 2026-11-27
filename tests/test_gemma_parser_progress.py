@@ -101,6 +101,17 @@ class GemmaParserProgress(unittest.TestCase):
                 self.assertEqual([e.kind for e in events], ["tool_start", "tool_args", "tool_call"])
                 self.assertEqual(events[-1].call.arguments, {"label": "literal <channel|>"})
 
+    def test_control_markers_quoted_as_code_stay_literal(self):
+        text = "Example: `<channel|>` and a code block:\n\n```text\n<tool_call|>\n```\n"
+        for size in (1, 3, len(text)):
+            with self.subTest(size=size):
+                parser = OutputParser(thinking=False, call_format="gemma")
+                events = []
+                for at in range(0, len(text), size):
+                    events.extend(parser.feed(text[at:at + size]))
+                events.extend(parser.finish())
+                self.assertEqual("".join(event.text for event in events), text)
+
 
 if __name__ == "__main__":
     # Direct execution needs the repository root for the child's serve import.
