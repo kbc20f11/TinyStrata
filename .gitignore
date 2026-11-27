@@ -106,6 +106,7 @@
 !/tests/test_vision_scratch_lifetime.py
 !/tests/test_winjob_startup.py
 !/tests/test_responses_timings.py
+!/tests/test_responses_keepalive.py
 !/tests/test_parking_settings.py
 !/tests/test_benchmark_profiles.py
 !/tests/test_benchmark_probe.py

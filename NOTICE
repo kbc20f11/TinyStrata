@@ -83,6 +83,8 @@ aflin/momoe commits 96edd42278fd3dcbf30d9a78b89b1e42cbd14cca and
 4a5679479da4e0e22e880d00c83ce85cea96f3b4 (MIT).
 Pinning image embeddings through request preparation adapts Strata
 91fb6328406885dcf0a704c52701b0edd0a3f5d4 (MIT).
+Responses streaming keep-alives during buffered custom tool input adapt Strata
+e83de74d7d6207622c7e8f3ae5f8b35dae15d491 (MIT).
 Batch release ownership, streamed usage and role framing, and long tool-call
 parsing adapt aflin/momoe 2fba6ec6, a2a33e74, 82dd7fa6, a34b718b and
 d0c462b5 (MIT, Copyright (c) 2026 Aaron Flin and the Strata contributors).
