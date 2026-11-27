@@ -685,6 +685,7 @@ void Engine::park_bound() {
     for (size_t il = 0; il < layers_.size(); ++il) q.heads[il] = std::exchange(layers_[il].heads, {});
     q.passes = std::exchange(passes_, {});
     q.tail = std::exchange(tail_, nullptr);
+    q.tail_graphless = std::exchange(tail_graphless_, false);
 }
 
 // Sequence s's members in place of the ones park_bound() put away, and the architecture's pointers into its
@@ -705,6 +706,7 @@ void Engine::take_bound(int s) {
     for (size_t il = 0; il < layers_.size() && il < q.heads.size(); ++il) layers_[il].heads = std::exchange(q.heads[il], {});
     passes_ = std::exchange(q.passes, {});
     tail_ = std::exchange(q.tail, nullptr);
+    tail_graphless_ = std::exchange(q.tail_graphless, false);
     bound_ = s;
     again_ = 0;
     alloc_caches();
@@ -2831,7 +2833,7 @@ int Engine::room_key(int n) const {
 
 // Records what `work` hands to the stream, as a graph that is launched with one call from then on.
 template <class F>
-void* Engine::record(F&& work) {
+void* Engine::record(F&& work, bool optional_memory) {
     cudaGraph_t g = nullptr;
     ck(cudaStreamBeginCapture(cs(st_), cudaStreamCaptureModeThreadLocal), "cudaStreamBeginCapture");
     recording_ = recorded_ = true;
@@ -2847,7 +2849,15 @@ void* Engine::record(F&& work) {
     ck(cudaStreamEndCapture(cs(st_), &g), "cudaStreamEndCapture");
     cudaGraphExec_t exec = nullptr;
     const cudaError_t made = cudaGraphInstantiateWithFlags(&exec, g, 0);
-    cudaGraphDestroy(g);
+    const cudaError_t dropped = cudaGraphDestroy(g);
+    if (optional_memory && made == cudaErrorMemoryAllocation) {
+        // Capture has queued no GPU work. Only this optional graph's allocation
+        // may fail softly; its caller must run the captured operation once.
+        if (exec) ck(cudaGraphExecDestroy(exec), "failed graph cleanup");
+        ck(dropped, "cudaGraphDestroy");
+        (void) cudaGetLastError();
+        return nullptr;
+    }
     ck(made, "cudaGraphInstantiate");
     graphs_.push_back(exec);
     return exec;
@@ -3266,8 +3276,19 @@ void Engine::eval(const int32_t* tokens, int n, bool want_logits) {
                "logits");
         };
         if (replay) {
-            if (!tail_) tail_ = record(tail);
-            ck(cudaGraphLaunch((cudaGraphExec_t) tail_, cs(st_)), "logits graph");
+            if (!tail_ && !tail_graphless_) {
+                tail_ = record(tail, true);
+                if (!tail_) {
+                    tail_graphless_ = true;
+                    std::fprintf(stderr, "tinystrata-lfm2: the logits graph found no device memory; "
+                                         "this sequence runs its logits directly until engine reload\n");
+                }
+            }
+            // Unlike Basalt's batch driver, this path has not run the operation
+            // before capture. An allocation failure therefore runs it once here;
+            // later calls avoid another failed capture for these bound buffers.
+            if (tail_graphless_) tail();
+            else ck(cudaGraphLaunch((cudaGraphExec_t) tail_, cs(st_)), "logits graph");
         } else {
             tail();
         }

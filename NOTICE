@@ -394,3 +394,9 @@ the host completion/stall-wait sampling intervals are unchanged.
 Gemma's orphaned output control markers follow simplexai-labs/PolyStrata commit
 ac64e1b5460925e8f778cf2e2ba247feff65a4d9 (MIT; Copyright (c) 2026 VecSzn
 and the PolyStrata contributors), adapted to TinyStrata's separate Gemma parser.
+
+The LFM output graph's device-allocation fallback follows jesdga95/basalt
+commit 222805226329a6949e184a51ce42385c1f3995bc (MIT; Copyright (c) 2026
+Jesús Gulfo). TinyStrata applies it only to its single-token logits graph,
+executes that operation once if graph instantiation runs out of memory,
+and retains other graph errors and the existing model arithmetic.

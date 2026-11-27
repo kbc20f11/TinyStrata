@@ -470,7 +470,7 @@ protected:
     bool batched(const Layer& L, int n) const;
     void moe_add(int n);
     template <class F>
-    void* record(F&& work);
+    void* record(F&& work, bool optional_memory = false);
     void moe_rows(Layer& L, int il, int n);
     void stage(const Layer& L, const int32_t* experts, int m, void* stream, bool alone = false);
     void mind_memory();
@@ -556,6 +556,7 @@ protected:
     std::map<std::vector<int>, void*> passes_;   ///< a call's layers recorded as one (run()): by its tokens and
                                                  ///< every layer's head_key()
     void* tail_ = nullptr;        ///< one token's launches from the last layer to the logits, recorded
+    bool tail_graphless_ = false; ///< this bound sequence's logits graph ran out of device memory
     // A recorded launch cannot be given the position as an argument: it reads it here when it runs.  eval() writes
     // the token's place in the sequence and its rotary position before it replays the layers.
     long long* at_ = nullptr;     ///< on the card: {pos(), turn(pos())}, and the same for a window's later tokens
@@ -621,6 +622,7 @@ protected:
         std::vector<std::vector<void*>> heads;   ///< Layer::heads, by layer
         std::map<std::vector<int>, void*> passes;
         void* tail = nullptr;
+        bool tail_graphless = false;
     };
     std::vector<Seq> seqs_;      ///< the bound one's place holds nothing while it is bound
     int bound_ = 0;
