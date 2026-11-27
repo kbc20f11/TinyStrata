@@ -971,6 +971,11 @@ public:
         if (const char* ev = std::getenv("STRATA_HIP_MOE_I8")) {
             use_i8_moe_wmma_ = (std::atoi(ev) != 0);
         }
+        const char* packed_fp8 = std::getenv("STRATA_INK_HIP_PACKED_FP8_DECODE");
+        packed_fp8_decode_ = mem_info_.gen == AmdGen::Rdna4 && (!packed_fp8 || std::strcmp(packed_fp8, "0") != 0);
+        if (packed_fp8_decode_) {
+            std::fputs("[ink-hip] Packed FP8 decode selected for single-token FP8 attention\n", stderr);
+        }
         if (blaslt_.ready() && blaslt_moe_min_b_ < 999999) {
             const size_t w13_b = static_cast<size_t>(2 * c_.inter) * c_.hidden * sizeof(half_t);
             const size_t w2_b  = static_cast<size_t>(c_.hidden) * c_.inter * sizeof(half_t);
@@ -4766,12 +4771,20 @@ private:
                 // 2-Stage FlashDecoding Split-KV (96 blocks x 8 waves = 768 waves at B=1 -> saturates ALL CUs!)
                 float* sp_part = reinterpret_cast<float*>(sc_splitkv_part_.dev_ptr);
                 if (is_fp8) {
-                    k3_flash_splitkv_part<true, 4><<<dim3(c_.n_head, B, 4), 256, 0, stream_>>>(
-                        q, rbias, sinks, reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), pos_dev,
-                        reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
-                        kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr,
-                        reinterpret_cast<const float*>(kvp.k_scales.dev_ptr), reinterpret_cast<const float*>(kvp.v_scales.dev_ptr),
-                        sp_part, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
+                    const auto launch_fp8 = [&]<bool Packed>() {
+                        k3_flash_splitkv_part<true, 4, Packed><<<dim3(c_.n_head, B, 4), 256, 0, stream_>>>(
+                            q, rbias, sinks, reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), pos_dev,
+                            reinterpret_cast<const int32_t*>(kvp.d_pt.dev_ptr), kvp.max_pages_per_slot,
+                            kvp.k_pool.dev_ptr, kvp.v_pool.dev_ptr,
+                            reinterpret_cast<const float*>(kvp.k_scales.dev_ptr),
+                            reinterpret_cast<const float*>(kvp.v_scales.dev_ptr),
+                            sp_part, B, c_.n_head, c_.n_kv, swa_w, swa_r, c_.rel_extent);
+                    };
+                    if (B == 1 && packed_fp8_decode_) {
+                        launch_fp8.operator()<true>();
+                    } else {
+                        launch_fp8.operator()<false>();
+                    }
                 } else {
                     k3_flash_splitkv_part<false, 4><<<dim3(c_.n_head, B, 4), 256, 0, stream_>>>(
                         q, rbias, sinks, reinterpret_cast<const int32_t*>(sc_slot_ids_.dev_ptr), pos_dev,
@@ -6629,6 +6642,7 @@ private:
     };
     int blaslt_moe_min_b_ = 999999;
     bool use_i8_moe_wmma_ = true;
+    bool packed_fp8_decode_ = false;
     KvDtype default_kv_dtype_ = KvDtype::FP16;
     bool has_dspark_ = false;
     int max_slots_ = 1;

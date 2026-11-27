@@ -1929,10 +1929,32 @@ __global__ void __launch_bounds__(128) k3_flash_swa_gqa_splitkv(
     }
 }
 
+// Project Maya's packed FP8 expansion inspired this decode path.
+// https://github.com/mw00/project-maya/commit/c5f5a354
+template <bool Packed>
+__device__ __forceinline__ float4 splitkv_e4m3fn_to_f32(uint32_t word) {
+#if defined(__HIP_DEVICE_COMPILE__) && INK_GFX12 && __has_builtin(__builtin_amdgcn_cvt_pk_f32_fp8)
+    if constexpr (Packed) {
+        // RDNA4 reads the OCP E4M3FN format directly, including signed zero and subnormals.
+        // Match the scalar decoder's mapping of either NaN encoding to positive zero.
+        const auto lo = __builtin_amdgcn_cvt_pk_f32_fp8(word, false);
+        const auto hi = __builtin_amdgcn_cvt_pk_f32_fp8(word, true);
+        return make_float4((word & 0x0000007fu) == 0x0000007fu ? 0.0f : lo[0],
+                           (word & 0x00007f00u) == 0x00007f00u ? 0.0f : lo[1],
+                           (word & 0x007f0000u) == 0x007f0000u ? 0.0f : hi[0],
+                           (word & 0x7f000000u) == 0x7f000000u ? 0.0f : hi[1]);
+    }
+#endif
+    return make_float4(e4m3fn_to_f32(static_cast<uint8_t>(word)),
+                       e4m3fn_to_f32(static_cast<uint8_t>(word >> 8)),
+                       e4m3fn_to_f32(static_cast<uint8_t>(word >> 16)),
+                       e4m3fn_to_f32(static_cast<uint8_t>(word >> 24)));
+}
+
 // 2-Stage FlashDecoding Split-KV Attention for B <= 4 (Saturates ALL 64 CUs on R9700 & 40 CUs on Strix Halo!):
 // Stage 1: Grid = (n_q_heads, M, kSplits=4), Block = 256 (8 waves -> 32 parallel KV walkers per head = 768 waves at B=1!)
 // Writes tiny partials [M, n_q_heads, kSplits, 130] (o[128], max_l, sum_e) -> 100% L2-resident!
-template <bool FP8_KV, int KSPLITS = 4>
+template <bool FP8_KV, int KSPLITS = 4, bool PackedFp8 = false>
 __global__ void __launch_bounds__(256) k3_flash_splitkv_part(
     const float* __restrict__ Q,
     const float* __restrict__ rel_bias,
@@ -1989,14 +2011,10 @@ __global__ void __launch_bounds__(256) k3_flash_splitkv_part(
             const float vs = v_scales ? v_scales[tok_base] : 1.0f;
             const uint32_t kw = *reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(k_pool) + base);
             const uint32_t vw = *reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(v_pool) + base);
-            k0 = e4m3fn_to_f32(static_cast<uint8_t>(kw & 0xFFu)) * ks;
-            k1 = e4m3fn_to_f32(static_cast<uint8_t>((kw >> 8) & 0xFFu)) * ks;
-            k2 = e4m3fn_to_f32(static_cast<uint8_t>((kw >> 16) & 0xFFu)) * ks;
-            k3 = e4m3fn_to_f32(static_cast<uint8_t>((kw >> 24) & 0xFFu)) * ks;
-            v0 = e4m3fn_to_f32(static_cast<uint8_t>(vw & 0xFFu)) * vs;
-            v1 = e4m3fn_to_f32(static_cast<uint8_t>((vw >> 8) & 0xFFu)) * vs;
-            v2 = e4m3fn_to_f32(static_cast<uint8_t>((vw >> 16) & 0xFFu)) * vs;
-            v3 = e4m3fn_to_f32(static_cast<uint8_t>((vw >> 24) & 0xFFu)) * vs;
+            const float4 k = splitkv_e4m3fn_to_f32<PackedFp8>(kw);
+            const float4 v = splitkv_e4m3fn_to_f32<PackedFp8>(vw);
+            k0 = k.x * ks; k1 = k.y * ks; k2 = k.z * ks; k3 = k.w * ks;
+            v0 = v.x * vs; v1 = v.y * vs; v2 = v.z * vs; v3 = v.w * vs;
         } else {
             const uint2 kw = *reinterpret_cast<const uint2*>(static_cast<const half_t*>(k_pool) + base);
             const uint2 vw = *reinterpret_cast<const uint2*>(static_cast<const half_t*>(v_pool) + base);
