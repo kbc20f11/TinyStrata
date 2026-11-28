@@ -133,7 +133,9 @@ public:
         const char* attention_split=std::getenv("STRATA_REVIEW_INTEL_LFM_SPLIT_PV");
         if(attention_split&&std::string(attention_split)!="0"&&std::string(attention_split)!="1")
             throw std::runtime_error("STRATA_REVIEW_INTEL_LFM_SPLIT_PV requires 0 or 1");
-        const bool pv_split=attention_split&&std::string(attention_split)=="1";
+        const bool pv_split=attention_split
+            ? std::string(attention_split)=="1"
+            : measured_runtime&&measured_device;
         if(q4_auxiliary&&!device_.capabilities.esimd)throw std::runtime_error("LFM Q4 DP4A candidate requires Intel ESIMD");
         if(context<0||context>context_policy::lfm_limit||chunk<1||chunk>512)throw std::runtime_error("LFM context must be auto or1..131072; chunk1..512 required");
 #ifdef TINYSTRATA_INTEL_AOT_TARGET
@@ -174,6 +176,7 @@ public:
             if(actual_allocations_.device!=chosen.bytes.owned_device||actual_allocations_.host_visible!=chosen.bytes.owned_host_visible||actual_allocations_.largest>chosen.bytes.largest||actual_allocations_.host_only!=lfm_turn::host_bytes(context))
                 throw std::logic_error("LFM context planner differs from actual engine allocations");
             attention_=std::make_unique<GemmaAttention>(q_,context,chunk,g.heads,g.dim,cache_elements,mkl,pv_split);
+            std::printf("INFO lfm_pv_split=%d\n",int(pv_split));
 #ifdef TINYSTRATA_INTEL_MKL
             if(mkl)gemm_=std::make_unique<PrefillGemm>(q_,1,chunk);
 #else
