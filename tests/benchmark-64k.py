@@ -28,6 +28,7 @@ from serve import config, tinyconfig
 class FakeService:
     instances = []
     capacity = 131072
+    reported_kv = {}
 
     def __init__(self, cfg, folder, timeout):
         self.cfg, self.requests, self.closed = cfg, [], False
@@ -43,7 +44,11 @@ class FakeService:
             return args[args.index(name) + 1] if name in args else fallback
         mode = option('--clover-mode', 'causal')
         committed = max(16384, ((self.largest + 7 + 8191) // 8192) * 8192)
-        return dict(kv=option('--kv-type', 'int8'), kv_grow=1, mtp=0,
+        kv = option('--kv-type', 'int8')
+        if kv == 'auto':
+            kv = 'int8' if self.cfg['arch'] == 'gemma4' else 'fp8-mma'
+        kv = self.reported_kv.get(self.cfg['model_name'], kv)
+        return dict(kv=kv, kv_grow=1, mtp=int(option('--mtp', '0')),
                     max_context=self.capacity, clover_mode=mode,
                     clover_draft=int(option('--clover-draft', '0')),
                     clover_accept=option('--clover-accept', 'exact'),
@@ -67,7 +72,7 @@ class FakeService:
     def generate(self, body):
         self.requests.append(copy.deepcopy(body))
         text = body['messages'][0]['content']
-        length = int(text.split(':')[1]) if text.startswith('BENCH-LENGTH:') else 20
+        length = int(text.split(':')[1]) if isinstance(text, str) and text.startswith('BENCH-LENGTH:') else 20
         self.largest = max(self.largest, length)
         native = dict(engine_generated=7 if length > 20 else 11, prompt_read=length,
                       prompt_total=length, reused=0, prompt_ms=100, decode_ms=50,
@@ -94,13 +99,13 @@ class Benchmark64K(unittest.TestCase):
         self.saved = self.config / 'config-clover.json'
         self.saved.write_text(json.dumps(self.original), encoding='utf-8')
         self.cases = json.loads((ROOT / 'benchmark/cases.json').read_text(encoding='utf-8'))
-        FakeService.instances, FakeService.capacity = [], 131072
+        FakeService.instances, FakeService.capacity, FakeService.reported_kv = [], 131072, {}
         self.sequence = 0
 
-    def invoke(self, *flags):
+    def invoke(self, *flags, model='clover'):
         self.sequence += 1
         output = self.folder / f'result-{self.sequence}'
-        arguments = ['benchmark/run.py', '--model', 'clover', '--config-dir', str(self.config),
+        arguments = ['benchmark/run.py', '--model', model, '--config-dir', str(self.config),
                      '--output', str(output), *flags]
         def counted_document(count, paragraph, question, length):
             text = f'BENCH-LENGTH:{length}'
@@ -295,15 +300,156 @@ class Benchmark64K(unittest.TestCase):
         self.assertNotIn('--vision', controlled['args'])
         self.assertEqual(app, before)
 
-    def test_v2_defaults_include_tiel_and_causal_clover_vision(self):
+    def test_v3_defaults_include_tiel_and_causal_clover_vision(self):
         self.saved.write_text(json.dumps(self.vision_app()), encoding='utf-8')
         report = self.invoke('--prepare-only')
-        self.assertEqual(report['protocol'], 'tinystrata-bench-v2')
+        self.assertEqual(report['protocol'], 'tinystrata-bench-v3')
         self.assertTrue(report['standard'])
         self.assertEqual(report['clover_mode'], 'causal')
         self.assertTrue(report['models']['clover']['image_supported'])
         self.assertEqual(bench.benchmark_models('all', v2=True), [*bench.MODELS, 'tiel'])
         self.assertEqual(bench.benchmark_models('tiel', v2=True), ['tiel'])
+
+    def write_discrete_profiles(self):
+        snapshots = {}
+        for model in bench.benchmark_models('all', v2=True):
+            filename, arch, name = bench.model_definition(model)
+            app = self.vision_app()
+            app.update(arch=arch, model_name=name, backend='hip', sampling={'temperature': .37, 'top_p': .61})
+            if model == 'clover':
+                app['env'] = {'STRATA_IQ_MT_MIN': '5'}
+            app['args'] += ['--kv-type', 'fp8-mma' if model == 'clover' else 'int8',
+                            '--chunk', '512', '--expert-vram', '6']
+            if model == 'gemma':
+                app['args'] += ['--draft-model', str(self.folder / 'model.gguf')]
+            path = self.config / filename
+            path.write_text(json.dumps(app), encoding='utf-8')
+            snapshots[path] = path.read_bytes()
+        return snapshots
+
+    def test_v3_records_managed_kv_requests_and_formats_selected_by_the_engine(self):
+        snapshots = self.write_discrete_profiles()
+        requested = {'qwen': 'auto', 'gemma': 'auto', 'lfm': 'auto', 'clover': 'int8', 'tiel': 'auto'}
+        observed = {'qwen': 'fp8-mma', 'gemma': 'int8', 'lfm': 'fp8-mma', 'clover': 'int8', 'tiel': 'fp8-mma'}
+
+        plan = self.invoke('--prepare-only', model='all')
+        self.assertEqual(plan['protocol'], 'tinystrata-bench-v3')
+        self.assertEqual(plan['kv_policy'], 'application-default')
+        self.assertTrue(plan['standard'])
+        self.assertEqual(FakeService.instances, [])
+        self.assertEqual({key: model['requested_kv'] for key, model in plan['models'].items()}, requested)
+
+        with patch.dict('os.environ', {'STRATA_IQ_MT_MIN': '7'}):
+            report = self.invoke('--protocol', 'v3', '--runs', '1', model='all')
+        self.assertEqual(report['protocol'], plan['protocol'])
+        self.assertEqual(report['kv_policy'], 'application-default')
+        self.assertTrue(report['complete'])
+        for (key, model), service in zip(report['models'].items(), FakeService.instances, strict=True):
+            with self.subTest(model=key):
+                self.assertEqual(config.value_of(service.cfg, 'kv_type'), requested[key])
+                self.assertEqual(config.value_of(service.cfg, 'chunk'), 'auto')
+                self.assertIsNone(config.value_of(service.cfg, 'expert_vram'))
+                self.assertNotIn('--kv-grow', service.cfg['args'])
+                self.assertEqual(model['requested_kv'], requested[key])
+                self.assertEqual(model['observed_kv'], [observed[key]])
+                self.assertEqual(model['runs'][0]['startup_engine']['kv'], observed[key])
+                self.assertTrue(all('enable_thinking' not in body for body in service.requests))
+                if key == 'clover':
+                    self.assertEqual(service.cfg['env'], {'STRATA_IQ_MT_MIN': '1'})
+                if key == 'qwen':
+                    self.assertEqual(model['sampling']['temperature'], 1.0)
+                    self.assertEqual(service.requests[1]['temperature'], 1.0)
+                    self.assertEqual(service.requests[1]['top_p'], .95)
+                    self.assertIs(model['reasoning_default'], True)
+                    self.assertEqual(service.requests[-1]['max_tokens'], 1024)
+                if key == 'tiel':
+                    self.assertEqual(model['reasoning_default'], 'medium')
+        markdown = bench.render_report(report).lower()
+        self.assertRegex(markdown, r'\| model \|[^\n]*\bkv\b[^\n]*\|')
+        self.assertIn('| fp8-mma |', markdown)
+        self.assertIn('| int8 |', markdown)
+        self.assertEqual({path: path.read_bytes() for path in snapshots}, snapshots)
+
+    def test_v3_uses_updated_defaults_from_the_managed_profile_factory(self):
+        from serve import model_profiles
+
+        self.write_discrete_profiles()
+        factory = model_profiles.fresh_profile_defaults
+
+        def changed_defaults(name, arch):
+            return config.apply(factory(name, arch), {'kv_type': 'fp8', 'mtp': 1, 'chunk': 1024})[0]
+
+        with patch.object(model_profiles, 'fresh_profile_defaults', side_effect=changed_defaults):
+            report = self.invoke('--runs', '1', model='qwen')
+        model = report['models']['qwen']
+        self.assertEqual(model['requested_kv'], 'fp8')
+        self.assertEqual(model['observed_kv'], ['fp8'])
+        self.assertEqual(model['runs'][0]['startup_engine']['mtp'], 1)
+        self.assertEqual(config.value_of(FakeService.instances[0].cfg, 'chunk'), 1024)
+
+    def test_v2_and_v1_keep_fixed_int8_and_their_original_workloads(self):
+        self.write_discrete_profiles()
+        fixed = self.invoke('--protocol', 'v2', '--prepare-only', model='all')
+        self.assertEqual(fixed['protocol'], 'tinystrata-bench-v2')
+        self.assertEqual(fixed['kv_policy'], 'fixed-int8')
+        self.assertTrue(fixed['standard'])
+        self.assertEqual(list(fixed['models']), bench.benchmark_models('all', v2=True))
+        self.assertTrue(fixed['models']['clover']['image_supported'])
+        self.assertEqual(fixed['models']['qwen']['sampling']['temperature'], .7)
+        self.assertTrue(all(model['requested_kv'] == 'int8' for model in fixed['models'].values()))
+        clover = self.folder / f'result-{self.sequence}' / 'clover-1' / 'config.json'
+        self.assertEqual(json.loads(clover.read_text(encoding='utf-8'))['env'], {})
+
+        legacy = self.invoke('--protocol', 'v1', '--prepare-only', model='all')
+        self.assertEqual(legacy['protocol'], 'tinystrata-bench-v1')
+        self.assertEqual(legacy['kv_policy'], 'fixed-int8')
+        self.assertTrue(legacy['standard'])
+        self.assertEqual(list(legacy['models']), bench.benchmark_models('all'))
+        self.assertFalse(legacy['models']['clover']['image_supported'])
+        self.assertEqual(legacy['models']['qwen']['sampling']['temperature'], .7)
+        self.assertTrue(all(model['requested_kv'] == 'int8' for model in legacy['models'].values()))
+
+        self.invoke('--protocol', 'v2', '--runs', '1', model='qwen')
+        qwen = FakeService.instances[-1]
+        self.assertIn('--kv-grow', qwen.cfg['args'])
+        self.assertIs(qwen.requests[1]['enable_thinking'], True)
+        self.assertIs(qwen.requests[-1]['enable_thinking'], False)
+        self.assertEqual(qwen.requests[-1]['max_tokens'], self.cases['image_max_tokens'])
+
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as blocked:
+            self.invoke('--protocol', 'v2', '--kv-type', 'int8', '--prepare-only', model='inkling')
+        self.assertEqual(blocked.exception.code, 2)
+
+    def test_inkling_extension_preserves_automatic_kv_on_v2_and_v3(self):
+        name, arch, model = bench.model_definition('inkling')
+        inkling = dict(self.original, arch=arch, model_name=model, backend='hip',
+                       inkling_vision=str(self.folder / 'model.gguf'))
+        (self.config / name).write_text(json.dumps(inkling), encoding='utf-8')
+        for revision, flags in (('v3', ()), ('v2', ('--protocol', 'v2'))):
+            with self.subTest(revision=revision):
+                plan = self.invoke('--prepare-only', *flags, model='inkling')
+                self.assertEqual(plan['protocol'], f'tinystrata-bench-{revision}-inkling')
+                self.assertEqual(plan['kv_policy'], 'application-default' if revision == 'v3' else 'engine-auto')
+                self.assertFalse(plan['standard'])
+                self.assertTrue(plan['models']['inkling']['image_supported'])
+                self.assertEqual(plan['models']['inkling']['requested_kv'], 'auto')
+
+    def test_reported_auto_kv_must_be_resolved_and_fixed_int8_must_match(self):
+        self.write_discrete_profiles()
+        name = bench.model_definition('qwen')[2]
+        for reported, requested, flags in (('auto', 'auto', ()),
+                                           ('fp8-mma', 'int8', ('--protocol', 'v2'))):
+            with self.subTest(reported=reported):
+                FakeService.reported_kv[name] = reported
+                with self.assertRaisesRegex(ValueError, f'requested KV {requested}'):
+                    self.invoke('--runs', '1', *flags, model='qwen')
+                self.assertEqual(FakeService.instances[-1].requests, [])
+                self.assertTrue(FakeService.instances[-1].closed)
+
+        FakeService.reported_kv[name] = 'int8'
+        fallback = self.invoke('--runs', '1', model='qwen')['models']['qwen']
+        self.assertEqual(fallback['requested_kv'], 'auto')
+        self.assertEqual(fallback['observed_kv'], ['int8'])
 
     def test_13_explicit_vision_d3_variant_records_resident_encoder_and_assets(self):
         app = self.vision_app()

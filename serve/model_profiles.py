@@ -15,6 +15,21 @@ from serve.model_download import manifest_for_arch, reject_retired_model
 from serve.thinking import capabilities
 
 
+def fresh_profile_defaults(name: str, arch: str) -> dict:
+    """Common settings for a fresh profile, before backend and asset setup."""
+    args = ["--max-context", "auto", "--kv-type", "auto", "--chunk", "auto"]
+    if arch in ("qwen35moe", "gemma4"):
+        args += ["--mtp", "3"]
+    result = {"arch": arch, "model_name": name, "cwd": str(model_setup.ROOT),
+              "args": args, "memory_policy_version": tinyconfig.MEMORY_POLICY_VERSION}
+    thinking = capabilities(name)
+    if thinking and thinking["mode"] in ("effort", "effort_always"):
+        result["reasoning_effort"] = thinking["default"]
+    elif thinking:
+        result["enable_thinking"] = True
+    return result
+
+
 _MODELS = {
     "qwen3.6-35b-a3b": "qwen35moe",
     "lfm2.5-24b-a2b": "lfm2moe",
@@ -194,19 +209,10 @@ class ModelProfiles:
         raise ValueError(f"No separate configuration path is available for {selected}")
 
     def _defaults(self, name: str, arch: str) -> dict:
-        args = ["--max-context", "auto", "--kv-type", "auto", "--chunk", "auto"]
-        if arch in ("qwen35moe", "gemma4"):
-            args += ["--mtp", "3"]
-        result = {"arch": arch, "model_name": name, "cwd": str(model_setup.ROOT),
-                  "args": args, "memory_policy_version": tinyconfig.MEMORY_POLICY_VERSION,
-                  **deepcopy(self._hardware)}
-        thinking = capabilities(name)
-        if thinking and thinking["mode"] in ("effort", "effort_always"):
-            result["reasoning_effort"] = thinking["default"]
-        elif thinking:
-            result["enable_thinking"] = True
+        result = {**fresh_profile_defaults(name, arch), **deepcopy(self._hardware)}
         if self._intel:
             from serve.intel_backend import configure_backend, MODEL_PROFILES, TARGET_ONLY_MODELS
+            args = result["args"]
             if (self._generic_intel or name in TARGET_ONLY_MODELS) and "--mtp" in args:
                 args[args.index("--mtp") + 1] = "0"
             result.update(intel_profile="generic" if self._generic_intel else MODEL_PROFILES[name],

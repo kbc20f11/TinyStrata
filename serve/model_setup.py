@@ -298,6 +298,19 @@ def save_settings(config_path: str | Path, cfg: dict) -> None:
         config.save(path, cfg)
 
 
+def apply_vision_token_defaults(cfg: dict, vision: dict) -> None:
+    """Fill the image-token limits used by the managed external encoder."""
+    if cfg.get("arch") == "gemma4":
+        vision.setdefault("max_tokens", 1120)
+    if "vision_tokens" in cfg:
+        vision["max_tokens"] = cfg["vision_tokens"]
+    if cfg.get("arch") == "clover_moe":
+        vision.setdefault("max_tokens", 4096)
+        vision.setdefault("min_tokens", min(1024, vision["max_tokens"]))
+        if "vision_tokens" in cfg:
+            vision["min_tokens"] = min(vision["min_tokens"], cfg["vision_tokens"])
+
+
 def configure_vision(cfg: dict, model: Path, *, projector: Path | None = None,
                      verified: bool = False) -> dict:
     """Apply the selected image mode with the pinned, verified projector.
@@ -374,16 +387,7 @@ def configure_vision(cfg: dict, model: Path, *, projector: Path | None = None,
                          "model": str(model), "gpu": mode == "gpu"}
         if cfg.get("backend") == "sycl":
             new["vision"].update(backend="sycl", elastic=False)
-        if cfg.get("arch") == "gemma4":
-            new["vision"].setdefault("max_tokens", 1120)
-        if "vision_tokens" in cfg:
-            new["vision"]["max_tokens"] = cfg["vision_tokens"]
-        if cfg.get("arch") == "clover_moe":
-            new["vision"].setdefault("max_tokens", 4096)
-            new["vision"].setdefault("min_tokens", min(1024, new["vision"]["max_tokens"]))
-            if "vision_tokens" in cfg:
-                # An explicit image cap wins over a previously saved minimum.
-                new["vision"]["min_tokens"] = min(new["vision"]["min_tokens"], cfg["vision_tokens"])
+        apply_vision_token_defaults(cfg, new["vision"])
         new["vision_policy_version"] = VISION_POLICY_VERSION
         new["args"].append("--vision")
         new.pop("vision_download_required", None)

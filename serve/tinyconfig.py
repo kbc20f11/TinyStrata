@@ -36,7 +36,7 @@ INKLING_SAMPLING = {"temperature": 1.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0,
                     "repetition_penalty": 1.0, "presence_penalty": 0.0, "frequency_penalty": 0.0}
 
 
-def clover_decode_defaults(cfg: dict) -> dict:
+def clover_decode_defaults(cfg: dict, *, process_env=None) -> dict:
     """The managed API/launcher profile; native direct-CLI defaults are separate."""
     if cfg.get("arch") != "clover_moe":
         return cfg
@@ -44,7 +44,8 @@ def clover_decode_defaults(cfg: dict) -> dict:
                                 "clover_accept": "exact", "kv_type": "int8"})
     env = dict(new.get("env") or {})
     # A supplied CPU arithmetic rule wins, including an explicit process env.
-    env.setdefault("STRATA_IQ_MT_MIN", os.environ.get("STRATA_IQ_MT_MIN", "1"))
+    process_env = os.environ if process_env is None else process_env
+    env.setdefault("STRATA_IQ_MT_MIN", process_env.get("STRATA_IQ_MT_MIN", "1"))
     new["env"] = env
     new["clover_decode_policy_version"] = CLOVER_DECODE_POLICY_VERSION
     return new

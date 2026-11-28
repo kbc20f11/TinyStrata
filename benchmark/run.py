@@ -1,4 +1,4 @@
-"""Run TinyStrata benchmark protocol v1; see benchmark/README.md.
+"""Run the TinyStrata benchmark protocols documented in benchmark/README.md.
 
 Uses the installed model profiles, isolated localhost API processes and the
 existing TinyStrata Python dependencies. Results stay outside the source tree.
@@ -32,9 +32,10 @@ ROOT = HERE.parent
 # Also support `python benchmark/run.py` when the repository is not on PYTHONPATH.
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from serve import tinyconfig
+from serve import config, tinyconfig
 
 GIB = 1 << 30
+V3_IMAGE_MAX_TOKENS = 1024
 MODELS = {
     'qwen': ('config.json', 'qwen35moe', 'qwen3.6-35b-a3b'),
     'gemma': ('config-gemma4.json', 'gemma4', 'gemma-4-26b-a4b-it'),
@@ -184,9 +185,9 @@ def benchmark_models(model, saved_profile=False, *, intel_text=False, v2=False):
     if model not in (*MODELS, 'tiel', 'inkling', 'all'):
         raise ValueError(f'Unsupported benchmark model: {model}')
     if model == 'tiel' and not (saved_profile or v2):
-        raise ValueError('Tiel benchmarking requires v2 or --saved-profile')
+        raise ValueError('Tiel benchmarking requires v2, v3 or --saved-profile')
     if model == 'inkling' and not (saved_profile or v2):
-        raise ValueError('Inkling benchmarking requires v2 workloads or --saved-profile')
+        raise ValueError('Inkling benchmarking requires v2, v3 or --saved-profile')
     return [*MODELS, *(['tiel'] if saved_profile or v2 else [])] if model == 'all' else [model]
 
 
@@ -391,7 +392,7 @@ def controlled_config(original, model, folder, port, cases, *, clover_mode='caus
                       clover_block_size=32, clover_threshold=0.95, clover_kv='int8',
                       clover_workers=None, clover_chunk='auto', clover_env=None, clover_thinking=True,
                       clover_draft=None, clover_accept='exact', clover_accept_ratio=0.9, clover_accept_delta=0.6,
-                      clover_vision=False):
+                      clover_vision=False, application_defaults=False):
     if original.get('backend') == 'sycl':
         raise ValueError('Intel benchmarking requires the explicit --intel-text variant')
     file, arch, name = model_definition(model)
@@ -399,7 +400,15 @@ def controlled_config(original, model, folder, port, cases, *, clover_mode='caus
         raise ValueError(f'{file} does not select {arch}')
     if clover_vision and (model != 'clover' or clover_mode == 'diffusion' or clover_accept != 'exact'):
         raise ValueError('Clover Vision requires causal or exact self-spec decoding')
-    has_vision = model not in TEXT_ONLY_MODELS or (model == 'clover' and clover_vision)
+    managed = {}
+    if application_defaults:
+        from serve.model_profiles import fresh_profile_defaults
+        managed = fresh_profile_defaults(name, arch)
+        managed = tinyconfig.clover_vision_defaults(tinyconfig.clover_decode_defaults(managed, process_env={}))
+        managed, _ = tinyconfig.migrate_generation_settings(managed)
+        vision_mode = tinyconfig.check_vision_options(managed)
+    else:
+        vision_mode = 'gpu' if model not in TEXT_ONLY_MODELS or (model == 'clover' and clover_vision) else 'no'
     # Rebuild the native arguments rather than retain manual tuning flags.
     args = original.get('args', [])
     base = Path(original.get('cwd') or ROOT).expanduser().resolve()
@@ -410,16 +419,21 @@ def controlled_config(original, model, folder, port, cases, *, clover_mode='caus
         if flag not in args or args.index(flag) + 1 >= len(args):
             raise ValueError(f'{file} is missing {flag}')
         return resolved(args[args.index(flag) + 1])
-    native = ['--model', value('--model'), '--max-context', 'auto', '--chunk', 'auto']
-    if model == 'inkling':
-        native += ['--kv-type', 'auto']
+    native = ['--model', value('--model')]
+    if application_defaults:
+        native += managed['args']
+        if vision_mode != 'no' and model != 'inkling':
+            native += ['--vision']
     else:
-        native += ['--kv-type', 'int8', '--kv-grow']
+        native += ['--max-context', 'auto', '--chunk', 'auto',
+                   '--kv-type', 'auto' if model == 'inkling' else 'int8']
+        if model != 'inkling':
+            native += ['--kv-grow']
     if model == 'gemma':
         native += ['--draft-model', value('--draft-model')]
-    if model not in (*TEXT_ONLY_MODELS, 'inkling'):
+    if not application_defaults and model not in (*TEXT_ONLY_MODELS, 'inkling'):
         native += ['--mtp', '3', '--vision']
-    elif model == 'clover':
+    elif not application_defaults and model == 'clover':
         if clover_mode not in ('causal', 'self-spec', 'diffusion'):
             raise ValueError('Benchmark Clover modes are causal, self-spec or diffusion')
         if clover_accept not in ('exact', 'threshold'):
@@ -449,39 +463,42 @@ def controlled_config(original, model, folder, port, cases, *, clover_mode='caus
             native += ['--clover-draft', '0']
         if clover_vision:
             native += ['--vision']
-    cfg = {key: copy.deepcopy(original[key]) for key in
-           ('exe', 'tokenizer', 'backend', 'lib_dirs', 'gpu', 'hip_ordinal', 'cuda_device')
-           if key in original}
+    cfg = {**managed, **{key: copy.deepcopy(original[key]) for key in
+           ('exe', 'tokenizer', 'backend', 'lib_dirs', 'gpu', 'hip_ordinal', 'cuda_device') if key in original}}
     cfg.update(arch=arch, model_name=name, args=native, cwd=str(ROOT),
                host='127.0.0.1', port=port, log=str(Path(folder) / 'engine.log'),
-               env=dict(clover_env or {}) if model == 'clover' else {}, parallel=1,
-               enable_thinking=clover_thinking if model == 'clover' else True,
-               max_tokens=24576 if model == 'clover' else 32768,
+               parallel=1, vision_mode=vision_mode,
                # These are deliberate benchmark choices, not legacy app defaults.
                memory_policy_version=tinyconfig.MEMORY_POLICY_VERSION,
                chunk_policy_version=tinyconfig.CHUNK_POLICY_VERSION,
-               generation_policy_version=tinyconfig.GENERATION_POLICY_VERSION,
-               sampling=model_sampling(model, cases), vision_mode='gpu' if has_vision else 'no')
-    if model == 'clover':
-        # Both on and off are explicit protocol choices, never an old app default.
-        cfg['clover_vision_policy_version'] = 1
+               generation_policy_version=tinyconfig.GENERATION_POLICY_VERSION)
+    if not application_defaults:
+        cfg.update(env=dict(clover_env or {}) if model == 'clover' else {},
+                   enable_thinking=clover_thinking if model == 'clover' else True,
+                   max_tokens=24576 if model == 'clover' else 32768,
+                   sampling=model_sampling(model, cases))
+        if model == 'clover':
+            cfg['clover_vision_policy_version'] = tinyconfig.CLOVER_VISION_POLICY_VERSION
     for key in ('exe', 'tokenizer'):
         if key in cfg:
             cfg[key] = resolved(cfg[key])
     if cfg.get('lib_dirs'):
         cfg['lib_dirs'] = [resolved(path) for path in cfg['lib_dirs']]
-    if model == 'inkling':
+    if model == 'inkling' and vision_mode != 'no':
         vision = original.get('inkling_vision') or original.get('vision_mmproj')
         if not vision:
             raise ValueError(f'{file} needs its installed native Inkling Vision payload')
         cfg['inkling_vision'] = resolved(vision)
-    elif has_vision:
+    elif vision_mode != 'no':
         vision = original.get('vision')
         if not isinstance(vision, dict) or not all(vision.get(k) for k in ('exe', 'mmproj', 'model')):
             raise ValueError(f'{file} needs its installed GPU Vision model')
         cfg['vision'] = {k: resolved(vision[k]) for k in ('exe', 'mmproj', 'model')}
-        cfg['vision'].update(gpu=True, elastic=False)
-        if model == 'clover':
+        cfg['vision'].update(gpu=vision_mode == 'gpu', elastic=False)
+        if application_defaults:
+            from serve.model_setup import apply_vision_token_defaults
+            apply_vision_token_defaults(cfg, cfg['vision'])
+        elif model == 'clover':
             cfg['vision'].update(min_tokens=1024, max_tokens=4096)
         cfg['vision_exe'] = cfg['vision']['exe']
     return cfg
@@ -495,6 +512,8 @@ def request_body(model, text, limit, cases, thinking=True, sampling=None):
     request.update(model=model_definition(model)[2], messages=[dict(role='user', content=text)],
                    max_tokens=limit, stream=True, enable_thinking=thinking,
                    strata_checkpoint=False, seed=cases['seed'])
+    if thinking is None:
+        request.pop('enable_thinking')
     return request
 
 
@@ -650,6 +669,16 @@ def image_encoder(cfg):
     if cfg.get('arch') == INKLING_MODEL[1]:
         return 'native' if cfg.get('inkling_vision') and cfg.get('vision_mode') != 'no' else None
     return 'external' if cfg.get('vision') else None
+
+
+def validate_controlled_engine(info, cfg, *, application_defaults=False):
+    requested_kv = config.value_of(cfg, 'kv_type') or 'auto'
+    valid_kv = tuple(fmt for fmt in config.ENGINE_OPTIONS['kv_type'][1] if fmt != 'auto') if requested_kv == 'auto' else (requested_kv,)
+    valid_growth = (0, 1) if application_defaults else (1,)
+    requested_mtp = config.value_of(cfg, 'mtp') or 0
+    if (info.get('kv') not in valid_kv or info.get('kv_grow') not in valid_growth or
+            info.get('mtp') != requested_mtp):
+        raise ValueError(f'Engine does not match protocol settings (requested KV {requested_kv}): {info}')
 
 
 def validate_inkling_engine(info, cfg, output_limit, *, controlled=False):
@@ -919,15 +948,20 @@ def assets(cfg):
 
 
 def render_report(report):
+    kv_policy = report.get('kv_policy')
+    model_header = '| Model | KV |' if kv_policy else '| Model |'
+    model_rule = '|---|---|' if kv_policy else '|---|'
     lines = [f'# {report["protocol"]}', '', f'Status: {"complete" if report["complete"] else "incomplete"}.',
              f'Runs per model: {report["runs"]} ({"standard" if report["standard"] else "variant/diagnostic"}).',
-             '', '| Model | Generation tok/s | 4K input tok/s | 16K input tok/s | Image first output / complete, s | Expert cache GiB: startup → after16K |',
-             '|---|---:|---:|---:|---:|---|']
+             '', f'{model_header} Generation tok/s | 4K input tok/s | 16K input tok/s | Image first output / complete, s | Expert cache GiB: startup → after16K |',
+             f'{model_rule}---:|---:|---:|---:|---|']
     if report.get('include_64k'):
-        lines[5] = ('| Model | Generation tok/s | 4K input tok/s | 16K input tok/s | 64K input tok/s | '
+        lines[5] = (f'{model_header} Generation tok/s | 4K input tok/s | 16K input tok/s | 64K input tok/s | '
                     'Generation after64K tok/s | Image first output / complete, s | '
                     'Expert cache GiB: startup → after16K → after64K |')
-        lines[6] = '|---|---:|---:|---:|---:|---:|---:|---|'
+        lines[6] = f'{model_rule}---:|---:|---:|---:|---:|---:|---|'
+    if kv_policy:
+        lines[4:4] = [f'KV policy `{kv_policy}`. The table shows the formats reported by the engine.', '']
     profile = report.get('clover_profile')
     if report.get('saved_profile'):
         lines[4:4] = ['Saved-profile variant: native settings and samplers are retained; each canonical generation text runs once per start.', '']
@@ -969,13 +1003,17 @@ def render_report(report):
             low, high = f'{min(values):.2f}', f'{max(values):.2f}'
             return low if low == high else f'{low}–{high}'
         cache = result['expert_cache']
+        model_cell = f'| {model_definition(model)[2]} |'
+        if kv_policy:
+            formats = ' / '.join(data.get('observed_kv', ())) or '—'
+            model_cell += f' {formats} |'
         if report.get('include_64k'):
-            lines.append(f'| {model_definition(model)[2]} | {rate("generation")} | {rate("input_4k")} | {rate("input_16k")} | '
+            lines.append(f'{model_cell} {rate("generation")} | {rate("input_4k")} | {rate("input_16k")} | '
                          f'{rate("input_64k")} | {rate("decode_after_64k")} | {image_text} | '
                          f'{span(cache["startup_engine"])} → {span(cache["after_16k_engine"])} → '
                          f'{span(cache.get("after_64k_engine", []))} |')
         else:
-            lines.append(f'| {model_definition(model)[2]} | {rate("generation")} | {rate("input_4k")} | {rate("input_16k")} | '
+            lines.append(f'{model_cell} {rate("generation")} | {rate("input_4k")} | {rate("input_16k")} | '
                          f'{image_text} | {span(cache["startup_engine"])} → {span(cache["after_16k_engine"])} |')
         if data.get('error'):
             lines.append(f'\n{model}: ERROR — {data["error"]}')
@@ -991,8 +1029,8 @@ def main():
     local = Path(os.environ.get('LOCALAPPDATA', Path.home() / '.local/share'))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--model', choices=(*MODELS, 'tiel', 'inkling', 'all'), default='all')
-    parser.add_argument('--protocol', choices=('v1', 'v2'),
-                        help='Controlled benchmark defaults to v2; existing diagnostic variants default to v1')
+    parser.add_argument('--protocol', choices=('v1', 'v2', 'v3'),
+                        help='v3 measures application defaults. v1 and v2 reproduce earlier fixed profiles. Diagnostics default to v1')
     parser.add_argument('--saved-profile', action='store_true',
                         help='Nonstandard variant: retain saved native/sampling/Vision settings, include Tiel in all, run each generation text once')
     parser.add_argument('--intel-text', action='store_true',
@@ -1022,7 +1060,7 @@ def main():
     parser.add_argument('--thinking', choices=('on', 'off'), default='on',
                         help='thinking on retains v1; off is a separately labelled Clover-only variant')
     parser.add_argument('--kv-type', choices=('int8', 'fp8-mma'),
-                        help='Clover-only KV override; labels the result as a variant')
+                        help='Clover-only v1 diagnostic KV override')
     parser.add_argument('--cpu-workers', type=int, metavar='N',
                         help='Clover-only Expert workers (0 = auto); the engine reports its total threads separately')
     parser.add_argument('--chunk', type=chunk_option, metavar='auto|N',
@@ -1082,12 +1120,14 @@ def main():
         parser.error('--include-64k requires the canonical 32-token long-input output limit')
     legacy_variant = (options.intel_text or options.saved_profile or options.clover_mode != 'causal'
                       or manual_variant or options.include_64k or options.clover_vision)
-    v2 = options.protocol == 'v2' or (options.protocol is None and not legacy_variant)
-    if v2 and legacy_variant:
-        parser.error('v2 uses fixed benchmark settings; use v1 for diagnostic variants')
-    base_protocol = 'tinystrata-bench-v2' if v2 else cases['protocol']
+    protocol_version = options.protocol or ('v1' if legacy_variant else 'v3')
+    modern_workload = protocol_version in ('v2', 'v3')
+    if modern_workload and legacy_variant:
+        parser.error('v2 and v3 use controlled settings; use v1 for diagnostic overrides')
+    application_defaults = protocol_version == 'v3'
+    base_protocol = f'tinystrata-bench-{protocol_version}'
     try:
-        models = benchmark_models(options.model, options.saved_profile, intel_text=options.intel_text, v2=v2)
+        models = benchmark_models(options.model, options.saved_profile, intel_text=options.intel_text, v2=modern_workload)
     except ValueError as error:
         parser.error(str(error))
     options.output.mkdir(parents=True, exist_ok=False)
@@ -1110,7 +1150,7 @@ def main():
         variant_suffix = (variant_suffix or '-clover-causal') + '-vision'
     if inkling_extension:
         variant_suffix = '-inkling'
-    clover_vision = v2 or options.clover_vision
+    clover_vision = modern_workload or options.clover_vision
     clover_profile = dict(mode=options.clover_mode, kv=options.kv_type or 'int8',
                           block_size=options.clover_block_size, threshold=options.clover_threshold,
                           cpu_workers=options.cpu_workers if options.cpu_workers is not None else 'auto',
@@ -1121,7 +1161,9 @@ def main():
                               accept_ratio=options.clover_accept_ratio, accept_delta=options.clover_accept_delta)
     if options.include_64k:
         clover_profile['include_64k'] = True
-    report = dict(protocol=base_protocol + variant_suffix,
+    kv_policy = ('saved-profile' if options.saved_profile else 'application-default' if application_defaults
+                 else 'engine-auto' if inkling_extension else 'explicit' if options.kv_type else 'fixed-int8')
+    report = dict(protocol=base_protocol + variant_suffix, kv_policy=kv_policy,
                   base_protocol=base_protocol, standard=options.runs == cases['runs'] and not variant,
                   clover_mode=options.clover_mode, clover_block_size=options.clover_block_size,
                   clover_threshold=options.clover_threshold, clover_profile=clover_profile if options.model == 'clover' and not options.saved_profile and not options.intel_text else None,
@@ -1163,7 +1205,7 @@ def main():
             original = json.loads(profile_path.read_text(encoding='utf-8-sig'))
             sampling = (dict(tinyconfig.TIEL_SAMPLING) if options.intel_text and model == 'tiel' else
                         copy.deepcopy(original.get('sampling') or model_sampling(model, cases)) if options.saved_profile else model_sampling(model, cases))
-            data = dict(runs=[], sampling=sampling, assets=[])
+            data = dict(runs=[], sampling=sampling, assets=[], observed_kv=[])
             if options.intel_text:
                 data.update(intel_text=True, profile_path=str(profile_path), source_config_sha256=sha256(profile_path),
                             intel_profile=original.get('intel_profile'),
@@ -1177,7 +1219,7 @@ def main():
                                    clover_threshold=options.clover_threshold, clover_kv=options.kv_type or 'int8',
                                    clover_workers=options.cpu_workers, clover_chunk=options.chunk if options.chunk is not None else 'auto',
                                    clover_env=dict(options.engine_env), clover_thinking=options.thinking == 'on',
-                                   clover_vision=model == 'clover' and clover_vision)
+                                   clover_vision=model == 'clover' and clover_vision, application_defaults=application_defaults)
             if self_spec_variant:
                 profile_options.update(clover_draft=options.clover_draft, clover_accept=options.clover_accept,
                                        clover_accept_ratio=options.clover_accept_ratio, clover_accept_delta=options.clover_accept_delta)
@@ -1186,6 +1228,13 @@ def main():
                 controlled_config(original, model, options.output, free_port(), cases, **profile_options)
             sys.path.insert(0, str(ROOT))
             tinyconfig.validate(prepared)
+            if application_defaults:
+                sampling = data['sampling'] = prepared['sampling']
+                data['requested_mtp'] = config.value_of(prepared, 'mtp') or 0
+                data['reasoning_default'] = prepared.get('reasoning_effort', prepared.get('enable_thinking'))
+            data['requested_kv'] = config.value_of(prepared, 'kv_type')
+            if model == 'clover' and report['clover_profile'] is not None:
+                clover_profile.update(mode=config.clover_mode(prepared), kv=data['requested_kv'], env=prepared['env'])
             data['image_supported'] = bool(image_encoder(prepared))
             if model == 'inkling':
                 from serve.server import inkling_engine_args
@@ -1250,14 +1299,17 @@ def main():
                         run['unsupported_cases'] = copy.deepcopy(data['unsupported_cases'])
                     if options.include_64k:
                         validate_64k_context(info, cases['prefill_max_tokens'])
-                    expected_kv = clover_profile['kv'] if model == 'clover' else 'int8'
                     if model == 'inkling':
                         validate_inkling_engine(info, cfg, cases['prefill_max_tokens'], controlled=not options.saved_profile)
-                    elif not options.saved_profile and not options.intel_text and (info.get('kv') != expected_kv or info.get('kv_grow') != 1 or info.get('mtp') != (0 if model in TEXT_ONLY_MODELS else 3)):
-                        raise ValueError(f'Engine does not match protocol settings: {info}')
-                    if not options.saved_profile and not options.intel_text and model == 'clover' and not self_spec_variant and info.get('clover_draft') != 0:
-                        raise ValueError(f'The causal/diffusion profiles do not use self-speculative drafts: {info}')
+                    elif not options.saved_profile and not options.intel_text:
+                        validate_controlled_engine(info, cfg, application_defaults=application_defaults)
+                    observed_kv = info.get('kv')
+                    if isinstance(observed_kv, str) and observed_kv not in data['observed_kv']:
+                        data['observed_kv'].append(observed_kv)
                     if model == 'clover' and not options.saved_profile and not options.intel_text:
+                        expected_draft = config.value_of(cfg, 'clover_draft') if application_defaults else 0
+                        if not self_spec_variant and info.get('clover_draft') != expected_draft:
+                            raise ValueError(f'Clover draft depth differs from the benchmark profile: {info}')
                         if options.cpu_workers and info.get('cpu_workers') != options.cpu_workers:
                             raise ValueError(f'Clover worker count differs from requested profile: {info}')
                         if isinstance(options.chunk, int) and info.get('chunk') != options.chunk:
@@ -1265,7 +1317,7 @@ def main():
                         # Older causal-only binaries may not report a mode; an
                         # explicit diffusion request must always be confirmed.
                         actual_mode = info.get('clover_mode', 'causal')
-                        if actual_mode != options.clover_mode:
+                        if actual_mode != config.clover_mode(cfg):
                             raise ValueError(f'Clover generation mode differs from requested profile: {info}')
                         if options.clover_mode == 'diffusion' and (
                                 info.get('clover_block_size') != options.clover_block_size or
@@ -1274,10 +1326,11 @@ def main():
                         if self_spec_variant:
                             validate_clover_self_spec(info, clover_profile)
                     cache_bytes(info, intel_text=options.intel_text)
-                    thinking = cfg.get('enable_thinking', True) if options.saved_profile else options.thinking == 'on' if model == 'clover' else True
+                    thinking = (None if application_defaults else cfg.get('enable_thinking', True) if options.saved_profile
+                                else options.thinking == 'on' if model == 'clover' else True)
                     def body(text, limit, *, thinking=thinking):
                         return request_body(model, text, limit, cases, thinking=thinking,
-                                            sampling=sampling if options.saved_profile or options.intel_text else None)
+                                            sampling=sampling if application_defaults or options.saved_profile or options.intel_text else None)
                     warmup = body(cases['warmup_text'], cases['warmup_max_tokens'])
                     save(folder / 'warmup.json', service.generate(warmup))
                     def measure(category, name, body, target=None):
@@ -1326,7 +1379,9 @@ def main():
                     if image_encoder(cfg):
                         image = dict(type='image', source=dict(type='base64', media_type='image/png',
                                      data=base64.b64encode((HERE / 'image.png').read_bytes()).decode('ascii')))
-                        image_body = body([image, dict(type='text', text=cases['image_prompt'])], cases['image_max_tokens'], thinking=False)
+                        image_limit = V3_IMAGE_MAX_TOKENS if application_defaults else cases['image_max_tokens']
+                        image_body = body([image, dict(type='text', text=cases['image_prompt'])], image_limit,
+                                          thinking=None if application_defaults else False)
                         measure('image', 'image', image_body)
                     run['vision_end'] = service.vision_identity()
                     if options.intel_text:

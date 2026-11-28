@@ -4,7 +4,11 @@
 
 ## English
 
-Use **`tinystrata-bench-v2`** for new standard TinyStrata measurements. The runner, fixed texts and image in this directory define the workload. Record the protocol and input SHA-256 hashes with the results.
+### Benchmark charter
+
+**A standard benchmark measures the performance users get with the shipped defaults for the model, backend and hardware.** Standard `tinystrata-bench-v3` builds a fresh profile through the same defaults as the app, including KV, MTP, input chunk, sampling and thinking for both text and image. Future changes to the app defaults flow into v3 through that shared profile. Keep those settings in the app profile code. The benchmark workload defines the prompts, seed, output limits and concurrency. Publish customized settings and experimental paths as diagnostics.
+
+Before collecting timings, verify the effective KV format reported by the engine. Qwen, Gemma, Clover and Tiel must keep GPU Vision active during the text tests and run the canonical image test. LFM is text-only. Record the protocol, KV policy and input SHA-256 hashes with the results.
 
 The Windows Intel text route has an explicit **`--intel-text`** variant:
 
@@ -20,12 +24,11 @@ It retains the canonical input hashes, seed 1234, excluded warm-up, four starts,
 
 ### Run
 
-The default controlled protocol is **tinystrata-bench-v2**. It measures Qwen, Gemma, LFM, Clover and Tiel Coder, with four fresh starts per model. Qwen, Gemma, Clover and Tiel run with GPU Vision. Clover uses causal D0 and the shared Qwen projector with 1,024–4,096 image tokens. Tiel uses its own projector and fixed sampler (temperature 1.0, top-p 0.95, top-k 20) with MTP 3. Prompts, INT8 KV, seed and timing rules carry over from v1.
+The default controlled protocol is **`tinystrata-bench-v3`** with `kv_policy: application-default`. It measures Qwen, Gemma, LFM, Clover and Tiel Coder, with four fresh starts per model. The current Clover profile uses causal D0, INT8 KV and `STRATA_IQ_MT_MIN=1`. Its shared Qwen projector uses 1,024–4,096 image tokens. Tiel uses its installed Ornith projector and currently defaults to MTP 3. The Tiel weights are `Tiel-Coder-35B-A3B-MTP-UD-IQ3_XXS.gguf`.
 
-Use `--protocol v1` to reproduce the four-model text-only Clover baseline. Existing saved-profile, Intel and Clover diagnostic variants retain their v1 labels.
-The v2 Tiel weights are `Tiel-Coder-35B-A3B-MTP-UD-IQ3_XXS.gguf`, with the installed Ornith projector.
+Use `--protocol v2` to reproduce historical fixed-INT8 v2 and its Clover settings. Use `--protocol v1` to reproduce the four-model baseline with text-only Clover. The saved-profile, Intel and Clover diagnostic protocols use their original v1 labels.
 
-Run Inkling 2 Mini on its own with `--model inkling` and an installed `config-inkling2.json`. The **`tinystrata-bench-v2-inkling`** extension uses the v2 workload and timing rules, including four fresh starts, two passes over the three generation texts, the exact 4K/16K inputs, and the canonical image. It disables drafting and uses automatic KV selection and the model's in-process Vision encoder, which can use the CPU. Results are marked `standard: false`. Use `--prepare-only` to inspect the plan or `--saved-profile --model inkling` to measure saved settings. The default `all` roster stays the same.
+Run Inkling 2 Mini on its own with `--model inkling` and an installed `config-inkling2.json`. The **`tinystrata-bench-v3-inkling`** extension uses the same workloads and timing rules, including four fresh starts, two passes over the three generation texts, the exact 4K/16K inputs, and the canonical image. It disables drafting and uses automatic KV selection and the model's in-process Vision encoder, which can use the CPU. Results use `standard: false` and `kv_policy: application-default`. The historical `--protocol v2 --model inkling` uses `tinystrata-bench-v2-inkling` and `kv_policy: engine-auto`. Use `--prepare-only` to inspect the plan or `--saved-profile --model inkling` to measure saved settings.
 
 [RTX 3060 branch results for Inkling 2 Mini](results/inkling2-rtx3060-route-parity-20261125.md)
 
@@ -36,7 +39,7 @@ $python = "$env:LOCALAPPDATA\TinyStrata-work\runtime\.venv\Scripts\python.exe"
 & $python "$env:LOCALAPPDATA\TinyStrata\benchmark\run.py" --model all
 ```
 
-From a source checkout, use `.\benchmark\run.py` instead. `--model qwen`, `--model gemma`, `--model lfm` and `--model clover` select one model. Clover uses `config-clover.json`. The runner uses the existing model/configuration files, starts its own loopback API, and does not change the saved configuration. Results go under `%LOCALAPPDATA%\TinyStrata-work\benchmarks\`; generated logs and results do not belong in Git.
+From a source checkout, use `.\benchmark\run.py` instead. `--model qwen`, `--model gemma`, `--model lfm`, `--model clover` and `--model tiel` select one model. Clover uses `config-clover.json`. The runner uses the existing model/configuration files, starts its own loopback API, and does not change the saved configuration. Results go under `%LOCALAPPDATA%\TinyStrata-work\benchmarks\`; generated logs and results do not belong in Git.
 
 To measure the **current saved application profiles once**, use:
 
@@ -52,7 +55,7 @@ Gemma HIP and CUDA batch up to 32 cached token/Expert pairs per launch. A [match
 
 Windows HIP also combines small Qwen-family routing transfers. A [matched-work development screen](results/hip-hybrid-publish-20261109.md) with a 6 GiB Expert budget measured short-generation gains of **26.17% for Qwen, 35.42% for causal Clover and 23.84% for Tiel**, with matching output tokens and Expert work. A smaller 4 GiB Qwen budget improved 18.07%. These are development measurements, separate from the standard v1 tables. `TINYSTRATA_HYBRID_PUBLISH=0` retains the old DMA path; CUDA and other OS defaults remain unchanged.
 
-The app defaults to causal decoding without drafts, D0, with INT8 KV and `STRATA_IQ_MT_MIN=1`; exact D3 is optional. Its selected route and the fixed benchmark regulation are separate. The standard benchmark always uses **INT8 causal decoding, D0**, independently of the app profile. Native LowConfidence block diffusion is measured separately:
+Managed Clover defaults to causal decoding without drafts, D0, with INT8 KV and `STRATA_IQ_MT_MIN=1`. Exact D3 is optional. The fixed v1 benchmark uses causal D0 and INT8 KV. Native LowConfidence block diffusion has its own benchmark:
 
 ```powershell
 & $python .\benchmark\run.py --protocol v1 --model clover --clover-mode causal
@@ -87,13 +90,13 @@ To measure Clover's default **GPU-resident Vision + causal D0** profile and opti
 
 `threshold` is approximate acceptance at temperature 0, not distribution-preserving speculative sampling. It uses target probabilities and entropy with the same response-count snapshot, including the already emitted anchor, for all preview and verification rows in a round; uncommitted drafts are excluded. It does not guarantee the causal/exact token sequence. A target EOS always stops, and an accepted draft EOS also remains a stopping boundary. Count final output tokens once and include preview, verification, transfers and acceptance work in decode time. The runner records the actual native settings, accepted/offered counts, transfers and kernel flags; report quality separately from throughput.
 
-Clover-only optional overrides are `--kv-type int8|fp8-mma`, `--cpu-workers N` (0 = auto), `--chunk auto|N`, and repeatable `--engine-env STRATA_NAME=VALUE` / `TINYSTRATA_NAME=VALUE`. For example:
+Clover diagnostics support `--kv-type int8|fp8-mma`, `--cpu-workers N` (0 = auto), `--chunk auto|N`, and repeatable `--engine-env STRATA_NAME=VALUE` / `TINYSTRATA_NAME=VALUE`. For example:
 
 ```powershell
 & $python .\benchmark\run.py --model clover --clover-mode diffusion --kv-type fp8-mma --cpu-workers 9 --chunk 1024
 ```
 
-Any such override makes the result a **variant** even when causal mode is selected. Saved profiles remain unchanged. The runner records the requested profile, checks the native mode/KV/block/threshold/explicit workers/chunk, and keeps the engine's reported worker count, total threads, block/pass counts and preview/replay times when available. Use the same overrides for the causal and diffusion comparison; the default command remains the INT8/automatic causal v1 baseline.
+Any such override makes the result a **variant** even when causal mode is selected. Saved profiles remain unchanged. The runner records the requested profile, checks the native mode/KV/block/threshold/explicit workers/chunk, and keeps the engine's reported worker count, total threads, block/pass counts and preview/replay times when available. Use the same overrides for the causal and diffusion comparison. The fixed v1 causal baseline is available with `--protocol v1 --model clover --clover-mode causal`.
 
 For a separate Clover comparison without thinking, add `--thinking off`. The default is `--thinking on`; disabling it marks even a causal run as a **variant**, records `thinking: false`, and applies to warm-up, token counting and every text request. The canonical short texts, sampler and seed stay fixed; the different chat template changes short-input token counts. Long inputs are still counted to exactly 4K/16K. This option does not change the saved profile or the standard v1 workload.
 
@@ -151,10 +154,10 @@ Candidates are powers of two, half the observed automatic count, and that count 
 
 Use the project's fixed model files: Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS, Google Gemma 4 26B-A4B-it QAT Q4_0 with its matching vision projector and QAT MTP assistant, LiquidAI LFM2.5-24B-A2B Q4_K_M, and [AtomicChat Clover-35B-A3B-Preview IQ3_XXS](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf) (`Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf`; Expert gate/up IQ3_XXS, down IQ3_S). Keep older Clover Q4_0 measurements labeled separately; they do not represent this IQ3_XXS profile. Record the actual model and binary hashes, TinyStrata version/commit, GPU/VRAM, CPU, system RAM, OS and driver version with a submission.
 
-- **INT8 KV** is the common comparison profile on NVIDIA and Radeon. FP8 or manually tuned settings belong in separately labelled results.
-- KV growth, automatic context capacity, automatic input chunk size, automatic Expert placement and automatic CPU worker selection. Graphs use their normal defaults. Do not add tuning environment variables or omit Experts/tokens.
-- MTP **3** and a **GPU-resident vision encoder** for Qwen/Gemma, including the three text benchmarks. LFM has neither. The fixed-v1 Clover control uses neither MTP nor Vision and explicitly uses causal decoding (`--clover-mode causal`, D0); v2 runs causal D0 with GPU Vision. Tiel runs with MTP 3 and GPU Vision in v2.
-- One request at a time; **seed 1234**. The following sampling values are fixed in `cases.json`, with the added Clover profile fixed in `run.py` so the existing v1 input hashes remain unchanged:
+- **v3 KV** follows the managed CUDA/HIP policy. In the current profile, Qwen, Tiel and LFM use native FP8 when the GPU and build support it, with INT8 as the fallback. Gemma and managed Clover default to INT8. Record the effective KV format reported by the engine for each start. **Historical v1 and v2** use fixed INT8 for the standard CUDA/HIP models.
+- The current managed profiles use KV growth, automatic context capacity, automatic input chunk size, automatic Expert placement, automatic CPU worker selection and the engine's graph defaults.
+- Qwen, Gemma and Tiel currently default to **MTP 3**. Qwen, Gemma, Clover and Tiel keep Vision on the GPU during text and image tests in v3. LFM is text-only and runs without MTP. The historical v2 protocol measures the same four models with GPU Vision. The v1 Clover control uses causal decoding (`--clover-mode causal`, D0) without Vision.
+- The workload uses one request at a time and **seed 1234**. v3 gets sampling from the fresh app profile at run time. For example, the current Qwen3.6 profile uses temperature 1.0. The table below records the historical v1/v2 sampler from `cases.json` and `benchmark/run.py`.
 
 | Model | Temperature | top_p | top_k | min_p | presence_penalty | repetition_penalty |
 |---|---:|---:|---:|---:|---:|---:|
@@ -164,7 +167,7 @@ Use the project's fixed model files: Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS, Goo
 | Clover | 0 | 1.0 | 64 | 0 | 0.9 | 1.05 |
 | Tiel Coder (v2) | 1.0 | 0.95 | 20 | 0 | 0 | 1.0 |
 
-Frequency penalty is zero. Thinking is enabled for generation and the two input-processing benchmarks; image description disables thinking so its first output is part of the description. The model's early EOS is respected: count the tokens actually generated, not an assumed output length.
+The historical sampler uses zero frequency penalty, enables thinking for text and disables it for images. v3 keeps the app's thinking defaults for every request, including the canonical image. Count the tokens actually generated, including runs that end early with EOS.
 
 ### Four benchmarks
 
@@ -173,7 +176,7 @@ Frequency penalty is zero. Thinking is enabled for generation and the two input-
 | Generation | The three `generation` texts in `cases.json`, in order, twice each; maximum 128 output tokens per request, including thinking | Total generated tokens ÷ total native decode seconds, tok/s |
 | 4K input | The numbered document defined by `long_paragraph` and `long_question`, adjusted to exactly **4,096 input tokens including the chat template**; maximum 32 output tokens | Total input tokens actually read ÷ total native prompt-processing seconds, tok/s |
 | 16K input | The same construction at exactly **16,384 input tokens including the chat template**; maximum 32 output tokens | Same input-processing rate, tok/s |
-| Image description | Unmodified **1,024 × 768** `image.png` and `image_prompt`; maximum 128 output tokens; first real image request after each fresh API start | Median client first-output time and median completion time, seconds; LFM is **N/A**. Clover and Tiel are included in v2; v1 measures images for Qwen and Gemma |
+| Image description | Unmodified **1,024 × 768** `image.png` and `image_prompt`. First real image request after each fresh API start. v3 allows **1,024 output tokens**, including thinking, to leave room for the description. v1/v2 allow 128 with thinking disabled | Median client first-output and completion times in seconds. LFM is **N/A**. v2 and v3 measure Qwen, Gemma, Clover and Tiel. v1 measures Qwen and Gemma |
 
 The runner uses the normal Messages API, including MTP, rather than the native `--tokens` generation loop. It uses the same request with `/v1/messages/count_tokens` to construct the 4K/16K inputs, then checks the actual native counts. The published texts/image and their hashes identify the inputs; the native prompt counts identify their token lengths for each model.
 
@@ -198,7 +201,7 @@ input tok/s      = 1000 × Σ prompt_read       / Σ prompt_ms
 
 Do not average per-request tok/s or select the fastest repetition. Loading and the separate warm-up are excluded. Each benchmark request sets `strata_checkpoint: false` so conversation parking cannot turn a repeated input into a cache hit. Failed, cancelled, cached or wrong-length samples cannot silently be dropped from a standard result: report an incomplete run or repeat the complete protocol after fixing the cause.
 
-For an image, start the client's monotonic clock immediately before POST. First-output time ends at the first nonempty streamed model text, not HTTP headers/keep-alives. Completion time ends at `message_stop`. These times include upload, image decoding/encoding, prompt processing and generation; they exclude server/model startup. Native `prompt_ms` alone excludes image encoding and must not replace the image times. Record the actual description and output length too.
+For an image, start the client's monotonic clock immediately before POST. v3 first-output time ends at the first nonempty streamed thinking or text. In v1/v2, the timing starts with thinking disabled and first output is the description. Completion time ends at `message_stop`. Use model output events for timing and ignore headers and keep-alives. These times include upload, image decoding and encoding, prompt processing and generation. Server and model loading happen before the timer starts. Native `prompt_ms` excludes image encoding. Record the actual description and output length too.
 
 ### Expert cache and result format
 
@@ -206,28 +209,31 @@ Save the reported `expert_cache_bytes` before and after every benchmark; when th
 
 This is the allocated GPU Expert cache, not the model's file size or an estimate of other applications' usage. KV growth, workspace and headroom adjustments can change it during a run; a later short image request may enlarge it again, which is why the second value is taken immediately after 16K. No other-application memory usage is collected by this protocol.
 
-| Model | Context | Generation tok/s | 4K input tok/s | 16K input tok/s | Image first / complete, s | Notes |
-|---|---:|---:|---:|---:|---:|---|
-| … | … | … | … | … | … / … | Expert cache … → … GiB |
+| Model | KV | Context | Chunk | Generation tok/s | 4K input tok/s | 16K input tok/s | Image first / complete, s | Notes |
+|---|---|---:|---:|---:|---:|---:|---:|---|
+| … | … | … | … | … | … | … | … / … | Expert cache … → … GiB |
 
-Use the same protocol/input hashes, model files and KV profile when comparing results. Report hardware and the actual automatic context/chunk settings alongside the table. Simulated VRAM limits are separate results from physical GPU measurements. Publish the complete run summary, not a single favourable sample.
+Use the same protocol, input hashes, model files and effective KV format when comparing an engine change. Reports of overall default performance may use different KV formats as selected by each GPU. Show the effective KV format and actual context and chunk settings alongside the hardware. The [November 28 Radeon table](results/rx-9060-xt.md#standard-v2-benchmark-2026-11-28) records the earlier v2 fixed-INT8 policy. Simulated VRAM limits are separate results from physical GPU measurements. Publish the complete run summary, not a single favourable sample.
 
 ## 日本語
+
+### ベンチマーク憲章
+
+**標準ベンチでは、出荷時の既定設定でユーザーが実際に得る性能を測ります。** 標準 `tinystrata-bench-v3` は、モデル・バックエンド・ハードウェアごとにアプリと同じ初期プロファイルを作成し、KV、MTP、入力チャンク、サンプラー、テキストと画像の思考設定に使います。今後の既定値の変更も共通プロファイルを通じて v3 に反映します。これらの既定値はアプリ側で管理します。ベンチのワークロードはプロンプト・seed・出力上限・同時実行数を定義します。手動調整や試験経路を使った値は診断結果として公開します。
+
+計測前にエンジンが報告する実効 KV 形式を確認します。Qwen・Gemma・Clover・Tiel はテキスト測定中も GPU Vision を有効にし、規定の画像テストを実施します。LFM はテキスト専用です。結果には規約バージョン、KV の選択方針、入力の SHA-256 を残します。
 
 Intel実験版は **`--intel-text`** を明示して測定します。`--model qwen` は `config-sycl.json`、`--model tiel` は `config-tiel-coder-sycl.json`、新しい専用runtimeの `--model gemma` / `lfm` / `clover` はそれぞれ `config-gemma4-sycl.json` / `config-lfm2-sycl.json` / `config-clover-sycl.json` を読みます。必要に応じて `--config-dir` で導入済み設定のフォルダーを指定してください。
 
 固定入力・seed1234・除外ウォームアップ・4回起動・生成3課題各2回・正確な4K/16K入力・fresh入力（`reused=0`）・計測境界は維持します。各モデルは固定v1のモデル別サンプラー、追加モデルのTielは公式Tiel設定を使います。ただし画像未対応、動的KVの代わりに私有設定でcontext32768固定、UMAの独立Expert cacheは該当なしです。このため規約名は `tinystrata-bench-v1-intel-text`、**`standard: false`** とし、標準v1の結果へ混ぜません。Qwen/Tielは実INT8 KV/MTP3/chunk1024/draft2048を保持します。専用Gemma/LFM/Cloverは実INT8 KV/MTP0、assistant/projectorなし、Cloverはcausal D0/draft0、LFMは思考必須です。新3モデルの現source profile auto chunkは512（Gemma/LFM上限512）、Cloverのauto変更は後続実測の採否と分けます。runnerはsource profileの実解決chunkと全native引数を固定記録し、新3モデルは対応する現native能力契約を必須にします。generic・不明profile・他モデルruntimeは拒否します。native INFOと正確な所有`--serve`引数を照合し、INFOで未報告のchunkを実counterとして扱いません。実行ファイル／stageのSHA・backend/profileを記録し、保存済み設定は変更しません。旧Qwen/Tiel chunk512の結果は別の診断として残します。`--prepare-only` はモデルを追加読込せず計画だけ確認し、新runtimeの実機品質・速度・配布の採用を意味しません。
 
-新しい標準計測には **`tinystrata-bench-v2`** を使います。このフォルダーの実行スクリプト・固定テキスト・画像が計測条件です。結果には規約バージョンと入力の SHA-256 を残します。
-
 ### 実行方法
 
-既定は **tinystrata-bench-v2** です。Qwen・Gemma・LFM・Clover・Tiel Coderを各4起動で計測します。Qwen・Gemma・Clover・TielはGPU Visionを使います。Cloverは因果D0と共有Qwenプロジェクターで画像を1,024〜4,096トークンに設定します。Tielは専用プロジェクター、MTP 3、温度1.0・top-p 0.95・top-k 20の固定設定で測ります。プロンプト、INT8 KV、seedと計時方法はv1と共通です。
+既定は **`tinystrata-bench-v3`**（`kv_policy: application-default`）です。Qwen・Gemma・LFM・Clover・Tiel Coder を各4起動で計測します。現行の Clover は因果 D0・INT8 KV・`STRATA_IQ_MT_MIN=1` を使い、共有 Qwen プロジェクターで画像を1,024〜4,096トークンに設定します。Tiel は専用の Ornith プロジェクターと、現行の既定 MTP 3 を使います。モデルファイルは `Tiel-Coder-35B-A3B-MTP-UD-IQ3_XXS.gguf` です。
 
-旧4モデル・Clover画像なしの条件は `--protocol v1` で再現できます。保存済み設定・Intel・Cloverの既存診断モードはv1のラベルを維持します。
-Tielのモデルファイルは `Tiel-Coder-35B-A3B-MTP-UD-IQ3_XXS.gguf` で、同モデル用に導入したOrnithプロジェクターを使用します。
+旧 v2 の INT8 固定と当時の Clover 設定は `--protocol v2` で再現できます。4モデルで Clover をテキストのみで測る旧規約は `--protocol v1` を指定します。保存済み設定・Intel・Clover の診断モードには従来の v1 ラベルを使います。
 
-Inkling 2 Miniは、導入済みの `config-inkling2.json` を使って `--model inkling` で個別に測定できます。**`tinystrata-bench-v2-inkling`** はv2と同じ計時方法で、4起動、短文3件を各2回、正確な4K／16K入力、規定画像を測ります。投機生成を無効にし、KVは自動選択、画像にはCPUも使用可能な内蔵エンコーダーを使います。結果には `standard: false` を記録します。計画の確認は `--prepare-only`、保存済み設定での計測は `--saved-profile --model inkling` を使います。既定の `all` の対象は従来どおりです。
+Inkling 2 Mini は、導入済みの `config-inkling2.json` を使って `--model inkling` で個別に測定できます。**`tinystrata-bench-v3-inkling`** は同じ計時方法で、4起動、短文3件を各2回、正確な4K／16K入力、規定画像を測ります。投機生成を無効にし、KV は自動選択、画像には CPU も使用可能な内蔵エンコーダーを使います。結果には `standard: false` と `kv_policy: application-default` を記録します。旧 `tinystrata-bench-v2-inkling`（`kv_policy: engine-auto`）は `--protocol v2 --model inkling` で再現できます。計画の確認は `--prepare-only`、保存済み設定での計測は `--saved-profile --model inkling` を使います。
 
 [RTX 3060でのInkling 2 Miniブランチ版の測定結果](results/inkling2-rtx3060-route-parity-20261125.md)
 
@@ -238,7 +244,7 @@ $python = "$env:LOCALAPPDATA\TinyStrata-work\runtime\.venv\Scripts\python.exe"
 & $python "$env:LOCALAPPDATA\TinyStrata\benchmark\run.py" --model all
 ```
 
-ソースを取得したフォルダーでは、スクリプトのパスを `.\benchmark\run.py` に置き換えます。個別に測る場合は `--model qwen`、`--model gemma`、`--model lfm`、`--model clover` を使います。Clover の設定ファイルは `config-clover.json` です。既存のモデルと設定ファイルを使って計測専用 API を起動し、保存済みの設定は書き換えません。結果は `%LOCALAPPDATA%\TinyStrata-work\benchmarks\` に保存します。生成したログや結果は Git に含めません。
+ソースを取得したフォルダーでは、スクリプトのパスを `.\benchmark\run.py` に置き換えます。個別に測る場合は `--model qwen`、`--model gemma`、`--model lfm`、`--model clover`、`--model tiel` を使います。Clover の設定ファイルは `config-clover.json` です。既存のモデルと設定ファイルを使って計測専用 API を起動し、保存済みの設定は書き換えません。結果は `%LOCALAPPDATA%\TinyStrata-work\benchmarks\` に保存します。生成したログや結果は Git に含めません。
 
 現在のアプリ設定で一度ずつ測る場合は `--saved-profile --runs 1 --model all` を指定します。Tiel も含む5モデルの保存済み native・温度・KV・CPU・Vision 設定を維持し、生成3問を各1回、4K・16K入力を各1回、画像対応モデルでは画像も1回測ります。アプリで一度もロードしていないダウンロード済みモデルも、ベンチ専用APIでは起動時にロードします。初回ロード待ち・遅延ロードのフラグは専用設定のコピーだけから除きます。名前は別枠の `tinystrata-bench-v1-saved-profile`、`standard: false` です。通常の設定・キーは変更せず、標準 v1 の既存の4モデル・2周・4起動の条件や過去の表は変更しません。
 
@@ -248,7 +254,7 @@ Gemma の HIP・CUDA 経路は、キャッシュ済み token／Expert を最大3
 
 Windows HIP では Qwen 系の小さいルーティング転送もまとめます。6 GiB Expert 配置による[同一処理の開発時比較](results/hip-hybrid-publish-20261109.md)で、短文生成は **Qwen +26.17%、Clover 因果 +35.42%、Tiel +23.84%**となり、出力トークン・Expert 処理件数が一致しました。Qwen の4 GiB配置でも18.07%改善しました。標準 v1 表とは別枠の結果です。`TINYSTRATA_HYBRID_PUBLISH=0` で従来 DMA に戻せます。CUDA と他 OS の既定は維持します。
 
-Clover のアプリの既定はドラフトを使わない因果生成 D0・INT8 KV・`STRATA_IQ_MT_MIN=1` で、exact D3 は任意選択です。アプリで選ぶ生成経路と固定ベンチ規約は別で、標準ベンチはアプリのプロファイルにかかわらず、**INT8・因果生成・D0** を使います。LowConfidence 方式のネイティブなブロック拡散は別々に測定します。
+Clover のアプリの既定はドラフトを使わない因果生成 D0・INT8 KV・`STRATA_IQ_MT_MIN=1` です。exact D3 は任意選択です。固定 v1 では因果生成 D0・INT8 KV を使用します。LowConfidence 方式のネイティブなブロック拡散は専用の条件で測定します。
 
 ```powershell
 & $python .\benchmark\run.py --protocol v1 --model clover --clover-mode causal
@@ -283,13 +289,13 @@ Clover の既定である **GPU 常駐 Vision＋因果 D0** と、任意選択�
 
 `threshold` は temperature 0 で使う近似的な採用規則で、確率分布を保存する投機サンプリングではありません。1 ラウンドの preview・検証の全行で、出力済み anchor を含む応答トークン数の履歴を固定し、未確定ドラフトを追加せずに本体の確率とエントロピーから採否を決めます。因果生成や exact と同じトークン列は保証しません。本体が選んだ EOS と採用されたドラフトの EOS は、いずれも応答終了として扱います。最終出力は各トークンを一度だけ数え、preview・因果検証・転送・採用判定もデコード時間に含めます。実際のエンジン設定・採用数／提案数・転送量・カーネル設定を保存し、品質は速度と分けて報告してください。
 
-Clover 専用の調整項目として、`--kv-type int8|fp8-mma`、`--cpu-workers N`（0 は自動）、`--chunk auto|N`、繰り返し指定できる `--engine-env STRATA_NAME=VALUE`／`TINYSTRATA_NAME=VALUE` も使えます。例：
+Clover の診断計測では `--kv-type int8|fp8-mma`、`--cpu-workers N`（0 は自動）、`--chunk auto|N`、繰り返し指定できる `--engine-env STRATA_NAME=VALUE`／`TINYSTRATA_NAME=VALUE` を使えます。たとえばブロック拡散で FP8 を指定するコマンドは次のとおりです。
 
 ```powershell
 & $python .\benchmark\run.py --model clover --clover-mode diffusion --kv-type fp8-mma --cpu-workers 9 --chunk 1024
 ```
 
-いずれかを指定すると、因果生成の場合も **variant（条件を明示した別枠の測定）** として保存します。保存済みのモデル設定は変更しません。指定条件を記録し、実際の生成方式・KV・ブロック・閾値・明示したワーカー数とチャンクが一致することを確認します。エンジンが返す実ワーカー数・総スレッド数・ブロック数・反復数・preview／replay 時間も記録します。因果生成とブロック拡散の比較では同じ調整値を指定してください。調整指定のない既定コマンドは、INT8・自動設定・因果生成の v1 基準値のままです。
+いずれかを指定すると、因果生成の場合も **variant（条件を明示した別枠の測定）** として保存します。保存済みのモデル設定は変更しません。指定条件を記録し、実際の生成方式・KV・ブロック・閾値・明示したワーカー数とチャンクが一致することを確認します。エンジンが返す実ワーカー数・総スレッド数・ブロック数・反復数・preview／replay 時間も記録します。因果生成とブロック拡散の比較では同じ調整値を指定してください。固定 v1 の因果生成は `--protocol v1 --model clover --clover-mode causal` で再現できます。
 
 Clover で思考なしの比較を別途行う場合は、`--thinking off` を追加します。既定は `--thinking on` です。無効にすると因果生成でも **variant** とし、`thinking: false` を記録して、ウォームアップ・トークン数の確認・すべてのテキスト生成へ適用します。規定の短文本文・サンプラー・seed は同じですが、チャットテンプレートが変わるため短い入力のトークン数は変わります。長文入力は引き続き正確に 4K／16K に合わせます。保存済み設定や標準の v1 条件は変更しません。
 
@@ -347,10 +353,10 @@ Gemma の検証用の容量は起動時に確保します。必要な幅はラ�
 
 モデルはプロジェクト指定の Unsloth Qwen3.6-35B-A3B MTP UD-IQ3_XXS、Google Gemma 4 26B-A4B-it QAT Q4_0 と対応する画像プロジェクタ・QAT MTP アシスタント、LiquidAI LFM2.5-24B-A2B Q4_K_M、[AtomicChat Clover-35B-A3B-Preview IQ3_XXS](https://huggingface.co/AtomicChat/Clover-35B-A3B-Preview-GGUF/blob/4f7e2918e5315634d9d9720ea4f6e8a9a627a875/Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf)（`Clover-35B-A3B-Preview-AD-IQ3_S-IQ3_XXS.gguf`、エキスパートの gate/up は IQ3_XXS、down は IQ3_S）を使います。過去の Clover Q4_0 の計測は別途 Q4_0 と明記し、この IQ3_XXS プロファイルの結果として扱いません。モデルとバイナリのハッシュ、TinyStrata のバージョン／コミット、GPU・搭載 VRAM、CPU、RAM、OS、ドライバーを結果に併記します。
 
-- NVIDIA・Radeon 共通の比較は **INT8 KV**。FP8 や手動調整を加えた結果は別枠です。
-- KV は段階確保。コンテキスト容量・入力チャンク・Expert 配置・CPU ワーカー数は自動選択、Graph は既定の動作です。高速化用の環境変数や Expert／トークンの省略は追加しません。
-- Qwen・Gemma は **MTP 3 と GPU 常駐 Vision** を使用します。テキストの計測でも画像エンコーダーを常駐させます。LFM はどちらも使いません。固定 v1 の Clover 対照は MTP・Vision なし、因果経路（`--clover-mode causal`、D0）で測り、v2 は Clover を因果 D0＋GPU Vision、Tiel を MTP 3＋GPU Vision で測ります。
-- 同時実行は 1 リクエスト、**seed は 1234**。サンプリングは下表で固定します。既存 v1 入力のハッシュを維持するため、追加した Clover の設定は `run.py` に、他のモデルは `cases.json` に定義します。
+- **v3 の KV** は CUDA／HIP の通常起動の方針に従います。現行の Qwen・Tiel・LFM は GPU とビルドが対応する場合はネイティブ FP8、その他の場合は INT8 を使用します。Gemma とアプリの Clover は既定で INT8 です。各起動でエンジンが実際に選んだ KV 形式を記録します。**旧 v1・v2** の標準 CUDA／HIP モデルは INT8 固定です。
+- 現行プロファイルでは KV を段階確保し、コンテキスト容量・入力チャンク・Expert 配置・CPU ワーカー数を自動選択します。Graph はエンジンの既定の動作に従います。
+- 現行の Qwen・Gemma・Tiel の既定は **MTP 3** です。v3 の Qwen・Gemma・Clover・Tiel はテキストと画像の両方で Vision を GPU に常駐させます。LFM はテキスト専用で、MTP を使いません。旧 v2 でも同じ4モデルで GPU Vision を使います。v1 の Clover は画像なしの因果 D0（`--clover-mode causal`）です。
+- 同時実行は 1 リクエスト、**seed は 1234** です。v3 のサンプラーは実行時点のアプリの初期プロファイルから取得します。たとえば現行の Qwen3.6 の温度は 1.0 です。下表は `cases.json` と `benchmark/run.py` に定義された旧 v1・v2 の設定です。
 
 | モデル | temperature | top_p | top_k | min_p | presence_penalty | repetition_penalty |
 |---|---:|---:|---:|---:|---:|---:|
@@ -358,9 +364,9 @@ Gemma の検証用の容量は起動時に確保します。必要な幅はラ�
 | Gemma 4 | 1.0 | 0.95 | 64 | 0 | 0 | 1.0 |
 | LFM2.5 | 0.1 | 1.0 | 50 | 0 | 0 | 1.05 |
 | Clover | 0 | 1.0 | 64 | 0 | 0.9 | 1.05 |
-| Tiel Coder (v2) | 1.0 | 0.95 | 20 | 0 | 0 | 1.0 |
+| Tiel Coder（v2） | 1.0 | 0.95 | 20 | 0 | 0 | 1.0 |
 
-frequency_penalty は 0。生成・4K・16K は思考有効、画像説明は説明本文の開始時間を測るため思考無効です。早期 EOS はそのまま扱い、出力上限まで生成したと仮定せず、実生成トークン数を使います。
+旧規約の `frequency_penalty` は 0 で、テキストでは思考有効、画像では思考無効です。v3 は規定の画像リクエストも含め、各リクエストでアプリの思考設定に従います。早期 EOS も含め、実際に生成したトークン数を使います。
 
 ### 4 つの計測
 
@@ -369,7 +375,7 @@ frequency_penalty は 0。生成・4K・16K は思考有効、画像説明は説
 | 生成速度 | `cases.json` の `generation` 3 入力を順に各 2 回。各リクエスト最大 128 トークン、思考を含む | 総生成トークン数 ÷ 総デコード秒数（tok/s） |
 | 4K 入力 | `long_paragraph` と `long_question` から作る文書を、**テンプレート込みで 4,096 入力トークン**に調整。出力上限 32 | 新しく読んだ総入力トークン数 ÷ 総入力処理秒数（tok/s） |
 | 16K 入力 | 同じ方法で **テンプレート込み 16,384 入力トークン**。出力上限 32 | 同じ入力処理速度（tok/s） |
-| 画像説明 | 無加工の **1,024 × 768** `image.png` と `image_prompt`。出力上限 128。API 起動後、最初の実画像リクエスト | 最初の出力まで／説明完了までの秒数の中央値。LFM は対象外。v2 は Clover と Tiel も計測し、v1 は Qwen と Gemma を計測 |
+| 画像説明 | 無加工の **1,024 × 768** `image.png` と `image_prompt`。API 起動後、最初の実画像リクエスト。v3 は思考の後に説明本文を出せるよう、思考も含めて **1,024 出力トークン**を上限とします。v1・v2 は思考なしで 128 | 最初の出力／完了までの秒数の中央値。LFM は対象外。v2・v3 は Qwen・Gemma・Clover・Tiel、v1 は Qwen・Gemma を計測 |
 
 MTP を含む通常の Messages API を使い、native の `--tokens` 生成ループでは測りません。4K・16K は同じリクエストを `/v1/messages/count_tokens` で数えて作成し、実際のエンジンの入力数でも確認します。テキスト・画像のハッシュで入力を識別し、各モデルの実トークン数で長さを確認します。
 
@@ -394,7 +400,7 @@ MTP を含む通常の Messages API を使い、native の `--tokens` 生成ル�
 
 各回の tok/s の単純平均や最速値の選別はしません。モデルの読み込みと別枠のウォームアップは除外します。各リクエストに `strata_checkpoint: false` を指定し、会話キャッシュによって繰り返し入力がヒットしないようにします。失敗・中断・KV 再利用・入力数違いの試行を黙って除外せず、未完了として報告するか、原因を直して規約の全手順を測り直します。
 
-画像はクライアントの単調増加時計で POST 直前から測ります。最初の出力は空でないモデルの文字列が届いた時点、完了は `message_stop` です。HTTP ヘッダーや keep-alive は出力に数えません。アップロード・画像の読み込み／エンコード・入力処理・生成を含み、サーバーとモデルの起動は含みません。エンジンの `prompt_ms` は画像エンコードを含まないため、画像の秒数の代わりには使いません。説明文と実出力数も保存します。
+画像はクライアントの単調増加時計で POST 直前から測ります。v3 の最初の出力は、空でない思考または本文が届いた時点です。v1・v2 は思考を無効にするため、説明本文の開始を測ります。完了は `message_stop` です。出力の判定にはモデルの出力イベントを使います。計時範囲はアップロード・画像の読み込み／エンコード・入力処理・生成です。サーバーとモデルは計時前に起動します。エンジンの `prompt_ms` は画像エンコードを含みません。説明文と実出力数も保存します。
 
 ### Expert キャッシュと表の備考
 
@@ -402,8 +408,8 @@ MTP を含む通常の Messages API を使い、native の `--tokens` 生成ル�
 
 これは GPU に確保した Expert キャッシュの量であり、モデルファイルの容量や他アプリの使用量の推定値ではありません。KV・作業領域・予備領域の調整でも実行中に変わります。その後の短い画像リクエストで再び増える場合があるため、矢印の後ろは 16K 終了直後の値にします。他アプリのメモリ使用量は収集しません。
 
-| モデル | コンテキスト | 生成 tok/s | 4K 入力 tok/s | 16K 入力 tok/s | 画像 最初／完了 秒 | 備考 |
-|---|---:|---:|---:|---:|---:|---|
-| … | … | … | … | … | … / … | Expert cache … → … GiB |
+| モデル | KV | コンテキスト | チャンク | 生成 tok/s | 4K 入力 tok/s | 16K 入力 tok/s | 画像 最初／完了 秒 | 備考 |
+|---|---|---:|---:|---:|---:|---:|---:|---|
+| … | … | … | … | … | … | … | … / … | Expert cache … → … GiB |
 
-比較には同じ規約・入力ハッシュ・モデルファイル・KV 形式を使い、ハードウェアと実際に自動選択されたコンテキスト・チャンクも併記します。VRAM を擬似的に制限した結果は物理 GPU の結果と分けます。都合のよい 1 回ではなく、完了した全試行の集計を公開します。
+エンジン変更前後の比較には、同じ規約・入力ハッシュ・モデルファイル・実際の KV 形式を使います。GPU ごとの既定性能を測ると、選ばれる KV 形式が異なる場合があります。ハードウェアと実際の KV 形式、コンテキスト、チャンクを併記します。[11月28日の Radeon ベンチ](results/rx-9060-xt.md#standard-v2-benchmark-2026-11-28) は当時の INT8 固定 v2 の記録です。VRAM を擬似的に制限した結果は物理 GPU の結果と分けます。完了した全試行の集計を公開します。

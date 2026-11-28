@@ -86,7 +86,7 @@ def refresh_hip_device(cfg: dict) -> dict:
 def prepare(a) -> tuple[dict, Path]:
     from serve import config
     from serve.backend import configure_backend, executable_backend, hardware_backend, hip_ordinal
-    from serve.tinyconfig import (CLOVER_SAMPLING, CLOVER_DECODE_POLICY_VERSION, MEMORY_POLICY_VERSION,
+    from serve.tinyconfig import (CLOVER_SAMPLING, CLOVER_DECODE_POLICY_VERSION,
                                  automatic_experts, check_files, clover_decode_defaults, clover_vision_defaults,
                                  CLOVER_VISION_POLICY_VERSION, migrate_settings, validate)
     from serve.model_setup import (configure_download, configure_vision, model_architecture, model_path, prepare_installed_model,
@@ -133,17 +133,18 @@ def prepare(a) -> tuple[dict, Path]:
     assert_installation_ready(path, allow_installer=getattr(a, "configure_only", False))
     arch = requested_arch or "qwen35moe"
     fresh = not path.exists()
-    cfg = config.load(path) if not fresh else {
-        "arch": arch, "model_name": ("tiel-coder-35b-a3b" if tiel else
-                                    {"lfm2moe": "lfm2.5-24b-a2b", "gemma4": "gemma-4-26b-a4b-it", "clover_moe": "clover-35b-a3b-preview",
-                                     "inkling2_loop": "inkling-2-mini"}
-                                    .get(arch, "qwen3.6-35b-a3b")),
-        "cwd": str(ROOT),
-        "args": ["--max-context", "auto", "--kv-type", "auto", "--chunk", "auto"] +
-                ([] if intel_requested or arch in ("clover_moe", "lfm2moe", "inkling2_loop") else ["--mtp", "3"]),
-        "memory_policy_version": MEMORY_POLICY_VERSION,
-        "host": "127.0.0.1",
-    }
+    if fresh:
+        from serve.model_profiles import fresh_profile_defaults
+        from serve.tinyconfig import MODEL_NAMES
+        name = "tiel-coder-35b-a3b" if tiel else MODEL_NAMES[arch]
+        cfg = {**fresh_profile_defaults(name, arch), "host": "127.0.0.1"}
+        if intel_requested:
+            args = cfg["args"]
+            if "--mtp" in args:
+                index = args.index("--mtp")
+                del args[index:index + 2]
+    else:
+        cfg = config.load(path)
     reject_retired_model(cfg.get("arch"), cfg.get("model_name"))
     if intel_requested and not fresh and cfg.get("backend") != "sycl":
         raise ValueError("Use a separate Intel --config path; an existing CUDA/HIP configuration is not overwritten")
