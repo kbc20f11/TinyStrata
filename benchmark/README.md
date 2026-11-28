@@ -10,6 +10,19 @@
 
 Before collecting timings, verify the effective KV format reported by the engine. Qwen, Gemma, Clover and Tiel must keep GPU Vision active during the text tests and run the canonical image test. LFM is text-only. Record the protocol, KV policy and input SHA-256 hashes with the results.
 
+On supported Windows Intel UMA hardware, use `--intel` for `tinystrata-bench-v3-intel`:
+
+```powershell
+& $python .\benchmark\run.py --intel --model all --prepare-only
+& $python .\benchmark\run.py --intel --model all
+```
+
+The runner uses the installed SYCL executables, weights, tokenizers and image projectors from `%LOCALAPPDATA%\TinyStrata-Intel-work\runtime\.tinystrata`. Use `--config-dir` for a custom install. Private API profiles apply the app's managed sampling, thinking, automatic context and chunk, KV and supported MTP defaults. GPU Vision is enabled for Qwen, Tiel, Gemma and Clover, including when an installed profile has it disabled. Install the matching projectors and encoder before running the suite. The source profiles remain untouched.
+
+Unload the ordinary application model before measurements so the private API has the device and UMA budget to itself. Four starts and two passes over the three generation prompts are the default. `--runs 1` gives a diagnostic pass through the full workload. Results include the selected backend and device, runtime and asset hashes, actual READY capacity and KV settings, startup memory planner figures and memory samples around each measured request. Native Attention and KV backing counters carry `null` when the runtime omits them. Shared GPU memory and system RAM overlap on UMA and are reported separately.
+
+If automatic context cannot hold a workload's input and required output, the runner records the capacity skip and continues the remaining workloads and models. The report remains incomplete and diagnostic even when the requested start count is four. Rates are available for completed cases.
+
 The Windows Intel text route has an explicit **`--intel-text`** variant:
 
 ```powershell
@@ -26,7 +39,7 @@ It retains the canonical input hashes, seed 1234, excluded warm-up, four starts,
 
 The default controlled protocol is **`tinystrata-bench-v3`** with `kv_policy: application-default`. It measures Qwen, Gemma, LFM, Clover and Tiel Coder, with four fresh starts per model. The current Clover profile uses causal D0, INT8 KV and `STRATA_IQ_MT_MIN=1`. Its shared Qwen projector uses 1,024–4,096 image tokens. Tiel uses its installed Ornith projector and currently defaults to MTP 3. The Tiel weights are `Tiel-Coder-35B-A3B-MTP-UD-IQ3_XXS.gguf`.
 
-Use `--protocol v2` to reproduce historical fixed-INT8 v2 and its Clover settings. Use `--protocol v1` to reproduce the four-model baseline with text-only Clover. The saved-profile, Intel and Clover diagnostic protocols use their original v1 labels.
+Use `--protocol v2` to reproduce historical fixed-INT8 v2 and its Clover settings. Use `--protocol v1` to reproduce the four-model baseline with text-only Clover. The saved-profile, `--intel-text` and Clover diagnostic protocols use their original v1 labels.
 
 Run Inkling 2 Mini on its own with `--model inkling` and an installed `config-inkling2.json`. The **`tinystrata-bench-v3-inkling`** extension uses the same workloads and timing rules, including four fresh starts, two passes over the three generation texts, the exact 4K/16K inputs, and the canonical image. Inkling currently defaults to drafting off, automatic KV selection and an in-process Vision encoder that can use the CPU. Results use `standard: false` and `kv_policy: application-default`. The historical `--protocol v2 --model inkling` uses `tinystrata-bench-v2-inkling` and `kv_policy: engine-auto`. Use `--prepare-only` to inspect the plan or `--saved-profile --model inkling` to measure saved settings.
 

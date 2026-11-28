@@ -79,6 +79,10 @@ ENGINE_KEYS += ('backend', 'experimental', 'intel_profile', 'memory_model', 'sin
                 'device_vendor', 'device_id', 'device_integrated', 'device_architecture',
                 'adapter_luid', 'adapter_node_mask')
 ENGINE_KEYS += ('arch', 'layers', 'visits', 'drafting', 'drafter', 'vision_backend')
+INTEL_ENGINE_KEYS = ('kv_used_tokens', 'kv_allocated_bytes', 'context_budget_device', 'context_bytes_device',
+                     'context_bytes_host_visible', 'context_bytes_host_only', 'context_wddm_known',
+                     'context_wddm_available_raw', 'context_wddm_headroom', 'context_wddm_usable',
+                     'attention_route', 'prefill_attention_route', 'decode_attention_route')
 CLOVER_INFO_FLOATS = ('clover_threshold', 'clover_last_threshold', 'clover_preview_ms',
                       'clover_replay_ms', 'clover_select_ms', 'clover_preview_cpu_ms',
                       'clover_accept_ratio', 'clover_accept_delta', 'clover_last_accept_ratio', 'clover_last_accept_delta')
@@ -172,10 +176,12 @@ def model_definition(model):
     return TIEL_MODEL if model == 'tiel' else MODELS[model]
 
 
-def benchmark_models(model, saved_profile=False, *, intel_text=False, v2=False):
-    if intel_text:
+def benchmark_models(model, saved_profile=False, *, intel_text=False, intel=False, v2=False):
+    if intel_text or intel:
+        if model == 'all' and intel:
+            return benchmark_models(model, v2=True)
         if model not in INTEL_TEXT_CONFIGS:
-            raise ValueError('--intel-text requires one explicit --model qwen, tiel, gemma, lfm or clover')
+            raise ValueError('Select qwen, tiel, gemma, lfm or clover with --intel-text; --intel also supports all')
         from serve.intel_backend import supports_model
         _, arch, name = model_definition(model)
         if not supports_model({'arch': arch, 'model_name': name}):
@@ -197,7 +203,7 @@ def generation_passes(saved_profile=False):
 def saved_config(original, model, folder, port, cases, *, copy_profiles=False):
     """Retain actual native/model choices; isolate only benchmark side effects."""
     if original.get('backend') == 'sycl':
-        raise ValueError('Intel benchmarking requires the explicit --intel-text variant')
+        raise ValueError('Select --intel for application-default v3 or --intel-text for the fixed-context diagnostic')
     file, arch, name = model_definition(model)
     if original.get('arch', 'qwen35moe') != arch:
         raise ValueError(f'{file} does not select {arch}')
@@ -348,11 +354,11 @@ def validate_intel_text_engine(info, health, cfg):
     cache_bytes(info, intel_text=True)
 
 
-def intel_text_build(cfg):
+def intel_runtime_build(cfg, option):
     from serve.model_setup import validate_intel_executable
     proof = validate_intel_executable(cfg, allow_legacy=False)
     if proof is None:
-        raise ValueError('--intel-text requires an installed native build with current capability metadata')
+        raise ValueError(f'{option} requires an installed native build with current capability metadata')
     from serve.intel_backend import canonical_model
     from serve.intel_models import TARGET_ONLY_MODELS
     if canonical_model(cfg) in TARGET_ONLY_MODELS:
@@ -362,10 +368,121 @@ def intel_text_build(cfg):
     manifests = list(dict.fromkeys(path / '.tinystrata-intel-runtime.json' for path in folders
                                   if (path / '.tinystrata-intel-runtime.json').is_file()))
     if not manifests:
-        raise ValueError('--intel-text requires an app-local staged/imported runtime manifest')
+        raise ValueError(f'{option} requires an app-local staged/imported runtime manifest')
     return {'executable': proof.executable, 'executable_sha256': proof.sha256,
             'capabilities': proof.report,
             'stage_manifests': [{'path': str(path), 'sha256': sha256(path)} for path in manifests]}
+
+
+def intel_text_build(cfg):
+    return intel_runtime_build(cfg, '--intel-text')
+
+
+def intel_config(original, model, folder, port):
+    """Use managed defaults with the installed model, device and image assets."""
+    from serve import model_setup
+    from serve.intel_backend import canonical_model, configure_backend, engine_args
+    from serve.intel_models import MODEL_PROFILES, VISION_MODELS
+    from serve.model_profiles import fresh_profile_defaults
+
+    _, arch, name = model_definition(model)
+    if (original.get('backend') != 'sycl' or canonical_model(original) != name or
+            original.get('intel_profile') != MODEL_PROFILES[name]):
+        raise ValueError('--intel requires the installed model-specific SYCL profile')
+    original_args = engine_args(original)
+    device = int(original_args[original_args.index('--device') + 1])
+    base = Path(original.get('cwd') or ROOT).expanduser().resolve()
+
+    def resolved(value):
+        return str((base / Path(value).expanduser()).resolve())
+
+    model_path = model_setup.model_path(original)
+    if model_path is None or not model_path.is_file():
+        raise ValueError(f'{INTEL_TEXT_CONFIGS[model]} needs its installed SYCL GGUF')
+    cfg = fresh_profile_defaults(name, arch)
+    # Intel owns the supported MTP depth, including Gemma target-only mode.
+    if '--mtp' in cfg['args']:
+        index = cfg['args'].index('--mtp')
+        del cfg['args'][index:index + 2]
+    cfg['args'] += ['--model', str(model_path)]
+    cfg.update(backend='sycl', intel_profile=original['intel_profile'], gpu=device,
+               cwd=str(ROOT), host='127.0.0.1', port=port, log=str(Path(folder) / 'engine.log'),
+               parallel=1, vision_mode='gpu' if name in VISION_MODELS else 'no',
+               download_dir=resolved(original.get('download_dir') or model_path.parent),
+               lib_dirs=[resolved(path) for path in original.get('lib_dirs', [])],
+               env={key: value for key, value in (original.get('env') or {}).items()
+                    if key.upper() in ('ONEAPI_DEVICE_SELECTOR', 'UR_LOADER_PRELOAD_FILTER')})
+    for key in ('exe', 'tokenizer'):
+        if original.get(key):
+            cfg[key] = resolved(original[key])
+    cfg, _ = tinyconfig.migrate_settings(configure_backend(cfg))
+    if name in VISION_MODELS:
+        vision = original.get('vision') or {}
+        for key, nested in (('vision_exe', 'exe'), ('vision_mmproj', 'mmproj')):
+            if value := original.get(key) or vision.get(nested):
+                cfg[key] = resolved(value)
+        cfg = model_setup.configure_vision(cfg, model_path)
+        if not cfg.get('vision'):
+            raise ValueError(f'{name} needs its verified SYCL image encoder and projector for v3')
+    return cfg
+
+
+def validate_intel_engine(info, health, cfg, arguments, output_limit=None):
+    """Bind measured READY/INFO to the private application's resolved profile."""
+    has_images = bool(cfg.get('vision'))
+    if (health.get('backend') != 'sycl' or health.get('intel_profile') != cfg['intel_profile'] or
+            health.get('model') != cfg['model_name'] or health.get('images') is not has_images):
+        raise ValueError('The owned API does not identify the selected managed Intel profile')
+    resolved = {flag: arguments[arguments.index(flag) + 1] for flag in ('--kv-type', '--mtp', '--chunk')}
+    preferred = int(resolved['--chunk'])
+    actual_chunk = info.get('chunk')
+    valid_chunks = {None, preferred}
+    if info.get('chunk_auto') and preferred in (512, 1024):
+        valid_chunks.update(size for size in (128, 256, 512) if size < preferred)
+    if (info.get('backend') != 'sycl' or info.get('device_vendor') != 0x8086 or
+            info.get('device_integrated') != 1 or info.get('memory_model') != 'uma' or
+            info.get('kv') != resolved['--kv-type'] or info.get('mtp') != int(resolved['--mtp']) or
+            actual_chunk not in valid_chunks or
+            info.get('vision') != int(has_images) or info.get('images') is not has_images):
+        raise ValueError(f'Native INFO does not match the managed Intel UMA profile: {info}')
+    capacity = info.get('max_context')
+    if type(capacity) is not int or capacity <= 0:
+        raise ValueError(f'Invalid native READY context: {capacity!r}')
+    if output_limit is not None:
+        required = required_context(16384, output_limit)
+        if capacity < required:
+            raise ValueError(f'Application-selected context is {capacity:,}; the request needs {required:,} tokens')
+    return capacity
+
+
+def required_context(input_tokens, output_tokens):
+    from serve.server import CTX_SLACK
+    return input_tokens + output_tokens + CTX_SLACK
+
+
+def intel_measurement(metrics):
+    """Expose observed counters and mark missing native measurements unavailable."""
+    engine = metrics['engine']
+    hardware = metrics.get('hardware', {})
+    return {**{key: engine.get(key) for key in ('backend', 'max_context', 'chunk', 'chunk_auto', 'kv', 'mtp', 'vision', 'images')},
+            **{key: engine.get(key) for key in INTEL_ENGINE_KEYS},
+            'hardware': {key: hardware.get(key) for key in (
+                'ram_used', 'ram_total', 'gpu_shared_mem_used', 'gpu_memory_usage_scope', 'gpu_metric_status')}}
+
+
+def intel_memory_from_log(path):
+    """Read the startup planner and native memory pool facts from the private log."""
+    snapshots = {}
+    for line in Path(path).read_text(encoding='utf-8', errors='replace').splitlines():
+        if line.startswith('Intel context_auto='):
+            key, start = 'context_planner', 1
+        elif line.startswith('memory_pools stage=engine_ready '):
+            key, start = 'ready_memory_pools', 2
+        else:
+            continue
+        values = (field.split('=', 1) for field in line.split()[start:] if '=' in field)
+        snapshots[key] = {name: int(value) if value.isdecimal() else value for name, value in values}
+    return snapshots
 
 
 def chunk_option(value):
@@ -393,7 +510,7 @@ def controlled_config(original, model, folder, port, cases, *, clover_mode='caus
                       clover_draft=None, clover_accept='exact', clover_accept_ratio=0.9, clover_accept_delta=0.6,
                       clover_vision=False, application_defaults=False):
     if original.get('backend') == 'sycl':
-        raise ValueError('Intel benchmarking requires the explicit --intel-text variant')
+        raise ValueError('Select --intel for application-default v3 or --intel-text for the fixed-context diagnostic')
     file, arch, name = model_definition(model)
     if original.get('arch', 'qwen35moe') != arch:
         raise ValueError(f'{file} does not select {arch}')
@@ -633,7 +750,7 @@ def validate_64k_context(info, output_limit):
 
 
 def aggregate_model(runs, *, intel_text=False):
-    records = [x for run in runs if run.get('complete') for x in run['records']]
+    records = [x for run in runs if run.get('complete') or run.get('partial') for x in run['records']]
     out = {}
     for category in ('generation', 'input_4k', 'input_16k', 'input_64k'):
         selected = [r for r in records if r['category'] == category]
@@ -663,6 +780,8 @@ def aggregate_model(runs, *, intel_text=False):
     if any('after_64k_engine' in r for r in complete):
         out['expert_cache']['after_64k_engine'] = [cache_bytes(r['after_64k_engine']) for r in complete]
     out['complete_runs'] = len(complete)
+    if partial := sum(bool(run.get('partial')) for run in runs):
+        out['partial_runs'] = partial
     return out
 
 
@@ -713,6 +832,10 @@ def validate_inkling_engine(info, cfg, output_limit, *, controlled=False):
         raise ValueError('Native Inkling KV capacity and backing are inconsistent')
     if controlled and info['kv_host_bytes']:
         raise ValueError('Controlled Inkling profiles require device KV without host backing')
+
+
+class ContextCapacityError(RuntimeError):
+    """The API explicitly rejected an inference request for context capacity."""
 
 
 class Service:
@@ -835,7 +958,14 @@ class Service:
                 proc = psutil.Process(pid)
                 if abs(proc.create_time() - created) < .001 and proc.is_running() and \
                         os.path.normcase(os.path.realpath(proc.exe())) == expected:
-                    matches.append(dict(pid=pid, created=created))
+                    identity = dict(pid=pid, created=created)
+                    if self.cfg.get('backend') == 'sycl':
+                        args = proc.cmdline()[1:]
+                        if '--gpu' not in args or '--device-luid' not in args[:-1]:
+                            continue  # model-free encoder capability process
+                        identity.update(executable=proc.exe(), arguments=args,
+                                        adapter_luid=args[args.index('--device-luid') + 1])
+                    matches.append(identity)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
         if len(matches) != 1:
@@ -856,22 +986,35 @@ class Service:
             time.sleep(.2)
         raise TimeoutError(f'API startup exceeded{timeout}s')
 
-    def generate(self, body):
-        before = self.engine()
+    def generate(self, body, *, intel=False):
+        before_metrics = self.json('/metrics')
+        before = engine_snapshot(before_metrics['engine'])
         request = self.request('/v1/messages', body)
         started = time.perf_counter()
         try:
             with self.opener.open(request, timeout=self.timeout) as response:
                 streamed = read_sse(response, started)
         except urllib.error.HTTPError as error:
-            raise RuntimeError(f'Generation HTTP{error.code}: {error.read().decode("utf-8", "replace")[:1200]}') from error
+            detail = error.read().decode('utf-8', 'replace')[:1200]
+            if error.code == 400:
+                try:
+                    message = json.loads(detail)['error']['message']
+                except (ValueError, TypeError, KeyError):
+                    message = None
+                if isinstance(message, str) and message.startswith('request exceeds the context window:'):
+                    raise ContextCapacityError(message) from error
+            raise RuntimeError(f'Generation HTTP{error.code}: {detail}') from error
         metrics = self.json('/metrics')
         if not metrics.get('requests'):
             raise RuntimeError('No native timing record after generation')
         after = engine_snapshot(metrics['engine'])
         validate_engine_snapshot(after)
-        return dict(response=streamed, native=metrics['requests'][0], engine_before=before,
-                    engine_after=after)
+        record = dict(response=streamed, native=metrics['requests'][0], engine_before=before,
+                      engine_after=after)
+        if intel:
+            record['intel_before'] = intel_measurement(before_metrics)
+            record['intel_after'] = intel_measurement(metrics)
+        return record
 
     def close(self):
         # Release native GPU mappings through the normal lifecycle before
@@ -973,6 +1116,11 @@ def render_report(report):
         lines[4:4] = [f'Intel text variant: fixed context32768, INT8 KV, {profiles}; '
                       'GPU Vision, dynamic KV growth and independent Expert cache are unsupported. '
                       'Image is N/A. Canonical v1 text inputs, sampler, seed, warmup and repetitions are retained.', '']
+    if report.get('intel'):
+        lines[4:4] = ['Intel SYCL uses the installed model and runtime assets with managed v3 settings. '
+                      'Four models keep GPU Vision resident. LFM is text-only. '
+                      'See result.json for READY capacity, actual KV and MTP, request memory samples and '
+                      'native Attention counters when available.', '']
     if report.get('inkling_extension'):
         lines[4:4] = ['Inkling extension: canonical v2 workloads, backend-selected KV, drafting off and in-process Vision. '
                       'Image timings include the in-process encoder. CPU fallback is possible.', '']
@@ -988,15 +1136,17 @@ def render_report(report):
                         f'ratio {profile["accept_ratio"]}, delta {profile["accept_delta"]}')
         details += ', environment ' + (', '.join(f'{key}={value}' for key, value in profile['env'].items()) or 'none') + '.'
         lines[4:4] = [details, '']
+    capacity_lines = []
     for model, data in report['models'].items():
-        result = aggregate_model(data['runs'], intel_text=bool(data.get('intel_text')))
+        intel_cache = bool(data.get('intel_text') or data.get('intel'))
+        result = aggregate_model(data['runs'], intel_text=intel_cache)
         def rate(key):
             return f'{result[key]["tok_s"]:.2f}' if key in result else '—'
         image = result['image']
         image_text = f'{image["first_output_s"]:.2f} / {image["elapsed_s"]:.2f}' if image else (
             '—' if data.get('image_supported') else 'N/A')
         def span(values):
-            if data.get('intel_text'):
+            if intel_cache:
                 return 'N/A (UMA)'
             values = [v / GIB for v in values if v is not None]
             if not values:
@@ -1018,6 +1168,11 @@ def render_report(report):
                          f'{image_text} | {span(cache["startup_engine"])} → {span(cache["after_16k_engine"])} |')
         if data.get('error'):
             lines.append(f'\n{model}: ERROR — {data["error"]}')
+        for run in data['runs']:
+            for case in run.get('skipped_cases', []):
+                capacity_lines.append(f'- {model} run {run["number"]}, {case["name"]}. {case["reason"]}')
+    if capacity_lines:
+        lines += ['', '### Context capacity skips', '', *capacity_lines]
     if report.get('error'):
         lines += ['', f'ERROR: {report["error"]}']
     lines += ['', 'Text rates pool actual native token counts and times. Image values are medians of client wall times.',
@@ -1034,9 +1189,11 @@ def main():
                         help='v3 measures application defaults. v1 and v2 reproduce earlier fixed profiles. Diagnostics default to v1')
     parser.add_argument('--saved-profile', action='store_true',
                         help='Nonstandard variant: retain saved native/sampling/Vision settings, include Tiel in all, run each generation text once')
-    parser.add_argument('--intel-text', action='store_true',
-                        help='Nonstandard explicit SYCL text variant; fixed context32768, no Vision/dynamic KV/independent Expert cache')
-    parser.add_argument('--config-dir', type=Path, default=local / 'TinyStrata-work/runtime/.tinystrata')
+    intel_options = parser.add_mutually_exclusive_group()
+    intel_options.add_argument('--intel', action='store_true', help='Use the installed SYCL models with managed v3 settings')
+    intel_options.add_argument('--intel-text', action='store_true',
+                               help='Nonstandard explicit SYCL text variant; fixed context32768, no Vision/dynamic KV/independent Expert cache')
+    parser.add_argument('--config-dir', type=Path)
     parser.add_argument('--output', type=Path, default=local / 'TinyStrata-work/benchmarks' / time.strftime('%Y%m%d-%H%M%S'))
     parser.add_argument('--runs', type=int, default=4, help='Standard protocols use four starts; other counts are diagnostic')
     parser.add_argument('--request-timeout', type=float, default=600)
@@ -1070,12 +1227,19 @@ def main():
                         help='Clover-only STRATA_*/TINYSTRATA_* engine override (repeatable)')
     parser.add_argument('--prepare-only', action='store_true', help='Validate configs and write plans without starting an API')
     options = parser.parse_args()
-    if options.intel_text and (options.saved_profile or options.include_64k or options.clover_vision or
+    intel_route = options.intel or options.intel_text
+    if intel_route and (options.saved_profile or options.include_64k or options.clover_vision or
             options.clover_mode != 'causal' or options.clover_block_size != 32 or options.clover_threshold != .95 or
             options.thinking != 'on' or options.engine_env or
             any(value is not None for value in (options.kv_type, options.cpu_workers, options.chunk,
                 options.clover_draft, options.clover_accept, options.clover_accept_ratio, options.clover_accept_delta))):
-        parser.error('--intel-text does not combine saved-profile, Clover, KV, worker, chunk, environment or thinking overrides')
+        option = '--intel' if options.intel else '--intel-text'
+        parser.error(f'{option} does not combine saved-profile, Clover, KV, worker, chunk, environment or thinking overrides')
+    if options.intel and options.protocol not in (None, 'v3'):
+        parser.error('--intel requires v3')
+    if options.config_dir is None:
+        config_root = 'TinyStrata-Intel-work' if options.intel else 'TinyStrata-work'
+        options.config_dir = local / config_root / 'runtime/.tinystrata'
     if not 1 <= options.runs <= 20 or options.request_timeout <= 0 or options.startup_timeout <= 0:
         parser.error('runs must be1..20 and timeouts must be positive')
     if not math.isfinite(options.clover_threshold) or not 0 <= options.clover_threshold <= 1:
@@ -1128,7 +1292,8 @@ def main():
     application_defaults = protocol_version == 'v3'
     base_protocol = f'tinystrata-bench-{protocol_version}'
     try:
-        models = benchmark_models(options.model, options.saved_profile, intel_text=options.intel_text, v2=modern_workload)
+        models = benchmark_models(options.model, options.saved_profile, intel_text=options.intel_text, intel=options.intel,
+                                  v2=modern_workload)
     except ValueError as error:
         parser.error(str(error))
     options.output.mkdir(parents=True, exist_ok=False)
@@ -1144,6 +1309,8 @@ def main():
                manual_variant or options.include_64k or inkling_extension)
     variant_suffix = ('-intel-text' if options.intel_text else '-saved-profile' if options.saved_profile else '-clover-diffusion' if diffusion_variant else '-clover-self-spec' if self_spec_variant
                       else '-clover-causal-variant' if manual_variant else '')
+    if options.intel:
+        variant_suffix = '-intel'
     if options.include_64k:
         variant_suffix = (variant_suffix or '-clover-causal') + '-64k'
     if options.clover_vision:
@@ -1167,7 +1334,7 @@ def main():
     report = dict(protocol=base_protocol + variant_suffix, kv_policy=kv_policy,
                   base_protocol=base_protocol, standard=options.runs == cases['runs'] and not variant,
                   clover_mode=options.clover_mode, clover_block_size=options.clover_block_size,
-                  clover_threshold=options.clover_threshold, clover_profile=clover_profile if options.model == 'clover' and not options.saved_profile and not options.intel_text else None,
+                  clover_threshold=options.clover_threshold, clover_profile=clover_profile if options.model == 'clover' and not options.saved_profile and not intel_route else None,
                   complete=False,
                   label=options.label, source_commit=commit, benchmark_sha256=sha256(__file__),
                   cases_sha256=sha256(HERE / 'cases.json'), image_sha256=sha256(HERE / 'image.png'),
@@ -1178,6 +1345,11 @@ def main():
                       config_hashes_before={str(p): sha256(p) for p in options.config_dir.glob('config*.json')})
     if inkling_extension:
         report['inkling_extension'] = True
+    if options.intel:
+        from serve.telemetry import windows_display_adapters
+        report.update(intel=True, generation_passes=2, configuration_scope='managed SYCL defaults with installed assets',
+                      display_adapters=windows_display_adapters('intel'),
+                      config_hashes_before={str(p): sha256(p) for p in options.config_dir.glob('config*.json')})
     if options.intel_text:
         report.update(intel_text=True, generation_passes=2,
                       config_hashes_before={str(p): sha256(p) for p in options.config_dir.glob('config*.json')},
@@ -1202,11 +1374,16 @@ def main():
     all_hashes = {}
     try:
         for model in models:
-            profile_path = options.config_dir / (INTEL_TEXT_CONFIGS[model] if options.intel_text else model_definition(model)[0])
+            profile_path = options.config_dir / (INTEL_TEXT_CONFIGS[model] if intel_route else model_definition(model)[0])
             original = json.loads(profile_path.read_text(encoding='utf-8-sig'))
             sampling = (dict(tinyconfig.TIEL_SAMPLING) if options.intel_text and model == 'tiel' else
                         copy.deepcopy(original.get('sampling') or model_sampling(model, cases)) if options.saved_profile else model_sampling(model, cases))
             data = dict(runs=[], sampling=sampling, assets=[], observed_kv=[])
+            if options.intel:
+                source = {key: config.value_of(original, key) for key in ('max_context', 'chunk', 'kv_type', 'mtp')}
+                source['vision_mode'] = original.get('vision_mode')
+                data.update(intel=True, profile_path=str(profile_path), source_config_sha256=sha256(profile_path),
+                            intel_profile=original.get('intel_profile'), source_settings=source)
             if options.intel_text:
                 data.update(intel_text=True, profile_path=str(profile_path), source_config_sha256=sha256(profile_path),
                             intel_profile=original.get('intel_profile'),
@@ -1224,7 +1401,8 @@ def main():
             if self_spec_variant:
                 profile_options.update(clover_draft=options.clover_draft, clover_accept=options.clover_accept,
                                        clover_accept_ratio=options.clover_accept_ratio, clover_accept_delta=options.clover_accept_delta)
-            prepared = intel_text_config(original, model, options.output, free_port(), cases) if options.intel_text else \
+            prepared = intel_config(original, model, options.output, free_port()) if options.intel else \
+                intel_text_config(original, model, options.output, free_port(), cases) if options.intel_text else \
                 saved_config(original, model, options.output, free_port(), cases) if options.saved_profile else \
                 controlled_config(original, model, options.output, free_port(), cases, **profile_options)
             sys.path.insert(0, str(ROOT))
@@ -1237,6 +1415,12 @@ def main():
             if model == 'clover' and report['clover_profile'] is not None:
                 clover_profile.update(mode=config.clover_mode(prepared), kv=data['requested_kv'], env=prepared['env'])
             data['image_supported'] = bool(image_encoder(prepared))
+            if options.intel:
+                from serve.intel_backend import engine_args as intel_args
+                data.update(native_build=intel_runtime_build(prepared, '--intel'),
+                            resolved_native_arguments=intel_args(prepared), vision_mode=prepared['vision_mode'],
+                            max_tokens=prepared['max_tokens'], requested_context=config.value_of(prepared, 'max_context'),
+                            requested_chunk=config.value_of(prepared, 'chunk'))
             if model == 'inkling':
                 from serve.server import inkling_engine_args
                 data['resolved_native_arguments'] = inkling_engine_args(prepared)
@@ -1261,7 +1445,8 @@ def main():
             for number in range(1, options.runs + 1):
                 folder = options.output / f'{model}-{number}'
                 folder.mkdir()
-                cfg = intel_text_config(original, model, folder, free_port(), cases) if options.intel_text else \
+                cfg = {**prepared, 'port': free_port(), 'log': str(folder / 'engine.log')} if options.intel else \
+                    intel_text_config(original, model, folder, free_port(), cases) if options.intel_text else \
                     saved_config(original, model, folder, free_port(), cases, copy_profiles=not options.prepare_only) if options.saved_profile else \
                     controlled_config(original, model, folder, free_port(), cases, **profile_options)
                 tinyconfig.validate(cfg)
@@ -1282,6 +1467,20 @@ def main():
                     run['startup_engine'] = service.engine()
                     info = run['startup_engine']
                     validate_engine_snapshot(info)
+                    if options.intel:
+                        run['api_identity'] = service.json('/health')
+                        run['native_identity'] = service.intel_native_identity()
+                        if identity is not None and identity['adapter_luid'].lower() != str(info.get('adapter_luid')).lower():
+                            raise ValueError('The Intel image encoder and language engine use different adapters')
+                        metrics = service.json('/metrics')
+                        run['startup_measurement'] = intel_measurement(metrics)
+                        run['hardware_static'] = metrics.get('hardware_static', {})
+                        adapters = [adapter for adapter in report['display_adapters']
+                                    if adapter['name'] == run['hardware_static'].get('gpu_name')]
+                        run['display_driver'] = adapters[0]['driver'] if len(adapters) == 1 else None
+                        run['native_memory'] = intel_memory_from_log(cfg['log'])
+                        context_capacity = validate_intel_engine(info, run['api_identity'], cfg,
+                                                                 data['resolved_native_arguments'])
                     if options.intel_text:
                         run['api_identity'] = service.json('/health')
                         validate_intel_text_engine(info, run['api_identity'], cfg)
@@ -1302,12 +1501,12 @@ def main():
                         validate_64k_context(info, cases['prefill_max_tokens'])
                     if model == 'inkling':
                         validate_inkling_engine(info, cfg, cases['prefill_max_tokens'], controlled=not options.saved_profile)
-                    elif not options.saved_profile and not options.intel_text:
+                    elif not options.saved_profile and not intel_route:
                         validate_controlled_engine(info, cfg, application_defaults=application_defaults)
                     observed_kv = info.get('kv')
                     if isinstance(observed_kv, str) and observed_kv not in data['observed_kv']:
                         data['observed_kv'].append(observed_kv)
-                    if model == 'clover' and not options.saved_profile and not options.intel_text:
+                    if model == 'clover' and not options.saved_profile and not intel_route:
                         expected_draft = config.value_of(cfg, 'clover_draft') if application_defaults else 0
                         if not self_spec_variant and info.get('clover_draft') != expected_draft:
                             raise ValueError(f'Clover draft depth differs from the benchmark profile: {info}')
@@ -1326,17 +1525,35 @@ def main():
                             raise ValueError(f'Clover diffusion settings differ from requested profile: {info}')
                         if self_spec_variant:
                             validate_clover_self_spec(info, clover_profile)
-                    cache_bytes(info, intel_text=options.intel_text)
+                    cache_bytes(info, intel_text=intel_route)
                     thinking = (None if application_defaults else cfg.get('enable_thinking', True) if options.saved_profile
                                 else options.thinking == 'on' if model == 'clover' else True)
                     def body(text, limit, *, thinking=thinking):
                         return request_body(model, text, limit, cases, thinking=thinking,
                                             sampling=sampling if application_defaults or options.saved_profile or options.intel_text else None)
                     warmup = body(cases['warmup_text'], cases['warmup_max_tokens'])
-                    save(folder / 'warmup.json', service.generate(warmup))
+                    measurement_options = {'intel': True} if options.intel else {}
+                    def skip_capacity(category, name, reason, **requirements):
+                        run.setdefault('skipped_cases', []).append(dict(category=category, name=name,
+                            status='insufficient_context', context_capacity=context_capacity, reason=reason, **requirements))
+                        report.update(capacity_limited=True, standard=False)
+                        print(f'{model} run{number} {name}: skipped. {reason}', flush=True)
+                        persist()
+                    try:
+                        save(folder / 'warmup.json', service.generate(warmup, **measurement_options))
+                    except ContextCapacityError as error:
+                        if not options.intel:
+                            raise
+                        skip_capacity('warmup', 'warmup', str(error))
                     def measure(category, name, body, target=None):
                         save(folder / f'{name}-request.json', body)
-                        record = dict(category=category, name=name, **service.generate(body))
+                        try:
+                            record = dict(category=category, name=name, **service.generate(body, **measurement_options))
+                        except ContextCapacityError as error:
+                            if not options.intel:
+                                raise
+                            skip_capacity(category, name, str(error))
+                            return
                         validate_native(record['native'], target)
                         if model == 'clover' and self_spec_variant:
                             validate_clover_self_spec(record['engine_after'], clover_profile, after_request=True)
@@ -1367,11 +1584,20 @@ def main():
                             measure('generation', f'{prompt["name"]}-{repeat}',
                                     body(prompt['text'], cases['generation_max_tokens']))
                     for length, category in ((4096, 'input_4k'), (16384, 'input_16k')):
+                        if options.intel:
+                            output_tokens = cases['prefill_max_tokens']
+                            required = required_context(length, output_tokens)
+                            if context_capacity < required:
+                                skip_capacity(category, category, f'Native READY had {context_capacity:,} tokens. '
+                                              f'The workload needs {required:,} with output and engine slack.',
+                                              input_tokens=length, output_tokens=output_tokens, required_context=required)
+                                continue
                         def count(text):
                             return service.json('/v1/messages/count_tokens', body(text, cases['prefill_max_tokens']))['input_tokens']
                         text, _ = exact_length_text(count, cases['long_paragraph'], cases['long_question'], length)
                         measure(category, category, body(text, cases['prefill_max_tokens']), length)
-                    run['after_16k_engine'] = service.engine()
+                    if not any(case['category'] == 'input_16k' for case in run.get('skipped_cases', [])):
+                        run['after_16k_engine'] = service.engine()
                     if model == 'inkling':
                         validate_inkling_engine(run['after_16k_engine'], cfg, cases['prefill_max_tokens'],
                                                controlled=not options.saved_profile)
@@ -1391,7 +1617,15 @@ def main():
                         validate_intel_text_engine(run['after_16k_engine'], service.json('/health'), cfg)
                         if service.intel_native_identity() != run['native_identity'] or intel_text_build(cfg) != run['native_build']:
                             raise ValueError('Intel native identity changed during the benchmark')
-                    run['complete'] = True
+                    if options.intel:
+                        validate_intel_engine(service.engine(), service.json('/health'), cfg,
+                                              data['resolved_native_arguments'])
+                        if service.intel_native_identity() != run['native_identity']:
+                            raise ValueError('Intel native identity changed during the benchmark')
+                    if run.get('skipped_cases'):
+                        run['partial'] = True
+                    else:
+                        run['complete'] = True
                 except BaseException as error:
                     run['error'] = repr(error)
                     raise
@@ -1402,27 +1636,27 @@ def main():
                         finally:
                             if hasattr(service, 'cleanup'):
                                 run['cleanup'] = service.cleanup
-                                if run.get('complete') and (not service.cleanup.get('graceful_unloaded') or
+                                if (run.get('complete') or run.get('partial')) and (not service.cleanup.get('graceful_unloaded') or
                                         service.cleanup.get('forced_fallback') or service.cleanup.get('errors')):
-                                    run.update(inference_complete=True, complete=False,
+                                    run.update(inference_complete=run['complete'], complete=False, partial=False,
                                                lifecycle_error='Inference completed, but normal unload/API cleanup did not complete cleanly')
                     persist()
                     if run.get('lifecycle_error'):
                         raise RuntimeError(run['lifecycle_error'])
-            data['aggregate'] = aggregate_model(data['runs'], intel_text=options.intel_text)
+            data['aggregate'] = aggregate_model(data['runs'], intel_text=intel_route)
             persist()
-        report['complete'] = not options.prepare_only
+        report['complete'] = not options.prepare_only and not report.get('capacity_limited', False)
         report['prepared_only'] = options.prepare_only
     except BaseException as error:
         report['error'] = repr(error)
         raise
     finally:
         report['finished'] = time.time()
-        if options.saved_profile or options.intel_text:
+        if options.saved_profile or intel_route:
             report['configs_unchanged'] = report['config_hashes_before'] == {str(p): sha256(p) for p in options.config_dir.glob('config*.json')}
             if not report['configs_unchanged']: report['complete'] = False
         persist()
-        if (options.saved_profile or options.intel_text) and not report['configs_unchanged']:
+        if (options.saved_profile or intel_route) and not report['configs_unchanged']:
             raise RuntimeError('Saved model configurations changed during benchmarking; results are incomplete')
     print(f'Results: {options.output / "report.md"}', flush=True)
 

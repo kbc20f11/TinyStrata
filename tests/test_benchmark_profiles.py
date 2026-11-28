@@ -734,5 +734,164 @@ class IntelTargetOnlyBenchmark(unittest.TestCase):
                 self.assertEqual(report['models'][model]['unsupported_cases'][0]['status'], 'unsupported')
 
 
+class IntelApplicationBenchmarkTests(unittest.TestCase):
+    @staticmethod
+    def configured_vision(cfg, model):
+        return {**cfg, 'vision': {'exe': cfg['vision_exe'], 'mmproj': cfg['vision_mmproj'],
+                                  'model': str(model), 'backend': 'sycl', 'gpu': True}}
+
+    def test_prepare_all_with_managed_defaults_and_installed_assets(self):
+        from serve.intel_models import MODEL_PROFILES
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for filename in ('engine.exe', 'model.gguf', 'encoder.exe', 'projector.gguf'):
+                (root / filename).write_bytes(b'fixture')
+            for model, filename in bench.INTEL_TEXT_CONFIGS.items():
+                _, arch, name = bench.model_definition(model)
+                source = dict(arch=arch, model_name=name, backend='sycl', intel_profile=MODEL_PROFILES[name],
+                              cwd=temp, exe='engine.exe', vision_mode='no', api_key='private',
+                              lazy_load=True, sampling={'temperature': 0.5}, max_tokens=42,
+                              args=['--model', 'model.gguf', '--max-context', '8192', '--chunk', '128', '--mtp', '0'])
+                if model != 'lfm':
+                    source.update(vision_exe='encoder.exe', vision_mmproj='projector.gguf')
+                bench.save(root / filename, source)
+
+            output = root / 'plans'
+            argv = ['benchmark/run.py', '--intel', '--model', 'all', '--runs', '1', '--prepare-only',
+                    '--config-dir', temp, '--output', str(output)]
+            with patch.object(sys, 'argv', argv), \
+                 patch('serve.model_setup.configure_vision', side_effect=self.configured_vision), \
+                 patch.object(bench, 'intel_runtime_build', return_value={'fixture': True}), \
+                 patch.object(bench, 'Service', side_effect=AssertionError('No native service in a plan')):
+                bench.main()
+
+            report = json.loads((output / 'result.json').read_text(encoding='utf-8'))
+            self.assertEqual(report['protocol'], 'tinystrata-bench-v3-intel')
+            self.assertEqual(report['kv_policy'], 'application-default')
+            self.assertTrue(report['configs_unchanged'])
+            self.assertFalse(report['standard'])
+            self.assertEqual((report['runs'], report['generation_passes']), (1, 2))
+            for model, data in report['models'].items():
+                with self.subTest(model=model):
+                    self.assertEqual(data['source_settings']['max_context'], 8192)
+                    self.assertEqual(data['requested_context'], 'auto')
+                    self.assertEqual(data['requested_chunk'], 'auto')
+                    self.assertEqual(data['requested_kv'], 'auto')
+                    self.assertEqual(data['requested_mtp'], 3 if model in ('qwen', 'tiel') else 0)
+                    self.assertEqual(data['image_supported'], model != 'lfm')
+                    self.assertNotEqual(data['sampling']['temperature'], 0.5)
+                    self.assertNotEqual(data['max_tokens'], 42)
+                    private = json.loads((output / f'{model}-1/config.json').read_text(encoding='utf-8'))
+                    self.assertNotIn('api_key', private)
+                    self.assertNotIn('lazy_load', private)
+
+    def test_short_ready_context_preserves_feasible_results_and_continues_other_models(self):
+        from serve.intel_models import MODEL_PROFILES
+
+        class PrivateService:
+            def __init__(self, cfg, folder, timeout):
+                self.cfg = cfg
+                self.model = cfg['model_name']
+                self.clover = cfg['arch'] == 'clover_moe'
+                self.run = int(folder.name.split('-')[-1])
+                self.capacity = (4096 if self.run == 1 else 8192) if self.clover else 32768
+                self.info = dict(model=self.model, backend='sycl', device_vendor=0x8086, device_integrated=1,
+                                 memory_model='uma', kv='int8', mtp=0 if self.clover else 3,
+                                 vision=1, images=True, adapter_luid='00000000:00000001', max_context=self.capacity)
+
+            def ready(self, timeout):
+                return self.vision_identity()
+
+            def engine(self):
+                return self.info
+
+            def json(self, path, body=None):
+                if path == '/health':
+                    return dict(backend='sycl', intel_profile=self.cfg['intel_profile'], model=self.model, images=True)
+                if path == '/metrics':
+                    return {'engine': self.info}
+                return {'input_tokens': len(body['messages'][0]['content']) // 4 + 7}
+
+            def intel_native_identity(self):
+                return {'pid': 1234}
+
+            def vision_identity(self):
+                return {'adapter_luid': self.info['adapter_luid']}
+
+            def generate(self, body, *, intel):
+                image = isinstance(body['messages'][0]['content'], list)
+                if image and self.clover and self.run == 2:
+                    raise bench.ContextCapacityError('request exceeds the context window: image leaves no room')
+                count = 512 if image else self.json('/v1/messages/count_tokens', body)['input_tokens']
+                if not image and bench.required_context(count, body['max_tokens']) > self.capacity:
+                    raise AssertionError('The runner sent a known oversized text input')
+                return dict(native=dict(engine_generated=4, prompt_read=count, prompt_total=count,
+                                        reused=0, prompt_ms=100, decode_ms=100, finish='stop'),
+                            response=dict(content='fixture', first_output_s=0.1, elapsed_s=0.2))
+
+            def close(self):
+                self.cleanup = {'graceful_unloaded': True}
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for filename in ('engine.exe', 'model.gguf', 'encoder.exe', 'projector.gguf'):
+                (root / filename).write_bytes(b'fixture')
+            models = ['clover', 'tiel']
+            for model in models:
+                _, arch, name = bench.model_definition(model)
+                source = dict(arch=arch, model_name=name, backend='sycl', intel_profile=MODEL_PROFILES[name],
+                              cwd=temp, exe='engine.exe', vision_mode='no', args=['--model', 'model.gguf'],
+                              vision_exe='encoder.exe', vision_mmproj='projector.gguf')
+                bench.save(root / bench.INTEL_TEXT_CONFIGS[model], source)
+            output = root / 'results'
+            argv = ['benchmark/run.py', '--intel', '--model', 'all', '--config-dir', temp, '--output', str(output)]
+            with patch.object(sys, 'argv', argv), patch.object(bench, 'benchmark_models', return_value=models), \
+                 patch('serve.model_setup.configure_vision', side_effect=self.configured_vision), \
+                 patch.object(bench, 'intel_runtime_build', return_value={'fixture': True}), \
+                 patch.object(bench, 'intel_memory_from_log', return_value={}), \
+                 patch.object(bench, 'Service', PrivateService), patch('builtins.print'):
+                bench.main()
+
+            report = json.loads((output / 'result.json').read_text(encoding='utf-8'))
+            self.assertFalse(report['complete'])
+            self.assertFalse(report['standard'])
+            self.assertTrue(report['configs_unchanged'])
+            self.assertTrue(report['capacity_limited'])
+            clover = report['models']['clover']
+            self.assertEqual(clover['aggregate']['partial_runs'], 4)
+            self.assertEqual(clover['aggregate']['generation']['requests'], 24)
+            self.assertEqual(clover['aggregate']['input_4k']['requests'], 3)
+            self.assertEqual(clover['aggregate']['image']['requests'], 3)
+            self.assertNotIn('input_16k', clover['aggregate'])
+            first_run = clover['runs'][0]
+            self.assertNotIn('after_16k_engine', first_run)
+            self.assertEqual([case['required_context'] for case in first_run['skipped_cases']], [4136, 16424])
+            self.assertEqual(report['models']['tiel']['aggregate']['complete_runs'], 4)
+            self.assertIn('Context capacity skips', (output / 'report.md').read_text(encoding='utf-8'))
+
+    def test_actual_intel_fields_and_capacity_are_reported(self):
+        cfg = {'intel_profile': 'b390-qwen36', 'model_name': 'qwen3.6-35b-a3b', 'vision': {'gpu': True}}
+        health = {'intel_profile': cfg['intel_profile'], 'model': cfg['model_name'], 'backend': 'sycl', 'images': True}
+        info = {'backend': 'sycl', 'device_vendor': 0x8086, 'device_integrated': 1, 'memory_model': 'uma',
+                'images': True, 'vision': 1, 'mtp': 3, 'kv': 'int8', 'max_context': 32768, 'kv_used_tokens': 16384}
+        args = ['--mtp', '3', '--kv-type', 'int8', '--chunk', '1024']
+        bench.validate_intel_engine(info, health, cfg, args, 32)
+        bench.validate_intel_engine({**info, 'chunk': 512, 'chunk_auto': 1}, health, cfg, args, 32)
+        for change in ({'backend': 'cuda'}, {'max_context': 16384}, {'vision': 0}, {'kv': 'fp32'}, {'chunk': 512}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                bench.validate_intel_engine({**info, **change}, health, cfg, args, 32)
+        actual = bench.intel_measurement({'engine': info, 'hardware': {'ram_used': 100, 'gpu_shared_mem_used': 40}})
+        self.assertEqual(actual['kv_used_tokens'], 16384)
+        self.assertIsNone(actual['kv_allocated_bytes'])
+        self.assertIsNone(actual['prefill_attention_route'])
+        self.assertEqual(actual['hardware']['ram_used'], 100)
+        self.assertEqual(actual['hardware']['gpu_shared_mem_used'], 40)
+        info.update(prefill_attention_route='tiled_int8', kv_allocated_bytes=512)
+        actual = bench.intel_measurement({'engine': info})
+        self.assertEqual(actual['prefill_attention_route'], 'tiled_int8')
+        self.assertEqual(actual['kv_allocated_bytes'], 512)
+
+
 if __name__ == "__main__":
     unittest.main()
