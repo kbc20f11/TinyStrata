@@ -291,7 +291,7 @@ KV／VRAM の各条件で独立起動を 4 回試み、v1 の入力・サンプ�
 
 Radeon カードでの速度を [tinystrata-bench-v1](benchmark/README.md#日本語) で計測した結果です。ハードウェア、ドライバー、エンジンのコミット、設定、全項目はカードごとのページにあります: [`benchmark/results/`](benchmark/results/)。値は 生成／4K 入力／16K 入力（tok/s）です。 Clover は exact D3 の派生条件です。
 
-**RX 9060 XT のベンチマーク**　[INT8 固定 v2 と Inkling 拡張（2026-11-28）](benchmark/results/rx-9060-xt.md#standard-v2-benchmark-2026-11-28)
+**RX 9060 XT のベンチマーク**　[アプリ既定の v3 と Inkling 拡張（2026-11-28）](benchmark/results/rx-9060-xt.md#standard-v3-benchmark-2026-11-28) · [旧 INT8 固定 v2](benchmark/results/rx-9060-xt.md#standard-v2-benchmark-2026-11-28)
 
 下表は従来の固定 v1 条件による比較です。 [保存設定での過去の測定（2026-11-09）](benchmark/results/rx-9060-xt.md#current-saved-settings--2026-11-09-one-pass)
 
