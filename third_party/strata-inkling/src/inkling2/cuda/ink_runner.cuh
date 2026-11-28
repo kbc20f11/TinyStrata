@@ -2496,15 +2496,19 @@ struct InkCudaRunner {
     }
 
     void init_kv_loans() {
-        if (max_slots != 1 || kv_dtype != InkKvDtype::FP16 || kv_host_ctx != 0 || kv_dev_ctx != max_ctx ||
+        const bool fp8_loan = kv_dtype == InkKvDtype::FP8 && m.sm_cc == 120;
+        if (max_slots != 1 || (kv_dtype != InkKvDtype::FP16 && !fp8_loan) ||
+            kv_host_ctx != 0 || kv_dev_ctx != max_ctx ||
             m.ls_active || m.ep2_active || !m.hybrid.tier_on || !m.hybrid.sec4_is_pinned) return;
+        // Loan only K/V payloads. Quantized KV scales are separate allocations.
         std::vector<uint8_t*> buffers;
         for (const auto& kv : kv_desc) {
             if (kv.is_swa) continue;
-            buffers.push_back(reinterpret_cast<uint8_t*>(kv.k_f16));
-            buffers.push_back(reinterpret_cast<uint8_t*>(kv.v_f16));
+            buffers.push_back(fp8_loan ? kv.k_f8 : reinterpret_cast<uint8_t*>(kv.k_f16));
+            buffers.push_back(fp8_loan ? kv.v_f8 : reinterpret_cast<uint8_t*>(kv.v_f16));
         }
-        m.hybrid.init_kv_loans(std::move(buffers), max_ctx, (size_t)kInkKVDim * sizeof(__half));
+        const size_t row_bytes = (size_t)kInkKVDim * (fp8_loan ? sizeof(uint8_t) : sizeof(__half));
+        m.hybrid.init_kv_loans(std::move(buffers), max_ctx, row_bytes);
     }
 
     // Elastic Global KV Cache Growth: starts compact (4K..8K) and grows in 8K-token chunks up to max_ctx!
