@@ -2,6 +2,7 @@
 // src/lfm2 implementation (PolyStrata/Strata attribution in LICENSE/NOTICE).
 #include "strata/intel/lfm_model.hpp"
 #include "strata/intel/context_policy.hpp"
+#include "strata/intel/attention_usage.hpp"
 #include "strata/intel/lfm_ops.hpp"
 #include "strata/intel/lfm_q4_policy.hpp"
 #include "strata/intel/lfm_turn_checkpoint.hpp"
@@ -129,6 +130,10 @@ public:
             :measured_runtime&&measured_device;
         lfm_q4_validate_modes(q4_fp32_blocks_,q4_dp4a_enabled_);
         const bool q4_auxiliary=q4_dp4a_enabled_||prefill_q4_dp4a_enabled_;
+        const char* attention_split=std::getenv("STRATA_REVIEW_INTEL_LFM_SPLIT_PV");
+        if(attention_split&&std::string(attention_split)!="0"&&std::string(attention_split)!="1")
+            throw std::runtime_error("STRATA_REVIEW_INTEL_LFM_SPLIT_PV requires 0 or 1");
+        const bool pv_split=attention_split&&std::string(attention_split)=="1";
         if(q4_auxiliary&&!device_.capabilities.esimd)throw std::runtime_error("LFM Q4 DP4A candidate requires Intel ESIMD");
         if(context<0||context>context_policy::lfm_limit||chunk<1||chunk>512)throw std::runtime_error("LFM context must be auto or1..131072; chunk1..512 required");
 #ifdef TINYSTRATA_INTEL_AOT_TARGET
@@ -139,7 +144,7 @@ public:
             ExecutionRequest loading;
             weights_=WeightStore::load_validated(q_,path,memory,[&](const strata::GgufModel& model){geometry_=LfmGeometry::validate(model);});
             const auto& g=geometry_;context_policy::LfmSpec context_shape;
-            context_shape.chunk=chunk_;context_shape.mkl=mkl;context_shape.q4_dp4a=q4_auxiliary;
+            context_shape.chunk=chunk_;context_shape.mkl=mkl;context_shape.q4_dp4a=q4_auxiliary;context_shape.pv_split=pv_split;
             const auto remaining=memory_budget(device_);
             const auto chosen=context_policy::select(context,g.model_context,remaining,device_.max_allocation,
                 [&](uint64_t tokens){return context_policy::lfm(tokens,context_shape);});
@@ -168,7 +173,7 @@ public:
             const size_t max_tiles=(n*g.picks+3)/4+g.experts;owners_=allocate<int32_t>(max_tiles);offsets_=allocate<int32_t>(max_tiles);tiles_=allocate<int32_t>(1);
             if(actual_allocations_.device!=chosen.bytes.owned_device||actual_allocations_.host_visible!=chosen.bytes.owned_host_visible||actual_allocations_.largest>chosen.bytes.largest||actual_allocations_.host_only!=lfm_turn::host_bytes(context))
                 throw std::logic_error("LFM context planner differs from actual engine allocations");
-            attention_=std::make_unique<GemmaAttention>(q_,context,chunk,g.heads,g.dim,cache_elements,mkl);
+            attention_=std::make_unique<GemmaAttention>(q_,context,chunk,g.heads,g.dim,cache_elements,mkl,pv_split);
 #ifdef TINYSTRATA_INTEL_MKL
             if(mkl)gemm_=std::make_unique<PrefillGemm>(q_,1,chunk);
 #else
@@ -185,6 +190,7 @@ public:
     ~LfmEngine(){release();}
     const DeviceInfo& device_info()const{return device_;}
     int context()const{return context_;}int chunk()const{return chunk_;}int consumed()const{return position_;}int vocabulary()const{return geometry_.vocabulary;}
+    unsigned take_attention_usage(){return attention_->take_attention_usage();}
     bool q4_fp32_blocks()const{return q4_fp32_blocks_;}
     bool terminal(int token)const{return std::find(geometry_.terminal_tokens.begin(),geometry_.terminal_tokens.end(),token)!=geometry_.terminal_tokens.end();}
     void reset(){for(auto& s:states_)if(s.convolution)q_.memset(s.convolution,0,size_t(2*geometry_.width)*sizeof(float));q_.wait_and_throw();position_=0;logits_valid_=false;turn_->invalidate();}
@@ -309,6 +315,7 @@ int serve(LfmEngine& e){const auto& d=e.device_info();
             const double elapsed=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
             std::printf("PP %zu %zu %.3f\n",index,prompt.size(),elapsed);std::fflush(stdout);}
         const auto decode_start=std::chrono::steady_clock::now();const double prefill=std::chrono::duration<double,std::milli>(decode_start-start).count();
+        const auto prefill_attention=attention_usage::format(e.take_attention_usage());
         const size_t fresh=live.size()-reused;std::vector<int> history(prompt);std::mt19937_64 random(sampling.seed?sampling.seed:std::random_device{}());
         int produced=0;const char* finish="length";
         if(inbox.cancelled().load())finish="cancel";
@@ -317,6 +324,8 @@ int serve(LfmEngine& e){const auto& d=e.device_info();
             std::printf("T %d\n",token);std::fflush(stdout);if(e.terminal(token)){finish="stop";break;}
             if(n+1<count){logits=e.step_many(&token,1,true,&inbox.cancelled());if(!logits){finish="cancel";break;}live.push_back(token);report();}}
         report();const double decode=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-decode_start).count();
+        std::printf("INFO prefill_attention_route=%s decode_attention_route=%s\n",
+            prefill_attention.c_str(),attention_usage::format(e.take_attention_usage()).c_str());
         std::printf("DONE %d %zu %.3f %.3f %s 0 0 %zu 0 0 0 0 0.0 %zu 0\n",produced,prompt.size(),prefill,decode,finish,reused,fresh);std::fflush(stdout);
     }return 0;}
 } // namespace

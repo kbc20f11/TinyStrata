@@ -2,6 +2,7 @@
 // TinyStrata Gemma engine's formulas (MIT; LICENSE/NOTICE), not Qwen aliases.
 #include "strata/intel/gemma_model.hpp"
 #include "strata/intel/context_policy.hpp"
+#include "strata/intel/attention_usage.hpp"
 #include "strata/intel/gemma_ops.hpp"
 #include "strata/intel/gemma_turn_snapshot.hpp"
 #include "strata/intel/gemma_vision.hpp"
@@ -164,6 +165,7 @@ public:
     ~GemmaEngine(){release();}
     const DeviceInfo& device_info() const{return device_;}
     int context() const{return context_;}int chunk() const{return chunk_;}int consumed() const{return position_;}int vocabulary() const{return geometry_.vocabulary;}
+    unsigned take_attention_usage(){return attention_->take_attention_usage();}
     int width() const{return geometry_.width;}bool vision_enabled()const{return vision_;}
     void images(std::shared_ptr<const gemma_vision::Input> input){queue_.wait_and_throw();pictures_=std::move(input);}
     bool terminal(int token) const{return std::find(stops_.begin(),stops_.end(),token)!=stops_.end();}
@@ -332,6 +334,7 @@ int serve(GemmaEngine& e){
             const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
             report_position();std::printf("PP %zu %zu %.3f\n",consumed,prompt.size(),ms);std::fflush(stdout);}
         const auto decode_start=std::chrono::steady_clock::now();const double prefill=std::chrono::duration<double,std::milli>(decode_start-start).count();
+        const auto prefill_attention=attention_usage::format(e.take_attention_usage());
         std::vector<int> history(prompt);std::mt19937_64 random(sampling.seed?sampling.seed:std::random_device{}());int produced=0;const char* finish="length";
         if(inbox.cancelled().load())finish="cancel";
         else for(int n=0;n<count;++n){
@@ -344,6 +347,8 @@ int serve(GemmaEngine& e){
         if(inbox.cancelled().load()){e.reset();live.clear();saved.clear();}
         report_position();
         const double decode=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-decode_start).count();
+        std::printf("INFO prefill_attention_route=%s decode_attention_route=%s\n",
+            prefill_attention.c_str(),attention_usage::format(e.take_attention_usage()).c_str());
         std::printf("DONE %d %zu %.3f %.3f %s 0 0 %zu 0 0 0 0 0.0 %zu 0\n",produced,prompt.size(),prefill,decode,finish,reused,consumed-reused);std::fflush(stdout);
     }
     return 0;

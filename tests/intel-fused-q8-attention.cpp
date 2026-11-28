@@ -3,6 +3,7 @@
 // Run explicitly on a compatible Intel GPU; optional --device N.
 // Not registered in the automatic CPU CTest group. No performance claim.
 #include "strata/intel/kv_q8.hpp"
+#include "strata/intel/qwen_ops.hpp"
 #include <stdexcept>
 #include <cstdlib>
 #include "strata/intel/device.hpp"
@@ -119,20 +120,60 @@ void store_error_test(sycl::queue& q){
     }
     std::puts("{\"store_nonfinite_overflow_error_policy\":true}");
 }
+void tiled_prefill_test(sycl::queue& q){
+    constexpr int context=16448,tokens=13;
+    constexpr size_t cells=size_t(context)*kv_heads*width,count=size_t(tokens)*heads*width;
+    Buffer<int8_t> key(q,cells),value(q,cells);
+    Buffer<sycl::half> key_scale(q,cells/32),value_scale(q,cells/32);
+    Buffer<float> expanded_key(q,cells),expanded_value(q,cells);
+    Buffer<float> query(q,count),gate(q,count),control(q,count+64),candidate(q,count+64);
+    const auto k=key.data,v=value.data;
+    const auto ks=key_scale.data,vs=value_scale.data;
+    const auto queries=query.data,gates=gate.data;
+    q.parallel_for(sycl::range<1>(cells),[=](sycl::id<1> id){
+        k[id]=int8_t(int((id[0]*17+3)%255)-127);
+        v[id]=int8_t(int((id[0]*29+11)%255)-127);
+    });
+    q.parallel_for(sycl::range<1>(cells/32),[=](sycl::id<1> id){
+        ks[id]=sycl::half(float(id[0]%11+1)/1024);
+        vs[id]=sycl::half(float(id[0]%7+1)/256);
+    });
+    q.parallel_for(sycl::range<1>(count),[=](sycl::id<1> id){
+        queries[id]=sycl::sin(float(id[0])*.13f);
+        gates[id]=sycl::cos(float(id[0])*.07f);
+    });
+    const si::Q8Kv cache{k,v,ks,vs,context,kv_heads};
+    for(int position:{0,7,16384}){
+        q.fill(control.data,sentinel,control.size);
+        q.fill(candidate.data,sentinel,candidate.size);
+        si::dequantize_q8_kv(q,cache,expanded_key.data,expanded_value.data,position+tokens);
+        si::causal_attention(q,queries,gates,expanded_key.data,expanded_value.data,
+            control.data,heads,kv_heads,context,position,tokens);
+        si::causal_attention_q8(q,queries,gates,cache,candidate.data,heads,position,tokens).wait_and_throw();
+        same(control,candidate,"tiled INT8 prefill");
+        for(size_t i=count;i<candidate.size;++i)if(candidate.data[i]!=sentinel)
+            throw std::runtime_error("Tiled INT8 prefill output tail changed");
+    }
+    std::puts("{\"tiled_int8_prefill_matches_expanded_fp32\":true}");
+}
 }
 int main(int argc,char** argv){
     try{
         unsigned selected=0;
+        const bool tiled_only=argc==2 && std::string(argv[1])=="--tiled-prefill-only";
         if(argc==3 && std::string(argv[1])=="--device") {
             const std::string text(argv[2]);
             if(text.empty() || text.find_first_not_of("0123456789")!=std::string::npos || std::stoul(text)>1024)
                 throw std::invalid_argument("Device must be an integer from0 through1024");
             selected=unsigned(std::stoul(text));
-        } else if(argc!=1)throw std::invalid_argument("Usage: intel_fused_q8_attention_test [--device N]");
+        } else if(argc!=1 && !tiled_only)
+            throw std::invalid_argument("Usage: intel_fused_q8_attention_test [--device N | --tiled-prefill-only]");
         const auto device=si::select_device(selected);const auto info=si::inspect_device(device);
         if(const char* limitation=si::baseline_limitation(info.capabilities))throw std::runtime_error(limitation);
         sycl::queue q(device,sycl::property_list{sycl::property::queue::in_order{}});
         std::printf("Device vendor=%04x device=%04x name=%s architecture=%s\n",info.vendor_id,info.device_id,info.name.c_str(),info.architecture.c_str());
+        tiled_prefill_test(q);
+        if(tiled_only)return 0;
         EnvironmentGuard restore_environment;
         store_error_test(q);
         const std::vector<int> contexts={255,256,511,512,1031,32768};

@@ -10,6 +10,7 @@
 #include "strata/intel/q8_xmx.hpp"
 #include "strata/intel/moe_route_policy.hpp"
 #include "strata/intel/kv_q8.hpp"
+#include "strata/intel/attention_usage.hpp"
 #include "strata/intel/execution_request.hpp"
 #include "strata/intel/turn_checkpoint.hpp"
 #include "strata/intel/qwen_vision.hpp"
@@ -82,6 +83,8 @@ class Engine {
     float *mtp_norm_ = nullptr, *mtp_last_norm_ = nullptr, *checkpoint_norm_ = nullptr, *mtp_logits_ = nullptr;
     float *verify_logits_ = nullptr, *verify_raw_ = nullptr, *verify_norm_ = nullptr;
     bool kv_int8_ = false;
+    bool direct_kv_prefill_ = false;
+    unsigned active_attention_ = 0, graph_attention_ = 0;
     int32_t* kv_error_ = nullptr;
     float *kv_float_key_ = nullptr, *kv_float_value_ = nullptr;
     std::vector<int> mtp_pending_;
@@ -337,8 +340,9 @@ class Engine {
         const size_t offset = size_t(token) * heads_ * 256;
         const int visible_hint = clover_ && clover_fused_t1_hint_
             ? (recording_ ? recording_minimum_visible_ : position_ + token + 1) : 0;
+        if (!kv_int8_) active_attention_ |= attention_usage::fp32_split;
         const auto event = kv_int8_ ? decode_attention_q8(q_, query_ + offset, query_gate_ + offset, state.q8, scores_,
-            attention_partial_, attention_ + offset, heads_, position_input_ + token, extent, profiling_ ? stages : nullptr, 1, visible_hint)
+            attention_partial_, attention_ + offset, heads_, position_input_ + token, extent, profiling_ ? stages : nullptr, 1, visible_hint, &active_attention_)
             : decode_attention(q_, query_ + offset, query_gate_ + offset, state.key, state.value, scores_,
                 attention_partial_, attention_ + offset, heads_, kv_heads_, context_, position_input_ + token, extent, profiling_ ? stages : nullptr);
         remember("decode_attention_join", event);
@@ -365,10 +369,17 @@ class Engine {
         const float *visible_keys = state.key, *visible_values = state.value;
         bool small_gemm_attention = false;
 #ifdef TINYSTRATA_INTEL_MKL
-        small_gemm_attention = verify_mkl_attention_ && gemm_ && tokens > 1 && tokens <= verify_capacity && position >= 512;
+        small_gemm_attention = !direct_kv_prefill_ && verify_mkl_attention_ && gemm_ && tokens > 1 && tokens <= verify_capacity && position >= 512;
 #endif
         if (kv_int8_) {
             remember("store_int8_kv", store_q8_kv(q_, key_, value_, state.q8, position_input_, tokens, kv_error_));
+            if (direct_kv_prefill_ && tokens > verify_capacity) {
+                active_attention_ |= attention_usage::int8_tiled;
+                remember("causal_attention_int8", causal_attention_q8(q_, query_, query_gate_, state.q8,
+                    attention_, heads, position, tokens));
+                matrix(prefix + "attn_output.weight", attention_, mixer_, tokens);
+                return;
+            }
             if (tokens > verify_capacity || small_gemm_attention) {
                 remember("dequantize_int8_kv", dequantize_q8_kv(q_, state.q8, kv_float_key_, kv_float_value_, position + tokens));
                 visible_keys = kv_float_key_; visible_values = kv_float_value_;
@@ -386,8 +397,11 @@ class Engine {
                     keys[index] = values[index] = 0.f;
                 }));
             }
-            if (small_gemm_attention) remember("mkl_grouped_attention", gemm_->attention_small(query_, query_gate_, visible_keys, visible_values,
-                attention_, heads, kv_heads, context, position, tokens));
+            if (small_gemm_attention) {
+                active_attention_ |= kv_int8_ ? attention_usage::int8_expanded_mkl : attention_usage::fp32_mkl;
+                remember("mkl_grouped_attention", gemm_->attention_small(query_, query_gate_, visible_keys, visible_values,
+                    attention_, heads, kv_heads, context, position, tokens));
+            }
             else
 #endif
             if (tokens <= verify_capacity && (kv_int8_ || position >= 512)) {
@@ -397,7 +411,7 @@ class Engine {
                     sycl::event stages[3];
                     remember("decode_attention_join", decode_attention_q8(q_, query_, query_gate_, state.q8, scores_,
                         attention_partial_, attention_, heads_, position_input_, extent, profiling_ ? stages : nullptr, tokens,
-                        recording_ || verify_graph_enabled_ ? 0 : position + tokens));
+                        recording_ || verify_graph_enabled_ ? 0 : position + tokens, &active_attention_));
                     if (profiling_) {
                         remember("decode_attention_qk", stages[0]); remember("decode_attention_softmax", stages[1]);
                         remember("decode_attention_pv", stages[2]);
@@ -405,12 +419,18 @@ class Engine {
                 } else for (int token = 0; token < tokens; ++token) attention_row(state, token, recording_ ? recording_extent_ : position + token + 1);
             } else {
 #ifdef TINYSTRATA_INTEL_MKL
-            if (gemm_ && tokens >= 1008) remember("mkl_attention_gate", gemm_->attention(query_, query_gate_, visible_keys, visible_values,
-                attention_, heads, kv_heads, context, position, tokens));
+            if (gemm_ && tokens >= 1008) {
+                active_attention_ |= kv_int8_ ? attention_usage::int8_expanded_mkl : attention_usage::fp32_mkl;
+                remember("mkl_attention_gate", gemm_->attention(query_, query_gate_, visible_keys, visible_values,
+                    attention_, heads, kv_heads, context, position, tokens));
+            }
             else
 #endif
-            remember("causal_attention", causal_attention(q_, query_, query_gate_, visible_keys, visible_values,
-                attention_, heads, kv_heads, context, position, tokens));
+            {
+                active_attention_ |= kv_int8_ ? attention_usage::int8_expanded_tiled : attention_usage::fp32_tiled;
+                remember("causal_attention", causal_attention(q_, query_, query_gate_, visible_keys, visible_values,
+                    attention_, heads, kv_heads, context, position, tokens));
+            }
             }
             matrix(prefix + "attn_output.weight", attention_, mixer_, tokens);
             return;
@@ -675,6 +695,7 @@ class Engine {
         q_.wait_and_throw();
         decode_graph_.reset();
         graph_api::command_graph<graph_api::graph_state::modifiable> graph(q_.get_context(), q_.get_device());
+        const auto previous_attention = std::exchange(active_attention_, 0);
         bool recording = false;
         try {
             recording_ = true;
@@ -687,12 +708,14 @@ class Engine {
             graph.end_recording(q_);
             recording = false;
             decode_graph_.emplace(graph.finalize());
+            graph_attention_ = active_attention_;
             std::fprintf(stderr, "Intel decode graph=enabled\n");
         } catch (const std::exception& error) {
             if (recording) graph.end_recording(q_);
             graph_enabled_ = false;
             std::fprintf(stderr, "Intel decode graph=unavailable; eager fallback: %s\n", error.what());
         }
+        active_attention_ = previous_attention;
         recording_ = false;
     }
     ExecutableGraph* verification_graph(int count) {
@@ -702,6 +725,7 @@ class Engine {
         if (const auto it = verify_graphs_.find(key); it != verify_graphs_.end()) return it->second.get();
         q_.wait_and_throw();
         graph_api::command_graph<graph_api::graph_state::modifiable> graph(q_.get_context(), q_.get_device());
+        const auto previous_attention = active_attention_;
         bool recording = false;
         try {
             recording_ = true; recording_extent_ = extent; recording_minimum_visible_ = 0;
@@ -712,11 +736,13 @@ class Engine {
             // A bounded cache retains common counts/extents across prompt replay.
             if (verify_graphs_.size() >= 16) verify_graphs_.erase(verify_graphs_.begin());
             auto* result = executable.get(); verify_graphs_.emplace(key, std::move(executable));
+            active_attention_ = previous_attention;
             recording_ = false;
             std::fprintf(stderr, "Intel verify_graph=enabled tokens=%d extent=%d cached=%zu\n", count, extent, verify_graphs_.size());
             return result;
         } catch (const std::exception& error) {
             if (recording) graph.end_recording(q_);
+            active_attention_ = previous_attention;
             recording_ = false; verify_graph_enabled_ = false;
             std::fprintf(stderr, "Intel verify_graph=unavailable; eager fallback: %s\n", error.what());
             return nullptr;
@@ -744,6 +770,15 @@ public:
         if (!selected_device.integrated) device_state = true;
         graph_enabled_ = use_graph;
         kv_int8_ = kv_int8;
+        const char* direct_kv_setting = std::getenv("STRATA_REVIEW_INTEL_INT8_TILED_PREFILL");
+        if (direct_kv_setting) {
+            const std::string value(direct_kv_setting);
+            if (value != "0" && value != "1")
+                throw std::runtime_error("STRATA_REVIEW_INTEL_INT8_TILED_PREFILL requires 0 or 1");
+            if (value == "1" && (!kv_int8 || verify_mkl_attention))
+                throw std::runtime_error("Tiled INT8 prefill requires INT8 KV and native verification attention");
+            direct_kv_prefill_ = value == "1";
+        }
         verify_xmx_ = verify_xmx;
         verify_mkl_attention_ = verify_mkl_attention;
         device_state_ = device_state;
@@ -773,9 +808,10 @@ public:
 #ifdef TINYSTRATA_INTEL_AOT_TARGET
         measured_clover_runtime = std::string(TINYSTRATA_INTEL_AOT_TARGET) == "intel_gpu_ptl_h";
 #endif
-        clover_fused_t1_hint_ = experimental_clover && measured_clover_runtime &&
+        const bool measured_clover_device = measured_clover_runtime &&
             selected_device.vendor_id == 0x8086 && selected_device.device_id == 0xB082 &&
             selected_device.integrated && selected_device.ptl_h_aot;
+        clover_fused_t1_hint_ = experimental_clover && measured_clover_device;
         if(const char* setting=experimental_clover?std::getenv("STRATA_INTEL_CLOVER_FUSED_T1"):nullptr){
             const std::string value(setting);
             if(value!="0"&&value!="1")throw std::runtime_error("STRATA_INTEL_CLOVER_FUSED_T1 requires0 or1");
@@ -871,7 +907,27 @@ public:
             context_shape.npu=prefill_npu;context_shape.npu_split=std::getenv("STRATA_REVIEW_NPU_SPLIT")!=nullptr;
             context_shape.vision=vision_enabled_;
             context_shape.clover_vision_aliases=clover_vision_workspace_aliases_;
+            context_shape.direct_kv_prefill=direct_kv_prefill_;
             const int context_limit=context_policy::model_limit(metadata_number("context_length",0),clover_?context_policy::lfm_limit:context_policy::full_limit);
+            const char* auto_chunk = std::getenv("TINYSTRATA_INTEL_CHUNK_AUTO");
+            const bool adaptive_chunk = selected_device.integrated && context <= context_limit && auto_chunk && std::string(auto_chunk) == "1";
+            if (adaptive_chunk) {
+                chunk_ = context_policy::uma_chunk(chunk_,context,context_limit,remaining_memory,selected_device.max_allocation,
+                    [&](uint64_t tokens,int rows){auto shape=context_shape;shape.chunk=rows;return context_policy::qwen(tokens,shape);});
+                context_shape.chunk=chunk_;
+            }
+            if (adaptive_chunk && measured_clover_device && clover_ && vision_enabled_ &&
+                    kv_int8_ && !verify_mkl_attention && !direct_kv_setting) {
+                // Keep the faster expansion when it can admit a complete
+                // 16K input plus output. Under pressure a tiled cache can
+                // retain that turn without allocating a full FP32 prefix.
+                const int target = context ? context : std::min(context_limit, 16384 + context_policy::auto_quantum);
+                const auto expanded = context_policy::qwen(target, context_shape);
+                context_shape.direct_kv_prefill = true;
+                direct_kv_prefill_ = !context_policy::fits(remaining_memory, selected_device.max_allocation, expanded) &&
+                    context_policy::fits(remaining_memory, selected_device.max_allocation, context_policy::qwen(target, context_shape));
+                context_shape.direct_kv_prefill = direct_kv_prefill_;
+            }
             const auto chosen=context_policy::select(context,context_limit,remaining_memory,selected_device.max_allocation,
                 [&](uint64_t tokens){return context_policy::qwen(tokens,context_shape);});
             context=context_=chosen.tokens;graph_extent_=std::min(context_,128);
@@ -932,8 +988,10 @@ public:
             checkpoint_hidden_ = alloc<float>(n_);
             if (kv_int8_) {
                 kv_error_ = alloc<int32_t>(1, true);
-                kv_float_key_ = alloc<float>(size_t(kv_heads_) * context * 256);
-                kv_float_value_ = alloc<float>(size_t(kv_heads_) * context * 256);
+                if (!direct_kv_prefill_) {
+                    kv_float_key_ = alloc<float>(size_t(kv_heads_) * context * 256);
+                    kv_float_value_ = alloc<float>(size_t(kv_heads_) * context * 256);
+                }
             }
             layers_.resize(size_t(g.n_layers));
             checkpoints_.resize(layers_.size());
@@ -986,6 +1044,8 @@ public:
                          mtp_depth_, vision_enabled_ ? "on" : "off", memory == WeightMemory::Host ? "host" : memory == WeightMemory::Shared ? "shared" : "device");
             print_memory("engine_ready", device);
             context_policy::report(chosen,context_limit,remaining_memory,selected_device.max_allocation);
+            std::printf("INFO int8_tiled_prefill=%d chunk=%d chunk_auto=%d\n", int(direct_kv_prefill_), chunk_, int(adaptive_chunk));
+            std::fflush(stdout);
             if(clover_vision_workspace_aliases_)std::fprintf(stderr,"Intel clover_image_workspace_aliases=1 saved_bytes=%llu MTP=0 single_owned_allocation_per_alias=1\n",
                 (unsigned long long)(uint64_t(chunk_)*45568*sizeof(float)));
             print_moe_routes();
@@ -1007,6 +1067,7 @@ public:
     }
     const float* step(int token, bool output_logits = true) { return step_many(&token, 1, output_logits); }
     int chunk() const { return chunk_; }
+    unsigned take_attention_usage() { return std::exchange(active_attention_, 0); }
     DeviceInfo device_info() const { return inspect_device(q_.get_device()); }
     const float* step_many(const int* tokens, int count, bool output_logits = true, const std::atomic<bool>* cancelled = nullptr) {
         const auto& g = weights_->geometry();
@@ -1028,7 +1089,10 @@ public:
         }
         bool complete = true;
         if (decode_graph_ && count == 1 && output_logits &&
-            !qwen_vision::overlaps(image_input_, size_t(position_), size_t(count))) q_.ext_oneapi_graph(*decode_graph_);
+            !qwen_vision::overlaps(image_input_, size_t(position_), size_t(count))) {
+            q_.ext_oneapi_graph(*decode_graph_);
+            active_attention_ |= graph_attention_;
+        }
         else complete = enqueue(count, output_logits, cancelled);
         q_.wait_and_throw();
         if (mtp_depth_ && complete && !(cancelled && cancelled->load())) warm_mtp(tokens, count);
@@ -1123,7 +1187,11 @@ public:
         try {
             auto* graph = verify_graph_enabled_ ? verification_graph(int(window.size())) : nullptr;
             if (cancelled && cancelled->load()) complete = false;
-            else if (graph) { q_.ext_oneapi_graph(*graph); complete = true; }
+            else if (graph) {
+                q_.ext_oneapi_graph(*graph);
+                active_attention_ |= attention_usage::int8_split;
+                complete = true;
+            }
             else complete = enqueue(int(window.size()), true, cancelled);
             q_.wait_and_throw();
         }
@@ -1456,6 +1524,7 @@ int serve(Engine& engine, bool stochastic_mtp = false) {
         }
         const auto decode_start = std::chrono::steady_clock::now();
         const double prompt_ms = std::chrono::duration<double, std::milli>(decode_start - start).count();
+        const auto prefill_attention = attention_usage::format(engine.take_attention_usage());
         // A partially consumed image cannot act as an independently reusable
         // prefix. Restore the last complete turn, or discard the partial state.
         if (inbox.cancelled().load() && !qwen_vision::canonical::whole_prefix(engine.images(), live.size())) {
@@ -1546,6 +1615,8 @@ int serve(Engine& engine, bool stochastic_mtp = false) {
         engine.print_spec_stats();
         engine.print_moe_routes();
         host_profile::print();
+        std::printf("INFO prefill_attention_route=%s decode_attention_route=%s\n",
+            prefill_attention.c_str(), attention_usage::format(engine.take_attention_usage()).c_str());
         const auto speculation_end = engine.speculation_counts();
         std::printf("DONE %d %zu %.3f %.3f %s %llu %llu %zu %d 0 0 0 0.0 %zu 0\n", produced, prompt.size(), prompt_ms, decode_ms, finish,
             static_cast<unsigned long long>(speculation_end.first - speculation_start.first),

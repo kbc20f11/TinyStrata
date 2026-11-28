@@ -370,6 +370,12 @@ def runtime_environment(cfg: dict, inherited: Mapping | None = None) -> dict[str
         environment[key_for(name)] = str(value)
     for name, default in (("ONEAPI_DEVICE_SELECTOR", "level_zero:gpu"), ("UR_LOADER_PRELOAD_FILTER", "1")):
         environment.setdefault(key_for(name), default)
+    if cfg.get("args") and canonical_model(cfg) in (QWEN_MODEL, TIEL_MODEL, CLOVER_MODEL):
+        values, _ = _options(cfg)
+        # Only pass the adaptive workspace hint for a managed automatic chunk.
+        # Older installed native generations keep their original preset.
+        name = "TINYSTRATA_INTEL_CHUNK_AUTO"
+        environment[key_for(name)] = str(int(values.get("--chunk", "auto") in ("auto", "0")))
     if directories:
         key = key_for("PATH")
         environment[key] = ";".join([*dict.fromkeys(directories), *([environment[key]] if environment.get(key) else [])])

@@ -1,5 +1,6 @@
 // Gemma formulas follow src/gemma4/{gemma4.cpp,kernels.cu} (MIT; NOTICE).
 #include "strata/intel/gemma_ops.hpp"
+#include "strata/intel/attention_usage.hpp"
 #include "strata/intel/gemma_vision.hpp"
 #ifdef TINYSTRATA_INTEL_MKL
 #include <oneapi/mkl/blas.hpp>
@@ -113,6 +114,7 @@ sycl::event gemma_route(sycl::queue& q,const float* logits,const float* escale,i
 struct GemmaAttention::Impl {
     sycl::queue& q;int context,tokens,heads,dim;size_t cache_elements;bool mkl,split_pv;
     float *scores=nullptr,*keys=nullptr,*values=nullptr,*temporary=nullptr,*partials=nullptr;
+    unsigned active_attention=0;
     std::vector<void*> allocations;
     template<class T>T* allocate(size_t count){auto* p=sycl::malloc_device<T>(count,q);if(!p)throw std::runtime_error("Gemma attention allocation failed");allocations.push_back(p);return p;}
     Impl(sycl::queue& queue,int c,int t,int h,int d,size_t elements,bool use_mkl,bool split):q(queue),context(c),tokens(t),heads(h),dim(d),cache_elements(elements),mkl(use_mkl),split_pv(split){
@@ -140,6 +142,7 @@ struct GemmaAttention::Impl {
 };
 GemmaAttention::GemmaAttention(sycl::queue& q,int c,int t,int h,int d,size_t e,bool m,bool split):impl_(std::make_unique<Impl>(q,c,t,h,d,e,m,split)){}
 GemmaAttention::~GemmaAttention()=default;
+unsigned GemmaAttention::take_attention_usage(){return std::exchange(impl_->active_attention,0);}
 sycl::event GemmaAttention::run(const float* query,GemmaKv c,float* output,int heads,int position,int tokens,float scale,bool whole_image){
     auto& p=*impl_;auto& q=p.q;cache_shape(c);
     if(heads<1||heads>p.heads||heads%c.heads||c.dim>p.dim||tokens<1||
@@ -152,6 +155,7 @@ sycl::event GemmaAttention::run(const float* query,GemmaKv c,float* output,int h
     const int image_end=sees_all?position+tokens-1:-1;
 #ifdef TINYSTRATA_INTEL_MKL
     if(p.mkl&&tokens>=16){
+        p.active_attention|=attention_usage::int8_expanded_mkl;
         const size_t count=size_t(c.heads)*span*c.dim;if(count>p.cache_elements)throw std::runtime_error("Gemma KV expansion exceeds its bound");
         float *keys=p.keys,*values=p.values,*temporary=p.temporary;
         q.parallel_for(sycl::range<1>(count),[=](sycl::id<1> id){
@@ -194,6 +198,7 @@ sycl::event GemmaAttention::run(const float* query,GemmaKv c,float* output,int h
             for(int col=int(lane);col<span;col+=128)scores[row*span+col]=first+col>=low&&first+col<=end?sycl::exp(scores[row*span+col]-maximum)/sum:0.f;
         });
         if(p.split_pv&&tokens==1&&span>=1024){
+            p.active_attention|=attention_usage::int8_split_pv;
             // Preserve QK, exact causal/window masking, and normalized
             // probabilities. Only partition the FP32 PV reduction; no key,
             // selected expert, or KV quantization is changed.
@@ -220,6 +225,7 @@ sycl::event GemmaAttention::run(const float* query,GemmaKv c,float* output,int h
             });
             continue;
         }
+        p.active_attention|=attention_usage::int8_split;
         last=q.parallel_for(sycl::range<1>(size_t(n)*heads*c.dim),[=](sycl::id<1> id){
             const size_t col=id[0]%c.dim,head=(id[0]/c.dim)%heads,token=id[0]/c.dim/heads,kv=head/(heads/c.heads);float sum=0;
             for(int cell=0;cell<span;++cell){const size_t src=(kv*c.capacity+(first+cell)%c.capacity)*c.dim+col;sum=sycl::fma(scores[(token*heads+head)*span+cell],float(c.value[src])*float(c.value_scale[src/32]),sum);}

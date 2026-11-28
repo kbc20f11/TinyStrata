@@ -61,6 +61,9 @@ int main(){try{
         if(p.owned_device!=p.cache+states+base+attention+mtp)std::fprintf(stderr,"Qwen ledger c=%llu got=%llu expected=%llu\n",(unsigned long long)c,(unsigned long long)p.owned_device,(unsigned long long)(p.cache+states+base+attention+mtp));
         check(p.owned_device==p.cache+states+base+attention+mtp);
         check(p.owned_host_visible==p.owned_device);
+        auto tile=q;tile.direct_kv_prefill=true;
+        const auto direct=cp::qwen(c,tile);
+        check(direct.cache==p.cache && p.owned_device-direct.owned_device==cells*8);
         auto d=q;d.device_state=true;const auto discrete=cp::qwen(c,d);
         check(discrete.device==p.device);check(discrete.host_visible<p.host_visible);
         auto off=q;off.support=false;const auto no=cp::qwen(c,off);
@@ -87,6 +90,12 @@ int main(){try{
     // WDDM and max single allocation can independently limit auto. There is
     // no sum of RAM and shared/local GPU capacity.
     auto wddm=uma;wddm.wddm_available=uma_wddm_headroom+65537ull*1024;check(cp::select(0,262144,wddm,GiB,linear).tokens==65536);
+    const auto chunk_workspace=[](uint64_t c,int rows){cp::Footprint p;p.allocation(c,1024);p.allocation(rows,65536);return p;};
+    auto small=uma;small.wddm_available=uma_wddm_headroom+80*(1ull<<20);
+    check(cp::uma_chunk(1024,0,262144,uma,GiB,chunk_workspace)==1024);
+    check(cp::uma_chunk(1024,0,262144,small,GiB,chunk_workspace)==512);
+    check(cp::uma_chunk(1024,65536,262144,small,GiB,chunk_workspace)==256);
+    check(cp::uma_chunk(128,65536,262144,small,GiB,chunk_workspace)==128);
     check(cp::select(65537,262144,wddm,GiB,linear).tokens==65537);
     rejected([&]{cp::select(65538,262144,wddm,GiB,linear);});
     for(uint64_t raw:{uint64_t{0},uma_wddm_headroom-1,uma_wddm_headroom}){

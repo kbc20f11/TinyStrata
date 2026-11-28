@@ -12,6 +12,9 @@ struct Q8Kv {
 sycl::event store_q8_kv(sycl::queue& q, const float* key, const float* value, Q8Kv cache,
     const int32_t* position, int tokens, int32_t* error);
 sycl::event dequantize_q8_kv(sycl::queue& q, Q8Kv cache, float* key, float* value, int visible);
+// Loads one INT8 K/V tile into work-group storage and expands it there.
+sycl::event causal_attention_q8(sycl::queue& q, const float* queries, const float* gates,
+    Q8Kv cache, float* output, int heads, int position, int tokens);
 // 1..8 token rows with independent causal positions. Query/gate/output are
 // token-major; scratch needs tokens*heads*context scores and
 // tokens*heads*ceil(context/256)*256 partial coefficients.
@@ -19,7 +22,8 @@ sycl::event dequantize_q8_kv(sycl::queue& q, Q8Kv cache, float* key, float* valu
 // path. Graph capture/replay passes 0, never its padded extent as visibility.
 sycl::event decode_attention_q8(sycl::queue& q, const float* query, const float* gate, Q8Kv cache,
     float* scores, float* partial, float* output, int heads, const int32_t* position,
-    int extent, sycl::event* stages = nullptr, int tokens = 1, int actual_visible = 0);
+    int extent, sycl::event* stages = nullptr, int tokens = 1, int actual_visible = 0,
+    unsigned* active_routes = nullptr);
 // Fused D256/GQA8: complete causal KV, register FP32 online
 // normalization and bounded split partials. Reuses the normal score/partial
 // allocations; their contents differ from the control. partial_stage receives

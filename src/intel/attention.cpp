@@ -1,10 +1,13 @@
 #include "strata/intel/qwen_ops.hpp"
+#include "strata/intel/kv_q8.hpp"
 #include <stdexcept>
 
 namespace strata::intel {
-sycl::event causal_attention(sycl::queue& q, const float* queries, const float* gates,
-                             const float* keys, const float* values, float* output,
-                             int heads, int kv_heads, int context, int position, int tokens) {
+namespace {
+template<bool quantized>
+sycl::event tiled_causal_attention(sycl::queue& q, const float* queries, const float* gates,
+    const float* keys, const float* values, Q8Kv cache, float* output,
+    int heads, int kv_heads, int context, int position, int tokens) {
     if (!q.has_property<sycl::property::queue::in_order>() || heads <= 0 || kv_heads <= 0 || heads % kv_heads ||
         position < 0 || tokens < 1 || position + tokens > context)
         throw std::invalid_argument("Invalid causal attention geometry/queue");
@@ -35,8 +38,14 @@ sycl::event causal_attention(sycl::queue& q, const float* queries, const float* 
                     const size_t cell = begin + i / dimension, col = i % dimension;
                     const bool valid = cell < end;
                     const size_t source = (kv_head * context + cell) * dimension + col;
-                    key[col * (key_tile + 1) + i / dimension] = valid ? keys[source] : 0.f;
-                    value[i] = valid ? values[source] : 0.f;
+                    const size_t target = col * (key_tile + 1) + i / dimension;
+                    if constexpr (quantized) {
+                        key[target] = valid ? float(cache.key[source]) * float(cache.key_scale[source / 32]) : 0.f;
+                        value[i] = valid ? float(cache.value[source]) * float(cache.value_scale[source / 32]) : 0.f;
+                    } else {
+                        key[target] = valid ? keys[source] : 0.f;
+                        value[i] = valid ? values[source] : 0.f;
+                    }
                 }
                 sycl::group_barrier(it.get_group());
                 const bool visible = token < size_t(tokens) && begin + lane <= size_t(position) + token;
@@ -70,6 +79,21 @@ sycl::event causal_attention(sycl::queue& q, const float* queries, const float* 
         });
     });
 }
+} // namespace
+
+sycl::event causal_attention(sycl::queue& q, const float* queries, const float* gates,
+    const float* keys, const float* values, float* output,
+    int heads, int kv_heads, int context, int position, int tokens) {
+    return tiled_causal_attention<false>(q, queries, gates, keys, values, {}, output,
+        heads, kv_heads, context, position, tokens);
+}
+
+sycl::event causal_attention_q8(sycl::queue& q, const float* queries, const float* gates,
+    Q8Kv cache, float* output, int heads, int position, int tokens) {
+    return tiled_causal_attention<true>(q, queries, gates, nullptr, nullptr, cache, output,
+        heads, cache.heads, cache.context, position, tokens);
+}
+
 sycl::event decode_attention(sycl::queue& q, const float* queries, const float* gates, const float* keys, const float* values,
     float* scores, float* partial, float* output, int heads, int kv_heads, int context, const int32_t* position, int extent, sycl::event* stages) {
     if (!q.has_property<sycl::property::queue::in_order>() || heads < 1 || kv_heads < 1 || heads % kv_heads || extent < 1 || extent > context)

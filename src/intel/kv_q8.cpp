@@ -1,4 +1,5 @@
 #include "strata/intel/kv_q8.hpp"
+#include "strata/intel/attention_usage.hpp"
 #include <sycl/ext/intel/experimental/grf_size_properties.hpp>
 #include <sycl/ext/oneapi/experimental/device_architecture.hpp>
 #include <algorithm>
@@ -255,15 +256,20 @@ sycl::event fused_decode_attention_q8(sycl::queue& q,const float* query,const fl
     });
 }
 sycl::event decode_attention_q8(sycl::queue& q,const float* query,const float* gate,Q8Kv c,
-    float* scores,float* partial,float* output,int heads,const int32_t* position,int extent,sycl::event* stages,int tokens,int actual_visible){
+    float* scores,float* partial,float* output,int heads,const int32_t* position,int extent,sycl::event* stages,int tokens,int actual_visible,
+    unsigned* active_routes){
     validate(q,c);
     if(heads<1||heads%c.heads||extent<1||extent>c.context||tokens<1||tokens>8)throw std::invalid_argument("Invalid Q8 decode attention geometry");
     if(actual_visible<0 || actual_visible>extent)throw std::invalid_argument("Invalid Q8 actual visibility");
     // The measured PTL-H device defaults to register GQA8 fusion. Explicit0/1
     // overrides that device policy. Old profiling expects three stage events;
     // graphs with a zero visibility hint retain the original implementation.
-    if(!stages && heads==16 && c.heads==2 && c.context>=2 && actual_visible>=16384 && fused_requested(q))
+    if(!stages && heads==16 && c.heads==2 && c.context>=2 && actual_visible>=16384 && fused_requested(q)) {
+        if(active_routes)*active_routes|=attention_usage::int8_fused_gqa;
         return fused_decode_attention_q8(q,query,gate,c,scores,partial,output,heads,position,extent,nullptr,tokens);
+    }
+    if(active_routes)*active_routes|=actual_visible>=16384&&(tokens==3||tokens==4)
+        ?attention_usage::int8_token_reuse:attention_usage::int8_split;
     if(actual_visible>=16384 && tokens==3)return token_reuse_attention<3>(q,query,gate,c,scores,partial,output,heads,position,extent,stages);
     if(actual_visible>=16384 && tokens==4)return token_reuse_attention<4>(q,query,gate,c,scores,partial,output,heads,position,extent,stages);
     constexpr size_t group=128,subgroup=16,per_group=group/subgroup,block=256;

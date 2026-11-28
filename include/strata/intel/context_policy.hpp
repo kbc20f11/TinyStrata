@@ -91,7 +91,7 @@ inline Footprint gemma(uint64_t c,const GemmaSpec& s={}){
     if(s.vision)p.host(gemma_vision::host_reservation(c,s.width));
     return p;
 }
-struct LfmSpec {uint64_t chunk=512,width=2048,vocabulary=128000,heads=32,kv_heads=8,dim=64,dense_ff=11776,experts=64,picks=4,expert_ff=1536;bool mkl=true,q4_dp4a=false;};
+struct LfmSpec {uint64_t chunk=512,width=2048,vocabulary=128000,heads=32,kv_heads=8,dim=64,dense_ff=11776,experts=64,picks=4,expert_ff=1536;bool mkl=true,q4_dp4a=false,pv_split=false;};
 inline Footprint lfm(uint64_t c,const LfmSpec& s={}){
     Footprint p;const auto n=s.chunk,cells=mul(mul(c,s.kv_heads),s.dim);
     q8_cache(p,cells,false,10);p.allocation(mul(2,s.width),4,false,60); // live and rollback convolution,30 layers
@@ -106,6 +106,7 @@ inline Footprint lfm(uint64_t c,const LfmSpec& s={}){
     p.allocation(mul(n,s.experts),4);const auto tiles=add(add(mul(n,s.picks),3)/4,s.experts);
     p.allocation(tiles,4,false,2);p.allocation(1,4);p.own();
     attention(p,c,n,s.heads,s.dim,cells,s.mkl);if(s.mkl)gemm(p,1,n);
+    if(s.pv_split)p.allocation(mul(mul(s.heads,add(c,255)/256),s.dim),4);
     if(s.q4_dp4a){p.allocation(512*8192,1);p.allocation(512*8192/32,4);p.allocation(1,4,true);
         p.allocation(2048,4);p.allocation(512,4);p.allocation(16,1);p.allocation(256,4);p.allocation(128,1);}
     // One independent ordinary-host turn snapshot, plus exact bounded IDs.
@@ -118,6 +119,7 @@ struct QwenSpec {
     bool int8=false,mtp=false,mkl=false,dp4a=false,dense_split=false,support=false;
     bool device_state=false,turn_checkpoint=true,graph=true,verify_graph=false,npu=false,npu_split=false;
     bool vision=false,clover_vision_aliases=false;
+    bool direct_kv_prefill=false;
 };
 // MoE's routed output is dead throughout the preceding attention/GDN phase.
 // Keep its simultaneously live attention views disjoint. GDN output uses the
@@ -156,7 +158,10 @@ inline Footprint qwen(uint64_t c,const QwenSpec& s={}){
     const auto tiles=add(add(mul(n,8),3)/4,256);a(tiles,4,2);a(1);
     control(n);control(n);a(2048);
     if(s.vision)a(mul(c,3)); // persistent interleaved temporal/height/width positions
-    if(s.int8){control(1);a(cells,4,2);}
+    if(s.int8){
+        control(1);
+        if(!s.direct_kv_prefill)a(cells,4,2);
+    }
     if(s.mtp){
         a(mul(n,4096));a(mul(n,2048),4,4);a(2048,4,2);
         control(s.draft_vocabulary?s.draft_vocabulary:s.vocabulary);
@@ -197,6 +202,17 @@ inline std::string rejection(const char* why,int requested,const Footprint& p,co
         " largest_allocation="+std::to_string(p.largest)+" maximum_allocation="+std::to_string(maximum);
 }
 struct Selection {int tokens=0;bool automatic=false;Footprint bytes;};
+template<class Estimate>int uma_chunk(int preferred,int requested,int ceiling,
+    const MemoryBudget& memory,uint64_t max_allocation,Estimate estimate){
+    // Keep the known fast chunk if the model admits a full long-input turn.
+    // This is a workspace check only. Auto context still searches its full
+    // range after the chunk is selected.
+    const int target=requested?requested:std::min(ceiling,32768);
+    for(int rows=preferred;rows>128;rows/=2){
+        if(fits(memory,max_allocation,estimate(target,rows)))return rows;
+    }
+    return std::min(preferred,128);
+}
 template<class Estimate>Selection select(int requested,int ceiling,const MemoryBudget& memory,uint64_t max_allocation,Estimate estimate){
     if(requested<0||ceiling<1||ceiling>full_limit||requested>ceiling)throw std::invalid_argument("Intel context exceeds model policy limit");
     if(requested){auto p=estimate(uint64_t(requested));if(!fits(memory,max_allocation,p))throw std::runtime_error(rejection("Explicit Intel context does not fit; request was not reduced.",requested,p,memory,max_allocation));return {requested,false,p};}
@@ -208,6 +224,7 @@ template<class Estimate>Selection select(int requested,int ceiling,const MemoryB
 inline void report(const Selection& s,int limit,const MemoryBudget& m,uint64_t maximum){
     std::fprintf(stderr,"Intel context_auto=%d max_context=%d model_limit=%d quantum=%d context_budget_device=%llu context_budget_host=%llu context_budget_nonlocal=%llu context_budget_wddm_known=%d context_budget_max_allocation=%llu context_bytes_device=%llu context_bytes_host_visible=%llu context_bytes_host_only=%llu context_bytes_cache=%llu context_bytes_largest_allocation=%llu os_headroom_bytes=%llu\n",int(s.automatic),s.tokens,limit,auto_quantum,(unsigned long long)allocation_budget(m),(unsigned long long)system_allocation_budget(m),(unsigned long long)(m.wddm_nonlocal_known?m.wddm_nonlocal_available:0),int(m.wddm_known),(unsigned long long)maximum,(unsigned long long)s.bytes.device,(unsigned long long)s.bytes.host_visible,(unsigned long long)s.bytes.host_only,(unsigned long long)s.bytes.cache,(unsigned long long)s.bytes.largest,(unsigned long long)(4*GiB));
     std::printf("INFO context_auto=%d\nINFO context_budget_device=%llu\nINFO context_bytes_device=%llu\nINFO context_bytes_host_visible=%llu\nINFO context_bytes_host_only=%llu\nINFO max_context=%d\n",int(s.automatic),(unsigned long long)allocation_budget(m),(unsigned long long)s.bytes.device,(unsigned long long)s.bytes.host_visible,(unsigned long long)s.bytes.host_only,s.tokens);std::fflush(stdout);
+    std::printf("INFO kv_allocated_bytes=%llu\n",(unsigned long long)s.bytes.cache);
     std::fprintf(stderr,"Intel context_wddm_known=%d context_wddm_available_raw=%llu context_wddm_headroom=%llu context_wddm_usable=%llu\n",int(m.wddm_known),(unsigned long long)(m.wddm_known?m.wddm_available:0),(unsigned long long)wddm_headroom(m),(unsigned long long)wddm_allocation_budget(m));
     std::printf("INFO context_wddm_known=%d\nINFO context_wddm_available_raw=%llu\nINFO context_wddm_headroom=%llu\nINFO context_wddm_usable=%llu\n",int(m.wddm_known),(unsigned long long)(m.wddm_known?m.wddm_available:0),(unsigned long long)wddm_headroom(m),(unsigned long long)wddm_allocation_budget(m));std::fflush(stdout);
 }
