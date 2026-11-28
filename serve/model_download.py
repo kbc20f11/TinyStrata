@@ -6,12 +6,17 @@ only so the transfer protocol can be exercised with a local HTTP fixture.
 """
 from __future__ import annotations
 
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import hashlib
+from io import BytesIO
+from itertools import islice
 from pathlib import Path
 import re
 import shutil
 import threading
+import time
 from typing import Callable, Iterable
 import urllib.request
 
@@ -65,7 +70,7 @@ FIXED_TIEL_MMPROJ = _Manifest(
 )
 
 LFM2_MODEL_REPO = "LiquidAI/LFM2.5-24B-A2B-GGUF"
-LFM2_MODEL_REVISION = "0912d33141f77e10705345a6732bfd83f0252fdc"
+LFM2_MODEL_REVISION = "d790f111166905bfb36a81e12a403701ac23a1ca"
 LFM2_MODEL_FILENAME = "LFM2.5-24B-A2B-Q4_K_M.gguf"
 LFM2_MODEL_SIZE = 14_526_258_464
 LFM2_MODEL_SHA256 = "d3334405b96228eb9908cdebb5c6194908f2da64282bda852afc3a3910c64e7d"
@@ -200,8 +205,12 @@ class _Cancelled(Exception):
     pass
 
 
+class _RangeUnsupported(Exception):
+    pass
+
+
 class FixedModelDownloader:
-    """One resumable background transfer and verified-model activation at a time.
+    """One resumable download job and verified-model activation at a time.
 
     ``on_ready`` runs on the download worker after SHA-256 verification.  It can
     install tokenizer/configuration and start the engine.  If activation fails,
@@ -214,6 +223,10 @@ class FixedModelDownloader:
     """
 
     _ACTIVE = frozenset(("downloading", "verifying", "loading"))
+    _RANGE_BYTES = 32 * 1024 * 1024
+    _RANGE_WORKERS = 4
+    _PARALLEL_MIN_BYTES = 2 * 1024**3
+    _PARALLEL_MIN_GAIN = 1.10
 
     def __init__(self, directory: Path, on_ready: Callable[[Path], None] | None = None,
                  existing_paths: Iterable[Path] = (), *,
@@ -321,6 +334,147 @@ class FixedModelDownloader:
         self._check_cancelled()
         return digest.hexdigest() == self.manifest.sha256
 
+    def _open_response(self, offset: int, end: int | None = None):
+        headers = {"User-Agent": "TinyStrata-model-download/1", "Accept-Encoding": "identity"}
+        if offset or end is not None:
+            headers["Range"] = f"bytes={offset}-{'' if end is None else end}"
+        request = urllib.request.Request(self.manifest.url, headers=headers)
+        return urllib.request.urlopen(request, timeout=self._timeout)
+
+    def _response_bounds(self, response, offset: int, end: int | None = None) -> tuple[int, int]:
+        if response.status == 206:
+            match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", response.headers.get("Content-Range", ""))
+            if not match:
+                raise ValueError("The download server returned an invalid Content-Range.")
+            first, last, total = map(int, match.groups())
+            if (first != offset or total != self.manifest.size or not first <= last < total or
+                    (end is not None and last != end)):
+                raise ValueError("The download server returned a different model range or size.")
+            size = last - first + 1
+        elif response.status == 200:
+            if end is not None:
+                # A range-ignoring server may allow an ordinary full download.
+                # Close this response without reading the duplicate body.
+                raise _RangeUnsupported()
+            offset, size = 0, self.manifest.size
+        else:
+            raise ValueError(f"Unexpected model download HTTP status: {response.status}")
+        length = response.headers.get("Content-Length")
+        if length is not None and int(length) != size:
+            raise ValueError("The download server returned an unexpected Content-Length.")
+        encoding = response.headers.get("Content-Encoding", "identity").lower()
+        if encoding not in ("", "identity"):
+            raise ValueError("Compressed transfer cannot be used for a resumable model download.")
+        return offset, size
+
+    def _receive(self, response, output, size: int, stopped: threading.Event | None = None) -> None:
+        received = 0
+        while True:
+            self._check_cancelled()
+            if stopped is not None and stopped.is_set():
+                raise _Cancelled()
+            block = response.read1(min(self._chunk_size, size - received + 1))
+            if not block:
+                break
+            if len(block) > size - received:
+                raise ValueError("The download server sent more bytes than its declared range.")
+            output.write(block)
+            received += len(block)
+            with self._lock:
+                self._bytes += len(block)
+        if received != size:
+            raise OSError("Model download ended early; retry to resume the retained partial file.")
+
+    def _download_single(self, offset: int, end: int | None = None) -> float:
+        self._check_cancelled()
+        with self._open_response(offset, end) as response:
+            self._check_cancelled()
+            # Truncate only after validating the full response from a server that ignored Range.
+            offset, size = self._response_bounds(response, offset, end)
+            self._update(count=offset)
+            started = time.perf_counter()
+            with self.partial.open("ab" if offset else "wb") as output:
+                self._receive(response, output, size)
+            expected_stop = self.manifest.size if end is None else end + 1
+            if offset + size != expected_stop:
+                raise OSError("Model download ended early; retry to resume the retained partial file.")
+        return time.perf_counter() - started
+
+    def _fetch_range(self, offset: int, end: int, stopped: threading.Event) -> bytes:
+        self._check_cancelled()
+        if stopped.is_set():
+            raise _Cancelled()
+        with self._open_response(offset, end) as response, BytesIO() as output:
+            _, size = self._response_bounds(response, offset, end)
+            self._receive(response, output, size, stopped)
+            return output.getvalue()
+
+    def _download_parallel(self, offset: int, stop: int) -> float:
+        starts = iter(range(offset, stop, self._RANGE_BYTES))
+        stopped = threading.Event()
+        started = time.perf_counter()
+        try:
+            with self.partial.open("ab") as output, ThreadPoolExecutor(
+                    max_workers=self._RANGE_WORKERS, thread_name_prefix="model-range") as pool:
+                def submit(start):
+                    end = min(start + self._RANGE_BYTES, stop) - 1
+                    return pool.submit(self._fetch_range, start, end, stopped)
+
+                # Fetch ahead only this far. Write in offset order so every on-disk
+                # byte still forms a contiguous prefix, usable by the old resume path.
+                pending = deque(submit(start) for start in islice(starts, self._RANGE_WORKERS))
+                try:
+                    while pending:
+                        self._check_cancelled()
+                        block = pending.popleft().result()
+                        self._check_cancelled()
+                        output.write(block)
+                        del block
+                        start = next(starts, None)
+                        if start is not None:
+                            pending.append(submit(start))
+                finally:
+                    stopped.set()
+                    for future in pending:
+                        future.cancel()
+        except Exception:
+            # The live counter includes buffered ranges. After workers stop,
+            # report only the bytes that can be reused by a retry.
+            self._update(count=self.partial.stat().st_size if self.partial.exists() else offset)
+            self._check_cancelled()
+            raise
+        return time.perf_counter() - started
+
+    def _transfer(self, offset: int) -> None:
+        """Measure parallelism on useful bytes, then use the faster transport."""
+        end = self.manifest.size
+        if end - offset < self._PARALLEL_MIN_BYTES:
+            self._download_single(offset)
+            return
+
+        single_bytes = 2 * self._RANGE_BYTES
+        parallel_bytes = self._RANGE_WORKERS * self._RANGE_BYTES
+        single_stop = offset + single_bytes
+        pilot_stop = single_stop + parallel_bytes
+        # Compare against sustained single-connection throughput. Parallel
+        # requests have recurring setup costs and must also pay for ordered writes.
+        single_elapsed = self._download_single(offset, single_stop - 1)
+        parallel_elapsed = self._download_parallel(single_stop, pilot_stop)
+        if parallel_elapsed * single_bytes * self._PARALLEL_MIN_GAIN >= single_elapsed * parallel_bytes:
+            self._download_single(pilot_stop)
+            return
+
+        offset = pilot_stop
+        while end - offset >= 2 * self._RANGE_BYTES:
+            stop = min(offset + 4 * parallel_bytes, end)
+            elapsed = self._download_parallel(offset, stop)
+            transferred = stop - offset
+            offset = stop
+            if elapsed * single_bytes >= single_elapsed * transferred:
+                break
+        if offset < end:
+            self._download_single(offset)
+
     def _download(self) -> Path:
         model = self.manifest
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -347,50 +501,10 @@ class FixedModelDownloader:
             raise OSError(f"Not enough disk space: need {remaining + self._reserve_bytes:,} more bytes "
                           "including the download safety reserve.")
         if remaining:
-            headers = {"User-Agent": "TinyStrata-model-download/1", "Accept-Encoding": "identity"}
-            if offset:
-                headers["Range"] = f"bytes={offset}-"
-            request = urllib.request.Request(model.url, headers=headers)
-            with urllib.request.urlopen(request, timeout=self._timeout) as response:
-                self._check_cancelled()
-                status = response.status
-                if status == 206:
-                    content_range = response.headers.get("Content-Range", "")
-                    match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", content_range)
-                    if not match:
-                        raise ValueError("The download server returned an invalid Content-Range.")
-                    first, last, total = map(int, match.groups())
-                    if first != offset or total != model.size or not first <= last < total:
-                        raise ValueError("The download server returned a different model range or size.")
-                    response_bytes = last - first + 1
-                elif status == 200:
-                    # Some servers ignore Range: restart only after validating headers.
-                    offset = 0
-                    response_bytes = model.size
-                else:
-                    raise ValueError(f"Unexpected model download HTTP status: {status}")
-                length = response.headers.get("Content-Length")
-                if length is not None and int(length) != response_bytes:
-                    raise ValueError("The download server returned an unexpected Content-Length.")
-                encoding = response.headers.get("Content-Encoding", "identity").lower()
-                if encoding not in ("", "identity"):
-                    raise ValueError("Compressed transfer cannot be used for a resumable model download.")
-                self._update(count=offset)
-                received = 0
-                with self.partial.open("ab" if offset else "wb") as output:
-                    while True:
-                        self._check_cancelled()
-                        block = response.read(min(self._chunk_size, response_bytes - received + 1))
-                        if not block:
-                            break
-                        if received + len(block) > response_bytes:
-                            raise ValueError("The download server sent more bytes than its declared range.")
-                        output.write(block)
-                        received += len(block)
-                        self._update(count=offset + received)
-                    output.flush()
-                if received != response_bytes or offset + received != model.size:
-                    raise OSError("Model download ended early; retry to resume the retained partial file.")
+            try:
+                self._transfer(offset)
+            except _RangeUnsupported:
+                self._download_single(self.partial.stat().st_size if self.partial.exists() else offset)
         self._check_cancelled()
         if not self._matches(self.partial):
             self._restart_partial = True

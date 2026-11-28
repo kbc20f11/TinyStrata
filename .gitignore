@@ -44,6 +44,7 @@
 
 # Keep only the public regression tests, not local test artifacts.
 /tests/**
+!/tests/test_model_download_ranges.py
 !/tests/intel-memory-policy.cpp
 !/tests/intel-speculative-distribution.cpp
 !/tests/intel-draft-vocabulary.cpp

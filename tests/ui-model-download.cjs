@@ -9,7 +9,7 @@ const sectionStart=source.indexOf('let modelCatalog ='),sectionEnd=source.indexO
 assert(sectionStart>=0&&sectionEnd>sectionStart,'Model controls section not found in app.js');
 const snippet=source.slice(sectionStart,sectionEnd);
 const healthFunction=source.slice(source.indexOf('async function loadHealth()'),source.indexOf('// ------------------------------------------------------------------ Monitor'));
-const IDS=['qwen3.6-35b-a3b','gemma-4-26b-a4b-it','lfm2.5-24b-a2b','clover-35b-a3b-preview','tiel-coder-35b-a3b'];
+const IDS=['qwen3.6-35b-a3b','gemma-4-26b-a4b-it','lfm2.5-24b-a2b','clover-35b-a3b-preview','tiel-coder-35b-a3b','inkling-2-mini'];
 let checks=0;
 function ok(value,label){assert(value,label);checks++;}
 function fixture(saved=[]){
@@ -59,7 +59,7 @@ function fixture(saved=[]){
   tr:(key,en,values={})=>en.replace(/\{(\w+)\}/g,(_,k)=>values[k]),fmt:(v,d=0)=>Number(v).toFixed(d),
   store:{get:(key,d)=>storage[key]??d,set:(key,value)=>{storage[key]=JSON.parse(JSON.stringify(value));return true;}},
   turnBlocksUnload:()=>ctx.inflight||ctx.busy!==null,pageBusy:()=>ctx.busy!==null||ctx.resourceOperation!==null,
-  parksWhileBusy:()=>false,busyHint:()=> 'Generating reply',
+  generatingChat:()=>ctx.busy!==null,parksWhileBusy:()=>false,busyHint:()=> 'Generating reply',
   toast:(...args)=>toasts.push(args),paintLive(){},setPill(){},
   setTimeout:(fn,delay)=>{timers.set(++tid,{fn,delay});return tid;},clearTimeout:id=>timers.delete(id),
   headers:()=>({}),fetch:()=>{throw Error('Real fetch prohibited');},
@@ -304,7 +304,7 @@ async function transferPermissionRefreshRegressions(){
  const list=f.element('model-library-list'),row=list._modelRows.get(IDS[1]),image=row.image,button=row.download;
  button.focus();const sourceWrites=image.writes;
  for(let i=0;i<20;i++)f.t.library();
- ok(list.children.length===5&&list._modelRows.get(IDS[1])===row,'all five model rows retain keyed DOM');
+ ok(list.children.length===IDS.length&&list._modelRows.get(IDS[1])===row,'all model rows retain keyed DOM');
  ok(row.image===image&&image.writes===sourceWrites&&row.download===button&&f.ctx.document.activeElement===button,'catalog polls preserve image src, button and focus');
  ok(image.tagName==='IMG'&&image.getAttribute('alt')===''&&image.getAttribute('aria-hidden')==='true','model images are decorative beside their text names');
  for(const id of IDS){const modelImage=list._modelRows.get(id).image;ok(modelImage.getAttribute('src')===f.ctx.StrataModelLibrary.get(id).iconSrc&&!modelImage.getAttribute('src').includes('#'),'each model renders its local standalone official or generic asset');}
@@ -348,9 +348,11 @@ async function transferPermissionRefreshRegressions(){
  ok(firstModel.element('composer-model').options.length===2&&firstModel.element('composer-model').options[0].disabled,'single downloaded model remains reachable from a disabled placeholder');
  firstModel.element('composer-model').value=IDS[2];await firstModel.element('composer-model').onchange();
  ok(posts(firstModel,'v1/model/switch').length===1&&posts(firstModel,'v1/model/download').length===0,'choosing the first downloaded model switches without downloading');
- const sendStart=source.indexOf('async function send(payload)'),replyStart=source.indexOf('async function generateReply()'),replyEnd=source.indexOf('\n$("composer").onsubmit',replyStart);
+ const sendStart=source.indexOf('async function send('),replyStart=source.indexOf('async function generateReply('),replyEnd=source.indexOf('\n$("composer").onsubmit',replyStart);
+ assert(sendStart>=0&&replyStart>sendStart&&replyEnd>replyStart,'Send controls section not found in app.js');
  vm.runInContext(source.slice(sendStart,replyStart)+'\n'+source.slice(replyStart,replyEnd),noModels.ctx);
- await noModels.ctx.send({text:'must not request',images:[],files:[]});await noModels.ctx.generateReply();
+ const targetChat={messages:noModels.ctx.messages};
+ await noModels.ctx.send({text:'must not request',images:[],files:[]},targetChat);await noModels.ctx.generateReply(targetChat);
  ok(noModels.calls.length===0&&noModels.ctx.messages.length===0,'send and regenerate guards perform no fetch, download or chat mutation when the model is missing');
  noModels.t.setCatalog(missingRows,false);noModels.t.controls();
  ok(!noModels.t.ready()&&!noModels.element('input').disabled,'temporary catalog failure retains legacy/unknown chat behaviour');
