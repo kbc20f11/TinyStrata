@@ -24,6 +24,7 @@ struct InkSyFitGeom {
     int hidden = 2304;
     bool dspark = false;
     bool vision = false;
+    size_t resident_vision_bytes = 0;
 };
 
 // The bytes the runner, its batch buffers, DSpark, Vision, the hybrid cache ring and the XMX scratch need on the device for `par` slots at `ctx` tokens
@@ -39,7 +40,8 @@ inline size_t ink_sy_runner_reserve(const InkSyFitGeom& g, int par, int ctx, int
     const size_t dsp = g.dspark ? (3ull * 2ull * p * (size_t)ctx * 1024ull * 2ull) : 0ull;
     const size_t sc = g.visit_is_swa.size() * p * 3ull * (2048ull + 2ull * (size_t)g.hidden) * 8ull;
     const size_t act = (size_t)batch_cap * 512ull * 1024ull + (128ull << 20);
-    const size_t vis = g.vision ? (700ull << 20) : 0ull;
+    constexpr size_t vision_budget = 700ull << 20;
+    const size_t vis = g.vision ? vision_budget - std::min(vision_budget, g.resident_vision_bytes) : 0ull;
     const size_t hyb_xmx = 320ull << 20;  // elastic VRAM cache ring (<= 256 MiB) + XMX scratch + ping-pong
     return kv + dsp + sc + act + vis + hyb_xmx;
 }

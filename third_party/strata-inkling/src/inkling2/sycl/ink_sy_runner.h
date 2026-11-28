@@ -35,6 +35,7 @@ struct InkSyRunner {
     int max_ctx = 4096;
     int max_batch = 256;
     bool use_dspark = true;
+    size_t kv_storage_bytes = 0; // actual half K/V allocations, counted once
 
     std::vector<int> visit_kv_stride;
     std::vector<half*> kv_k;
@@ -171,6 +172,7 @@ struct InkSyRunner {
     ~InkSyRunner() { release(); }
 
     void release() {
+        kv_storage_bytes = 0;
 #if defined(SYCL_EXT_ONEAPI_GRAPH)
         if (!graphs.empty()) { try { wait(); } catch (...) {} graphs.clear(); }
 #endif
@@ -254,6 +256,7 @@ struct InkSyRunner {
             const size_t kve = (size_t)max_slots * stride * c.n_kv * c.head_dim;
             kv_k[v] = dalloc<half>(kve); kv_v[v] = dalloc<half>(kve);
             kv_tot += 2 * kve * sizeof(half);
+            kv_storage_bytes = kv_tot;
 
             const size_t sc_kv = (size_t)max_slots * 3 * 1024;
             const size_t sc_d  = (size_t)max_slots * 3 * c.hidden;

@@ -285,7 +285,8 @@ inline void k_kv_norm_store_f16_sg16(const float* k_in, const float* v_in, half*
 }
 
 // Fused RelPos + Sink 24:8 GQA Flash Attention + Sigmoid Gate (SG16: 8 SGs = 128 threads, 8 dims/lane!)
-inline void k_relpos_sink_gqa_sg16(
+template <bool FarGlobal>
+inline void k_relpos_sink_gqa_sg16_impl(
     const float* q_buf, const float* r_buf, const float* rel_proj_pad, const float* sinks_buf,
     const float* gate_buf, const half* k_cache, const half* v_cache,
     const int* slot_ids, const int* pos_buf, float* attn_out,
@@ -306,6 +307,15 @@ inline void k_relpos_sink_gqa_sg16(
             if (tid < 16) sh_r[tid] = r_buf[((size_t)m * INK_NH + head) * INK_DREL + tid];
             sycl::group_barrier(it.get_group());
 
+            bool zero_far_bias = false;
+            if constexpr (FarGlobal) {
+                // The loader pads column 1024 with zero. Check the actual
+                // column and finite R once, so a non-finite operand or custom
+                // nonzero padding retains the legacy arithmetic.
+                zero_far_bias = sycl::all_of_group(it.get_sub_group(),
+                    sycl::isfinite(sh_r[lane]) && rel_proj_pad[(size_t)lane * 1025 + 1024] == 0.0f);
+            }
+
             // Each SG16 lane holds 8 dims: d = lane*8 .. lane*8+7
             float qv[8], o_acc[8];
             const float* qp = q_buf + ((size_t)m * INK_NH + head) * INK_HD + lane * 8;
@@ -325,14 +335,32 @@ inline void k_relpos_sink_gqa_sg16(
                 float sc = sg_sum(it, dt);
 
                 const int dist = sycl::min(qpos - k, rel_extent);
-                sc += sg_sum(it, sh_r[lane] * rel_proj_pad[(size_t)lane * 1025 + dist]);
+                bool far_cell = false;
+                if constexpr (FarGlobal) {
+                    far_cell = zero_far_bias && far_attention_cell(qpos, k, rel_extent);
+                    if (far_cell) sc += 0.0f;
+                    else sc += sg_sum(it, sh_r[lane] * rel_proj_pad[(size_t)lane * 1025 + dist]);
+                } else {
+                    sc += sg_sum(it, sh_r[lane] * rel_proj_pad[(size_t)lane * 1025 + dist]);
+                }
 
                 const float mn = sycl::fmax(m_max, sc);
+                const bool unchanged_max = mn == m_max;
                 const float corr = sycl::exp(m_max - mn);
                 const float p = sycl::exp(sc - mn);
+                // Keep l's exact original expression/order, including exp(0).
                 l_sum = l_sum * corr + p;
                 m_max = mn;
-                for (int u = 0; u < 8; ++u) o_acc[u] = o_acc[u] * corr + p * (float)v_cache[kv_off + u];
+                if constexpr (FarGlobal) {
+                    if (far_cell && unchanged_max) {
+                        // exp(old_max - new_max) == 1 exactly in this branch.
+                        for (int u = 0; u < 8; ++u) o_acc[u] = o_acc[u] + p * (float)v_cache[kv_off + u];
+                    } else {
+                        for (int u = 0; u < 8; ++u) o_acc[u] = o_acc[u] * corr + p * (float)v_cache[kv_off + u];
+                    }
+                } else {
+                    for (int u = 0; u < 8; ++u) o_acc[u] = o_acc[u] * corr + p * (float)v_cache[kv_off + u];
+                }
             }
 
             if (lane == 0) { sh_m[sg] = m_max; sh_l[sg] = l_sum; }
@@ -355,6 +383,27 @@ inline void k_relpos_sink_gqa_sg16(
             }
         });
     });
+}
+
+inline void k_relpos_sink_gqa_sg16(
+    const float* q_buf, const float* r_buf, const float* rel_proj_pad, const float* sinks_buf,
+    const float* gate_buf, const half* k_cache, const half* v_cache,
+    const int* slot_ids, const int* pos_buf, float* attn_out,
+    int M, int is_swa, int swa_win, int rel_extent, int kv_stride) {
+    const bool enabled = far_attention_requested();
+    const bool candidate = far_attention_eligible(enabled, M, is_swa != 0, rel_extent);
+    // Counts report actual kernel dispatches, not guessed GPU skipped cells.
+    if (enabled) {
+        auto& counters = far_attention_dispatches();
+        (candidate ? counters.candidate : counters.legacy).fetch_add(1, std::memory_order_relaxed);
+    }
+    if (candidate) {
+        k_relpos_sink_gqa_sg16_impl<true>(q_buf, r_buf, rel_proj_pad, sinks_buf, gate_buf, k_cache,
+            v_cache, slot_ids, pos_buf, attn_out, M, is_swa, swa_win, rel_extent, kv_stride);
+    } else {
+        k_relpos_sink_gqa_sg16_impl<false>(q_buf, r_buf, rel_proj_pad, sinks_buf, gate_buf, k_cache,
+            v_cache, slot_ids, pos_buf, attn_out, M, is_swa, swa_win, rel_extent, kv_stride);
+    }
 }
 
 inline void k_router_topk8_sg16(const float* r_logits, const float* r_bias, int* topk_idx, float* topk_w,

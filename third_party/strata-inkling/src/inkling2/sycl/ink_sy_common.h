@@ -24,12 +24,18 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
 #include "../ink_json.h"
+#include "ink_sy_far_attention.h"
 #include "strata/artifact/strata_reader.hpp"
 #include "strata/core/device_error_exit.hpp"
+#ifdef INK_SY_TINYSTRATA_MEMORY
+#include "strata/intel/device.hpp"
+#include "ink_sy_memory_policy.h"
+#endif
 #ifdef INK_SYCL_WITH_MODEL_FILE
 #include "../ink_gguf_transcode.h"
 #endif
@@ -53,6 +59,11 @@ inline bool sy_no_xmx_requested() {
         return e && e[0] == '1';
     }();
     return v;
+}
+
+inline bool far_attention_requested() {
+    static const bool enabled = parse_far_attention_mode(std::getenv("STRATA_REVIEW_INKLING_FAR_ATTN"));
+    return enabled;
 }
 
 inline void sy_setenv(const char* k, const char* v, int overwrite = 1) {
@@ -320,9 +331,53 @@ inline const SyDevCaps& dev_caps() {
 
 inline size_t& dev_bytes_allocated() { static size_t b = 0; return b; }
 
+#ifdef INK_SY_TINYSTRATA_MEMORY
+inline const strata::intel::DeviceInfo& selected_memory_device() {
+    static const auto device = strata::intel::inspect_device(Q().get_device());
+    return device;
+}
+inline bool is_uma() {
+    // Keep the bundled OpenCL/discrete route unchanged. Qualification uses
+    // Level Zero, whose integrated flag identifies the actual selected device.
+    return Q().get_device().get_backend() == sycl::backend::ext_oneapi_level_zero &&
+           selected_memory_device().integrated;
+}
+inline UmaLedger& uma_ledger() {
+    static UmaLedger ledger{strata::intel::allocation_budget(
+        strata::intel::memory_budget(selected_memory_device()))};
+    return ledger;
+}
+inline uint64_t uma_remaining_bytes() {
+    return uma_ledger().remaining(strata::intel::allocation_budget(
+        strata::intel::memory_budget(selected_memory_device())));
+}
+struct OwnedAllocation { size_t bytes; bool host; };
+inline std::unordered_map<void*, OwnedAllocation>& owned_allocations() {
+    static std::unordered_map<void*, OwnedAllocation> owned;
+    return owned;
+}
+inline void admit_uma_allocation(size_t bytes) {
+    if (is_uma() && bytes > uma_remaining_bytes())
+        throw std::runtime_error("sycl: allocation exceeds the single UMA RAM/commit/WDDM budget (4 GiB OS and 768 MiB WDDM headroom)");
+}
+inline void record_allocation(void* pointer, size_t bytes, bool host) {
+    owned_allocations().emplace(pointer, OwnedAllocation{bytes, host});
+    if (is_uma()) {
+        if (host) uma_ledger().host_usm_bytes += bytes;
+        else uma_ledger().device_bytes += bytes;
+    }
+}
+#else
+inline bool is_uma() { return false; }
+#endif
+
 template <class T>
 inline T* dalloc(size_t n) {
     size_t cnt = n ? n : 1;
+    if (cnt > SIZE_MAX / sizeof(T)) throw std::overflow_error("sycl: device allocation size overflow");
+#ifdef INK_SY_TINYSTRATA_MEMORY
+    admit_uma_allocation(cnt * sizeof(T));
+#endif
     T* p = sycl::malloc_device<T>(cnt, Q());
     if (!p) {
         char what[160];
@@ -330,22 +385,47 @@ inline T* dalloc(size_t n) {
         strata::core::exit_device_error(what, "out of device memory");
     }
     dev_bytes_allocated() += cnt * sizeof(T);
+#ifdef INK_SY_TINYSTRATA_MEMORY
+    record_allocation(p, cnt * sizeof(T), false);
+#endif
     return p;
 }
 
 template <class T>
 inline T* halloc(size_t n) {
     size_t cnt = n ? n : 1;
+    if (cnt > SIZE_MAX / sizeof(T)) throw std::overflow_error("sycl: host allocation size overflow");
+#ifdef INK_SY_TINYSTRATA_MEMORY
+    admit_uma_allocation(cnt * sizeof(T));
+#endif
     T* p = sycl::malloc_host<T>(cnt, Q());
     if (!p) {
         char what[160];
         std::snprintf(what, sizeof(what), "[ink_sycl] halloc (%zu bytes)", cnt * sizeof(T));
         strata::core::exit_device_error(what, "out of host USM memory");
     }
+#ifdef INK_SY_TINYSTRATA_MEMORY
+    record_allocation(p, cnt * sizeof(T), true);
+#endif
     return p;
 }
 
-inline void dfree(void* p) { if (p) sycl::free(p, Q()); }
+inline void dfree(void* p) {
+    if (!p) return;
+    sycl::free(p, Q());
+#ifdef INK_SY_TINYSTRATA_MEMORY
+    auto& owned = owned_allocations();
+    const auto it = owned.find(p);
+    if (it != owned.end()) {
+        if (!it->second.host) dev_bytes_allocated() -= it->second.bytes;
+        if (is_uma()) {
+            if (it->second.host) uma_ledger().host_usm_bytes -= it->second.bytes;
+            else uma_ledger().device_bytes -= it->second.bytes;
+        }
+        owned.erase(it);
+    }
+#endif
+}
 inline void h2d(void* d, const void* h, size_t b) { if (b) Q().memcpy(d, h, b); }
 inline void h2d_sync(void* d, const void* h, size_t b) { if (b) Q().memcpy(d, h, b).wait(); }
 inline void d2h(void* h, const void* d, size_t b) { if (b) Q().memcpy(h, d, b); }
@@ -896,6 +976,28 @@ struct InkSyclModel {
             vram_budget = (size_t)(vram_experts_gb_override * (1024.0 * 1024.0 * 1024.0));
         }
 
+#ifdef INK_SY_TINYSTRATA_MEMORY
+        if (is_uma()) {
+            uint64_t expert_bytes = 0;
+            for (uint16_t gid : order) {
+                if (gid >= n_total) continue;
+                if (!add_expert_bytes(expert_bytes, ents_by_gid[gid].body_bytes)) {
+                    std::fclose(fp); err = "sycl: UMA expert size overflow"; return false;
+                }
+            }
+            const uint64_t remaining = uma_remaining_bytes();
+            if (!all_experts_fit(expert_bytes, extra_reserve_bytes, remaining) ||
+                (vram_experts_gb_override >= 0.0 && vram_budget < expert_bytes)) {
+                std::fclose(fp);
+                err = "sycl: all compressed experts and runner do not fit the single UMA budget: experts_bytes=" +
+                    std::to_string(expert_bytes) + " runner_reserve_bytes=" + std::to_string(extra_reserve_bytes) +
+                    " available_bytes=" + std::to_string(remaining);
+                return false;
+            }
+            vram_budget = (size_t)expert_bytes;
+        }
+#endif
+
         // Optional Dual-GPU Expert Parallelism setup (--gpus 2 / --gpus 0,1 / --devices 0,1)
         ep2_active = false;
         ep2_gpu0_idx = primary_gpu_index();
@@ -1319,6 +1421,27 @@ struct InkSyclModel {
         if (vram_experts_gb_override >= 0.0) {
             vram_budget = (size_t)(vram_experts_gb_override * (1024.0 * 1024.0 * 1024.0));
         }
+
+#ifdef INK_SY_TINYSTRATA_MEMORY
+        if (is_uma()) {
+            uint64_t expert_bytes = 0;
+            for (uint16_t gid : order) {
+                if (gid >= n_total || dir_idx_by_gid[gid] == (size_t)-1) continue;
+                if (!add_expert_bytes(expert_bytes, ents_by_gid[gid].body_bytes)) {
+                    err = "sycl: UMA expert size overflow"; return false;
+                }
+            }
+            const uint64_t remaining = uma_remaining_bytes();
+            if (!all_experts_fit(expert_bytes, extra_reserve_bytes, remaining) ||
+                (vram_experts_gb_override >= 0.0 && vram_budget < expert_bytes)) {
+                err = "sycl: all compressed experts and runner do not fit the single UMA budget: experts_bytes=" +
+                    std::to_string(expert_bytes) + " runner_reserve_bytes=" + std::to_string(extra_reserve_bytes) +
+                    " available_bytes=" + std::to_string(remaining);
+                return false;
+            }
+            vram_budget = (size_t)expert_bytes;
+        }
+#endif
 
         std::vector<size_t> vram_gids, host_gids;
         size_t vram_acc = 0;

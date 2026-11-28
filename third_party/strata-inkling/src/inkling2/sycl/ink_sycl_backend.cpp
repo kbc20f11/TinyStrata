@@ -33,6 +33,15 @@ namespace ink2 {
 
 class SyclInkBackend final : public InkBackend {
 public:
+    ~SyclInkBackend() override {
+        if (far_mode_initialized_) {
+            const auto& counters = ink_sycl::far_attention_dispatches();
+            std::fprintf(stderr, "[ink_sycl] far_attn_mode=%d candidate_kernel_dispatches=%llu legacy_kernel_dispatches=%llu "
+                "counter_scope=enabled_mode_dispatches skipped_cells=not_measured\n", (int)far_mode_,
+                (unsigned long long)counters.candidate.load(std::memory_order_relaxed),
+                (unsigned long long)counters.legacy.load(std::memory_order_relaxed));
+        }
+    }
     const char* backend_name() const noexcept override { return mod_.ep2_active ? "sycl-ep2" : "sycl"; }
 
     bool dspark_ready() const override { return runner_.use_dspark; }
@@ -40,7 +49,8 @@ public:
     std::string device_info() const override {
         const auto& d = ink_sycl::dev_caps();
         std::string info = d.name + " (" + d.platform + ", " +
-               std::to_string((int)(d.global_mem / (1024ull * 1024ull * 1024ull))) + " GiB, SG16)";
+               (ink_sycl::is_uma() ? std::string("UMA physical RAM pool") :
+                std::to_string((int)(d.global_mem / (1024ull * 1024ull * 1024ull))) + " GiB") + ", SG16)";
         if (mod_.ep2_active) {
             info += " + " + mod_.ep2_dev1_name + " (" +
                     std::to_string((int)(mod_.ep2_dev1_mem / (1024ull * 1024ull * 1024ull))) +
@@ -55,21 +65,45 @@ public:
         s.total_experts = (size_t)mod_.man.c.n_phys * (size_t)mod_.man.c.n_experts;
         s.vram_experts_loaded = (size_t)mod_.n_vram_experts;
         s.ram_experts_loaded = (size_t)mod_.n_host_experts;
-        s.vram_used_bytes = ink_sycl::dev_bytes_allocated() + mod_.vram_expert_bytes_g1;
-        s.vram_total_bytes = ink_sycl::dev_caps().global_mem + (mod_.ep2_active ? mod_.ep2_dev1_mem : 0);
+        // These legacy fields describe dedicated VRAM. UMA is not another RAM
+        // capacity; leave them unavailable (zero) and report owned bytes below.
+        if (!ink_sycl::is_uma()) {
+            s.vram_used_bytes = ink_sycl::dev_bytes_allocated() + mod_.vram_expert_bytes_g1;
+            s.vram_total_bytes = ink_sycl::dev_caps().global_mem + (mod_.ep2_active ? mod_.ep2_dev1_mem : 0);
+        }
         s.active_slots = active_slots_;
         s.max_slots = runner_.max_slots;
         s.kv_dtype = kv_dtype_;
         return s;
     }
 
+    std::optional<BackendMemoryStats> memory_stats() const override {
+        if (!ink_sycl::is_uma()) return std::nullopt;
+        BackendMemoryStats s;
+        s.expert_cache_bytes = mod_.vram_expert_bytes;
+        s.expert_cache_full_bytes = mod_.vram_expert_bytes;
+        s.kv_logical_bytes = runner_.kv_storage_bytes;
+        s.kv_mapped_bytes = runner_.kv_storage_bytes;
+        s.kv_grow = false;
+        for (int rows : slot_rows_) s.kv_committed_rows += rows;
+        return s;
+    }
+
     bool init(const InkModelFile& model, const BackendOpts& opts, std::string& err) override {
-        if (kv_dtype_is_int_quant(opts.kv_dtype)) {
-            err = "sycl: --kv k8v4/k8v8 is not supported on the SYCL backend (allocates fp16-sized pages); use --kv fp8 or fp16";
+        if (!opts.kv_dtype_auto && opts.kv_dtype != KvDtype::FP16) {
+            err = "sycl: this backend stores FP16 K/V only; use --kv fp16 (FP8/k8v8/k8v4 are not implemented)";
             return false;
         }
         ink_sycl::apply_gpu_index(opts.gpu_index, opts.gpus);
-        kv_dtype_ = opts.kv_dtype;
+        far_mode_ = ink_sycl::far_attention_requested();
+        far_mode_initialized_ = true;
+        std::fprintf(stderr, "[ink_sycl] far_attn_mode=%d admission=global_prefill_Tge16_rel1024 baseline_default=0\n", (int)far_mode_);
+        std::printf("INFO inkling_far_attn=%d\n", (int)far_mode_);
+        kv_dtype_ = KvDtype::FP16;
+        if (ink_sycl::is_uma() && opts.gpus != 1) {
+            err = "sycl: UMA qualification requires one selected GPU and one compressed weight store";
+            return false;
+        }
         const int par = std::max(1, std::min(64, opts.parallel));
         const int ctx = std::max(256, opts.max_ctx);
         const int batch_cap = std::max(256, std::max(opts.chunk, par));
@@ -91,8 +125,18 @@ public:
         fit.hidden = mc.hidden;
         fit.dspark = opts.enable_dspark && model.m.dspark.present;
         fit.vision = !opts.vision_path.empty();
-        const size_t extra_reserve = ink_sycl::ink_sy_runner_reserve(fit, par, ctx, opts.chunk);
         ink_sycl::ensure_l0_v1_default();
+#ifdef INK_SY_TINYSTRATA_MEMORY
+        if (fit.vision && ink_sycl::is_uma()) {
+            // Admit the resident encoder before choosing language KV/Expert
+            // capacity. The estimate keeps only its remaining scratch reserve.
+            (void)ink_sycl::uma_ledger();
+            const size_t before = ink_sycl::dev_bytes_allocated();
+            if (!runner_.vis.load(opts.vision_path, err)) return false;
+            fit.resident_vision_bytes = ink_sycl::dev_bytes_allocated() - before;
+        }
+#endif
+        const size_t extra_reserve = ink_sycl::ink_sy_runner_reserve(fit, par, ctx, opts.chunk);
         if (model.kind == ModelSourceKind::Strata) {
             if (!mod_.load(model.path, opts.vram_experts_gb, err, extra_reserve, opts.gpus, opts.gpu_ids, opts.ep_split)) return false;
         } else {
@@ -101,7 +145,10 @@ public:
         {
             const size_t gpu_mem = ink_sycl::dev_caps().global_mem;
             const size_t used = ink_sycl::dev_bytes_allocated();
-            const size_t avail = gpu_mem > used ? gpu_mem - used : 0;
+            size_t avail = gpu_mem > used ? gpu_mem - used : 0;
+#ifdef INK_SY_TINYSTRATA_MEMORY
+            if (ink_sycl::is_uma()) avail = (size_t)ink_sycl::uma_remaining_bytes();
+#endif
             const std::string why = ink_sycl::ink_sy_fit_message(fit, par, ctx, opts.chunk, avail);
             if (!why.empty()) {
                 err = why;
@@ -111,10 +158,31 @@ public:
         if (!runner_.init(mod_, par, ctx, batch_cap, opts.enable_dspark, err)) {
             return false;
         }
-        if (!opts.vision_path.empty()) {
+        if (fit.vision && !runner_.vis.loaded) {
             if (!runner_.vis.load(opts.vision_path, err)) return false;
         }
         slot_used_.assign((size_t)par, 0);
+        slot_rows_.assign((size_t)par, 0);
+#ifdef INK_SY_TINYSTRATA_MEMORY
+        if (ink_sycl::is_uma()) {
+            const auto& device = ink_sycl::selected_memory_device();
+            const auto memory = strata::intel::memory_budget(device);
+            const auto& ledger = ink_sycl::uma_ledger();
+            std::fprintf(stderr, "[ink_sycl] memory_model=uma adapter_luid=%s adapter_node_mask=%u "
+                "owned_device_bytes=%llu owned_host_usm_bytes=%llu owned_total_bytes=%llu "
+                "initial_allocation_budget=%llu remaining_allocation_budget=%llu "
+                "available_physical=%llu available_commit=%llu wddm_known=%d wddm_available=%llu "
+                "os_headroom_bytes=%llu wddm_headroom_bytes=%llu kv_storage=fp16 kv_storage_bytes=%zu\n",
+                device.adapter_luid.empty() ? "unknown" : device.adapter_luid.c_str(), device.adapter_node_mask,
+                (unsigned long long)ledger.device_bytes, (unsigned long long)ledger.host_usm_bytes,
+                (unsigned long long)ledger.owned_bytes(), (unsigned long long)ledger.initial_budget,
+                (unsigned long long)ink_sycl::uma_remaining_bytes(),
+                (unsigned long long)memory.available_physical, (unsigned long long)memory.available_commit,
+                (int)memory.wddm_known, (unsigned long long)memory.wddm_available,
+                (unsigned long long)(4 * strata::intel::GiB),
+                (unsigned long long)strata::intel::uma_wddm_headroom, runner_.kv_storage_bytes);
+        }
+#endif
         return true;
     }
 
@@ -122,6 +190,7 @@ public:
         if (slot < 0 || slot >= runner_.max_slots) { err = "sycl slot out of range"; return false; }
         if (!slot_used_[slot]) { slot_used_[slot] = 1; ++active_slots_; }
         runner_.reset_slot(slot);
+        slot_rows_[slot] = 0;
         return true;
     }
 
@@ -130,12 +199,16 @@ public:
             slot_used_[slot] = 0;
             --active_slots_;
             runner_.reset_slot(slot);
+            slot_rows_[slot] = 0;
         }
     }
 
-    void reset_slot(int slot) override { runner_.reset_slot(slot); }
+    void reset_slot(int slot) override { runner_.reset_slot(slot); slot_rows_.at(slot) = 0; }
     void snapshot_slot(int slot) override { runner_.snapshot_slot(slot); }
-    void rollback_slot(int slot, int keep_len) override { runner_.rollback_slot(slot, keep_len); }
+    void rollback_slot(int slot, int keep_len) override {
+        runner_.rollback_slot(slot, keep_len);
+        slot_rows_.at(slot) = keep_len;
+    }
 
     bool forward_batch(const StepBatch& batch, float* logits_out, TapCapture* taps_out, std::string& err) override {
         if (batch.n_tokens <= 0) return true;
@@ -182,6 +255,10 @@ public:
                 err = "sycl forward_batch failed"; return false;
             }
             dst_logit_row += n_want;
+            for (int row = off; row < off + M; ++row) {
+                const int slot = batch.slot_ids[row];
+                slot_rows_.at(slot) = std::max(slot_rows_.at(slot), batch.pos[row] + 1);
+            }
         }
         (void)taps_out;
         return true;
@@ -265,10 +342,13 @@ private:
     ink_sycl::InkSyModel mod_;
     ink_sycl::InkSyRunner runner_;
     std::vector<uint8_t> slot_used_;
+    std::vector<int> slot_rows_;
     int active_slots_ = 0;
     KvDtype kv_dtype_ = KvDtype::FP16;
     int pending_gpu_index_ = 0;
     int pending_gpus_ = 1;
+    bool far_mode_ = false;
+    bool far_mode_initialized_ = false;
 };
 
 std::unique_ptr<InkBackend> make_sycl_backend(const BackendOpts* opts) {
