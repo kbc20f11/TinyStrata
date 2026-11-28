@@ -54,7 +54,7 @@ The table shows the median of two starts per arm. The first measured code respon
 
 A separate virtual 16 GiB run used an explicit 64K FP16 context and forced lending to exercise actual reclamation. During a 54,172-token logistics workflow, 384 Experts were reclaimed as KV expanded. Resident Experts went from 1,422 at startup to 1,838 after priming, down to 1,454 after the document, and back to 1,838 in a fresh conversation. The model matched all nine reference facts, completed the cached image follow-up with CUDA Vision, and handled image replacement, invalid-image retry and context-overflow retry.
 
-The new CUDA build automatically enables lending for the single-slot, GPU-first FP16/256K profile on 24 GiB Blackwell when dedicated VRAM availability before loading is at least 20 GiB and Expert placement is automatic. Explicit `STRATA_INK_KV_LEND=0` or `=1` takes precedence under the existing eligibility checks. With the normal managed options and no environment override, the new build activated lending and passed the 34,184-token document workflow with nine out of nine facts, a cached image follow-up, image replacement, invalid-image recovery and context-overflow recovery. All 3,072 Experts became resident, and the reported context stayed at 256K.
+The FP16 CUDA build automatically enabled lending for the single-slot, GPU-first FP16/256K profile on 24 GiB Blackwell when dedicated VRAM availability before loading was at least 20 GiB and Expert placement was automatic. Explicit `STRATA_INK_KV_LEND=0` or `=1` takes precedence under the existing eligibility checks. The build passed the 34,184-token document workflow with nine out of nine facts, a cached image follow-up, image replacement, invalid-image recovery and context-overflow recovery. All 3,072 Experts became resident, and the reported context stayed at 256K.
 
 ### Virtual 16 GiB: KV formats and routed Expert staging
 
@@ -67,7 +67,27 @@ This screen used one fresh start per row, temperature 0, thinking off, the same 
 | FP8, full | 944 | 37.01 | 659.39 | 619.54 |
 | FP16, routed only | 0 | 22.22 | 487.03 | 473.76 |
 
-Routed staging reduced the recorded transfer bytes by 26.7%, with identical output hashes in this screen. FP8 also matched those hashes. INT8 differed on the capped 4K and 16K responses. All four arms passed the three expected-value assertions and returned the correct image heading, `TinyStrata`, from the reference image. The automated OCR check used a stale heading, so the raw outputs were rescored against the actual image. These single starts on virtual 16 GiB establish a speed signal. The adopted default applies to the separately repeated and validated 24 GiB lending configuration.
+Routed staging reduced the recorded transfer bytes by 26.7%, with identical output hashes in this screen. FP8 also matched those hashes. INT8 differed on the capped 4K and 16K responses. All four arms passed the three expected-value assertions and returned the correct image heading, `TinyStrata`, from the reference image. The automated OCR check used a stale heading, so the raw outputs were rescored against the actual image. These single starts on virtual 16 GiB establish a speed signal.
+
+### Managed FP8 KV and lending on Blackwell
+
+The follow-up sets FP8 KV and automatic Expert lending for the managed 256K profile on 16–24 GiB Blackwell CUDA GPUs. The app starts each profile with `--kv auto` and no lending environment override. Each row uses one fresh start at temperature zero with two short code requests, fixed 4K and 16K inputs, and a capped CUDA image OCR request. The virtual row uses the original 24 GiB GPU with a dedicated-memory reservation.
+
+| Capacity | Effective KV | Generation tok/s | 4K input tok/s | 16K input tok/s | GPU Experts at startup → after 16K |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Physical 24 GiB | FP8 / 256K | 48.92 | 1,205.63 | 1,090.91 | 2,821 → 3,072 |
+| Virtual 16 GiB | FP8 / 256K | 41.07 | 892.16 | 835.00 | 950 → 1,814 |
+
+The automatic virtual 16 GiB profile passed the 54,172-token document workflow with nine of nine reference facts. The engine reclaimed 192 Expert loans as the document grew, then restored the earlier Expert count in a fresh conversation. Cached and fresh CUDA image requests, an invalid-image retry and a context-overflow retry completed. Separate starts confirmed that lending can be explicitly disabled with FP8 active and that an explicit INT8 request selects K8V8.
+
+The first singleton step used fused Split-K Flash-GQA with FP8 KV. An instrumented physical 24 GiB comparison held FP8, lending and the 512-token chunk constant and verified both prefill dispatches in the native log. The standard prefill uses BF16 Tensor Core tiles and online softmax. Each route used one fresh start with the same requests.
+
+| Prefill route | 4K input tok/s | 16K input tok/s |
+| --- | ---: | ---: |
+| Standard tiled prefill | 1,187.90 | 1,069.11 |
+| Forced fused Flash-GQA prefill | 907.54 (−23.60%) | 693.00 (−35.18%) |
+
+The two routes matched the output hashes on all cases except the capped 4K response. The measured long-input default uses the higher-throughput tiled route.
 
 ## Evidence
 

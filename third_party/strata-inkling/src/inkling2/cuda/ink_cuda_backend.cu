@@ -210,6 +210,11 @@ public:
         const bool managed_ampere_128k = opts.kv_gpu_first && max_slots_ == 1 && sm_cc == 86
             && opts.max_ctx == 131072 && prop.totalGlobalMem >= (11ull << 30)
             && prop.totalGlobalMem <= (13ull << 30);
+        const bool build_screen = opts.enable_dspark && mf.m.dspark.present;
+        constexpr size_t gib = size_t{1} << 30;
+        const bool managed_blackwell_256k = opts.kv_gpu_first && max_slots_ == 1 && sm_cc == 120
+            && all_gpus.size() == 1 && !build_screen && opts.max_ctx == 262144
+            && prop.totalGlobalMem >= 15 * gib && prop.totalGlobalMem <= 25 * gib;
         kv_dtype_ = opts.kv_dtype;
         if (opts.kv_dtype_auto) {
             // A 128K device cache on the RTX 3060 12 GB leaves more room for experts in INT8.
@@ -217,6 +222,9 @@ public:
             if (managed_ampere_128k) {
                 kv_dtype_ = KvDtype::K8V8;
                 std::fprintf(stderr, "[InkCUDA] auto KV: INT8 for the managed 128K cache on 12 GiB Ampere\n");
+            } else if (managed_blackwell_256k) {
+                kv_dtype_ = KvDtype::FP8_E4M3;
+                std::fprintf(stderr, "[InkCUDA] auto KV: FP8 for the managed 256K cache on 16-24 GiB Blackwell\n");
             } else if (max_slots_ >= 16) {
                 kv_dtype_ = KvDtype::FP8_E4M3;
             } else if (kv_offload_mode < 0) {
@@ -250,7 +258,6 @@ public:
                                   + (size_t)strata::ink::kInkVisits * max_slots_ * 3 * strata::ink::kInkSconvCh * 4
                                   + (size_t)8 * max_slots_ * planned_glob * per_visit_pos;
         // Include O(1) prefill ws (~114 MiB) + DSpark (~224 MiB when enabled) + activation ws (WDDM floor added inside loader!)
-        const bool build_screen = opts.enable_dspark && mf.m.dspark.present;
         const size_t dspark_pad = build_screen ? (224ull << 20) : 0ull;
         const size_t ws_pad = ((max_slots_ >= 8) ? (1280ull << 20)
                              : ((prop.totalGlobalMem >= (20ull << 30)) ? (960ull << 20)
@@ -269,17 +276,16 @@ public:
         const char* lend = std::getenv("STRATA_INK_KV_LEND");
         const bool lend_forced = lend && std::strcmp(lend, "1") == 0;
         const bool can_lend = opts.kv_gpu_first && opts.vram_experts_gb < 0.0;
-        // Only the 24 GiB Blackwell FP16/256K profile has been measured. Use the
-        // pre-load free budget too so a card with 16 GiB usable keeps its policy.
-        constexpr size_t gib = size_t{1} << 30;
-        const bool default_lend_profile = !lend && can_lend && max_slots_ == 1 && sm_cc == 120
-            && prop.totalGlobalMem >= 23 * gib && prop.totalGlobalMem <= 25 * gib
-            && requested_ctx == 262144 && cuda_kvd == strata::ink::InkKvDtype::FP16 && !build_screen;
+        const bool default_lend_profile = !lend && can_lend && managed_blackwell_256k;
         size_t free_before_load = 0;
         size_t total_before_load = 0;
-        const bool default_lend = default_lend_profile
+        // The explicit FP16 profile still needs the measured 24 GiB headroom.
+        const bool default_fp16_lend = default_lend_profile
+            && cuda_kvd == strata::ink::InkKvDtype::FP16 && prop.totalGlobalMem >= 23 * gib
             && strata::ink::ink_cuda_mem_info(&free_before_load, &total_before_load, gpu_id_) == cudaSuccess
             && free_before_load >= 20 * gib;
+        const bool default_lend = default_fp16_lend
+            || (default_lend_profile && cuda_kvd == strata::ink::InkKvDtype::FP8);
 
         const char* vision_gpu = std::getenv("STRATA_INK_VISION_CUDA");
         if (!opts.vision_path.empty() && !(vision_gpu && std::strcmp(vision_gpu, "0") == 0)) {

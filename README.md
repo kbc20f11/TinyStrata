@@ -48,6 +48,8 @@ Gemma automatically groups long text around fresh images when its current Expert
 
 On discrete CUDA/HIP GPUs, Inkling uses automatic context targets of **64K / 128K / 256K** for **8 / 12 / 16+ GB** of VRAM. The managed route budgets device KV before Expert placement. On Windows with an RX 9060 XT 16 GB, automatic placement commits KV in GPU memory as the conversation grows and lends the remaining space to Experts. The API reports the context limit, committed KV rows and current Expert placement.
 
+On **16–24 GB Blackwell CUDA GPUs**, the managed single-GPU 256K profile selects **FP8 KV** and automatically lends unused KV rows to Experts when the cache fits on the GPU. Generation uses fused Flash-GQA.
+
 [RX 9060 XT Inkling benchmark](benchmark/results/inkling2-rx9060-xt-20261127.md)
 
 With image input enabled, the CUDA and discrete HIP routes load the Vision encoder on the GPU before budgeting KV and Experts. The native CPU encoder remains available when the image workspace cannot fit. The CUDA encoder keeps the stored weight precision, uses FP32 arithmetic, and reuses workspace across attention and MLP. On Windows with NVIDIA, Inkling uses the CUDA free-memory estimate and caps it at the driver's free dedicated VRAM when that reading is available.
