@@ -266,6 +266,20 @@ public:
         if (opts.vram_reserve_mib >= 0) {
             min_reserve_bytes = std::max(min_reserve_bytes, (size_t)opts.vram_reserve_mib << 20);
         }
+        const char* lend = std::getenv("STRATA_INK_KV_LEND");
+        const bool lend_forced = lend && std::strcmp(lend, "1") == 0;
+        const bool can_lend = opts.kv_gpu_first && opts.vram_experts_gb < 0.0;
+        // Only the 24 GiB Blackwell FP16/256K profile has been measured. Use the
+        // pre-load free budget too so a card with 16 GiB usable keeps its policy.
+        constexpr size_t gib = size_t{1} << 30;
+        const bool default_lend_profile = !lend && can_lend && max_slots_ == 1 && sm_cc == 120
+            && prop.totalGlobalMem >= 23 * gib && prop.totalGlobalMem <= 25 * gib
+            && requested_ctx == 262144 && cuda_kvd == strata::ink::InkKvDtype::FP16 && !build_screen;
+        size_t free_before_load = 0;
+        size_t total_before_load = 0;
+        const bool default_lend = default_lend_profile
+            && strata::ink::ink_cuda_mem_info(&free_before_load, &total_before_load, gpu_id_) == cudaSuccess
+            && free_before_load >= 20 * gib;
 
         const char* vision_gpu = std::getenv("STRATA_INK_VISION_CUDA");
         if (!opts.vision_path.empty() && !(vision_gpu && std::strcmp(vision_gpu, "0") == 0)) {
@@ -419,8 +433,7 @@ public:
                      led_loaded, led_loaded - led_runner, runner_->max_batch, led_runner - free_mib(), free_mib());
 
         runner_->pick_cold_lane();   // STRATA_INK_EXACT unset: time the CPU lane and the copy-in lane for the cold experts once, keep the faster
-        const char* lend = std::getenv("STRATA_INK_KV_LEND");
-        if (opts.kv_gpu_first && opts.vram_experts_gb < 0.0 && lend && std::strcmp(lend, "1") == 0) {
+        if (can_lend && (lend_forced || (default_lend && eff_max_ctx_ == requested_ctx))) {
             runner_->init_kv_loans();
         }
 

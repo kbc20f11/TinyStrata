@@ -32,6 +32,8 @@ Run Inkling 2 Mini on its own with `--model inkling` and an installed `config-in
 
 [RTX 3060 branch results for Inkling 2 Mini](results/inkling2-rtx3060-route-parity-20261125.md)
 
+[RTX PRO 4000 Blackwell SFF: Gemma KV and Inkling capacity comparison](results/rtx-pro-4000-blackwell-sff-20261128.md)
+
 Download the models to be measured using the normal installer/API first, then stop the regular TinyStrata API. In 64-bit PowerShell:
 
 ```powershell
@@ -236,6 +238,8 @@ Intel実験版は **`--intel-text`** を明示して測定します。`--model q
 Inkling 2 Mini は、導入済みの `config-inkling2.json` を使って `--model inkling` で個別に測定できます。**`tinystrata-bench-v3-inkling`** は同じ計時方法で、4起動、短文3件を各2回、正確な4K／16K入力、規定画像を測ります。現行の Inkling は投機生成なし、KV 自動選択が既定です。画像には CPU も使用できる内蔵エンコーダーを使います。結果には `standard: false` と `kv_policy: application-default` を記録します。旧 `tinystrata-bench-v2-inkling`（`kv_policy: engine-auto`）は `--protocol v2 --model inkling` で再現できます。計画の確認は `--prepare-only`、保存済み設定での計測は `--saved-profile --model inkling` を使います。
 
 [RTX 3060でのInkling 2 Miniブランチ版の測定結果](results/inkling2-rtx3060-route-parity-20261125.md)
+
+[RTX PRO 4000 Blackwell SFFでのGemma KVとInklingの容量別比較](results/rtx-pro-4000-blackwell-sff-20261128.md)
 
 通常のインストーラー／API で測定するモデルを先にダウンロードし、普段の TinyStrata API を終了します。64 ビット PowerShell で実行してください。
 
