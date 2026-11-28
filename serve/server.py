@@ -334,6 +334,10 @@ def engine_frozen(base: tuple[float, int], now: tuple[float, int]) -> bool:
 VISION_READY_S = _timeout_env("STRATA_VISION_READY_S", 300.0)
 VISION_ENCODE_S = _timeout_env("STRATA_VISION_ENCODE_S", 300.0)
 ENGINE_READY_S = _timeout_env("STRATA_ENGINE_READY_S", 900.0)
+# A stalled client must release its handler and any acquired generation turn.
+# This bounds each socket operation, not the duration of a working request.
+# Ported from aflin/momoe e7fe3200; zero keeps unbounded peer waits.
+PEER_STALL_S = _timeout_env("STRATA_PEER_STALL_S", 120.0)
 
 
 # ------------------------------------------------------------------------------------------------ engines
@@ -6143,6 +6147,7 @@ class BadBody(Exception):
 
 def make_handler(svc: Service):
     class Handler(BaseHTTPRequestHandler):
+        timeout = PEER_STALL_S
         protocol_version = "HTTP/1.0"                       # SSE ends by closing the connection
 
         def setup(self):
@@ -6182,7 +6187,7 @@ def make_handler(svc: Service):
                     wait = deadline - time.monotonic()
                     if wait <= 0:
                         return b"".join(parts)
-                    self.connection.settimeout(wait)
+                    self.connection.settimeout(min(wait, self.timeout) if self.timeout else wait)
                 line = self.rfile.readline(1025)
                 if not line.endswith(b"\n"):
                     raise BadBody(400, "malformed chunked request body")
@@ -6257,7 +6262,7 @@ def make_handler(svc: Service):
             deadline = time.monotonic() + self.DRAIN_SECONDS
             try:
                 while left > 0 and (wait := deadline - time.monotonic()) > 0:
-                    self.connection.settimeout(wait)         # a client that never sends what it announced
+                    self.connection.settimeout(min(wait, self.timeout) if self.timeout else wait)
                     piece = self.rfile.read1(min(left, 1 << 20))   # one socket read: read() would wait for it all
                     if not piece:
                         break
@@ -6790,7 +6795,7 @@ def make_handler(svc: Service):
             if self._chunked():
                 self.body_read = True
                 try:
-                    self.connection.settimeout(2.0)
+                    self.connection.settimeout(min(2.0, self.timeout) if self.timeout else 2.0)
                     self._read_chunked(65536, keep=False)
                 except BadBody as e:
                     self._json(e.status, {"error": {"message": f"control request: {e}"}})
@@ -6809,7 +6814,7 @@ def make_handler(svc: Service):
                 return False
             timeout = self.connection.gettimeout()
             try:
-                self.connection.settimeout(2.0)
+                self.connection.settimeout(min(2.0, self.timeout) if self.timeout else 2.0)
                 complete = len(self.rfile.read(length)) == length
             except OSError:
                 complete = False
@@ -6881,9 +6886,10 @@ def make_handler(svc: Service):
             self.send_header("X-Accel-Buffering", "no")   # nginx and similar proxies pass each event at once
             self._cors()
             self.end_headers()
-            if STREAM_WRITE_TIMEOUT_S > 0:
+            limits = [value for value in (STREAM_WRITE_TIMEOUT_S, self.timeout) if value is not None and value > 0]
+            if limits:
                 try:
-                    self.connection.settimeout(STREAM_WRITE_TIMEOUT_S)
+                    self.connection.settimeout(min(limits))
                 except OSError:
                     pass
 

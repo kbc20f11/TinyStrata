@@ -211,7 +211,7 @@ class StreamBackpressure(unittest.TestCase):
             worker.join(3)
             close_fixture(handler, reader)
 
-    def test_zero_timeout_keeps_existing_unbounded_stream_until_client_closes(self):
+    def test_both_timeouts_disabled_keep_unbounded_stream_until_client_closes(self):
         handler, reader, svc, _, request = handler_fixture(" ".join(map(str, range(80000))))
         errors = []
 
@@ -223,7 +223,8 @@ class StreamBackpressure(unittest.TestCase):
 
         worker = threading.Thread(target=run, daemon=True)
         try:
-            with mock.patch.object(api, "STREAM_WRITE_TIMEOUT_S", 0, create=True), redirect_stdout(StringIO()):
+            with mock.patch.object(api, "STREAM_WRITE_TIMEOUT_S", 0, create=True), \
+                 mock.patch.object(type(handler), "timeout", None), redirect_stdout(StringIO()):
                 worker.start()
                 end = time.monotonic() + 3
                 while not svc.fifo.locked() and worker.is_alive() and time.monotonic() < end:
