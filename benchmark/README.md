@@ -6,7 +6,7 @@
 
 ### Benchmark charter
 
-**A standard benchmark measures the performance users get with the shipped defaults for the model, backend and hardware.** Standard `tinystrata-bench-v3` builds a fresh profile through the same defaults as the app, including KV, MTP, input chunk, sampling and thinking for both text and image. Future changes to the app defaults flow into v3 through that shared profile. Keep those settings in the app profile code. The benchmark workload defines the prompts, seed, output limits and concurrency. Publish customized settings and experimental paths as diagnostics.
+**A standard benchmark measures the performance users get with the shipped defaults for the model, backend and hardware.** Standard `tinystrata-bench-v3` builds a fresh profile through the same defaults as the app, including KV, MTP, input chunk, sampling and thinking for both text and image. Future changes to the app defaults flow into v3 through that shared profile. Keep those settings in the app profile code. The benchmark workload defines the prompts, seed, text output limits and concurrency. v3 image requests leave `max_tokens` and thinking overrides unset so the app supplies both defaults. Publish customized settings and experimental paths as diagnostics.
 
 Before collecting timings, verify the effective KV format reported by the engine. Qwen, Gemma, Clover and Tiel must keep GPU Vision active during the text tests and run the canonical image test. LFM is text-only. Record the protocol, KV policy and input SHA-256 hashes with the results.
 
@@ -28,7 +28,7 @@ The default controlled protocol is **`tinystrata-bench-v3`** with `kv_policy: ap
 
 Use `--protocol v2` to reproduce historical fixed-INT8 v2 and its Clover settings. Use `--protocol v1` to reproduce the four-model baseline with text-only Clover. The saved-profile, Intel and Clover diagnostic protocols use their original v1 labels.
 
-Run Inkling 2 Mini on its own with `--model inkling` and an installed `config-inkling2.json`. The **`tinystrata-bench-v3-inkling`** extension uses the same workloads and timing rules, including four fresh starts, two passes over the three generation texts, the exact 4K/16K inputs, and the canonical image. It disables drafting and uses automatic KV selection and the model's in-process Vision encoder, which can use the CPU. Results use `standard: false` and `kv_policy: application-default`. The historical `--protocol v2 --model inkling` uses `tinystrata-bench-v2-inkling` and `kv_policy: engine-auto`. Use `--prepare-only` to inspect the plan or `--saved-profile --model inkling` to measure saved settings.
+Run Inkling 2 Mini on its own with `--model inkling` and an installed `config-inkling2.json`. The **`tinystrata-bench-v3-inkling`** extension uses the same workloads and timing rules, including four fresh starts, two passes over the three generation texts, the exact 4K/16K inputs, and the canonical image. Inkling currently defaults to drafting off, automatic KV selection and an in-process Vision encoder that can use the CPU. Results use `standard: false` and `kv_policy: application-default`. The historical `--protocol v2 --model inkling` uses `tinystrata-bench-v2-inkling` and `kv_policy: engine-auto`. Use `--prepare-only` to inspect the plan or `--saved-profile --model inkling` to measure saved settings.
 
 [RTX 3060 branch results for Inkling 2 Mini](results/inkling2-rtx3060-route-parity-20261125.md)
 
@@ -176,7 +176,7 @@ The historical sampler uses zero frequency penalty, enables thinking for text an
 | Generation | The three `generation` texts in `cases.json`, in order, twice each; maximum 128 output tokens per request, including thinking | Total generated tokens ÷ total native decode seconds, tok/s |
 | 4K input | The numbered document defined by `long_paragraph` and `long_question`, adjusted to exactly **4,096 input tokens including the chat template**; maximum 32 output tokens | Total input tokens actually read ÷ total native prompt-processing seconds, tok/s |
 | 16K input | The same construction at exactly **16,384 input tokens including the chat template**; maximum 32 output tokens | Same input-processing rate, tok/s |
-| Image description | Unmodified **1,024 × 768** `image.png` and `image_prompt`. First real image request after each fresh API start. v3 allows **1,024 output tokens**, including thinking, to leave room for the description. v1/v2 allow 128 with thinking disabled | Median client first-output and completion times in seconds. LFM is **N/A**. v2 and v3 measure Qwen, Gemma, Clover and Tiel. v1 measures Qwen and Gemma |
+| Image description | Unmodified **1,024 × 768** `image.png` and `image_prompt`. First real image request after each fresh API start. v3 uses the app's output limit and thinking settings. v1/v2 allow 128 output tokens with thinking disabled | Median client first-output and completion times in seconds. LFM is **N/A**. v2 and v3 measure Qwen, Gemma, Clover and Tiel. v1 measures Qwen and Gemma |
 
 The runner uses the normal Messages API, including MTP, rather than the native `--tokens` generation loop. It uses the same request with `/v1/messages/count_tokens` to construct the 4K/16K inputs, then checks the actual native counts. The published texts/image and their hashes identify the inputs; the native prompt counts identify their token lengths for each model.
 
@@ -219,7 +219,7 @@ Use the same protocol, input hashes, model files and effective KV format when co
 
 ### ベンチマーク憲章
 
-**標準ベンチでは、出荷時の既定設定でユーザーが実際に得る性能を測ります。** 標準 `tinystrata-bench-v3` は、モデル・バックエンド・ハードウェアごとにアプリと同じ初期プロファイルを作成し、KV、MTP、入力チャンク、サンプラー、テキストと画像の思考設定に使います。今後の既定値の変更も共通プロファイルを通じて v3 に反映します。これらの既定値はアプリ側で管理します。ベンチのワークロードはプロンプト・seed・出力上限・同時実行数を定義します。手動調整や試験経路を使った値は診断結果として公開します。
+**標準ベンチでは、出荷時の既定設定でユーザーが実際に得る性能を測ります。** 標準 `tinystrata-bench-v3` は、モデル・バックエンド・ハードウェアごとにアプリと同じ初期プロファイルを作成し、KV、MTP、入力チャンク、サンプラー、テキストと画像の思考設定に使います。今後の既定値の変更も共通プロファイルを通じて v3 に反映します。これらの既定値はアプリ側で管理します。ベンチのワークロードはプロンプト・seed・テキスト計測の出力上限・同時実行数を定義します。v3 の画像リクエストでは `max_tokens` と思考の上書き指定を省略し、アプリの既定値に従います。手動調整や試験経路を使った値は診断結果として公開します。
 
 計測前にエンジンが報告する実効 KV 形式を確認します。Qwen・Gemma・Clover・Tiel はテキスト測定中も GPU Vision を有効にし、規定の画像テストを実施します。LFM はテキスト専用です。結果には規約バージョン、KV の選択方針、入力の SHA-256 を残します。
 
@@ -233,7 +233,7 @@ Intel実験版は **`--intel-text`** を明示して測定します。`--model q
 
 旧 v2 の INT8 固定と当時の Clover 設定は `--protocol v2` で再現できます。4モデルで Clover をテキストのみで測る旧規約は `--protocol v1` を指定します。保存済み設定・Intel・Clover の診断モードには従来の v1 ラベルを使います。
 
-Inkling 2 Mini は、導入済みの `config-inkling2.json` を使って `--model inkling` で個別に測定できます。**`tinystrata-bench-v3-inkling`** は同じ計時方法で、4起動、短文3件を各2回、正確な4K／16K入力、規定画像を測ります。投機生成を無効にし、KV は自動選択、画像には CPU も使用可能な内蔵エンコーダーを使います。結果には `standard: false` と `kv_policy: application-default` を記録します。旧 `tinystrata-bench-v2-inkling`（`kv_policy: engine-auto`）は `--protocol v2 --model inkling` で再現できます。計画の確認は `--prepare-only`、保存済み設定での計測は `--saved-profile --model inkling` を使います。
+Inkling 2 Mini は、導入済みの `config-inkling2.json` を使って `--model inkling` で個別に測定できます。**`tinystrata-bench-v3-inkling`** は同じ計時方法で、4起動、短文3件を各2回、正確な4K／16K入力、規定画像を測ります。現行の Inkling は投機生成なし、KV 自動選択が既定です。画像には CPU も使用できる内蔵エンコーダーを使います。結果には `standard: false` と `kv_policy: application-default` を記録します。旧 `tinystrata-bench-v2-inkling`（`kv_policy: engine-auto`）は `--protocol v2 --model inkling` で再現できます。計画の確認は `--prepare-only`、保存済み設定での計測は `--saved-profile --model inkling` を使います。
 
 [RTX 3060でのInkling 2 Miniブランチ版の測定結果](results/inkling2-rtx3060-route-parity-20261125.md)
 
@@ -375,7 +375,7 @@ Gemma の検証用の容量は起動時に確保します。必要な幅はラ�
 | 生成速度 | `cases.json` の `generation` 3 入力を順に各 2 回。各リクエスト最大 128 トークン、思考を含む | 総生成トークン数 ÷ 総デコード秒数（tok/s） |
 | 4K 入力 | `long_paragraph` と `long_question` から作る文書を、**テンプレート込みで 4,096 入力トークン**に調整。出力上限 32 | 新しく読んだ総入力トークン数 ÷ 総入力処理秒数（tok/s） |
 | 16K 入力 | 同じ方法で **テンプレート込み 16,384 入力トークン**。出力上限 32 | 同じ入力処理速度（tok/s） |
-| 画像説明 | 無加工の **1,024 × 768** `image.png` と `image_prompt`。API 起動後、最初の実画像リクエスト。v3 は思考の後に説明本文を出せるよう、思考も含めて **1,024 出力トークン**を上限とします。v1・v2 は思考なしで 128 | 最初の出力／完了までの秒数の中央値。LFM は対象外。v2・v3 は Qwen・Gemma・Clover・Tiel、v1 は Qwen・Gemma を計測 |
+| 画像説明 | 無加工の **1,024 × 768** `image.png` と `image_prompt`。API 起動後、最初の実画像リクエスト。v3 の出力上限と思考設定はアプリの既定値。v1・v2 は思考なしで出力上限 128 トークン | 最初の出力／完了までの秒数の中央値。LFM は対象外。v2・v3 は Qwen・Gemma・Clover・Tiel、v1 は Qwen・Gemma を計測 |
 
 MTP を含む通常の Messages API を使い、native の `--tokens` 生成ループでは測りません。4K・16K は同じリクエストを `/v1/messages/count_tokens` で数えて作成し、実際のエンジンの入力数でも確認します。テキスト・画像のハッシュで入力を識別し、各モデルの実トークン数で長さを確認します。
 

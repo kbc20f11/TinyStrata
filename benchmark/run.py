@@ -35,7 +35,6 @@ if str(ROOT) not in sys.path:
 from serve import config, tinyconfig
 
 GIB = 1 << 30
-V3_IMAGE_MAX_TOKENS = 1024
 MODELS = {
     'qwen': ('config.json', 'qwen35moe', 'qwen3.6-35b-a3b'),
     'gemma': ('config-gemma4.json', 'gemma4', 'gemma-4-26b-a4b-it'),
@@ -514,6 +513,8 @@ def request_body(model, text, limit, cases, thinking=True, sampling=None):
                    strata_checkpoint=False, seed=cases['seed'])
     if thinking is None:
         request.pop('enable_thinking')
+    if limit is None:
+        request.pop('max_tokens')
     return request
 
 
@@ -1343,11 +1344,13 @@ def main():
                             offered, accepted = native.get('drafts_offered'), native.get('drafts_accepted')
                             if any(isinstance(v, bool) or not isinstance(v, int) for v in (offered, accepted)) or not 0 <= accepted <= offered:
                                 raise ValueError(f'Invalid self-spec accepted/offered counts: {native}')
-                        if record['native']['engine_generated'] > body['max_tokens']:
+                        output_limit = body.get('max_tokens')
+                        if output_limit is not None and record['native']['engine_generated'] > output_limit:
                             raise ValueError('Engine generated more than the requested output limit')
                         if identity is not None and service.vision_identity() != identity:
                             raise RuntimeError('The GPU image encoder restarted during the benchmark')
                         if category == 'image' and not record['response']['content'].strip():
+                            save(folder / f'{name}-result.json', record)
                             raise ValueError('Image test produced no description')
                         run['records'].append(record)
                         save(folder / f'{name}-result.json', record)
@@ -1379,7 +1382,7 @@ def main():
                     if image_encoder(cfg):
                         image = dict(type='image', source=dict(type='base64', media_type='image/png',
                                      data=base64.b64encode((HERE / 'image.png').read_bytes()).decode('ascii')))
-                        image_limit = V3_IMAGE_MAX_TOKENS if application_defaults else cases['image_max_tokens']
+                        image_limit = None if application_defaults else cases['image_max_tokens']
                         image_body = body([image, dict(type='text', text=cases['image_prompt'])], image_limit,
                                           thinking=None if application_defaults else False)
                         measure('image', 'image', image_body)

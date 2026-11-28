@@ -354,6 +354,10 @@ class Benchmark64K(unittest.TestCase):
                 self.assertEqual(model['observed_kv'], [observed[key]])
                 self.assertEqual(model['runs'][0]['startup_engine']['kv'], observed[key])
                 self.assertTrue(all('enable_thinking' not in body for body in service.requests))
+                if model['image_supported']:
+                    image = service.requests[-1]
+                    self.assertEqual(image['messages'][0]['content'][0]['type'], 'image')
+                    self.assertNotIn('max_tokens', image)
                 if key == 'clover':
                     self.assertEqual(service.cfg['env'], {'STRATA_IQ_MT_MIN': '1'})
                 if key == 'qwen':
@@ -361,7 +365,7 @@ class Benchmark64K(unittest.TestCase):
                     self.assertEqual(service.requests[1]['temperature'], 1.0)
                     self.assertEqual(service.requests[1]['top_p'], .95)
                     self.assertIs(model['reasoning_default'], True)
-                    self.assertEqual(service.requests[-1]['max_tokens'], 1024)
+                    self.assertEqual(service.requests[1]['max_tokens'], self.cases['generation_max_tokens'])
                 if key == 'tiel':
                     self.assertEqual(model['reasoning_default'], 'medium')
         markdown = bench.render_report(report).lower()
