@@ -151,6 +151,13 @@ public:
             const auto chosen=context_policy::select(context,g.model_context,remaining,device_.max_allocation,
                 [&](uint64_t tokens){return context_policy::lfm(tokens,context_shape);});
             context=context_=chosen.tokens;
+            // Initialize the fixed codec tables before queuing the large KV
+            // workspace fills. Level Zero can refuse their shared allocation
+            // while those fills are still pending.
+            if(q4_auxiliary){
+                q4_dp4a_=std::make_unique<DecodeDp4a>(q_,false,false);
+                q_.wait_and_throw();
+            }
             const size_t n=size_t(chunk_),width=g.width,cache_elements=size_t(context)*g.kv_heads*g.dim;
             states_.resize(g.layers);
             for(int l=0;l<g.layers;++l){auto& s=states_[l];if(g.attention(l)){
@@ -175,6 +182,7 @@ public:
             const size_t max_tiles=(n*g.picks+3)/4+g.experts;owners_=allocate<int32_t>(max_tiles);offsets_=allocate<int32_t>(max_tiles);tiles_=allocate<int32_t>(1);
             if(actual_allocations_.device!=chosen.bytes.owned_device||actual_allocations_.host_visible!=chosen.bytes.owned_host_visible||actual_allocations_.largest>chosen.bytes.largest||actual_allocations_.host_only!=lfm_turn::host_bytes(context))
                 throw std::logic_error("LFM context planner differs from actual engine allocations");
+            q_.wait_and_throw();
             attention_=std::make_unique<GemmaAttention>(q_,context,chunk,g.heads,g.dim,cache_elements,mkl,pv_split);
             std::printf("INFO lfm_pv_split=%d\n",int(pv_split));
 #ifdef TINYSTRATA_INTEL_MKL
@@ -182,7 +190,6 @@ public:
 #else
             if(mkl)throw std::runtime_error("LFM oneMKL requires an MKL build");
 #endif
-            if(q4_auxiliary)q4_dp4a_=std::make_unique<DecodeDp4a>(q_,false,false);
             q_.wait_and_throw();
             std::printf("INFO lfm_q4_dp4a=%d lfm_prefill_q4_dp4a=%d\n",int(q4_dp4a_enabled_),int(prefill_q4_dp4a_enabled_));std::fflush(stdout);
             std::printf("INFO lfm_turn_checkpoint=1 lfm_turn_checkpoint_host_bytes=%llu\n",(unsigned long long)turn_->bytes());std::fflush(stdout);
