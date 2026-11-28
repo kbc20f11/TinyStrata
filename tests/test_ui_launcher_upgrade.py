@@ -113,12 +113,33 @@ class LauncherUpgradeTests(unittest.TestCase):
 
     def test_tiel_process_state_is_separate_from_qwen(self):
         self.launcher.family = "tiel"
+        (self.source / "requirements.txt").write_text("fixture requirements", encoding="utf-8")
+        (self.source / "run.py").write_text("# fixture launcher", encoding="utf-8")
         config = self.launcher.runtime / ".tinystrata" / "config-tiel-coder.json"
         with mock.patch.object(launch, "process_started", return_value="created"):
             self.launcher.save_api_process(argparse.Namespace(pid=123), config)
         state = launch.read_json(self.launcher.runtime / "server-state-tiel-coder.json")
         self.assertEqual(state["config"], str(config))
+        self.assertEqual(state["api_source_fingerprint"], launch.api_source_fingerprint(self.source))
         self.assertFalse((self.launcher.runtime / "server-state.json").exists())
+
+    def test_desktop_intel_state_preserves_separate_profile_and_source_receipt(self):
+        args = argparse.Namespace(api_port=18085, port=3005, model_family="tiel", backend="sycl")
+        item = launch.Launcher(args, self.source, self.work)
+        for name in ("requirements.txt", "run.py", "serve/server.py", "serve/chat.jinja"):
+            path = self.source / name
+            path.parent.mkdir(exist_ok=True)
+            path.write_text(name, encoding="utf-8")
+        before = launch.api_source_fingerprint(self.source)
+        config = launch.profile_path(item.runtime, "tiel", "sycl")
+        with mock.patch.object(launch, "process_started", return_value="created"):
+            item.save_api_process(argparse.Namespace(pid=123), config)
+        state = launch.read_json(item.runtime / "server-state-tiel-coder-sycl.json")
+        self.assertEqual(state["config"], str(config))
+        self.assertEqual(state["api_source_fingerprint"], before)
+        self.assertFalse((item.runtime / "server-state-tiel-coder.json").exists())
+        (self.source / "serve/chat.jinja").write_text("changed template", encoding="utf-8")
+        self.assertNotEqual(launch.api_source_fingerprint(self.source), before)
 
     def test_owned_current_backend_reused_without_process_action(self):
         with mock.patch.object(self.launcher, "existing_ui", return_value={"pid": 42}), \

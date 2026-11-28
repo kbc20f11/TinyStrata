@@ -13,7 +13,7 @@ function Import-FixtureFunctions($Path,$Names) {
     # Dot-sourced into this function; explicitly retain only the named definitions.
     foreach($name in $Names){Set-Item -Path ('Function:script:'+ $name) -Value (Get-Item ('Function:'+ $name)).ScriptBlock}
 }
-Import-FixtureFunctions (Join-Path $repository 'install.ps1') @('Get-TinyStrataConfig','Get-TinyStrataModelFamily','Assert-TinyStrataIntelManagedDeviceSelection','Test-TinyStrataIntelRuntimeCurrent','Remove-TinyStrataNativeGeneration','Get-TinyStrataSourceFingerprint','Invoke-TinyStrataInstaller','Enter-TinyStrataInstallationGuard','Exit-TinyStrataInstallationGuard')
+Import-FixtureFunctions (Join-Path $repository 'install.ps1') @('Get-TinyStrataConfig','Get-TinyStrataModelFamily','Get-TinyStrataRunningApiProfiles','Assert-TinyStrataIntelManagedDeviceSelection','Test-TinyStrataIntelRuntimeCurrent','Remove-TinyStrataNativeGeneration','Get-TinyStrataSourceFingerprint','Invoke-TinyStrataInstaller','Enter-TinyStrataInstallationGuard','Exit-TinyStrataInstallationGuard')
 Import-FixtureFunctions (Join-Path $PSScriptRoot 'installer-intel-runtime.ps1') @('Write-IntelFixture','Write-IntelManifest','New-IntelFixtureStage')
 $checks=0
 function Check([bool]$Ok,[string]$Message){if(-not $Ok){throw $Message};$script:checks++}
@@ -78,8 +78,13 @@ try {
         $stage=Join-Path $fixture ('stage-'+$name);$manifest=New-IntelFixtureStage $stage
         Write-IntelFixture $stage 'tinystrata-intel.exe' ('CPU non-executable fixture '+$name)
         Write-IntelFixture $stage 'tinystrata-vision.exe' ('CPU non-executable image fixture '+$name)
+        Write-IntelFixture $stage 'licenses/TinyStrata/third_party/licenses/llama-vision.txt' 'CPU vision license fixture'
         $image=Get-Item -LiteralPath (Join-Path $stage 'tinystrata-vision.exe')
         $manifest.Files+=@([pscustomobject]@{RelativePath='tinystrata-vision.exe';Component='tinystrata';RedistributionEvidence='fixture notice';Source='Z:\never-read';Bytes=$image.Length;Sha256=(Get-FileHash -LiteralPath $image.FullName -Algorithm SHA256).Hash.ToLowerInvariant()})
+        $license=Get-Item -LiteralPath (Join-Path $stage 'licenses/TinyStrata/third_party/licenses/llama-vision.txt')
+        $manifest.Files+=@([pscustomobject]@{RelativePath='licenses/TinyStrata/third_party/licenses/llama-vision.txt';Component='tinystrata';RedistributionEvidence='fixture notice';Source='Z:\never-read';Bytes=$license.Length;Sha256=(Get-FileHash -LiteralPath $license.FullName -Algorithm SHA256).Hash.ToLowerInvariant()})
+        $manifest|Add-Member -NotePropertyName VisionEnabled -NotePropertyValue $true -Force
+        $manifest|Add-Member -NotePropertyName VisionEncoder -NotePropertyValue ([pscustomobject]@{RelativePath='tinystrata-vision.exe';Backend='sycl';InputProtocol='enc-tabs';WarmupBeforeReady=$true;LlamaCommit='3cf03257f219afbe7334045ff7c6a06ac68c627d'}) -Force
         $manifest.Files[0].Bytes=(Get-Item -LiteralPath (Join-Path $stage 'tinystrata-intel.exe')).Length
         $manifest.Files[0].Sha256=(Get-FileHash -LiteralPath (Join-Path $stage 'tinystrata-intel.exe') -Algorithm SHA256).Hash.ToLowerInvariant();Write-IntelManifest $stage $manifest
         $hash=(Get-FileHash -LiteralPath (Join-Path $stage '.tinystrata-intel-runtime.json') -Algorithm SHA256).Hash.ToLowerInvariant();$script:stages[$hash]=$stage
@@ -133,6 +138,8 @@ try {
     function Get-TinyStrataIntelRuntimeSelection {param($Model,$RequestedProfile)return [pscustomobject]@{Profile='b390-qwen36';AotTarget='intel_gpu_ptl_h'}}
     function Get-TinyStrataSavedProcess {param($StatePath,$ConfigPath,$SourcePath,$ApiPort)return $null}
     function Assert-TinyStrataInstallationIdle {param($SourceRoot,$WorkRoot)}
+    function Stop-TinyStrataOwnedServicesForUpdate {param($SourceRoot,$WorkRoot)return $null}
+    function Restore-TinyStrataOwnedServicesAfterUpdate {param($Snapshot,$SourceRoot,$WorkRoot,[switch]$NoBrowser)}
     function Initialize-TinyStrataPython {param($WorkRoot,$SourceRoot,$CacheRoot,$Transaction)return 'Invoke-IntelUiFixturePython'}
     function Complete-TinyStrataPythonTransaction {param($Transaction,[switch]$Rollback)}
     function Restore-TinyStrataSource {param($Change)}
@@ -251,6 +258,116 @@ try {
         Check (@(Get-ChildItem -LiteralPath (Join-Path $case.Work 'native') -Directory).Count -eq $generationCount) 'Running peer checks create no generation'
         foreach($path in $protected.Keys){Check ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -eq $protected[$path]) 'Running peer checks preserve every config/key/UI/history/candidate byte'}
         Check (-not(Test-Path -LiteralPath (Join-Path $case.Work '.tinystrata-installing.json'))) 'Running peer checks do not acquire or leave an update guard'
+    }
+    # Ordinary SYCL reruns use the same shipping update transaction. Only the
+    # process/HTTP/Desktop boundaries below are fixtures; runtime inventories,
+    # imports, configure candidates, publication, guards and rollback are real.
+    Import-FixtureFunctions (Join-Path $repository 'install.ps1') @('Get-TinyStrataApiSourceFingerprint','Test-TinyStrataRunningApiCurrent',
+        'Backup-TinyStrataUpdateSettings','Restore-TinyStrataUpdateSettings','Backup-TinyStrataPython','Complete-TinyStrataPythonTransaction')
+    function Get-TinyStrataIntelRuntimeSelection {param($Model,$RequestedProfile)
+        $family=@('qwen36','tiel','gemma4','lfm2','clover')|ForEach-Object{Get-TinyStrataModelFamily $_ -Backend sycl}|Where-Object{$_.Model -eq $Model}|Select-Object -First 1
+        return [pscustomobject]@{Profile=$(if($RequestedProfile){$RequestedProfile}else{$family.IntelProfile});AotTarget='intel_gpu_ptl_h'}
+    }
+    function Get-TinyStrataSavedProcess {param($StatePath,$ConfigPath,$SourcePath,$ApiPort)
+        if($script:runningApi -and $StatePath -eq $script:originalState -and $ConfigPath -eq $script:originalConfig -and $ApiPort -eq 19085){return $script:runningApi}
+    }
+    function Stop-TinyStrataOwnedServicesForUpdate {param($SourceRoot,$WorkRoot)
+        Check (Test-Path -LiteralPath (Join-Path $WorkRoot '.tinystrata-installing.json')) 'Every shared-root stop is guarded'
+        $script:updateEvents+=@('stop');$script:runningApi=$null
+        return $script:ownedSnapshot
+    }
+    function Restore-TinyStrataOwnedServicesAfterUpdate {param($Snapshot,$SourceRoot,$WorkRoot,[switch]$NoBrowser)
+        Check (-not(Test-Path -LiteralPath (Join-Path $WorkRoot '.tinystrata-installing.json'))) 'Restoration starts only after the shared guard is released'
+        Check ($Snapshot.Apis.Count -eq 2 -and $Snapshot.Uis.Count -eq 2) 'All CUDA and Intel consumers of shared source/Python are restored'
+        $script:updateEvents+=@('restore')
+    }
+    function Initialize-TinyStrataPython {param($WorkRoot,$SourceRoot,$CacheRoot,$Transaction)
+        $script:updateEvents+=@('python')
+        $venv=Join-Path $WorkRoot 'runtime\.venv';Backup-TinyStrataPython $venv $Transaction
+        Write-IntelFixture $venv 'dependencies.txt' 'updated requirements fixture'
+        return 'Invoke-IntelUiFixturePython'
+    }
+    function Initialize-TinyStrataOptionalUI {param($SourceRoot,$WorkRoot,$ApiPort,$UiPort,$Family,[switch]$ConfigureOnly,$Backend,$IntelProfile,$Vision)
+        Check ($ApiPort -eq 19085 -and $UiPort -eq 3905 -and $Backend -eq 'sycl') 'Ordinary rerun retains the selected Intel API/UI custom ports'
+        $script:updateEvents+=@('ui')
+    }
+    function Start-Process {param($FilePath,$ArgumentList,$WorkingDirectory,$WindowStyle,$RedirectStandardOutput,$RedirectStandardError,[switch]$PassThru)
+        Check ($script:updateEvents -contains 'stop') 'No duplicate Intel server is started before owned quiescence'
+        Check ($ArgumentList -match [regex]::Escape($script:activeConfig)) 'Restart uses the actual switched profile rather than the original launch profile'
+        Check (($ArgumentList -match '--lazy') -eq (-not $script:wasLoaded)) 'An unloaded API stays lazy across the transaction'
+        $script:updateEvents+=@('start')
+        $script:runningApi=[pscustomobject]@{Id=456;HasExited=($script:updateScenario -eq 'startup-fail');StartTime=[DateTime]::Now}
+        $script:runningApi|Add-Member -MemberType ScriptMethod -Name Refresh -Value {}
+        return $script:runningApi
+    }
+    function Get-NetTCPConnection {param($LocalPort,$State,$ErrorAction)return @()}
+    function Invoke-TinyStrataApi {param($BaseUrl,$Path,$Method,$Headers)
+        Check ($Path -eq '/health') 'Installer fixture never cancels jobs or starts a model download'
+        return [pscustomobject]@{status='ok';service='strata';backend='sycl';model=$script:activeFamily.Model;intel_profile=$script:activeFamily.IntelProfile;experimental=$true;loaded=$script:wasLoaded;images=$false}
+    }
+    foreach($scenario in @('current','stale-runtime','stale-encoder','switched-unloaded','configure-fail','startup-fail')){
+        $case=Prepare-Case ('ordinary-'+$scenario) $catalog
+        $script:updateScenario=$scenario;$script:updateEvents=@();$script:configureFail='';$script:failModel='';$script:receiveFail=''
+        Prepare-Extras $case;Publish-TinyStrataIntelConfigurations $case.Configurations
+        $source=Join-Path $fixture ('ordinary-source-'+$scenario);[IO.Directory]::CreateDirectory((Join-Path $source 'cmake'))|Out-Null
+        foreach($helper in @('install-intel-runtime.ps1','intel-runtime-package.ps1','install-intel-ui-runtimes.ps1')){[IO.File]::Copy((Join-Path $repository ('cmake\'+$helper)),(Join-Path $source ('cmake\'+$helper)))}
+        [IO.File]::Copy($case.Catalog,(Join-Path $source 'cmake\intel-runtime-catalog.json'))
+        foreach($name in @('run.py','requirements.txt','serve\server.py')){Write-IntelFixture $source $name ('small source '+$name)}
+        $script:activeFamily=Get-TinyStrataModelFamily $(if($scenario -eq 'switched-unloaded'){'tiel'}else{'qwen36'}) -Backend sycl
+        $script:wasLoaded=$scenario -ne 'switched-unloaded'
+        $script:originalConfig=Join-Path $case.Work 'runtime\.tinystrata\config-sycl.json';$script:originalState=Join-Path $case.Work 'runtime\server-state-sycl.json'
+        $script:activeConfig=Join-Path $case.Work ('runtime\.tinystrata\'+$script:activeFamily.ConfigFile)
+        $selected=$case.Cache[($script:qwenArtifact.manifest_sha256+':'+$script:qwenArtifact.executable_sha256)]
+        foreach($name in @('qwen36',$script:activeFamily.Name)|Select-Object -Unique){
+            $family=Get-TinyStrataModelFamily $name -Backend sycl
+            $configuration=[ordered]@{backend='sycl';model_name=$family.Model;arch=$family.Arch;intel_profile=$family.IntelProfile;port=19085;vision_mode='no';
+                exe=$selected.Exe;lib_dirs=$selected.DllDirectories;api_key='private-never-printed';args=@('--model','absolute-existing.gguf','--max-context','auto');sampling=@{temperature=0.37};reasoning_effort='medium'}
+            Write-IntelFixture $case.Work ('runtime\.tinystrata\'+$family.ConfigFile) ($configuration|ConvertTo-Json -Depth 10)
+        }
+        if($scenario -in @('stale-runtime','configure-fail','startup-fail','switched-unloaded')){
+            $oldStage=Join-Path $fixture ('old-stage-'+$scenario);$null=New-IntelFixtureStage $oldStage
+            $old=Install-TinyStrataIntelRuntime -StageDirectory $oldStage -Destination (Join-Path $case.Work ('native\sycl-'+('1'*32)))
+            $cfg=Get-TinyStrataConfig $script:activeConfig;$cfg.exe=$old.Exe;$cfg.lib_dirs=$old.DllDirectories
+            Write-IntelFixture (Split-Path -Parent $script:activeConfig) (Split-Path -Leaf $script:activeConfig) ($cfg|ConvertTo-Json -Depth 10)
+        }elseif($scenario -eq 'stale-encoder'){
+            $cfg=Get-TinyStrataConfig $script:activeConfig;$cfg.vision_mode='gpu'
+            $cfg|Add-Member -NotePropertyName vision_exe -NotePropertyValue (Join-Path $case.Work 'native\old-encoder\tinystrata-vision.exe')
+            Write-IntelFixture (Split-Path -Parent $script:activeConfig) (Split-Path -Leaf $script:activeConfig) ($cfg|ConvertTo-Json -Depth 10)
+        }
+        Write-IntelFixture $case.Work 'runtime\server-state-sycl.json' (@{port=19085;config=$script:originalConfig}|ConvertTo-Json)
+        Write-IntelFixture $case.Work 'runtime\.venv\dependencies.txt' 'old working dependencies'
+        Write-IntelFixture $case.Work 'runtime\.tinystrata\config.json' '{"backend":"cuda","api_key":"shared-root-key","sampling":{"temperature":0.72}}'
+        Write-IntelFixture $case.Work 'runtime\ui\history.sqlite3' 'CUDA history fixture'
+        Write-IntelFixture $case.Work 'runtime\ui-sycl\settings.json' '{"model_family":"qwen36","port":3905}'
+        Write-IntelFixture $case.Work 'runtime\.tinystrata\model-files\model.gguf' 'retained model bytes'
+        $script:runningApi=[pscustomobject]@{Id=123;HasExited=$false;TinyStrataApiSourceFingerprint=(Get-TinyStrataApiSourceFingerprint $source)}
+        $active=[pscustomobject]@{Backend='sycl';Family=$script:activeFamily.Name;Config=$script:activeConfig;Port=19085;Loaded=$script:wasLoaded}
+        $script:ownedSnapshot=[pscustomobject]@{Api=$active;Apis=@($active,[pscustomobject]@{Backend='cuda';Port=18080});Uis=@([pscustomobject]@{Backend='sycl';Port=3905},[pscustomobject]@{Backend='auto';Port=3000})}
+        $oldSettings=@(Backup-TinyStrataUpdateSettings $case.Work);$before=Get-TinyStrataConfig $script:activeConfig
+        $protected=@{};foreach($relative in @('runtime\.tinystrata\config.json','runtime\ui\history.sqlite3','runtime\ui-sycl\history.sqlite3','runtime\.tinystrata\model-files\model.gguf')){$path=Join-Path $case.Work $relative;$protected[$path]=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash}
+        if($scenario -eq 'configure-fail'){$script:configureFail='qwen3.6-35b-a3b'}
+        $failed=$false
+        try{Invoke-TinyStrataInstaller -SourceDirectory $source -WorkingDirectory $case.Work -Backend sycl -IncludeUI $true -DoNotDownload $true}catch{
+            if($scenario -notin @('configure-fail','startup-fail')){throw};$failed=$true
+        }
+        Check ($failed -eq ($scenario -in @('configure-fail','startup-fail'))) ('Ordinary Intel outcome '+$scenario)
+        if($scenario -eq 'current') {Check ($script:updateEvents -notcontains 'stop' -and $script:updateEvents -notcontains 'start') 'A current installed Intel app is reused on ordinary rerun'}
+        else {
+            Check ($script:updateEvents[0] -eq 'stop' -and $script:updateEvents[-1] -eq 'restore') 'Update and rollback both restore the owned shared-root services'
+            $after=Get-TinyStrataConfig $script:activeConfig
+            Check ($after.api_key -ceq $before.api_key -and $after.sampling.temperature -eq 0.37 -and $after.reasoning_effort -eq 'medium' -and $after.args[1] -eq 'absolute-existing.gguf') 'Existing keys, thinking, sampling and selected model file remain intact'
+            if($failed){
+                foreach($record in $oldSettings){if($null -ne $record.Bytes){Check ([Convert]::ToBase64String([IO.File]::ReadAllBytes($record.Path)) -ceq [Convert]::ToBase64String($record.Bytes)) 'Failed update restores original config, backup and UI settings bytes'}}
+                Check ([IO.File]::ReadAllText((Join-Path $case.Work 'runtime\.venv\dependencies.txt')) -ceq 'old working dependencies') 'Both prepare and post-start failure restore the previous Python environment'
+            }else{
+                Check ($after.exe -ne $before.exe -or $scenario -eq 'stale-encoder') 'A stale runtime is adopted only through a new immutable generation'
+                if($scenario -eq 'stale-encoder'){Check ($after.vision_exe -eq (Join-Path (Split-Path -Parent $after.exe) 'tinystrata-vision.exe')) 'The configured encoder is repinned to its verified native generation'}
+                $state=Get-TinyStrataConfig (Join-Path $case.Work ('runtime\'+$script:activeFamily.StateFile))
+                Check ($state.api_source_fingerprint -eq (Get-TinyStrataApiSourceFingerprint $source)) 'The restarted Intel API records the actual shared API source fingerprint'
+            }
+        }
+        foreach($path in $protected.Keys){Check ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ceq $protected[$path]) 'Shared-root normal configuration, both histories and model payload remain byte-identical'}
+        Check (-not(Test-Path -LiteralPath (Join-Path $case.Work '.tinystrata-installing.json'))) 'A completed update or safe rollback releases the guard'
     }
     # Real file replacement failure after the first publish must restore both
     # original configs and their prior .bak, including paths with literal [].

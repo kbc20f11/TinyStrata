@@ -1584,11 +1584,29 @@ function Get-TinyStrataApiSourceFingerprint {
 }
 
 function Test-TinyStrataRunningApiCurrent {
-    param($Server, $Configuration, [string]$SourceRoot, [string]$Backend)
+    param($Server, $Configuration, [string]$SourceRoot, [string]$Backend,
+          [string]$WorkRoot, [bool]$IncludeUI = $false, [string]$Vision)
     if (-not $Configuration.exe -or $Configuration.backend -ne $Backend -or
         $Server.TinyStrataApiSourceFingerprint -ne (Get-TinyStrataApiSourceFingerprint -SourceRoot $SourceRoot)) { return $false }
     $exe = [string]$Configuration.exe
     if (-not [IO.Path]::IsPathRooted($exe)) { $exe = Join-Path $SourceRoot $exe }
+    if ($Backend -eq 'sycl') {
+        try {
+            . (Join-Path $SourceRoot 'cmake\install-intel-runtime.ps1')
+            . (Join-Path $SourceRoot 'cmake\intel-runtime-package.ps1')
+            $catalog = Join-Path $SourceRoot 'cmake\intel-runtime-catalog.json'
+            $target = if ($Configuration.intel_profile -eq 'generic') { '' } else { 'intel_gpu_ptl_h' }
+            $artifact = Get-TinyStrataIntelRuntimeArtifact -CatalogPath $catalog -Profile $Configuration.intel_profile -Model $Configuration.model_name -AotTarget $target
+            if (-not (Test-TinyStrataIntelRuntimeCurrent -Configuration $Configuration -WorkRoot $WorkRoot -Artifact $artifact)) { return $false }
+            $mode = if ($Configuration.arch -eq 'lfm2moe') { 'no' } else { $Vision }
+            if ($mode -and $Configuration.vision_mode -ne $mode) { return $false }
+            if ($IncludeUI) {
+                . (Join-Path $SourceRoot 'cmake\install-intel-ui-runtimes.ps1')
+                Assert-TinyStrataIntelUiRuntimesCurrent -SourceRoot $SourceRoot -WorkRoot $WorkRoot -CatalogPath $catalog -SelectedModel $Configuration.model_name -AotTarget $target -Vision $Vision
+            }
+            return $true
+        } catch { return $false }
+    }
     $fingerprint = Get-TinyStrataSourceFingerprint -Directory $SourceRoot -NativeOnly -Backend $Backend
     # Source and binary identity suffice for an already running installation.
     # Starting from a cached build still requires the full toolchain proof.
@@ -1601,10 +1619,10 @@ function Test-TinyStrataRunningApiCurrent {
 }
 
 function Get-TinyStrataRunningApiProfiles {
-    param([string]$SourceRoot, [string]$RuntimeRoot, [string[]]$Families, [int]$Port)
+    param([string]$SourceRoot, [string]$RuntimeRoot, [string[]]$Families, [int]$Port, [string]$Backend = 'auto')
     $configRoot = Join-Path $RuntimeRoot '.tinystrata'
     foreach ($name in $Families) {
-        $family = Get-TinyStrataModelFamily -Name $name
+        $family = Get-TinyStrataModelFamily -Name $name -Backend $Backend
         $statePath = Join-Path $RuntimeRoot $family.StateFile
         $state = Get-TinyStrataConfig -Path $statePath
         $savedPort = 0
@@ -1615,10 +1633,26 @@ function Get-TinyStrataRunningApiProfiles {
             $configPath = [string]$state.config
         }
         $cfg = Get-TinyStrataConfig -Path $configPath
-        if (-not $cfg -or $cfg.backend -eq 'sycl') { continue }
+        if (-not $cfg -or (($cfg.backend -eq 'sycl') -ne ($Backend -eq 'sycl'))) { continue }
         $server = Get-TinyStrataSavedProcess -StatePath $statePath -ConfigPath $configPath -SourcePath $SourceRoot -ApiPort $savedPort
         if ($server) {
-            [pscustomobject]@{ Family=$family; ConfigPath=$configPath; Configuration=$cfg; StatePath=$statePath; Port=$savedPort; Server=$server }
+            $originalConfigPath = $configPath
+            $originalStatePath = $statePath
+            if ($Backend -eq 'sycl') {
+                $health = Invoke-TinyStrataApi -BaseUrl "http://127.0.0.1:$savedPort" -Path '/health'
+                $active = @('qwen36','tiel','gemma4','lfm2','clover') | ForEach-Object { Get-TinyStrataModelFamily -Name $_ -Backend sycl } |
+                          Where-Object { $_.Model -eq $health.model } | Select-Object -First 1
+                if (-not $active -or $health.backend -ne 'sycl') { throw 'The saved Intel API does not identify a supported active model; it was left unchanged.' }
+                $family = $active
+                $configPath = Join-Path $configRoot $family.ConfigFile
+                $statePath = Join-Path $RuntimeRoot $family.StateFile
+                $cfg = Get-TinyStrataConfig -Path $configPath
+                if (-not $cfg -or $cfg.backend -ne 'sycl' -or $cfg.model_name -ne $health.model -or $cfg.intel_profile -ne $health.intel_profile) {
+                    throw 'The active Intel profile is missing or differs from the running API; it was left unchanged.'
+                }
+            }
+            [pscustomobject]@{ Family=$family; ConfigPath=$configPath; Configuration=$cfg; StatePath=$statePath; Port=$savedPort; Server=$server;
+                              OriginalConfigPath=$originalConfigPath; OriginalStatePath=$originalStatePath }
         }
     }
 }
@@ -2141,6 +2175,7 @@ from urllib.parse import quote
 import psutil
 
 class PendingServer(RuntimeError):pass
+class BusyServer(RuntimeError):pass
 
 PROFILES={'qwen3.6-35b-a3b':('qwen36','config.json','server-state.json'),
  'gemma-4-26b-a4b-it':('gemma4','config-gemma4.json','server-state-gemma4.json'),
@@ -2148,6 +2183,9 @@ PROFILES={'qwen3.6-35b-a3b':('qwen36','config.json','server-state.json'),
  'clover-35b-a3b-preview':('clover','config-clover.json','server-state-clover.json'),
  'tiel-coder-35b-a3b':('tiel','config-tiel-coder.json','server-state-tiel-coder.json'),
  'inkling-2-mini':('inkling2','config-inkling2.json','server-state-inkling2.json')}
+INTEL_PROFILES={model:(family,'config-sycl.json' if family=='qwen36' else filename[:-5]+'-sycl.json',
+    'server-state-sycl.json' if family=='qwen36' else statename[:-5]+'-sycl.json')
+    for model,(family,filename,statename) in PROFILES.items() if family!='inkling2'}
 def norm(p):return os.path.normcase(str(Path(p).resolve()))
 def same(a,b):
     try:return os.path.samefile(a,b)
@@ -2187,11 +2225,15 @@ def options(command,kind,source):
     else:
         if norm(command[2])!=norm(source/'ui/server.py'):raise RuntimeError('The UI command belongs to another source directory')
         rest=command[3:];allowed={'--port','--api-port','--data-dir'}
-    if len(rest)%2:raise RuntimeError('The saved server command has unexpected arguments')
     result={}
-    for i in range(0,len(rest),2):
+    i=0
+    while i<len(rest):
+        if kind=='api' and rest[i]=='--lazy' and '--lazy' not in result:
+            result['--lazy']=True;i+=1;continue
+        if i+1>=len(rest):raise RuntimeError('The saved server command has unexpected arguments')
         if rest[i] not in allowed or rest[i] in result:raise RuntimeError('The saved server command has unexpected options')
         result[rest[i]]=rest[i+1]
+        i+=2
     return result
 def verify_process(m,command,source,python):
     if not same_invocation(m['command'],command,python) or norm(m['cwd'])!=norm(source):raise RuntimeError('Server command or working directory changed; no process was stopped')
@@ -2251,9 +2293,7 @@ def collect(source,work):
         m=meta(root)
         if 'started' not in state or abs(m['started']-stamp(state['started']))>.00001:
             raise RuntimeError(f'Saved process identity changed for {path.name}; it was left unchanged')
-        if path==intel_uistate:
-            raise RuntimeError('Stop the separate Intel API and UI before updating CUDA/HIP sources or Python; services were left unchanged')
-        kind='ui' if path==uistate else 'api';command=m['command'];args=options(command,kind,source)
+        kind='ui' if path in (uistate,intel_uistate) else 'api';command=m['command'];args=options(command,kind,source)
         verify_process(m,command,source,python)
         port=int(args.get('--port',0))
         if not 0<port<65536:raise RuntimeError('Invalid saved server port')
@@ -2267,7 +2307,8 @@ def collect(source,work):
         else:
             if not same_invocation(state.get('command'),command,python):raise RuntimeError('Saved UI command does not match its running process')
             config=None
-            if '--data-dir' in args and norm(args['--data-dir'])!=norm(runtime/'ui'):
+            data=runtime/('ui-sycl' if path==intel_uistate else 'ui')
+            if '--data-dir' in args and norm(args['--data-dir'])!=norm(data):
                 raise RuntimeError('The UI history directory belongs to another installation')
         owners=listeners(port)
         if not owners:raise PendingServer(f'The recorded {kind} is still starting on port {port}; retry after it is ready')
@@ -2287,25 +2328,32 @@ def collect(source,work):
             if cm['parent']!=m['pid'] or cm['started']<m['started']:raise RuntimeError('A server port belongs to another process')
             verify_process(cm,command,source,python);verified.append(cm)
         health=request(port,'/local-ui-health' if kind=='ui' else '/health')
-        if kind=='api' and (read(config).get('backend')=='sycl' or health.get('backend')=='sycl'):
-            raise RuntimeError('Stop the separate Intel API and UI before updating CUDA/HIP sources or Python; services were left unchanged')
         if kind=='ui':
             if health.get('app')!='tinystrata-ui' or health.get('pid') not in owners or int(health.get('api_port',0))!=int(args.get('--api-port',0)):
                 raise RuntimeError('The UI listener identity does not match this installation')
-            for key,expected in (('source_dir',source),('data_dir',runtime/'ui')):
+            for key,expected in (('source_dir',source),('data_dir',data)):
                 if key in health and norm(health[key])!=norm(expected):raise RuntimeError('The UI serves another installation')
-            item={'Kind':'ui','Port':port,'ApiPort':int(args['--api-port']),'StatePath':str(path),'Processes':verified,'Command':command}
+            item={'Kind':'ui','Backend':'sycl' if path==intel_uistate else 'auto','Port':port,'ApiPort':int(args['--api-port']),
+                  'DataDir':str(data),'StatePath':str(path),'Processes':verified,'Command':command}
         else:
             if health.get('service') not in ('strata','tinystrata') or health.get('status')!='ok' or health.get('model') not in PROFILES:
                 raise RuntimeError('The API is switching or does not identify a supported active model')
-            model=health['model'];family,filename,statename=PROFILES[model]
+            intel=read(config).get('backend')=='sycl'
+            if intel!=(health.get('backend')=='sycl'):raise RuntimeError('The API backend differs from its saved configuration')
+            profiles=INTEL_PROFILES if intel else PROFILES
+            if health['model'] not in profiles:raise RuntimeError('The API active model is not supported by its backend')
+            model=health['model'];family,filename,statename=profiles[model]
             active=runtime/'.tinystrata'/filename
-            if family=='qwen36' and active.exists() and read(active).get('arch')=='gpt-oss':active=active.with_name('config-qwen36.json')
+            if not intel and family=='qwen36' and active.exists() and read(active).get('arch')=='gpt-oss':active=active.with_name('config-qwen36.json')
             if not active.is_file():raise RuntimeError('The active model profile is missing; the API was left running')
+            if intel and (read(active).get('backend')!='sycl' or read(active).get('model_name')!=model or
+                          read(active).get('intel_profile')!=health.get('intel_profile')):
+                raise RuntimeError('The active Intel model/profile differs from its saved configuration')
             owner=process(next(iter(owners)))
             if owner is None:raise RuntimeError('The API listener changed during connection-setting inspection')
             verify_connection_settings(config,active,owner)
-            item={'Kind':'api','Family':family,'Port':port,'Host':args.get('--host') or read(config).get('host') or '127.0.0.1','Config':str(active),'Model':model,'Loaded':bool(health.get('loaded')),
+            item={'Kind':'api','Family':family,'Backend':'sycl' if intel else read(config).get('backend','auto'),
+                  'IntelProfile':health.get('intel_profile') if intel else None,'Port':port,'Host':args.get('--host') or read(config).get('host') or '127.0.0.1','Config':str(active),'Model':model,'Loaded':bool(health.get('loaded')),
                   'OriginalConfig':str(config),'StatePath':str(runtime/statename),'Processes':verified,'Command':command}
         if any(x['Kind']==kind and x['Port']==port for x in records):continue
         records.append(item)
@@ -2316,9 +2364,9 @@ def idle(item):
     control=request(item['Port'],'/v1/model/switch',item['OriginalConfig'])
     library=request(item['Port'],'/v1/models',item['OriginalConfig'])
     if status.get('busy') or status.get('queued') or control.get('switching') or control.get('in_flight'):
-        raise RuntimeError(f"TinyStrata on port {item['Port']} is busy; no service was stopped")
+        raise BusyServer(f"TinyStrata on port {item['Port']} is busy; no service was stopped")
     if control.get('downloading') or any(x.get('management',{}).get('delete_reason')=='downloading' for x in library.get('data',[])):
-        raise RuntimeError('A model download is running; no service was stopped')
+        raise BusyServer('A model download is running; no service was stopped')
     if 'downloading' not in control:
         # First upgrade: the already loaded legacy API has no installer gate
         # or aggregate download flag. Query every supported model's job, rather
@@ -2327,7 +2375,18 @@ def idle(item):
             if row.get('id') in PROFILES:
                 job=request(item['Port'],'/v1/model/download?model='+quote(row['id'],safe=''),item['OriginalConfig'])
                 if job.get('state') in ('downloading','verifying','loading') or job.get('running'):
-                    raise RuntimeError('A model download is running; no service was stopped')
+                    raise BusyServer('A model download is running; no service was stopped')
+def drain(items,timeout=300):
+    # The installation guard prevents new admissions. Existing generation,
+    # switch and download jobs finish normally; no STOP/cancel request is sent.
+    deadline=time.monotonic()+timeout
+    while True:
+        try:
+            for item in items:idle(item)
+            return
+        except BusyServer:
+            if time.monotonic()>=deadline:raise
+            time.sleep(.25)
 def hold(m):
     kernel=ctypes.WinDLL('kernel32',use_last_error=True)
     kernel.OpenProcess.argtypes=[ctypes.c_uint32,ctypes.c_int,ctypes.c_uint32];kernel.OpenProcess.restype=ctypes.c_void_p
@@ -2354,6 +2413,11 @@ def stop(source,work):
     snapshot={'SourceRoot':str(source),'WorkRoot':str(work),'Api':selected,'Apis':apis,'Ui':uis[0] if uis else None,'Uis':uis,'Stopped':False}
     handles=[];stopping=False
     try:
+        drain(items)
+        # A switch admitted before the guard may have changed the active model.
+        items=collect(source,work);apis=[x for x in items if x['Kind']=='api'];uis=[x for x in items if x['Kind']=='ui']
+        selected=next((a for u in uis for a in apis if a['Port']==u['ApiPort']),apis[0] if apis else None)
+        snapshot.update(Api=selected,Apis=apis,Ui=uis[0] if uis else None,Uis=uis)
         for item in items:
             idle(item)
             for m in item['Processes']:handles.append((item,m,*hold(m)))
@@ -2410,10 +2474,14 @@ def stop(source,work):
     finally:
         for _,_,kernel,handle in handles:kernel.CloseHandle(handle)
 def revision(source):
-    digest=hashlib.sha256()
-    for name in ('server.py','launch.py','stdio.py','chat_history.py','web_search.py','tool_settings.py','sandbox_runtime.py'):
-        digest.update(name.encode()+b'\0');digest.update((source/'ui'/name).read_bytes())
-    return digest.hexdigest()
+    # The stdlib-only launcher owns the receipt's file list. Import it under a
+    # private name without executing main; no API/UI/server/model is created.
+    # Duplicating its list here missed calculator.py and web_page.py, falsely
+    # rejecting a newly restored UI as stale after a safe update rollback.
+    import importlib.util
+    spec=importlib.util.spec_from_file_location('_tinystrata_update_ui_revision',source/'ui/launch.py')
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    return module.backend_revision(source)
 def resume(source,work,snapshot,api_source_fingerprint=None):
     if norm(snapshot.get('SourceRoot',''))!=norm(source) or norm(snapshot.get('WorkRoot',''))!=norm(work):
         raise RuntimeError('The saved service snapshot belongs to a different installation')
@@ -2434,8 +2502,9 @@ def resume(source,work,snapshot,api_source_fingerprint=None):
             config=Path(item['Config'])
             if not config.is_file():raise RuntimeError('The saved active API profile is missing; no replacement model was selected')
             command=[str(python),'-B','-m','serve.server','--engine','tinystrata','--config',str(config),'--port',str(port),'--host',item.get('Host','127.0.0.1')]
-        else:command=[str(python),'-B',str(source/'ui/server.py'),'--port',str(port),'--api-port',str(item['ApiPort']),'--data-dir',str(work/'runtime/ui')]
-        logs=work/'runtime/ui' if kind=='ui' else work/'runtime';logs.mkdir(parents=True,exist_ok=True)
+            if not item['Loaded']:command.append('--lazy')
+        else:command=[str(python),'-B',str(source/'ui/server.py'),'--port',str(port),'--api-port',str(item['ApiPort']),'--data-dir',item.get('DataDir',str(work/'runtime/ui'))]
+        logs=Path(item.get('DataDir',str(work/'runtime/ui'))) if kind=='ui' else work/'runtime';logs.mkdir(parents=True,exist_ok=True)
         with (logs/(kind+'.stdout.log')).open('ab') as out,(logs/(kind+'.stderr.log')).open('ab') as err:
             p=subprocess.Popen(command,cwd=source,stdin=subprocess.DEVNULL,stdout=out,stderr=err,
                 env={**os.environ,'PYTHONUTF8':'1','PYTHONIOENCODING':'utf-8'},creationflags=subprocess.CREATE_NO_WINDOW|subprocess.CREATE_NEW_PROCESS_GROUP)
@@ -2559,6 +2628,47 @@ function Assert-TinyStrataInstallationIdle {
     }
 }
 
+function Backup-TinyStrataUpdateSettings {
+    param([string]$WorkRoot)
+    # Only small installer-owned settings participate in rollback. Never copy
+    # model files, databases, keys in other files, or mutable chat history.
+    $paths = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($backend in @('auto','sycl')) {
+        foreach ($name in @('qwen36','tiel','gemma4','lfm2','clover')) {
+            $family = Get-TinyStrataModelFamily -Name $name -Backend $backend
+            $path = Join-Path (Join-Path $WorkRoot 'runtime\.tinystrata') $family.ConfigFile
+            [void]$paths.Add($path); [void]$paths.Add($path + '.bak')
+        }
+    }
+    foreach ($relative in @('runtime\.tinystrata\config-qwen36.json','runtime\.tinystrata\config-qwen36.json.bak',
+                            'runtime\.tinystrata\config-inkling2.json','runtime\.tinystrata\config-inkling2.json.bak',
+                            'runtime\ui\settings.json','runtime\ui-sycl\settings.json')) { [void]$paths.Add((Join-Path $WorkRoot $relative)) }
+    foreach ($path in $paths) {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            if ((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Cannot snapshot linked installation settings.' }
+            [pscustomobject]@{ Path=$path; Bytes=[IO.File]::ReadAllBytes($path) }
+        } else { [pscustomobject]@{ Path=$path; Bytes=$null } }
+    }
+}
+
+function Restore-TinyStrataUpdateSettings {
+    param($Snapshot)
+    foreach ($entry in $Snapshot) {
+        $path = [string]$entry.Path
+        if (Test-Path -LiteralPath $path) {
+            if ((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Cannot restore linked installation settings.' }
+        }
+        if ($null -eq $entry.Bytes) { if (Test-Path -LiteralPath $path -PathType Leaf) { [IO.File]::Delete($path) }; continue }
+        $temporary = $path + '.restore-' + [Guid]::NewGuid().ToString('N')
+        try {
+            [IO.Directory]::CreateDirectory((Split-Path -Parent $path)) | Out-Null
+            [IO.File]::WriteAllBytes($temporary, [byte[]]$entry.Bytes)
+            if (Test-Path -LiteralPath $path -PathType Leaf) { [IO.File]::Replace($temporary, $path, [NullString]::Value) }
+            else { [IO.File]::Move($temporary, $path) }
+        } finally { if (Test-Path -LiteralPath $temporary -PathType Leaf) { [IO.File]::Delete($temporary) } }
+    }
+}
+
 function New-TinyStrataNativeGeneration {
     param([string]$WorkRoot, [string]$Backend, [string]$FromDirectory)
     $root = [IO.Path]::GetFullPath((Join-Path $WorkRoot 'native'))
@@ -2601,6 +2711,11 @@ function Test-TinyStrataIntelRuntimeCurrent {
             (Split-Path -Leaf $exe) -ne 'tinystrata-intel.exe') { return $false }
         $plan = Get-TinyStrataIntelStagePlan -StageDirectory $directory
         $entry = @($plan.Files | Where-Object { $_.RelativePath -eq 'tinystrata-intel.exe' })
+        if ($Configuration.vision_mode -eq 'gpu') {
+            $encoder = Join-Path $directory 'tinystrata-vision.exe'
+            if ($Configuration.vision_exe -ne $encoder -or -not (Test-Path -LiteralPath $encoder -PathType Leaf) -or
+                ($Configuration.vision -and ($Configuration.vision.exe -ne $encoder -or $Configuration.vision.gpu -ne $true))) { return $false }
+        }
         return $entry.Count -eq 1 -and $entry[0].Sha256 -eq $Artifact.executable_sha256 -and
                $plan.Manifest.ImportedFromManifestSha256 -eq $Artifact.manifest_sha256
     } catch {
@@ -2785,20 +2900,27 @@ function Invoke-TinyStrataInstaller {
     $updateGuard = $null
     $ownedServices = $null
     $updateFailure = $null
+    $updateSettings = $null
+    $rollbackPreparation = $null
+    $rollbackIncomplete = $false
     try {
-    $updateServices = $RefreshSource -or $BuildAgain -or $HipDirectory -or ($Revision -and $IncludeUI -and $archiveInstall)
+    $updateServices = $RefreshSource -or $BuildAgain -or $HipDirectory -or ($Revision -and $IncludeUI -and $archiveInstall) -or
+                      ($selectedBackend -eq 'sycl' -and $IntelRuntimeDirectory)
     $runningTarget = $null
-    if ($sourceReady -and -not $IncludeUI -and $selectedBackend -ne 'sycl') {
+    if ($sourceReady -and (-not $IncludeUI -or $selectedBackend -eq 'sycl')) {
         $families = @($selectedFamily.Name)
-        if (-not $familyExplicitHere) { $families = @($families + @('qwen36','gemma4','lfm2','clover','tiel','inkling2') | Select-Object -Unique) }
+        if (-not $familyExplicitHere) {
+            $otherFamilies = if ($selectedBackend -eq 'sycl') { @('qwen36','gemma4','lfm2','clover','tiel') } else { @('qwen36','gemma4','lfm2','clover','tiel','inkling2') }
+            $families = @($families + $otherFamilies | Select-Object -Unique)
+        }
         $profiles = @(Get-TinyStrataRunningApiProfiles -SourceRoot $sourceRoot -RuntimeRoot $runtimeRoot -Families $families `
-            -Port $(if ($portAutomatic) { 0 } else { $ApiPort }))
+            -Port $(if ($portAutomatic) { 0 } else { $ApiPort }) -Backend $selectedBackend)
         if ($profiles.Count) {
             $runningTarget = $profiles[0]
             if (-not $updateServices -and -not $DoNotStart) {
                 foreach ($profile in $profiles) {
                     $backendForProfile = Get-TinyStrataBackend -Requested $Backend -Configuration $profile.Configuration
-                    if (Test-TinyStrataRunningApiCurrent -Server $profile.Server -Configuration $profile.Configuration -SourceRoot $sourceRoot -Backend $backendForProfile) { continue }
+                    if (Test-TinyStrataRunningApiCurrent -Server $profile.Server -Configuration $profile.Configuration -SourceRoot $sourceRoot -Backend $backendForProfile -WorkRoot $workRoot -IncludeUI $IncludeUI -Vision $Vision) { continue }
                     $runningTarget = $profile
                     $updateServices = $true
                     Write-Host "The running $($profile.Family.Name) API needs updated sources or a new native build. Updating this installation..."
@@ -2811,27 +2933,56 @@ function Invoke-TinyStrataInstaller {
             $cfg = $runningTarget.Configuration
             $ApiPort = $runningTarget.Port
             $selectedBackend = Get-TinyStrataBackend -Requested $Backend -Configuration $cfg
+            if ($selectedBackend -eq 'sycl') {
+                $intelRuntimeSelection = Get-TinyStrataIntelRuntimeSelection -Model $selectedFamily.Model -RequestedProfile $(if ($profileExplicitHere) { $IntelProfile } else { [string]$cfg.intel_profile })
+                $IntelProfile = $intelRuntimeSelection.Profile
+                $uiSelection.IntelProfile = $IntelProfile
+                $selectedVision = if ($selectedFamily.Arch -eq 'lfm2moe') { 'no' } elseif ($Vision) { $Vision } elseif ($cfg.vision_mode -eq 'gpu') { 'gpu' } else { 'no' }
+            }
             $baseUrl = "http://127.0.0.1:$ApiPort"
+        }
+    }
+    if ($sourceReady -and -not $runningTarget -and -not $updateServices -and (Test-Path -LiteralPath $runtimeRoot -PathType Container)) {
+        # A UI-only installation, or the other backend on a shared work root,
+        # still consumes the same sources/venv. Presence only requests the
+        # strict inspector; a PID alone never authorizes stopping a service.
+        $serviceStates = @(Get-ChildItem -LiteralPath $runtimeRoot -Filter 'server-state*.json' -File)
+        foreach ($relative in @('ui\ui-process.json','ui-sycl\ui-process.json')) {
+            $path = Join-Path $runtimeRoot $relative
+            if (Test-Path -LiteralPath $path -PathType Leaf) { $serviceStates += Get-Item -LiteralPath $path }
+        }
+        foreach ($path in $serviceStates) {
+            $record = Get-TinyStrataConfig -Path $path.FullName
+            if ($record.pid -and (Get-Process -Id $record.pid -ErrorAction SilentlyContinue)) { $updateServices = $true; break }
         }
     }
     if ($updateServices) {
         $updateGuard = Enter-TinyStrataInstallationGuard -WorkRoot $workRoot
-        if ($selectedBackend -eq 'sycl') { Assert-TinyStrataInstallationIdle -SourceRoot $sourceRoot -WorkRoot $workRoot }
-        else { $ownedServices = Stop-TinyStrataOwnedServicesForUpdate -SourceRoot $sourceRoot -WorkRoot $workRoot }
+        $ownedServices = Stop-TinyStrataOwnedServicesForUpdate -SourceRoot $sourceRoot -WorkRoot $workRoot
+        if (@($ownedServices.Apis | Where-Object { $_.Backend -eq 'sycl' }).Count -or @($ownedServices.Uis | Where-Object { $_.Backend -eq 'sycl' }).Count) {
+            $updateSettings = @(Backup-TinyStrataUpdateSettings -WorkRoot $workRoot)
+        }
         $ownedApi = if ($runningTarget) {
             $ownedServices.Apis | Where-Object { $_.Port -eq $runningTarget.Port } | Select-Object -First 1
-        } else { $ownedServices.Api }
+        } else { @($ownedServices.Apis | Where-Object { ($_.Backend -eq 'sycl') -eq ($selectedBackend -eq 'sycl') } | Select-Object -First 1)[0] }
         if ($ownedApi) {
             if (-not $familyExplicitHere) {
-                $selectedFamily = Get-TinyStrataModelFamily -Name $ownedApi.Family
+                $selectedFamily = Get-TinyStrataModelFamily -Name $ownedApi.Family -Backend $(if ($ownedApi.Backend -eq 'sycl') { 'sycl' } else { 'auto' })
                 $configPath = [string]$ownedApi.Config
                 $statePath = Join-Path $runtimeRoot $selectedFamily.StateFile
                 $cfg = Get-TinyStrataConfig -Path $configPath
                 $selectedBackend = Get-TinyStrataBackend -Requested $Backend -Configuration $cfg
+                if ($selectedBackend -eq 'sycl') {
+                    $intelRuntimeSelection = Get-TinyStrataIntelRuntimeSelection -Model $selectedFamily.Model -RequestedProfile $(if ($profileExplicitHere) { $IntelProfile } else { [string]$cfg.intel_profile })
+                    $IntelProfile = $intelRuntimeSelection.Profile
+                    $uiSelection.IntelProfile = $IntelProfile
+                    $selectedVision = if ($selectedFamily.Arch -eq 'lfm2moe') { 'no' } elseif ($Vision) { $Vision } elseif ($cfg.vision_mode -eq 'gpu') { 'gpu' } else { 'no' }
+                }
             }
             if ($portAutomatic) { $ApiPort = [int]$ownedApi.Port }
         }
-        if ($ownedServices.Ui -and -not $UiPortExplicit) { $UiPort = [int]$ownedServices.Ui.Port }
+        $ownedUi = $ownedServices.Uis | Where-Object { ($_.Backend -eq 'sycl') -eq ($selectedBackend -eq 'sycl') } | Select-Object -First 1
+        if ($ownedUi -and -not $UiPortExplicit) { $UiPort = [int]$ownedUi.Port }
         if ($IncludeUI -and $ApiPort -eq $UiPort) { throw 'The UI and API must use different ports.' }
         $baseUrl = "http://127.0.0.1:$ApiPort"
     }
@@ -2843,7 +2994,9 @@ function Invoke-TinyStrataInstaller {
         } catch { $previousServer = $null }
         if ($previousServer -and $savedState.port -ne $ApiPort) { throw "This installation already runs on port $($savedState.port). Stop that instance before changing its port." }
     }
-    $server = Get-TinyStrataSavedProcess -StatePath $statePath -ConfigPath $configPath -SourcePath $sourceRoot -ApiPort $ApiPort
+    $server = if ($runningTarget -and -not $updateServices -and $runningTarget.OriginalConfigPath) {
+        Get-TinyStrataSavedProcess -StatePath $runningTarget.OriginalStatePath -ConfigPath $runningTarget.OriginalConfigPath -SourcePath $sourceRoot -ApiPort $ApiPort
+    } else { Get-TinyStrataSavedProcess -StatePath $statePath -ConfigPath $configPath -SourcePath $sourceRoot -ApiPort $ApiPort }
     if ($server -and $selectedBackend -eq 'sycl' -and $IntelRuntimeDirectory) { throw 'Stop the selected Intel API before importing another runtime generation.' }
     if ($server -and $selectedBackend -eq 'sycl') {
         if ($Vision -and $cfg.vision_mode -ne $selectedVision) {
@@ -3094,6 +3247,7 @@ function Invoke-TinyStrataInstaller {
         else { [IO.File]::Move($candidateConfig, $configPath) }
         $preparationCommitted = $true
         $cfg = $prepared
+        if ($updateSettings) { $rollbackPreparation = @{ Settings=$updateSettings; Source=$sourceChange; Python=$pythonTransaction } }
         } catch {
             $preparationError = $_
             if (-not $preparationError.Exception.Data['IntelConfigurationRollbackFailed']) {
@@ -3106,7 +3260,7 @@ function Invoke-TinyStrataInstaller {
             throw $preparationError
         } finally {
             try {
-            if ($preparationCommitted) {
+            if ($preparationCommitted -and -not $rollbackPreparation) {
                 try { Complete-TinyStrataPythonTransaction -Transaction $pythonTransaction } catch { Write-Warning "The old Python snapshot could not be removed: $($pythonTransaction.PythonBackup)" }
             }
             if ($candidateConfig) {
@@ -3130,7 +3284,8 @@ function Invoke-TinyStrataInstaller {
         $stderr = Join-Path $runtimeRoot $(if ($selectedBackend -eq 'sycl') { 'api-sycl.stderr.log' } else { 'api.stderr.log' })
         # Windows command-line quoting is confined to validated path arguments.
         $commandLine = '-B -m serve.server --engine tinystrata --config "{0}" --port {1}' -f $configPath, $ApiPort
-        $apiSourceFingerprint = if ($selectedBackend -ne 'sycl') { Get-TinyStrataApiSourceFingerprint -SourceRoot $sourceRoot }
+        if ($ownedApi -and $ownedApi.Loaded -eq $false) { $commandLine += ' --lazy' }
+        $apiSourceFingerprint = Get-TinyStrataApiSourceFingerprint -SourceRoot $sourceRoot
         $server = Start-Process -FilePath $python -ArgumentList $commandLine -WorkingDirectory $sourceRoot -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
         $server.Refresh()
         $state = [ordered]@{ pid = $server.Id; started = $server.StartTime.ToUniversalTime().ToString('o'); config = $configPath; source = $sourceRoot; port = $ApiPort; api_source_fingerprint = $apiSourceFingerprint }
@@ -3192,10 +3347,35 @@ function Invoke-TinyStrataInstaller {
     } catch {
         $updateFailure = $_
         if (-not $ownedServices -and $_.Exception.Data.Contains('TinyStrataServices')) { $ownedServices = $_.Exception.Data['TinyStrataServices'] }
+        if ($rollbackPreparation) {
+            try {
+                # Startup/UI failure is still part of the update. Quiesce only
+                # newly owned listeners before restoring shared Python/source.
+                if (-not $updateGuard) { $updateGuard = Enter-TinyStrataInstallationGuard -WorkRoot $workRoot }
+                $null = Stop-TinyStrataOwnedServicesForUpdate -SourceRoot $sourceRoot -WorkRoot $workRoot
+                Assert-TinyStrataInstallationIdle -SourceRoot $sourceRoot -WorkRoot $workRoot
+                Restore-TinyStrataUpdateSettings -Snapshot $rollbackPreparation.Settings
+                Complete-TinyStrataPythonTransaction -Transaction $rollbackPreparation.Python -Rollback
+                Restore-TinyStrataSource -Change $rollbackPreparation.Source
+                $rollbackPreparation = $null
+            } catch {
+                $rollbackIncomplete = $true
+                Write-Warning ('Update rollback could not safely finish; previous source/Python backups and runtime generations were retained: ' + $_.Exception.Message)
+            }
+        }
         throw
     } finally {
-        if ($updateGuard) { Exit-TinyStrataInstallationGuard -Guard $updateGuard }
-        if ($ownedServices) {
+        if ($rollbackPreparation -and -not $updateFailure) {
+            try { Complete-TinyStrataPythonTransaction -Transaction $rollbackPreparation.Python }
+            catch { Write-Warning ('The previous Python snapshot was retained: ' + $_.Exception.Message) }
+        }
+        if ($updateGuard) {
+            if ($rollbackIncomplete) {
+                $updateGuard.Stream.Dispose()
+                Write-Warning 'The incomplete update marker was retained. Run the installer again to repair this installation before starting it.'
+            } else { Exit-TinyStrataInstallationGuard -Guard $updateGuard }
+        }
+        if ($ownedServices -and -not $rollbackIncomplete) {
             try { Restore-TinyStrataOwnedServicesAfterUpdate -Snapshot $ownedServices -SourceRoot $sourceRoot -WorkRoot $workRoot -NoBrowser }
             catch {
                 if ($updateFailure) { Write-Warning ("The update failed and its previous services could not be restored: " + $_.Exception.Message) }

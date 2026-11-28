@@ -16,12 +16,27 @@ $directory = Join-Path ([IO.Path]::GetTempPath()) ('tinystrata-update-contract-'
 $modulePath = Join-Path $directory 'inspector.py'
 $testPath = Join-Path $directory 'contracts.py'
 $tests = @'
-import pathlib,sys,unittest,tempfile,os
+import pathlib,sys,unittest,tempfile,os,shutil
 from unittest import mock
 n={'__name__':'installer_contract_fixture'}
 exec(compile(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'),'shipping-inspector','exec'),n)
 Path=pathlib.Path
 class Contracts(unittest.TestCase):
+ def test_ui_revision_uses_shipping_launcher_list_including_calculator_and_web_page(self):
+  import importlib.util
+  shipping=Path(sys.argv[2]);spec=importlib.util.spec_from_file_location('shipping_launcher_fixture',shipping/'ui/launch.py')
+  launcher=importlib.util.module_from_spec(spec);spec.loader.exec_module(launcher)
+  with tempfile.TemporaryDirectory() as folder:
+   source=Path(folder);ui=source/'ui';ui.mkdir()
+   for name in launcher.UI_BACKEND_FILES:(ui/name).write_text('private revision fixture '+name,encoding='utf-8')
+   shutil.copyfile(shipping/'ui/launch.py',ui/'launch.py')
+   expected=launcher.backend_revision(source)
+   self.assertEqual(n['revision'](source),expected)
+   for name in ('calculator.py','web_page.py'):
+    path=ui/name;original=path.read_bytes();path.write_bytes(original+b' changed')
+    self.assertNotEqual(n['revision'](source),expected)
+    self.assertEqual(n['revision'](source),launcher.backend_revision(source))
+    path.write_bytes(original)
  def test_current_os_image_handles_store_alias_without_accepting_other_python_images(self):
   image=n['psutil'].Process(os.getpid()).exe();source=Path.cwd()
   expected=[sys.executable,'-B','server.py','--port','19191']
@@ -117,7 +132,8 @@ class Contracts(unittest.TestCase):
    self.assertEqual(known,{42});state['reads']+=1
    return [child] if state['resident'] or (late_child and state['reads']>1) else []
   with mock.patch.dict(n,collect=lambda s,w:[item],request=request,hold=lambda m:(Kernel(),123),
-       process=lambda pid:object(),meta=lambda p:m,active_children=children):
+       process=lambda pid:object(),meta=lambda p:m,active_children=children,
+       drain=lambda items:[n['idle'](x) for x in items]):
    try:result=n['stop'](Path.cwd(),Path.cwd().parent/'work-fixture');error=None
    except RuntimeError as caught:result=None;error=caught
   return result,error,events
@@ -125,7 +141,7 @@ class Contracts(unittest.TestCase):
   result,error,events=self.stop_api_fixture(unload_status='unsupported')
   self.assertIsNone(error);self.assertTrue(result['Stopped']);self.assertFalse(result['Api']['Loaded'])
   self.assertNotIn('/unload',events);self.assertEqual(events.count('terminate'),1);self.assertEqual(events.count('close'),1)
-  self.assertEqual(events.count('/status'),3)
+  self.assertEqual(events.count('/status'),4)
  def test_loaded_api_still_unloads_even_if_no_child_is_visible(self):
   result,error,events=self.stop_api_fixture(loaded=True)
   self.assertIsNone(error);self.assertTrue(result['Stopped']);self.assertIn('/unload',events)
@@ -149,6 +165,64 @@ class Contracts(unittest.TestCase):
  def test_unloaded_api_still_refuses_busy_work_before_any_mutation(self):
   result,error,events=self.stop_api_fixture(busy=True)
   self.assertIsNone(result);self.assertIn('busy',str(error));self.assertNotIn('/unload',events);self.assertNotIn('terminate',events)
+ def test_active_jobs_drain_under_guard_without_cancelling_or_starting_work(self):
+  events=[];item=self.api();clock=iter([0.,.1,.2])
+  def idle(item):
+   events.append('read-only-idle')
+   if len(events)<3:raise n['BusyServer']('existing generation/download')
+  with mock.patch.dict(n,idle=idle),mock.patch.object(n['time'],'monotonic',side_effect=lambda:next(clock)),mock.patch.object(n['time'],'sleep') as sleep:
+   n['drain']([item],timeout=1)
+  self.assertEqual(events,['read-only-idle']*3);self.assertEqual(sleep.call_count,2)
+ def test_job_timeout_retains_every_service_without_unload_or_termination(self):
+  with mock.patch.dict(n,idle=mock.Mock(side_effect=n['BusyServer']('still generating'))),mock.patch.object(n['time'],'monotonic',side_effect=[0.,2.]),mock.patch.object(n['time'],'sleep') as sleep,self.assertRaises(n['BusyServer']):
+   n['drain']([self.api()],timeout=1)
+  sleep.assert_not_called()
+ def test_lazy_flag_is_preserved_without_accepting_unknown_switches(self):
+  command=[sys.executable,'-B','-m','serve.server','--engine','tinystrata','--config','x','--lazy','--port','19191']
+  self.assertIs(n['options'](command,'api',Path.cwd())['--lazy'],True)
+  with self.assertRaises(RuntimeError):n['options'](command+['--lazy'],'api',Path.cwd())
+ def test_collect_shared_root_keeps_intel_active_profile_unloaded_and_both_ui_directories(self):
+  import json,datetime
+  with tempfile.TemporaryDirectory() as folder:
+   source=Path(folder)/'source';work=Path(folder)/'work';runtime=work/'runtime';configs=runtime/'.tinystrata';configs.mkdir(parents=True);source.mkdir()
+   python=runtime/'.venv/Scripts/python.exe';created=1000.;stamp=datetime.datetime.fromtimestamp(created,datetime.timezone.utc).isoformat()
+   python.parent.mkdir(parents=True);python.write_bytes(b'inert fixture identity; never executed')
+   records={};health={};states=[]
+   for pid,backend,config_name,model,port in ((10,'sycl','config-sycl.json','qwen3.6-35b-a3b',18085),(20,'cuda','config.json','qwen3.6-35b-a3b',18080)):
+    config=configs/config_name;config.write_text(json.dumps({'backend':backend,'model_name':model,'intel_profile':'b390-qwen36'}))
+    state=runtime/('server-state-sycl.json' if backend=='sycl' else 'server-state.json')
+    state.write_text(json.dumps({'pid':pid,'started':stamp,'source':str(source),'config':str(config),'port':port}))
+    command=[str(python),'-B','-m','serve.server','--engine','tinystrata','--config',str(config),'--port',str(port)]
+    records[pid]={'pid':pid,'parent':1,'started':created,'command':command,'cwd':str(source),'executable':str(python)}
+    health[port]={'status':'ok','service':'strata','model':model,'loaded':True}
+    if backend=='sycl':health[port].update(backend='sycl',model='tiel-coder-35b-a3b',intel_profile='b390-tiel-coder',loaded=False)
+   (configs/'config-tiel-coder-sycl.json').write_text(json.dumps({'backend':'sycl','model_name':'tiel-coder-35b-a3b','intel_profile':'b390-tiel-coder'}))
+   for pid,port,api,data in ((30,3005,18085,'ui-sycl'),(40,3000,18080,'ui')):
+    directory=runtime/data;directory.mkdir()
+    command=[str(python),'-B',str(source/'ui/server.py'),'--port',str(port),'--api-port',str(api),'--data-dir',str(directory)]
+    (directory/'ui-process.json').write_text(json.dumps({'pid':pid,'started':stamp,'command':command}))
+    records[pid]={'pid':pid,'parent':1,'started':created,'command':command,'cwd':str(source),'executable':str(python)}
+    health[port]={'app':'tinystrata-ui','pid':pid,'api_port':api,'source_dir':str(source),'data_dir':str(directory)}
+   with mock.patch.dict(n,process=lambda pid:pid if pid in records else None,meta=lambda p:records[p],listeners=lambda port:{next(pid for pid,r in records.items() if r['command'][r['command'].index('--port')+1]==str(port))},
+       request=lambda port,*a:health[port],verify_process=mock.Mock(),verify_connection_settings=mock.Mock()):
+    result=n['collect'](source,work)
+   intel=next(x for x in result if x.get('Backend')=='sycl' and x['Kind']=='api')
+   self.assertEqual(intel['Model'],'tiel-coder-35b-a3b');self.assertEqual(intel['Family'],'tiel');self.assertFalse(intel['Loaded'])
+   self.assertEqual(Path(intel['Config']).name,'config-tiel-coder-sycl.json');self.assertEqual(Path(intel['OriginalConfig']).name,'config-sycl.json')
+   self.assertEqual(Path(intel['StatePath']).name,'server-state-tiel-coder-sycl.json')
+   self.assertEqual({Path(x['DataDir']).name for x in result if x['Kind']=='ui'},{'ui','ui-sycl'})
+   self.assertEqual({x['Port'] for x in result},{18080,18085,3000,3005})
+ def test_resume_unloaded_intel_uses_saved_active_profile_and_lazy_without_loading(self):
+  with tempfile.TemporaryDirectory() as folder:
+   source=Path(folder)/'source';work=Path(folder)/'work';source.mkdir();config=work/'runtime/.tinystrata/config-tiel-coder-sycl.json';config.parent.mkdir(parents=True);config.write_text('{}')
+   item={'Kind':'api','Port':19191,'Config':str(config),'StatePath':str(work/'runtime/server-state-tiel-coder-sycl.json'),'Model':'tiel-coder-35b-a3b','Loaded':False,'Backend':'sycl','IntelProfile':'b390-tiel-coder'}
+   snapshot={'SourceRoot':str(source),'WorkRoot':str(work),'Apis':[item],'Uis':[]}
+   child=mock.Mock(pid=88);child.poll.return_value=None
+   with mock.patch.dict(n,listeners=lambda port:set(),collect=lambda s,w:[item],request=mock.Mock(side_effect=AssertionError('An unloaded snapshot must not POST /load'))),mock.patch.object(n['subprocess'],'Popen',return_value=child) as spawn,mock.patch.object(n['psutil'],'Process') as process:
+    process.return_value.create_time.return_value=1000.
+    result=n['resume'](source,work,snapshot,'receipt')
+   command=spawn.call_args.args[0];self.assertIn('--lazy',command);self.assertEqual(command[command.index('--config')+1],str(config));self.assertFalse(result[0]['reused'])
+   self.assertEqual(n['read'](item['StatePath'])['api_source_fingerprint'],'receipt')
  def test_verified_redirector_and_console_do_not_hide_a_resident_vision_child(self):
   known=mock.Mock(pid=43)
   console=mock.Mock(pid=44);console.ppid.return_value=42
@@ -183,8 +257,24 @@ unittest.main(argv=[sys.argv[0]])
 try {
     [IO.File]::WriteAllText($modulePath, $embedded[0].Value, (New-Object Text.UTF8Encoding($false)))
     [IO.File]::WriteAllText($testPath, $tests, (New-Object Text.UTF8Encoding($false)))
-    & $Python -I -X utf8 -B $testPath $modulePath
+    & $Python -I -X utf8 -B $testPath $modulePath $root
     if ($LASTEXITCODE -ne 0) { throw 'Service update contract regression failed.' }
+    # The Desktop and installer write/read the same receipt. Compare the two
+    # actual implementations over a Unicode fixture, including a template and
+    # upper-case Python extension, without starting any application.
+    $definition = $ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-TinyStrataApiSourceFingerprint'}, $true)
+    Invoke-Expression $definition.Extent.Text
+    $receiptRoot = Join-Path $directory ('receipt-' + [char]0x65E5)
+    [IO.Directory]::CreateDirectory((Join-Path $receiptRoot 'serve')) | Out-Null
+    foreach ($name in @('requirements.txt','run.py','serve/z.py','serve/A.PY','serve/chat.jinja')) {
+        [IO.File]::WriteAllText((Join-Path $receiptRoot $name), ('receipt fixture ' + $name), (New-Object Text.UTF8Encoding($false)))
+    }
+    $pythonReceipt = @(& $Python -I -B -c 'import sys; sys.path.insert(0,sys.argv[1]); from ui.launch import api_source_fingerprint; print(api_source_fingerprint(sys.argv[2]))' $root $receiptRoot)
+    if ($LASTEXITCODE -ne 0 -or ($pythonReceipt -join '').Trim() -cne (Get-TinyStrataApiSourceFingerprint $receiptRoot)) { throw 'Desktop and installer API source receipts differ.' }
+    foreach ($file in Get-ChildItem -LiteralPath (Join-Path $receiptRoot 'serve') -File) { [IO.File]::Delete($file.FullName) }
+    [IO.Directory]::Delete((Join-Path $receiptRoot 'serve'))
+    foreach ($name in @('requirements.txt','run.py')) { [IO.File]::Delete((Join-Path $receiptRoot $name)) }
+    [IO.Directory]::Delete($receiptRoot)
 } finally {
     foreach ($path in @($modulePath, $testPath)) { if (Test-Path -LiteralPath $path -PathType Leaf) { [IO.File]::Delete($path) } }
     if (Test-Path -LiteralPath $directory -PathType Container) { [IO.Directory]::Delete($directory) }

@@ -30,6 +30,19 @@ INTEL_PROFILES = {"qwen36": ("b390-qwen36", "config-sycl.json", "server-state-sy
                   "clover": ("b390-clover", "config-clover-sycl.json", "server-state-clover-sycl.json")}
 
 
+def api_source_fingerprint(source):
+    """Same API input receipt as install.ps1, including Desktop-created APIs."""
+    source = Path(source).resolve()
+    paths = [source / "requirements.txt", source / "run.py"]
+    paths.extend(p for p in (source / "serve").rglob("*")
+                 if p.is_file() and p.suffix.lower() in (".py", ".jinja"))
+    # The installer sorts full Windows paths with StringComparer.Ordinal and
+    # uses uppercase per-file SHA256 followed by lowercase aggregate SHA256.
+    entries = [f"{p.relative_to(source).as_posix()}:{hashlib.sha256(p.read_bytes()).hexdigest().upper()}"
+               for p in sorted(paths, key=lambda p: str(p).encode("utf-16-be", errors="surrogatepass"))]
+    return hashlib.sha256("\n".join(entries).encode("utf-8")).hexdigest()
+
+
 def retired_model(name):
     # The optional UI also supports an older installed core. Keep this check
     # local rather than requiring a newly added serve module at UI startup.
@@ -446,7 +459,8 @@ class Launcher:
         target = self.runtime / name
         temporary = target.with_name(f"{target.name}.{os.getpid()}.tmp")
         values = {"pid": process.pid, "started": process_started(process.pid),
-                  "config": str(config), "source": str(self.source), "port": self.api_port}
+                  "config": str(config), "source": str(self.source), "port": self.api_port,
+                  "api_source_fingerprint": api_source_fingerprint(self.source)}
         temporary.write_text(json.dumps(values, indent=2), encoding="utf-8")
         temporary.replace(target)
 
