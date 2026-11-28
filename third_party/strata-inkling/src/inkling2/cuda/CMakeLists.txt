@@ -54,6 +54,17 @@ target_compile_options(strata_inkling_cuda_sm120 PRIVATE
 )
 
 # 2. Portable InkCudaBackend plugin implementing ink2::InkBackend (make_cuda_backend)
+# Include native FP4-to-half conversion in the single-token Expert kernels on
+# matching Blackwell chips. Keep the original targets for portable CUDA builds.
+set(_ink_runner_archs ${STRATA_INK_CUDA_ARCHS})
+if(CMAKE_CUDA_COMPILER_ID STREQUAL "NVIDIA" AND CUDAToolkit_VERSION VERSION_GREATER_EQUAL "12.8")
+  foreach(_arch IN LISTS STRATA_INK_CUDA_ARCHS)
+    if("${_arch}" MATCHES "^(12[01])(-real)?$")
+      list(APPEND _ink_runner_archs "${CMAKE_MATCH_1}a-real")
+    endif()
+  endforeach()
+  list(REMOVE_DUPLICATES _ink_runner_archs)
+endif()
 add_library(strata_inkling_cuda STATIC
   "${CMAKE_CURRENT_SOURCE_DIR}/ink_cuda_backend.cu"
 )
@@ -61,7 +72,7 @@ target_include_directories(strata_inkling_cuda PRIVATE ${_ink_cuda_inc})
 set_target_properties(strata_inkling_cuda PROPERTIES
   CUDA_STANDARD 20
   CUDA_STANDARD_REQUIRED ON
-  CUDA_ARCHITECTURES "${STRATA_INK_CUDA_ARCHS}"
+  CUDA_ARCHITECTURES "${_ink_runner_archs}"
   CUDA_RUNTIME_LIBRARY Shared
   POSITION_INDEPENDENT_CODE ON
 )

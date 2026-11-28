@@ -127,8 +127,28 @@ Compared with the virtual 16 GiB 256K context control above, the release run hel
 
 The physical 24 GiB release run improved 4K and 16K input by 5.2% and 4.7% against the earlier 512-token start. Startup Expert residency was higher in the release run, so these are deployment measurements with the same requests. In the same-binary physical 24 GiB screen, explicit 1024 improved 16K input from 1,053.35 to 1,097.73 tok/s.
 
+### Native Blackwell FP4 conversion
+
+The Inkling CUDA runner adds an `sm_120a` device image alongside the portable image. The Blackwell Expert kernels use the hardware FP4-to-FP16 conversion. Both builds selected FP8 KV, 256K context, CUDA Vision, and a 1024-token chunk automatically. The diagnostic uses greedy generation with the same prompts and GPU Expert counts within each pair. [Strata change](https://github.com/Niko1221/Strata/commit/2cbe802195d8c7f7545d5ac76b27e8778dd981f7)
+
+| Capacity | Generation tok/s | 4K input tok/s | 16K input tok/s |
+| --- | ---: | ---: | ---: |
+| Physical 24 GiB | 46.91 → 50.95 (+8.6%) | 1,232.25 → 1,230.66 | 1,098.59 → 1,098.24 |
+| Virtual 16 GiB | 41.32 → 43.73 (+5.8%) | 1,041.92 → 1,040.76 | 949.40 → 949.44 |
+
+Greedy outputs matched in both pairs. At virtual 16 GiB the 54K logistics workflow returned all nine expected facts, reclaimed 192 Expert loans in each build, and matched responses across 15 requests covering text, CUDA images, and a retry after invalid input.
+
+The v3 workload confirmed the gain with application-default sampling and medium reasoning. Each build used one fresh start per capacity in the reverse order of the diagnostic. Expert counts, effective chunk size, requests, text and reasoning matched across each pair.
+
+| Capacity | Generation tok/s | 4K input tok/s | 16K input tok/s | Image completion s |
+| --- | ---: | ---: | ---: | ---: |
+| Physical 24 GiB | 44.57 → 48.38 (+8.6%) | 1,224.73 → 1,220.65 | 1,099.06 → 1,099.67 | 7.89 → 7.31 |
+| Virtual 16 GiB | 40.99 → 43.98 (+7.3%) | 1,044.92 → 1,051.55 | 961.97 → 968.42 | 6.55 → 6.15 |
+
 ## Evidence
 
 Raw measurements are retained privately under `blackwell-followup-20261128`. Gemma throughput is summarized in `gemma-speed-summary.json`, with raw v3 runs and the two experimental dispatch receipts. Coding and retrieval results are in `gemma-quality-code/summary.json`, `gemma-quality-code-candidate/summary.json` and `gemma-quality-ruler/summary.json`. Inkling's per-capacity `result.json` files contain actual prompts, outputs, placements, settings and workload hashes. `inkling/results-1x*.json` contains reservation and image-path evidence. The same-binary comparisons are in `inkling-ab-lend-24/ab.json` and `inkling-quick-kv-v16/matrix.json`. Reclamation and managed-default workflows are saved under `inkling-candidate/qa-lend-reclaim-v16/` and `inkling-candidate/qa-lend-managed-default-24/`. The original Inkling CUDA executable's SHA-256 was `27029e368d0af368e9cf52af0a8742dd09ada8c4620483857f5fc6c24a7d4705`. The updated executable's SHA-256 was `ec5776b002fa2ddda126896212b11273cb6947fceea26ae4cc7a321f591324be`.
 
 Follow-up measurements are under `inkling-blackwell-loop-20261128`. `prefill-screen`, `native-screen`, and `chunk1536` retain the chunk and transfer experiments. `decode-abcd` and `relative-decode` retain the generated sequences and activation logs. `context-compare`, `release-chunk-qa`, and `release-long-qa` retain the fixed-format 128K/256K comparison, managed starts, and long workflow.
+
+The native FP4 conversion comparison is under `inkling-sm120a-20261128`. `speed/ab/report.json` and `speed/v3-ab/report.json` record the matched runs. `qa/realmodel-ab/summary.json` records the long workflow and response checks.
