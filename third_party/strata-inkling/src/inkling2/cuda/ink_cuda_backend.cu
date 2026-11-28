@@ -364,7 +364,11 @@ public:
         const char* retry_env = std::getenv("STRATA_INK_OOM_RETRY");
         strata::ink::ink_alloc_throws() = !(retry_env && std::atoi(retry_env) == 0);
         struct ThrowGuard { ~ThrowGuard() { strata::ink::ink_alloc_throws() = false; } } throw_guard;
-        int chunk_try = std::max(64, opts.chunk);
+        const int initial_chunk = std::max(64, opts.chunk);
+        int chunk_try = initial_chunk;
+        bool blackwell_chunk_tuned = false;
+        // Leave 512 MiB plus room for the buffers allocated after the runner.
+        constexpr double tuned_chunk_free_mib = 544.0;
         // No --chunk: the memory left after the experts decides (strata/core/ink_chunk.hpp); STRATA_INK_CHUNK_AUTO=0 keeps the old 512.
         if (opts.chunk_auto && !model_.ls_active) {
             const char* auto_env = std::getenv("STRATA_INK_CHUNK_AUTO");
@@ -373,7 +377,21 @@ public:
                 const int remaining_kv_rows = opts.kv_gpu_first ? std::max(0, planned_glob - 8192)
                     : (kv_offload_mode == 1 ? 0 : std::max(0, requested_ctx - init_glob));
                 const double kv_pending_mib = (double)8 * max_slots_ * remaining_kv_rows * (double)per_visit_pos / 1048576.0;
-                chunk_try = std::max(chunk_try, strata::core::ink_auto_chunk(led_loaded, max_slots_, kv_pending_mib));
+                const bool managed_fp8 = managed_blackwell_256k && cuda_kvd == strata::ink::InkKvDtype::FP8
+                    && opts.vram_experts_gb < 0.0;
+                if (managed_fp8) {
+                    const double workspace_mib = led_loaded - kv_pending_mib;
+                    // Measured SM120 FP8 at 256K. Larger chunks help when most
+                    // Experts are in RAM. Check the actual allocation again below.
+                    if (model_.n_host_experts > model_.n_vram_experts && workspace_mib >= 2464.0) {
+                        chunk_try = std::max(chunk_try, 1536);
+                    } else if (workspace_mib >= 1856.0) {
+                        chunk_try = std::max(chunk_try, 1024);
+                    }
+                    blackwell_chunk_tuned = chunk_try > initial_chunk;
+                } else {
+                    chunk_try = std::max(chunk_try, strata::core::ink_auto_chunk(led_loaded, max_slots_, kv_pending_mib));
+                }
                 // On the measured INT8 route, chunk 1024 used about 3,585 MiB including KV.
                 // Keep at least 400 MiB of headroom at startup and retain allocation retries.
                 if (managed_ampere_128k && kv_dtype_ == KvDtype::K8V8 && !build_screen && led_loaded >= 4000.0) {
@@ -403,6 +421,16 @@ public:
             }
             try {
                 runner_->init(max_slots_, requested_ctx, chunk_try, cuda_kvd, kv_offload_mode, opts.kv_gpu_first);
+                if (blackwell_chunk_tuned && chunk_try > initial_chunk &&
+                    (runner_->max_ctx < requested_ctx || free_mib() < tuned_chunk_free_mib)) {
+                    const int next = chunk_try > 1024 ? std::max(initial_chunk, 1024) : initial_chunk;
+                    std::fprintf(stderr, "[InkCUDA] chunk %d did not leave full KV capacity and working memory headroom; retrying with chunk %d\n",
+                                 chunk_try, next);
+                    runner_->free_all();
+                    runner_.reset();
+                    chunk_try = next;
+                    continue;
+                }
                 break;
             } catch (const strata::ink::InkAllocFailure& ex) {
                 runner_->free_all();

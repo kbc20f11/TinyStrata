@@ -89,6 +89,46 @@ The first singleton step used fused Split-K Flash-GQA with FP8 KV. An instrument
 
 The two routes matched the output hashes on all cases except the capped 4K response. The measured long-input default uses the higher-throughput tiled route.
 
+### Blackwell input chunk and generation follow-up
+
+The study kept the pinned IQ4 weights, FP8 KV, 256K context, one slot, CUDA Vision and KV lending. A real CUDA allocation reserved approximately 8 GiB on the 24 GB card for the virtual 16 GiB runs. Prompt inputs were exactly 4,096 and 16,384 tokens. The following rates are diagnostic starts and use the same quick workload.
+
+| Capacity | Prefill chunk | 4K input tok/s | 16K input tok/s |
+| --- | ---: | ---: | ---: |
+| Physical 24 GiB | 512 | 1,172.33 | 1,053.35 |
+| Physical 24 GiB | 1024 | 1,228.70 | 1,101.37 |
+| Physical 24 GiB | 1536 | 1,235.41 | 1,105.70 |
+| Physical 24 GiB | 2048 | 937.41 | 718.74 |
+| Virtual 16 GiB | 512 | 870.99 | 816.53 |
+| Virtual 16 GiB | 1024 | 1,037.88 | 950.63 |
+| Virtual 16 GiB | 1536 | 1,076.93 | 983.92 |
+| Virtual 16 GiB | 2048 | 1,129.74 | 1,023.14 |
+
+The 1536-token virtual 16 GiB run retained 256K and left 546 MiB after the runner initialized. The 2048-token run left 407 MiB. Automatic tuning uses 1024 with sufficient memory, and considers 1536 when most Experts are in RAM and the available workspace is larger. The initialization checks the actual device context and remaining memory before keeping a larger chunk.
+
+On virtual 16 GiB, selecting only routed Experts at chunk 512 moved about 30% fewer bytes and improved 16K input from 816.53 to 839.11 tok/s. BF16 KV tile reuse at chunk 1024 gave 954.31 vs 950.63 tok/s. The wider staging buffer at 1024 reached 993.99 tok/s but reduced short generation from 40.85 to 39.29 tok/s. Visit-weighted Expert promotion had 41.16 tok/s generation and 925.23 tok/s at 16K. The release uses the measured chunk policy. [Basalt visit weighting](https://github.com/jesdga95/basalt/commit/40000f2de47032c63f0c5053b20a3417c315941f)
+
+Warmed singleton generation on physical 24 GiB, after two independent conversation requests populated all 3,072 Experts, was 47.1 tok/s on the control. Skipping empty Expert staging measured 47.3, grouped BF16 Q/K/V measured 47.1, and combining the staging skip with fused MoE reduction and ShortConv measured 47.3. These arms used the same binary with dedicated switches and a separate 256-token warm response.
+
+A separate same-binary comparison computed only the relative-position distances reachable by the current singleton query. Warm generation measured 46.8 tok/s on the control and 47.0 with cropping. The short generation candidates had sub-percent warm differences and were held back.
+
+The virtual 16 GiB context comparison explicitly held FP8, KV lending, and chunk 512 constant. Each setting used one fresh start.
+
+| Context | Global KV MiB | GPU Experts at startup → after 16K | Generation tok/s | First code generation tok/s | Generation after 16K tok/s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 256K | 4,224 | 930 → 1,794 | 41.22 | 37.0 | 37.6 |
+| 128K | 2,112 | 1,419 → 1,803 | 42.48 | 40.5 | 37.7 |
+
+The shorter cache placed 489 more Experts at startup and helped the first response. At 16K the loaned placement was similar and the generation rates converged. The managed 256K policy is used in the chunk tuning results.
+
+The managed build selected chunk 1024 with no overrides at both capacities. Physical 24 GiB measured 46.93 generation, 1,233.47 4K and 1,103.38 16K tok/s. Virtual 16 GiB measured 41.10 generation, 1,048.91 4K and 959.62 16K tok/s. A separate virtual 16 GiB run allocated another 640 MiB after Expert placement. The engine attempted chunk 1024, discarded it for insufficient headroom, and retried with chunk 512. It retained 262,144 device KV rows and completed the code, 16K input and CUDA image workloads.
+
+Compared with the virtual 16 GiB 256K context control above, the release run held the same 930 startup and 1,794 post-16K GPU Experts. It improved 4K input by 17.6% and 16K input by 15.6%, with a 0.3% generation difference. The capped 16K answer changed wording. The other response hashes matched, and the actual 54,172-token logistics workflow returned all nine expected facts, reclaimed 192 Expert loans, restored the initial warm residency in a new conversation, and completed cached and fresh GPU image requests and error retries.
+
+The physical 24 GiB release run improved 4K and 16K input by 5.2% and 4.7% against the earlier 512-token start. Startup Expert residency was higher in the release run, so these are deployment measurements with the same requests. In the same-binary physical 24 GiB screen, explicit 1024 improved 16K input from 1,053.35 to 1,097.73 tok/s.
+
 ## Evidence
 
 Raw measurements are retained privately under `blackwell-followup-20261128`. Gemma throughput is summarized in `gemma-speed-summary.json`, with raw v3 runs and the two experimental dispatch receipts. Coding and retrieval results are in `gemma-quality-code/summary.json`, `gemma-quality-code-candidate/summary.json` and `gemma-quality-ruler/summary.json`. Inkling's per-capacity `result.json` files contain actual prompts, outputs, placements, settings and workload hashes. `inkling/results-1x*.json` contains reservation and image-path evidence. The same-binary comparisons are in `inkling-ab-lend-24/ab.json` and `inkling-quick-kv-v16/matrix.json`. Reclamation and managed-default workflows are saved under `inkling-candidate/qa-lend-reclaim-v16/` and `inkling-candidate/qa-lend-managed-default-24/`. The original Inkling CUDA executable's SHA-256 was `27029e368d0af368e9cf52af0a8742dd09ada8c4620483857f5fc6c24a7d4705`. The updated executable's SHA-256 was `ec5776b002fa2ddda126896212b11273cb6947fceea26ae4cc7a321f591324be`.
+
+Follow-up measurements are under `inkling-blackwell-loop-20261128`. `prefill-screen`, `native-screen`, and `chunk1536` retain the chunk and transfer experiments. `decode-abcd` and `relative-decode` retain the generated sequences and activation logs. `context-compare`, `release-chunk-qa`, and `release-long-qa` retain the fixed-format 128K/256K comparison, managed starts, and long workflow.
